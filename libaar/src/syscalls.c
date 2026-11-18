@@ -352,6 +352,13 @@ ssize_t _read(int fd, void *buf, size_t count)
     return (ssize_t)got;
 }
 
+/* True when v is a non-negative value the target's off_t holds: 31 bits on
+ * A32, where off_t is a 32-bit long, 63 bits on A64. */
+static int off_fits(uint64_t v)
+{
+    return v <= (uint64_t)((off_t)(~((uint64_t)1 << (8 * sizeof(off_t) - 1))));
+}
+
 off_t _lseek(int fd, off_t offset, int whence)
 {
     int64_t pos = 0;
@@ -368,7 +375,7 @@ off_t _lseek(int fd, off_t offset, int whence)
     rc = aar_file_seek(fd, (int64_t)offset, whence, &pos);
     if (rc != AAR_OK)
         return fail(rc);
-    if (pos < 0 || (uint64_t)pos > (uint64_t)((off_t)(~((uint64_t)1 << (8 * sizeof(off_t) - 1))))) {
+    if (pos < 0 || !off_fits((uint64_t)pos)) {
         errno = EOVERFLOW;
         return -1;
     }
@@ -395,6 +402,10 @@ int _fstat(int fd, struct stat *st)
         rc = aar_file_seek(fd, pos, AAR_SEEK_SET, &pos);
     if (rc != AAR_OK)
         return fail(rc);
+    if (end < 0 || !off_fits((uint64_t)end)) {
+        errno = EOVERFLOW;
+        return -1;
+    }
     st->st_mode = S_IFREG | 0644;
     st->st_size = (off_t)end;
     st->st_blksize = 4096;
@@ -413,6 +424,12 @@ int _stat(const char *path, struct stat *st)
     rc = aar_file_stat(path, &as);
     if (rc != AAR_OK)
         return fail(rc);
+    /* off_t is 32 bits on A32: a size it cannot hold is an error, not a
+     * wrapped value. */
+    if (!off_fits(as.size)) {
+        errno = EOVERFLOW;
+        return -1;
+    }
     memset(st, 0, sizeof(*st));
     st->st_mode = (as.mode == AAR_MODE_DIR ? S_IFDIR | 0755 : S_IFREG | 0644);
     st->st_size = (off_t)as.size;

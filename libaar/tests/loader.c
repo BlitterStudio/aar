@@ -14,8 +14,9 @@
  *   COHERENT=1       report AAR_INFOF_SHARED_COHERENT, so publish and acquire
  *                    must not reach the table
  *
- * One path has a meaning of its own: stat-calls.magic stats as a file whose
- * size is the number of stat calls made so far.
+ * Two paths have a meaning of their own: huge.bin opens as a file of 3 GiB
+ * (no data, seeks tracked), and stat-calls.magic stats as a file whose size is
+ * the number of stat calls made so far.
  *
  * The exit report on stderr counts heap_grow, heap_shrink and
  * publish/acquire calls. The exit status is the app's.
@@ -66,6 +67,8 @@ static unsigned shrink_calls;
 static unsigned publish_calls;
 static int coherent;
 static int files[MAX_FILES];
+static int huge[MAX_FILES];
+static int64_t huge_pos[MAX_FILES];
 static unsigned stat_calls;
 
 static void app_exit(int code)
@@ -182,9 +185,13 @@ static int host_fd(int id)
     return files[id - AAR_FD_BASE];
 }
 
-/* A path with a meaning of its own, for runtime_test: MAGIC_STAT_CALLS stats
- * as a file whose size is the number of ordinary stat calls so far. */
+/* Paths with a meaning of their own, for runtime_test. MAGIC_HUGE opens as a
+ * file whose size is 3 GiB (reads return nothing, seeks are tracked), so the
+ * 32-bit off_t of A32 cannot hold it. MAGIC_STAT_CALLS stats as a file whose
+ * size is the number of ordinary stat calls so far. */
+#define MAGIC_HUGE       "huge.bin"
 #define MAGIC_STAT_CALLS "stat-calls.magic"
+#define HUGE_SIZE        (3ull << 30)
 
 static int app_file_open(const char *path, uint32_t flags)
 {
@@ -192,6 +199,7 @@ static int app_file_open(const char *path, uint32_t flags)
     int mode = O_RDONLY;
     int fd;
     int i;
+    int is_huge;
 
     if ((flags & AAR_FILE_READ) && (flags & AAR_FILE_WRITE))
         mode = O_RDWR;
@@ -205,13 +213,19 @@ static int app_file_open(const char *path, uint32_t flags)
         mode |= O_TRUNC;
     if (flags & AAR_FILE_EXCL)
         mode |= O_EXCL;
-    host_path(full, sizeof full, path);
+    is_huge = strcmp(path, MAGIC_HUGE) == 0;
+    if (is_huge)
+        strcpy(full, "/dev/null");
+    else
+        host_path(full, sizeof full, path);
     fd = open(full, mode, 0644);
     if (fd < 0)
         return aar_error();
     for (i = 0; i < MAX_FILES; i++) {
         if (!files[i]) {
             files[i] = fd;
+            huge[i] = is_huge;
+            huge_pos[i] = 0;
             return i + AAR_FD_BASE;
         }
     }
@@ -227,6 +241,7 @@ static int app_file_close(int id)
         return AAR_E_BADF;
     close(fd);
     files[id - AAR_FD_BASE] = 0;
+    huge[id - AAR_FD_BASE] = 0;
     return AAR_OK;
 }
 
@@ -266,6 +281,17 @@ static int app_file_seek(int id, int64_t off, int whence, int64_t *out_pos)
 
     if (fd <= 0)
         return AAR_E_BADF;
+    if (huge[id - AAR_FD_BASE]) {
+        int64_t *at = &huge_pos[id - AAR_FD_BASE];
+        int64_t base = whence == AAR_SEEK_SET ? 0 :
+                       whence == AAR_SEEK_CUR ? *at : (int64_t)HUGE_SIZE;
+
+        if (base + off < 0)
+            return AAR_E_INVAL;
+        *at = base + off;
+        *out_pos = *at;
+        return AAR_OK;
+    }
     pos = lseek(fd, (off_t)off, whence);
     if (pos < 0)
         return AAR_E_IO;
@@ -287,6 +313,11 @@ static int app_file_stat(const char *path, aar_stat *out)
         return AAR_OK;
     }
     stat_calls++;
+    if (strcmp(path, MAGIC_HUGE) == 0) {
+        out->size = HUGE_SIZE;
+        out->mode = AAR_MODE_FILE;
+        return AAR_OK;
+    }
     host_path(full, sizeof full, path);
     if (stat(full, &st) != 0)
         return aar_error();

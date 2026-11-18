@@ -516,9 +516,12 @@ program run:
   `AAR_FILE_CREATE`, `AAR_FILE_TRUNCATE` and `AAR_FILE_EXCL` in one
   `aar_file_open` call, with no separate existence check. How exclusive
   `O_EXCL` is depends on the client; see `aar_file_open` in the API reference.
+  `stat` and `fstat` return -1 with `errno` set to `EOVERFLOW` when the size
+  does not fit `off_t`, which is 32 bits on A32 (a file of 2 GiB or more);
+  `lseek` does the same for a position. A64 has a 64-bit `off_t`.
   The path rules of the client apply. For a directory use `aar_file_list_open`,
   `aar_file_list_next` and `aar_file_list_close`, and for a path use
-  `aar_file_stat`.
+  `aar_file_stat`, which reports a 64-bit size.
 - `exit` flushes stdio, runs the `atexit` handlers, and ends in `aar_exit`.
 - `aar_alloc(bytes, align)` and `aar_free(p)` are `malloc` with an alignment.
   Shared memory is `aar_shared_alloc`, and the two allocators do not mix.

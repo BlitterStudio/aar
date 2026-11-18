@@ -244,6 +244,36 @@ static int test_open_flags(void)
     return 0;
 }
 
+/* A size the 32-bit off_t of A32 cannot hold is an error, not a wrapped
+ * value; on A64 the size is exact. The loader answers "huge.bin" with 3 GiB. */
+static int test_big_size(void)
+{
+    struct stat st;
+    int fd;
+
+    errno = 0;
+    if (sizeof(off_t) == 4) {
+        CHECK(stat("huge.bin", &st) == -1 && errno == EOVERFLOW);
+    } else {
+        CHECK(stat("huge.bin", &st) == 0);
+        CHECK((long long)st.st_size == (3ll << 30));
+    }
+    fd = open("huge.bin", O_RDONLY);
+    CHECK(fd >= 0);
+    CHECK(lseek(fd, 5, SEEK_SET) == 5);
+    errno = 0;
+    if (sizeof(off_t) == 4) {
+        CHECK(fstat(fd, &st) == -1 && errno == EOVERFLOW);
+    } else {
+        CHECK(fstat(fd, &st) == 0);
+        CHECK((long long)st.st_size == (3ll << 30));
+    }
+    /* The failed or successful fstat put the position back. */
+    CHECK(lseek(fd, 0, SEEK_CUR) == 5);
+    CHECK(close(fd) == 0);
+    return 0;
+}
+
 static int test_wrappers(void)
 {
     aar_info info;
@@ -268,7 +298,7 @@ int aar_main(int argc, char **argv)
     CHECK(argc == 2 && strcmp(argv[0], "app") == 0 && strcmp(argv[1], "one") == 0);
     CHECK(aar_api_ptr != NULL);
     if (test_init_arrays() || test_heap() || test_files() ||
-        test_open_flags() || test_wrappers())
+        test_open_flags() || test_big_size() || test_wrappers())
         return 1;
     printf("printf %d %s %5.2f\n", 42, "ok", 3.14159);
     puts("runtime_test PASS");
