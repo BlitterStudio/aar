@@ -247,6 +247,9 @@ static int api_heap_grow(uint64_t bytes, void **old_break)
         return AAR_E_NOMEM;
     if (old_break)
         *old_break = arena + heap_committed;
+    /* New memory is zeroed (app.h): a span shrunk earlier still holds the
+     * app's old bytes. */
+    memset(arena + heap_committed, 0, (size_t)bytes);
     heap_committed += bytes;
     return AAR_OK;
 }

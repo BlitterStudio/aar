@@ -181,6 +181,13 @@ static void test_dynamic_heap_through_table(void)
     assert(old_break == reported_end);
     api.heap_range(&range, &range_bytes);
     assert(range_bytes == committed);
+    /* A granule given back and committed again must come back zeroed. */
+    ((uint8_t *)old_break)[0] = 0x77;
+    ((uint8_t *)old_break)[(1u << 20) - 1] = 0x77;
+    assert(api.heap_shrink(1u << 20, NULL) == AAR_OK);
+    assert(api.heap_grow(1u << 20, &old_break) == AAR_OK);
+    assert(((uint8_t *)old_break)[0] == 0);
+    assert(((uint8_t *)old_break)[(1u << 20) - 1] == 0);
 
     api.size = (uint32_t)offsetof(aar_api, heap_grow);
     assert(aar_heap_grow(1u << 20, &old_break) == AAR_E_NOSYS);

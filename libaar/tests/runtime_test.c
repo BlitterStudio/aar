@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "aar/app.h"
 #include "aar/note.h"
@@ -150,6 +152,21 @@ static int test_files(void)
     fseek(f, 0, SEEK_END);
     n = ftell(f);
     CHECK(n == 3);
+    fclose(f);
+
+    /* O_APPEND holds for every write, not only at open: an lseek back to 0
+     * must not make the next write overwrite the start. */
+    {
+        int fd = open("t1.txt", O_WRONLY | O_APPEND);
+
+        CHECK(fd >= 0);
+        CHECK(lseek(fd, 0, SEEK_SET) == 0);
+        CHECK(write(fd, "X", 1) == 1);
+        CHECK(close(fd) == 0);
+    }
+    f = fopen("t1.txt", "r");
+    CHECK(f && fgets(buf, sizeof buf, f));
+    CHECK(strcmp(buf, "abcX") == 0);
     fclose(f);
     return 0;
 }

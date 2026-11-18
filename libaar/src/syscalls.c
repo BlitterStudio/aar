@@ -189,6 +189,29 @@ static int is_console(int fd)
     return fd >= 0 && fd < AAR_FD_BASE;
 }
 
+/* Descriptors opened with O_APPEND. Every write on them seeks to the end
+ * first, so another writer extending the file, or an lseek, cannot make a
+ * write land before the end. File ids are small integers; an append open
+ * that returns an id this map cannot hold fails with EMFILE. */
+#define APPEND_FD_LIMIT 256
+static uint32_t append_fds[APPEND_FD_LIMIT / 32];
+
+static int fd_appends(int fd)
+{
+    return fd >= 0 && fd < APPEND_FD_LIMIT &&
+           (append_fds[fd / 32] & (1u << (fd % 32))) != 0;
+}
+
+static void fd_set_append(int fd, int on)
+{
+    if (fd < 0 || fd >= APPEND_FD_LIMIT)
+        return;
+    if (on)
+        append_fds[fd / 32] |= 1u << (fd % 32);
+    else
+        append_fds[fd / 32] &= ~(1u << (fd % 32));
+}
+
 int _open(const char *path, int flags, ...)
 {
     int access = flags & O_ACCMODE;
@@ -239,14 +262,22 @@ int _open(const char *path, int flags, ...)
     fd = aar_file_open(path, aflags);
     if (fd < 0)
         return fail(fd);
+    fd_set_append(fd, 0);
     if ((flags & O_APPEND) != 0) {
         int64_t pos = 0;
-        int rc = aar_file_seek(fd, 0, AAR_SEEK_END, &pos);
+        int rc;
 
+        if (fd >= APPEND_FD_LIMIT) {
+            (void)aar_file_close(fd);
+            errno = EMFILE;
+            return -1;
+        }
+        rc = aar_file_seek(fd, 0, AAR_SEEK_END, &pos);
         if (rc != AAR_OK) {
             (void)aar_file_close(fd);
             return fail(rc);
         }
+        fd_set_append(fd, 1);
     }
     return fd;
 }
@@ -258,6 +289,8 @@ int _close(int fd)
     if (is_console(fd))
         return 0;
     rc = aar_file_close(fd);
+    if (rc == AAR_OK)
+        fd_set_append(fd, 0);
     return rc == AAR_OK ? 0 : fail(rc);
 }
 
@@ -273,6 +306,13 @@ ssize_t _write(int fd, const void *buf, size_t count)
     if (count != 0 && !bytes) {
         errno = EFAULT;
         return -1;
+    }
+    if (count != 0 && fd_appends(fd)) {
+        int64_t pos = 0;
+        int rc = aar_file_seek(fd, 0, AAR_SEEK_END, &pos);
+
+        if (rc != AAR_OK)
+            return fail(rc);
     }
     while (done < count) {
         uint32_t wrote = 0;

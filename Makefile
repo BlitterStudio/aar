@@ -16,6 +16,10 @@
 AAR_SDK := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PYTHON ?= python3
 
+# The per-app rules below are expanded before `all` is defined; without this
+# the first of them would be the default goal.
+.DEFAULT_GOAL := all
+
 CROSS_a32 ?= arm-none-eabi-
 CROSS_a64 ?= aarch64-none-elf-
 SYSROOT_a32 = $(AAR_SYSROOT_A32)
