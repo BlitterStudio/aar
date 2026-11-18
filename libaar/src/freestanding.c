@@ -1,8 +1,8 @@
 /*
  * The four routines GCC may call on its own, even for code that never
  * names them: struct copies, zero initialisers and loop idioms become calls
- * to memcpy, memmove, memset and memcmp. libgcc does not provide them, so a
- * ZZAPP_FREESTANDING image needs a definition. These are weak: an app or a
+ * to memcpy, memmove, memset and memcmp. libgcc does not provide them, so an
+ * AAR_FREESTANDING image needs a definition. These are weak: an app or a
  * faster library may define its own and this file steps aside. Nothing else
  * from <string.h> is provided; an app that calls strlen or strcmp supplies
  * them. Build this file with -fno-builtin and -fno-tree-loop-distribute-
@@ -16,7 +16,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ZZAPP_WEAK __attribute__((weak))
+#define AAR_WEAK __attribute__((weak))
 
 /* Shared by memcpy and memmove. memmove must not call the weak memcpy: an
  * app may replace that with a copy that runs backward. */
@@ -34,13 +34,13 @@ static void copy_forward(uint8_t *d, const uint8_t *s, size_t n)
         *d++ = *s++;
 }
 
-ZZAPP_WEAK void *memcpy(void *dst, const void *src, size_t n)
+AAR_WEAK void *memcpy(void *dst, const void *src, size_t n)
 {
     copy_forward((uint8_t *)dst, (const uint8_t *)src, n);
     return dst;
 }
 
-ZZAPP_WEAK void *memmove(void *dst, const void *src, size_t n)
+AAR_WEAK void *memmove(void *dst, const void *src, size_t n)
 {
     uint8_t *d = (uint8_t *)dst;
     const uint8_t *s = (const uint8_t *)src;
@@ -56,7 +56,7 @@ ZZAPP_WEAK void *memmove(void *dst, const void *src, size_t n)
     return dst;
 }
 
-ZZAPP_WEAK void *memset(void *dst, int c, size_t n)
+AAR_WEAK void *memset(void *dst, int c, size_t n)
 {
     uint8_t *d = (uint8_t *)dst;
     uint8_t byte = (uint8_t)c;
@@ -75,7 +75,7 @@ ZZAPP_WEAK void *memset(void *dst, int c, size_t n)
     return dst;
 }
 
-ZZAPP_WEAK int memcmp(const void *a, const void *b, size_t n)
+AAR_WEAK int memcmp(const void *a, const void *b, size_t n)
 {
     const uint8_t *x = (const uint8_t *)a;
     const uint8_t *y = (const uint8_t *)b;
