@@ -1,32 +1,34 @@
 /*
- * Stereo square-wave tone. It uses the normal zzapp_audio ring, so the
- * launcher-selected card-fabric and AHI routes need no app-side changes.
+ * Stereo square-wave tone. It uses the normal aar_audio ring, so whatever
+ * route the platform chooses needs no app-side changes. The pitch follows the
+ * granted rate.
  *
  * SPDX-License-Identifier: MIT
  */
-#include "zzapp.h"
-#include "zzapp_note.h"
+#include "aar/app.h"
+#include "aar/note.h"
 
-ZZAPP_NOTE(ZZAPP_NOTE_FLAG_AUDIO, 0)
+AAR_NOTE(0, 0, AAR_GROUP_AUDIO, 0)
 
-#define TONE_RATE 22050u
 #define TONE_HZ 440u
 
-int zz_main(int argc, char **argv)
+int aar_main(int argc, char **argv)
 {
-    zzapp_audio audio;
+    aar_audio audio;
     uint32_t phase = 0u;
+    uint32_t period;
     int rc;
 
     (void)argc;
     (void)argv;
-    rc = zz_audio_open(TONE_RATE, 2u, &audio);
-    if (rc != ZZ_OK) {
-        if (zz_should_stop())
+    rc = aar_audio_open(AAR_AUDIO_RATE_22050, 2u, &audio);
+    if (rc != AAR_OK) {
+        if (aar_should_stop())
             return 0;
         return 20;
     }
-    while (!zz_should_stop()) {
+    period = audio.rate / TONE_HZ;
+    while (!aar_should_stop()) {
         uint32_t read = *audio.read_frame;
         uint32_t write = *audio.write_frame;
         uint32_t used = write - read;
@@ -38,23 +40,23 @@ int zz_main(int argc, char **argv)
         if (frames > 128u)
             frames = 128u;
         if (frames == 0u) {
-            zz_yield();
+            aar_yield();
             continue;
         }
         while (frames--) {
-            int16_t value = phase < TONE_RATE / (2u * TONE_HZ) ? 12000 : -12000;
+            int16_t value = phase < period / 2u ? 12000 : -12000;
             uint32_t slot = write & (audio.frames - 1u);
 
             audio.samples[slot * 2u] = value;
             audio.samples[slot * 2u + 1u] = value;
             write++;
             phase++;
-            if (phase == TONE_RATE / TONE_HZ)
+            if (phase == period)
                 phase = 0u;
         }
         *audio.write_frame = write;
-        zz_yield();
+        aar_yield();
     }
-    (void)zz_audio_close();
+    (void)aar_audio_close();
     return 0;
 }

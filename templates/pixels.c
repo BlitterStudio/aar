@@ -1,21 +1,23 @@
 /*
  * Opens 320x240 RGB565, fills the back buffer, flips until stop or a key.
- * Draws the CPU mapping from zz_display_open. Does not call GL.
+ * Draws the CPU mapping from aar_display_open. Does not call GL. A key is an
+ * input event, so the note lists AAR_GROUP_INPUT as optional; without it the
+ * app still ends on stop.
  *
  * SPDX-License-Identifier: MIT
  */
-#include "zzapp.h"
-#include "zzapp_note.h"
+#include "aar/app.h"
+#include "aar/note.h"
 
-ZZAPP_NOTE(ZZAPP_NOTE_FLAG_DISPLAY, 0)
+AAR_NOTE(0, 0, AAR_GROUP_DISPLAY, AAR_GROUP_INPUT)
 
 static void put_rgb565(uint8_t *dst, uint16_t pixel, uint32_t layout)
 {
-    if (layout == ZZ_LAYOUT_BGR565_BE || layout == ZZ_LAYOUT_BGR565_LE)
+    if (layout == AAR_LAYOUT_BGR565_BE || layout == AAR_LAYOUT_BGR565_LE)
         pixel = (uint16_t)((pixel & 0x07e0u) |
                            ((pixel & 0xf800u) >> 11) |
                            ((pixel & 0x001fu) << 11));
-    if (layout == ZZ_LAYOUT_RGB565_BE || layout == ZZ_LAYOUT_BGR565_BE) {
+    if (layout == AAR_LAYOUT_RGB565_BE || layout == AAR_LAYOUT_BGR565_BE) {
         dst[0] = (uint8_t)(pixel >> 8);
         dst[1] = (uint8_t)pixel;
     } else {
@@ -24,10 +26,10 @@ static void put_rgb565(uint8_t *dst, uint16_t pixel, uint32_t layout)
     }
 }
 
-int zz_main(int argc, char **argv)
+int aar_main(int argc, char **argv)
 {
-    zzapp_surface surface = {0};
-    zzapp_event ev;
+    aar_surface surface = {0};
+    aar_event ev;
     uint32_t n;
     uint32_t y;
     uint32_t x;
@@ -35,20 +37,20 @@ int zz_main(int argc, char **argv)
 
     (void)argc;
     (void)argv;
-    rc = zz_display_open(320, 240, ZZ_FMT_RGB565, ZZ_DISPLAY_VSYNC, &surface);
-    if (rc != ZZ_OK)
-        zz_exit(rc);
+    rc = aar_display_open(320, 240, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC, &surface);
+    if (rc != AAR_OK)
+        aar_exit(rc);
     if (surface.layout == 0u)
-        surface.layout = ZZ_LAYOUT_RGB565_BE;
+        surface.layout = AAR_LAYOUT_RGB565_BE;
     if (!surface.back || surface.pitch < surface.width * 2u || surface.height == 0 ||
-        (surface.layout != ZZ_LAYOUT_RGB565_BE &&
-         surface.layout != ZZ_LAYOUT_RGB565_LE &&
-         surface.layout != ZZ_LAYOUT_BGR565_BE &&
-         surface.layout != ZZ_LAYOUT_BGR565_LE))
-        zz_exit(ZZ_EIO);
+        (surface.layout != AAR_LAYOUT_RGB565_BE &&
+         surface.layout != AAR_LAYOUT_RGB565_LE &&
+         surface.layout != AAR_LAYOUT_BGR565_BE &&
+         surface.layout != AAR_LAYOUT_BGR565_LE))
+        aar_exit(AAR_E_IO);
 
     for (y = 0; y < surface.height; y++) {
-        uint8_t *row = (uint8_t *)surface.back + y * surface.pitch;
+        uint8_t *row = (uint8_t *)surface.back + (size_t)y * surface.pitch;
         for (x = 0; x < surface.width; x++) {
             uint16_t px = (uint16_t)(((x & 32u) ? 0xf800u : 0u) |
                                      ((y & 32u) ? 0x07e0u : 0u) |
@@ -56,35 +58,35 @@ int zz_main(int argc, char **argv)
             put_rgb565(row + x * 2u, px, surface.layout);
         }
     }
-    if (surface.front != surface.back) {
+    if (surface.front && surface.front != surface.back) {
         for (y = 0; y < surface.height; y++)
-            __builtin_memcpy((uint8_t *)surface.front + y * surface.pitch,
-                             (uint8_t *)surface.back + y * surface.pitch,
+            __builtin_memcpy((uint8_t *)surface.front + (size_t)y * surface.pitch,
+                             (uint8_t *)surface.back + (size_t)y * surface.pitch,
                              surface.width * 2u);
     }
 
     for (;;) {
-        if (zz_should_stop())
+        if (aar_should_stop())
             break;
         n = 0;
-        rc = zz_input_poll(&ev, 1, &n);
-        if (rc == ZZ_OK && n == 1 &&
-            (ev.type == ZZ_EV_STOP || ev.type == ZZ_EV_KEY_DOWN))
+        rc = aar_event_poll(&ev, 1, &n);
+        if (rc == AAR_OK && n == 1 &&
+            (ev.type == AAR_EV_STOP || ev.type == AAR_EV_KEY_DOWN))
             break;
-        rc = zz_display_flip(surface.id);
-        if (rc != ZZ_OK) {
-            if (zz_should_stop())
+        rc = aar_display_flip(surface.id);
+        if (rc != AAR_OK) {
+            if (aar_should_stop())
                 break;
-            zz_exit(rc);
+            aar_exit(rc);
         }
-        rc = zz_display_refresh(&surface);
-        if (rc != ZZ_OK && rc != ZZ_ENOSYS) {
-            if (zz_should_stop())
+        rc = aar_display_refresh(&surface);
+        if (rc != AAR_OK && rc != AAR_E_NOSYS) {
+            if (aar_should_stop())
                 break;
-            zz_exit(rc);
+            aar_exit(rc);
         }
-        zz_yield();
+        aar_yield();
     }
-    zz_display_close(surface.id);
+    aar_display_close(surface.id);
     return 0;
 }

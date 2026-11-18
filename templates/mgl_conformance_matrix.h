@@ -1,6 +1,6 @@
 /*
  * One MiniGL texture-environment conformance matrix shared by the 68k and
- * ZZApp probes.  Values are RGBA8 and expected results use GL 1.1 rules.
+ * AAR probes.  Values are RGBA8 and expected results use GL 1.1 rules.
  *
  * SPDX-License-Identifier: MIT
  */

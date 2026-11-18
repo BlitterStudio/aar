@@ -1,14 +1,15 @@
 /*
- * Core-1 memory bandwidth benchmark for a USR-mode ZZ9000 app.
- * Timed loops stay in app memory and the report goes out through zz_log.
+ * Core-1 memory bandwidth benchmark for a user-mode app on the ZZ9000.
+ * Timed loops stay in app memory and the report goes out through aar_log.
  * PMU, system control registers, and device MMIO are not available to apps.
  *
  * SPDX-License-Identifier: MIT
  */
-#include "zzapp.h"
-#include "zzapp_note.h"
+#include "aar/app.h"
+#include "aar/note.h"
 
-ZZAPP_NOTE(ZZAPP_NOTE_FLAG_DISPLAY, 0)
+/* The p96 region below needs a display; the benchmark runs without one. */
+AAR_NOTE(0, 0, 0, AAR_GROUP_DISPLAY)
 
 #include <alloca.h>
 #include <stdint.h>
@@ -47,7 +48,7 @@ static struct seq_result seq_words(uint8_t *memory, uint32_t bytes, int write)
     uint64_t total = (uint64_t)bytes * BENCH_ROUNDS;
     struct seq_result result = {0u};
 
-    begin_us = zz_time_us();
+    begin_us = aar_time_us();
     for (round = 0u; round < BENCH_ROUNDS; round++) {
         if (write) {
             for (index = 0u; index < count; index++)
@@ -57,7 +58,7 @@ static struct seq_result seq_words(uint8_t *memory, uint32_t bytes, int write)
                 sum += words[index];
         }
     }
-    elapsed_us = zz_time_us() - begin_us;
+    elapsed_us = aar_time_us() - begin_us;
     bench_sink ^= sum;
     if (elapsed_us != 0u)
         result.mib_s = (uint32_t)((total * 1000000u) /
@@ -75,18 +76,22 @@ static struct seq_result seq_ldrd(uint8_t *memory, uint32_t bytes)
     uint64_t total = (uint64_t)bytes * BENCH_ROUNDS;
     struct seq_result result = {0u};
 
-    begin_us = zz_time_us();
+    begin_us = aar_time_us();
     for (round = 0u; round < BENCH_ROUNDS; round++) {
         for (offset = 0u; offset < bytes; offset += 8u) {
             uint64_t value;
 
+#if defined(__aarch64__)
+            __asm__ __volatile__("ldr %0, [%1]"
+#else
             __asm__ __volatile__("ldrd %Q0, %R0, [%1]"
+#endif
                                  : "=&r"(value)
                                  : "r"(memory + offset) : "memory");
             sum += value;
         }
     }
-    elapsed_us = zz_time_us() - begin_us;
+    elapsed_us = aar_time_us() - begin_us;
     bench_sink ^= (uint32_t)sum;
     if (elapsed_us != 0u)
         result.mib_s = (uint32_t)((total * 1000000u) /
@@ -103,12 +108,24 @@ static struct seq_result seq_line_store(uint8_t *memory, uint32_t bytes)
     uint64_t total = (uint64_t)bytes * BENCH_ROUNDS;
     struct seq_result result = {0u};
 
-    begin_us = zz_time_us();
+    begin_us = aar_time_us();
     for (round = 0u; round < BENCH_ROUNDS; round++) {
         uint32_t lo = round;
         uint32_t hi = ~round;
 
         for (offset = 0u; offset < bytes; offset += 32u)
+#if defined(__aarch64__)
+            __asm__ __volatile__(
+                "str %w1, [%0, #0]\n\t"
+                "str %w2, [%0, #4]\n\t"
+                "str %w1, [%0, #8]\n\t"
+                "str %w2, [%0, #12]\n\t"
+                "str %w1, [%0, #16]\n\t"
+                "str %w2, [%0, #20]\n\t"
+                "str %w1, [%0, #24]\n\t"
+                "str %w2, [%0, #28]"
+                : : "r"(memory + offset), "r"(lo), "r"(hi) : "memory");
+#else
             __asm__ __volatile__(
                 "str %1, [%0, #0]\n\t"
                 "str %2, [%0, #4]\n\t"
@@ -119,8 +136,9 @@ static struct seq_result seq_line_store(uint8_t *memory, uint32_t bytes)
                 "str %1, [%0, #24]\n\t"
                 "str %2, [%0, #28]"
                 : : "r"(memory + offset), "r"(lo), "r"(hi) : "memory");
+#endif
     }
-    elapsed_us = zz_time_us() - begin_us;
+    elapsed_us = aar_time_us() - begin_us;
     if (elapsed_us != 0u)
         result.mib_s = (uint32_t)((total * 1000000u) /
                                   (elapsed_us * 1024u * 1024u));
@@ -147,10 +165,10 @@ static uint32_t chase_measure(uint8_t *memory, uint32_t bytes)
     uint32_t step;
 
     chase_prepare(memory, bytes);
-    begin_us = zz_time_us();
+    begin_us = aar_time_us();
     for (step = 0u; step < steps; step++)
         index = words[index & (bytes / 4u - 1u)];
-    elapsed_us = zz_time_us() - begin_us;
+    elapsed_us = aar_time_us() - begin_us;
     bench_sink ^= index;
     if (elapsed_us == 0u)
         return 0u;
@@ -175,10 +193,14 @@ static void alu_measure(uint64_t *elapsed_us_out)
     uint64_t begin_us;
     uint32_t i;
 
-    begin_us = zz_time_us();
+    begin_us = aar_time_us();
     for (i = 0u; i < BENCH_ALU_ADDS; i++)
+#if defined(__aarch64__)
+        __asm__ __volatile__("add %w0, %w0, %w1" : "+r"(value) : "r"(i) : "cc");
+#else
         __asm__ __volatile__("add %0, %0, %1" : "+r"(value) : "r"(i) : "cc");
-    *elapsed_us_out = zz_time_us() - begin_us;
+#endif
+    *elapsed_us_out = aar_time_us() - begin_us;
     bench_sink ^= value;
 }
 
@@ -272,9 +294,9 @@ static int wants_tune(int argc, char **argv)
     return 0;
 }
 
-/* zz_log truncates one call at 1024 bytes and the firmware passes at most
- * 8 lines per second to the UART: send the report one line per call,
- * 150 ms apart.  The firmware adds the line ending. */
+/* aar_log truncates one call at AAR_LOG_MAX bytes and the ZZ9000 passes at
+ * most 8 lines per second to the UART: send the report one line per call,
+ * 150 ms apart.  The runtime adds the line ending. */
 static void log_lines(const char *text)
 {
     while (*text != '\0') {
@@ -282,13 +304,13 @@ static void log_lines(const char *text)
 
         while (*nl != '\0' && *nl != '\n')
             nl++;
-        zz_log(text, (uint32_t)(nl - text));
-        zz_sleep_us(150000u);
+        aar_log(text, (uint32_t)(nl - text));
+        aar_sleep_us(150000u);
         text = *nl == '\n' ? nl + 1 : nl;
     }
 }
 
-int zz_main(int argc, char **argv)
+int aar_main(int argc, char **argv)
 {
     char report[4096];
     char *at = report;
@@ -297,7 +319,7 @@ int zz_main(int argc, char **argv)
     uint8_t *stack;
     uint8_t *heap_raw;
     uint8_t *heap;
-    zzapp_surface display = {0};
+    aar_surface display = {0};
     int display_rc;
     uint64_t alu_us;
 
@@ -306,14 +328,14 @@ int zz_main(int argc, char **argv)
     stack = align64(stack_raw);
     heap_raw = (uint8_t *)malloc(BENCH_MAX_BYTES + 64u);
     if (heap_raw == NULL) {
-        append_text(&at, end, "zzmembench: malloc failed\n");
+        append_text(&at, end, "membench: malloc failed\n");
         *at = '\0';
-        zz_log(report, (uint32_t)(at - report));
-        return ZZ_ENOMEM;
+        aar_log(report, (uint32_t)(at - report));
+        return AAR_E_NOMEM;
     }
     heap = align64(heap_raw);
 
-    append_text(&at, end, "zzmembench bandwidth (zz_time_us)\n");
+    append_text(&at, end, "membench bandwidth (aar_time_us)\n");
     append_text(&at, end, "cpu/pl310/ddrc not available to apps\n");
     append_text(&at, end, "alu ");
     append_u64(&at, end, BENCH_ALU_ADDS);
@@ -325,8 +347,8 @@ int zz_main(int argc, char **argv)
     append_region(&at, end, "stack", stack, 512u << 10);
     append_region(&at, end, "heap ", heap, BENCH_MAX_BYTES);
 
-    display_rc = zz_display_open(640u, 480u, ZZ_FMT_RGB565, 0u, &display);
-    if (display_rc == ZZ_OK && display.back != NULL &&
+    display_rc = aar_display_open(640u, 480u, AAR_FMT_RGB565, 0u, &display);
+    if (display_rc == AAR_OK && display.back != NULL &&
         display.pitch >= 640u * 2u && display.height >= 480u) {
         uint32_t span = display.pitch * display.height;
         uint32_t bytes = 1u;
@@ -334,13 +356,13 @@ int zz_main(int argc, char **argv)
         while (bytes * 2u <= span)
             bytes *= 2u;
         append_region(&at, end, "p96  ", (uint8_t *)display.back, bytes);
-        (void)zz_display_close(display.id);
+        (void)aar_display_close(display.id);
     } else {
         append_text(&at, end, "p96 unavailable rc ");
         append_u64(&at, end, (uint32_t)display_rc);
         append_char(&at, end, '\n');
-        if (display_rc == ZZ_OK)
-            (void)zz_display_close(display.id);
+        if (display_rc == AAR_OK)
+            (void)aar_display_close(display.id);
     }
     append_stream(&at, end, "stream", bench_bss);
     if (wants_tune(argc, argv))

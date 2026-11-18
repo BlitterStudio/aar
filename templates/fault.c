@@ -3,19 +3,23 @@
  *
  * SPDX-License-Identifier: MIT
  */
-#include "zzapp.h"
-#include "zzapp_note.h"
+#include "aar/app.h"
+#include "aar/note.h"
 
-ZZAPP_NOTE(0, 0)
+AAR_NOTE(0, 0, 0, 0)
 
-int zz_main(int argc, char **argv)
+int aar_main(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    zz_log("fault zzapp: executing UDF\n",
-           sizeof "fault zzapp: executing UDF\n" - 1u);
-    /* UDF is architecturally undefined on ARMv7-A, independent of the
-     * firmware's writable mapping at address zero. */
+    aar_log("fault aar: executing UDF\n",
+            sizeof "fault aar: executing UDF\n" - 1u);
+    /* UDF is architecturally undefined on both profiles, independent of any
+     * mapping at address zero. A32 encodes it as 0xe7f000f0, A64 as 0. */
+#if defined(__aarch64__)
+    __asm__ volatile (".inst 0x00000000" ::: "memory");
+#else
     __asm__ volatile (".word 0xe7f000f0" ::: "memory");
+#endif
     return 1;
 }

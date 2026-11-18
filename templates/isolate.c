@@ -1,5 +1,7 @@
 /*
- * Exercises the app address-space boundary without touching app resources.
+ * Exercises the app address-space boundary of an isolated runtime without
+ * touching app resources. The two addresses are ZZ9000 firmware memory and
+ * an ungranted host heap page; they mean nothing on another platform.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -7,10 +9,10 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "zzapp.h"
-#include "zzapp_note.h"
+#include "aar/app.h"
+#include "aar/note.h"
 
-ZZAPP_NOTE(0, 0)
+AAR_NOTE(0, 0, 0, 0)
 
 #define FIRMWARE_ADDRESS 0x00100000u
 #define UNGRANTED_HOST_ADDRESS 0x03400000u
@@ -54,18 +56,20 @@ static int fault_window(void)
     return 20;
 }
 
+/* A pointer into the app's own text is not a writable output buffer. An
+ * isolated runtime answers AAR_E_FAULT. */
 static int check_svc_pointer(void)
 {
     int rc;
 
-    printf("isolate svc: passing text pointer to zz_mem_info\n");
+    printf("isolate svc: passing text pointer to aar_get_info\n");
     fflush(stdout);
-    rc = zz_mem_info((zzapp_mem_info *)(uintptr_t)text_target);
-    printf("isolate svc: zz_mem_info returned %d\n", rc);
-    return rc == ZZ_EFAULT ? 0 : 20;
+    rc = aar_get_info((aar_info *)(uintptr_t)text_target);
+    printf("isolate svc: aar_get_info returned %d\n", rc);
+    return rc == AAR_E_FAULT ? 0 : 20;
 }
 
-int zz_main(int argc, char **argv)
+int aar_main(int argc, char **argv)
 {
     if (argc != 2) {
         fprintf(stderr, "usage: isolate <store|exec|window|svc>\n");

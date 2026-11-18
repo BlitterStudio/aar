@@ -1,12 +1,15 @@
 /*
- * MiniGL texture environment conformance probe for the ZZApp in-process path.
+ * MiniGL texture environment conformance probe for the AAR in-process GL
+ * path. The identity line reads the ZZ9000 extension table, so it says
+ * "unavailable" on any other platform.
  * SPDX-License-Identifier: MIT
  */
-#include "zzapp.h"
-#include "zzapp_note.h"
+#include "aar/app.h"
+#include "aar/ext_zz9000.h"
+#include "aar/note.h"
 #include "mgl_conformance_matrix.h"
 
-ZZAPP_NOTE(ZZAPP_NOTE_FLAG_DISPLAY | ZZAPP_NOTE_FLAG_GL, 0)
+AAR_NOTE(0, 0, AAR_GROUP_DISPLAY | AAR_GROUP_GL, 0)
 
 #include <stdio.h>
 #include <string.h>
@@ -27,8 +30,8 @@ static void log_line(const char *line)
 {
     size_t length = strlen(line);
     if (length != 0u) {
-        zz_log(line, (uint32_t)length);
-        zz_sleep_us(150000u);
+        aar_log(line, (uint32_t)length);
+        aar_sleep_us(150000u);
     }
 }
 
@@ -134,7 +137,7 @@ static const float coords[4][2] = {
     { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 1.0f, 1.0f }, { 0.0f, 1.0f }
 };
 
-static mgl_probe_rgba read_surface_rgb565(const zzapp_surface *surface,
+static mgl_probe_rgba read_surface_rgb565(const aar_surface *surface,
                                           uint32_t x, uint32_t y)
 {
     const uint8_t *pixel;
@@ -146,13 +149,13 @@ static mgl_probe_rgba read_surface_rgb565(const zzapp_surface *surface,
         y >= surface->height || surface->pitch < (x + 1u) * 2u)
         return value;
     pixel = (const uint8_t *)surface->front + y * surface->pitch + x * 2u;
-    if (surface->layout == ZZ_LAYOUT_RGB565_LE ||
-        surface->layout == ZZ_LAYOUT_BGR565_LE)
+    if (surface->layout == AAR_LAYOUT_RGB565_LE ||
+        surface->layout == AAR_LAYOUT_BGR565_LE)
         raw = (uint16_t)pixel[0] | (uint16_t)pixel[1] << 8;
     else
         raw = (uint16_t)pixel[0] << 8 | (uint16_t)pixel[1];
-    if (surface->layout == ZZ_LAYOUT_BGR565_BE ||
-        surface->layout == ZZ_LAYOUT_BGR565_LE) {
+    if (surface->layout == AAR_LAYOUT_BGR565_BE ||
+        surface->layout == AAR_LAYOUT_BGR565_LE) {
         value.r = (uint8_t)((raw & 0x1fu) * 255u / 31u);
         value.g = (uint8_t)(((raw >> 5) & 0x3fu) * 255u / 63u);
         value.b = (uint8_t)(((raw >> 11) & 0x1fu) * 255u / 31u);
@@ -229,10 +232,10 @@ static void draw_quad(enum mgl_probe_draw draw, mgl_probe_rgba colour)
     glDisableClientState(GL_VERTEX_ARRAY);
 }
 
-int zz_main(int argc, char **argv)
+int aar_main(int argc, char **argv)
 {
-    zzapp_surface surface;
-    const zzapp_gl *gl;
+    aar_surface surface;
+    const aar_ext_zz9000 *ext;
     uint32_t texture;
     unsigned int env, format, texel, colour, draw, alpha_test, blend;
     unsigned int cases = 0u, failures = 0u;
@@ -246,13 +249,15 @@ int zz_main(int argc, char **argv)
     int surface_readback = surface_readback_from_argv(argc, argv);
     char line[256];
 
-    if (zz_display_open(WIDTH, HEIGHT, ZZ_FMT_RGB565, ZZ_DISPLAY_VSYNC, &surface) != ZZ_OK ||
-        !(gl = zz_gl_bind(surface.id)))
+    if (aar_display_open(WIDTH, HEIGHT, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC, &surface) != AAR_OK ||
+        !aar_gl_bind(surface.id))
         return 2;
+    ext = (const aar_ext_zz9000 *)aar_ext(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_MAIN);
     (void)snprintf(line, sizeof(line), "MGL identity firmware=%s module=%s\n",
-        ZZ_API_COVERS(zzapp_api_ptr, build_id) && zzapp_api_ptr->build_id ?
-            zzapp_api_ptr->build_id : "unavailable",
-        ZZ_GL_COVERS(gl, build_id) && gl->build_id ? gl->build_id : "unavailable");
+        AAR_EXT_ZZ9000_COVERS(ext, build_id) && ext->build_id ?
+            ext->build_id : "unavailable",
+        AAR_EXT_ZZ9000_COVERS(ext, gl_build_id) && ext->gl_build_id ?
+            ext->gl_build_id : "unavailable");
     log_line(line);
     glViewport(0, 0, WIDTH, HEIGHT);
     glGenTextures(1, &texture);
@@ -312,11 +317,11 @@ int zz_main(int argc, char **argv)
         log_group(mgl_probe_envs[env], mgl_probe_formats[format], mgl_probe_draws[draw], &group);
     }
     glDeleteTextures(1, &texture);
-    zz_gl_swap();
+    aar_gl_swap();
     if (surface_readback) {
         mgl_probe_rgba direct;
 
-        (void)zz_display_refresh(&surface);
+        (void)aar_display_refresh(&surface);
         direct = read_surface_rgb565(&surface, WIDTH / 2u, HEIGHT / 2u);
         (void)snprintf(line, sizeof(line),
             "MGL surface-readback x=%u y=%u rgba=%02x%02x%02x%02x layout=%lu\n",
@@ -326,7 +331,7 @@ int zz_main(int argc, char **argv)
     }
     (void)snprintf(line, sizeof(line), "MGL summary cases=%u failures=%u\n", cases, failures);
     log_line(line);
-    zz_gl_unbind();
-    zz_display_close(surface.id);
+    aar_gl_unbind();
+    aar_display_close(surface.id);
     return failures ? 1 : 0;
 }

@@ -116,17 +116,20 @@ $(foreach p,$(PROFILES),$(eval $(call FP_RULE,$(p))))
 
 # The note of the templates that set one. Arguments: ELF STACK_BYTES
 # MIN_HEAP_MIB GROUPS_REQUIRED GROUPS_OPTIONAL. Group bits: DISPLAY 1,
-# AUDIO 4, GL 8.
+# INPUT 2, AUDIO 4, GL 8. pixels, console and membench list the group they
+# use but can run without as optional.
 check-expect-note: $(EXPECT_TARGETS)
 
 define EXPECT_RULE
 .PHONY: expect-note-$(1)
-expect-note-$(1): $(foreach a,hello pixels tone mgl-conformance freestanding,check-$(1)-$(a))
+expect-note-$(1): $(foreach a,hello pixels tone mgl-conformance freestanding console membench,check-$(1)-$(a))
 	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/hello.elf 0 0 0 0
-	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/pixels.elf 0 0 1 0
+	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/pixels.elf 0 0 1 2
 	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/tone.elf 0 0 4 0
 	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/mgl-conformance.elf 0 0 9 0
 	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/freestanding.elf 0 0 0 0
+	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/console.elf 0 0 0 2
+	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/membench.elf 0 0 0 1
 endef
 $(foreach p,$(PROFILES),$(eval $(call EXPECT_RULE,$(p))))
 
