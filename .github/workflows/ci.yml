@@ -1,0 +1,173 @@
+# Copyright (C) 2024-2026 Dimitris Panokostas / BlitterStudio and contributors
+# SPDX-License-Identifier: MIT
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: actionlint (workflow files)
+        run: docker run --rm -v "$PWD":/repo:ro -w /repo rhysd/actionlint:latest -color
+
+  # Links every template as a PIE with the Arm GNU Toolchain on the runner and
+  # runs zzapp-check on the results.
+  arm-check:
+    name: ARM PIE link and zzapp-check
+    runs-on: ubuntu-latest
+    env:
+      ARM_TOOLCHAIN_VERSION: 15.3.rel2
+      ARM_TOOLCHAIN_DIR: ${{ github.workspace }}/.toolchain/arm-gnu-toolchain
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            wget xz-utils make cmake perl ca-certificates python3 g++ texinfo
+
+      # Arm GNU Toolchain with newlib. Ubuntu's gcc-arm-none-eabi package
+      # uses picolibc, which does not match the PIC newlib the apps link.
+      - name: Cache Arm GNU Toolchain
+        id: toolchain-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.ARM_TOOLCHAIN_DIR }}
+          key: arm-gnu-toolchain-${{ env.ARM_TOOLCHAIN_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Download Arm GNU Toolchain
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          case "${{ runner.arch }}" in
+            X64)   TC_HOST=x86_64;  TC_SHA256=463df9665c246fa13bab2102115bbf83440661b6eb70b44f3dfd4712ca30037a ;;
+            ARM64) TC_HOST=aarch64; TC_SHA256=a0dc18893171d39dec82fd8d57eeab3da836fd3df4b61978db3eccbf4a6bb948 ;;
+            *)     echo "Unsupported runner arch: ${{ runner.arch }}"; exit 1 ;;
+          esac
+          TC_BASE="arm-gnu-toolchain-${ARM_TOOLCHAIN_VERSION}-${TC_HOST}-arm-none-eabi"
+          # From 15.3 on, Arm publishes the toolchain on its GitLab package registry.
+          URL="https://gitlab.arm.com/api/v4/projects/tooling%2Fgnu-toolchains-for-arm/packages/generic/gnu-toolchain/${ARM_TOOLCHAIN_VERSION}/${TC_BASE}.tar.xz"
+          mkdir -p "${ARM_TOOLCHAIN_DIR}"
+          wget -q "$URL" -O toolchain.tar.xz
+          echo "${TC_SHA256}  toolchain.tar.xz" | sha256sum -c -
+          tar xf toolchain.tar.xz --strip-components=1 -C "${ARM_TOOLCHAIN_DIR}"
+          rm toolchain.tar.xz
+
+      - name: Add toolchain to PATH
+        run: echo "${ARM_TOOLCHAIN_DIR}/bin" >> "$GITHUB_PATH"
+
+      - name: Cache ZZApp PIC newlib
+        id: zzapp-pic-newlib-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.toolchain/zzapp-pic-newlib
+          key: zzapp-pic-newlib-4.6.0.20260123-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build_pic_newlib.sh') }}
+
+      - name: Build ZZApp PIC newlib
+        if: steps.zzapp-pic-newlib-cache.outputs.cache-hit != 'true'
+        env:
+          ZZAPP_PIC_SYSROOT: ${{ github.workspace }}/.toolchain/zzapp-pic-newlib
+          ZZAPP_NEWLIB_CACHE: ${{ github.workspace }}/.toolchain/zzapp-newlib-cache
+        run: sh build_pic_newlib.sh
+
+      - name: ZZApp PIE link and zzapp-check
+        env:
+          ZZAPP_PIC_SYSROOT: ${{ github.workspace }}/.toolchain/zzapp-pic-newlib
+        run: make check
+
+  # Builds the SDK image and runs the checks and the CMake examples inside it.
+  # The image is not pushed to GHCR from this repository yet. Publishing moves
+  # here with the rename of the zzapp names to aar names.
+  sdk-image:
+    name: ZZApp SDK toolchain image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: ZZApp check unit test
+        run: python3 tests/zzapp_check_test.py
+      - name: Host ZZAPP_NOTE expands to nothing
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends gcc binutils
+          cat > /tmp/zzapp-note-host.c <<'EOF'
+          #include "zzapp_note.h"
+          ZZAPP_NOTE(1, 0)
+          int host_ok(void) { return 0; }
+          EOF
+          gcc -Wall -Wextra -Werror -std=c11 -I include -c -o /tmp/zzapp-note-host.o /tmp/zzapp-note-host.c
+          if readelf -S /tmp/zzapp-note-host.o | grep -q note.zzapp; then
+            echo "host ZZAPP_NOTE emitted a note" >&2
+            exit 1
+          fi
+      - name: Build SDK image
+        run: docker build -f docker/Dockerfile -t zz9000-app-sdk:ci .
+      - name: Make templates inside the image
+        run: docker run --rm zz9000-app-sdk:ci make check
+      - name: CMake hello and freestanding templates inside the image
+        run: |
+          docker run --rm zz9000-app-sdk:ci bash -c '
+            set -euo pipefail
+            cmake -S /opt/zzapp-sdk/cmake/example -B /tmp/hello \
+              -DCMAKE_TOOLCHAIN_FILE=/opt/zzapp-sdk/cmake/zzapp-toolchain.cmake
+            cmake --build /tmp/hello
+          '
+      - name: CMake freestanding build without the PIC sysroot
+        run: |
+          docker run --rm zz9000-app-sdk:ci bash -c '
+            set -euo pipefail
+            unset ZZAPP_PIC_SYSROOT
+            cmake -S /opt/zzapp-sdk/cmake/example -B /tmp/freestanding \
+              -DCMAKE_TOOLCHAIN_FILE=/opt/zzapp-sdk/cmake/zzapp-toolchain.cmake \
+              -DZZAPP_FREESTANDING=ON
+            cmake --build /tmp/freestanding
+          '
+
+  docs:
+    name: ZZApp API docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: API reference covers every public symbol
+        run: python3 docs/check_zzapp_api.py --self-test
+
+  host:
+    name: ZZApp SDL2 host runner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install SDL2
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            cmake python3 libsdl2-dev
+      - name: Configure
+        run: cmake -S host -B build-zzapp-host -DCMAKE_BUILD_TYPE=Debug
+      - name: Build
+        run: cmake --build build-zzapp-host --parallel
+      - name: Test
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: ctest --test-dir build-zzapp-host --output-on-failure
