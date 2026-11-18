@@ -1,0 +1,568 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Fail unless an app image matches the AAR standard (spec 2.2 to 2.4).
+
+  aar-check [--profile a32|a64] app.elf...
+      check images: the ELF rules of both profiles, the relocation tables in
+      PT_DYNAMIC and in the section headers, the float ABI, and the AAR note
+  aar-check --expect-note app.elf STACK_BYTES MIN_HEAP_MIB GROUPS_REQUIRED GROUPS_OPTIONAL
+      compare the note bytes with what AAR_NOTE() emits for those arguments
+  aar-check --no-libc app.map
+      check the link map of an AAR_FREESTANDING build
+
+The profile is inferred from the ELF class when --profile is not given.
+Exit status: 0 every check passed, 1 a check failed, 2 usage error.
+"""
+import re
+import struct
+import sys
+
+# include/aar/app.h: AAR_API_MAJOR, AAR_API_MINOR. tests/aar_check_test.py
+# compares these two numbers with the header.
+AAR_API_MAJOR = 0
+AAR_API_MINOR = 5
+
+PROFILE_NUMBER = {"a32": 1, "a64": 2}  # AAR_PROFILE_A32, AAR_PROFILE_A64
+NOTE_MAGIC = 0x4E524141
+NOTE_TYPE = 1
+NOTE_VERSION = 1
+NOTE_DESC_BYTES = 40
+NOTE_OWNER = b"AAR\x00"
+NOTE_SECTION = ".note.aar"
+GROUPS_DEFINED = 0x0000001F
+GROUPS_EXPERIMENTAL = 0xF0000000
+GROUPS_KNOWN = GROUPS_DEFINED | GROUPS_EXPERIMENTAL
+STACK_MIN = 64 << 10
+STACK_MAX = 1 << 20
+
+ELFCLASS32 = 1
+ELFCLASS64 = 2
+ELFDATA2LSB = 1
+ET_DYN = 3
+EM_ARM = 40
+EM_AARCH64 = 183
+EF_ARM_EABIMASK = 0xFF000000
+EF_ARM_EABI_VER5 = 0x05000000
+EF_ARM_ABI_FLOAT_SOFT = 0x200
+EF_ARM_ABI_FLOAT_HARD = 0x400
+
+PT_LOAD = 1
+PT_DYNAMIC = 2
+PT_INTERP = 3
+PT_NOTE = 4
+PF_X = 1
+PF_W = 2
+SHT_RELA = 4
+SHT_DYNAMIC = 6
+SHT_NOTE = 7
+SHT_REL = 9
+SHT_RELR = 19
+SHF_ALLOC = 2
+
+DT_NULL = 0
+DT_NEEDED = 1
+DT_PLTRELSZ = 2
+DT_RELA = 7
+DT_RELASZ = 8
+DT_RELAENT = 9
+DT_REL = 17
+DT_RELSZ = 18
+DT_RELENT = 19
+DT_JMPREL = 23
+DT_RELRSZ = 35
+DT_RELR = 36
+DT_RELRENT = 37
+
+R_ARM_RELATIVE = 23
+R_AARCH64_RELATIVE = 1027
+
+# Per profile: ELF class, machine, section name of the relocation tables the
+# loader reads, relocation target alignment, ELF layout structs.
+LAYOUT = {
+    "a32": {
+        "cls": ELFCLASS32, "machine": EM_ARM, "reloc_type": R_ARM_RELATIVE,
+        "reloc_name": "R_ARM_RELATIVE", "align": 4,
+        "ehdr": struct.Struct("<16sHHIIIIIHHHHHH"),
+        "phdr": struct.Struct("<IIIIIIII"),
+        "shdr": struct.Struct("<IIIIIIIIII"),
+        "dyn": struct.Struct("<II"),
+        "rel": struct.Struct("<II"), "rela": struct.Struct("<III"),
+    },
+    "a64": {
+        "cls": ELFCLASS64, "machine": EM_AARCH64,
+        "reloc_type": R_AARCH64_RELATIVE,
+        "reloc_name": "R_AARCH64_RELATIVE", "align": 8,
+        "ehdr": struct.Struct("<16sHHIQQQIHHHHHH"),
+        "phdr": struct.Struct("<IIQQQQQQ"),
+        "shdr": struct.Struct("<IIQQQQIIQQ"),
+        "dyn": struct.Struct("<qQ"),
+        "rel": None, "rela": struct.Struct("<QQq"),
+    },
+}
+CLASS_PROFILE = {ELFCLASS32: "a32", ELFCLASS64: "a64"}
+USAGE = """usage: aar-check [--profile a32|a64] ELF...
+       aar-check --expect-note ELF STACK_BYTES MIN_HEAP_MIB GROUPS_REQUIRED GROUPS_OPTIONAL
+       aar-check --no-libc MAP
+"""
+
+
+class CheckError(Exception):
+    pass
+
+
+def fail(msg):
+    raise CheckError(msg)
+
+
+def read_file(path):
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError as exc:
+        fail(str(exc))
+
+
+class Image:
+    """A parsed little-endian ELF32 or ELF64 image and its profile."""
+
+    def __init__(self, blob, want_profile=None):
+        self.blob = blob
+        if len(blob) < 16 or blob[:4] != b"\x7fELF":
+            fail("not a little-endian ELF32 or ELF64 image")
+        cls = blob[4]
+        if blob[5] != ELFDATA2LSB or cls not in CLASS_PROFILE:
+            fail("not a little-endian ELF32 or ELF64 image")
+        self.cls = cls
+        if want_profile is not None and CLASS_PROFILE[cls] != want_profile:
+            fail("ELF class %s does not match profile %s"
+                 % ("ELFCLASS32" if cls == ELFCLASS32 else "ELFCLASS64",
+                    want_profile))
+        self.profile = want_profile or CLASS_PROFILE[cls]
+        self.lay = LAYOUT[self.profile]
+        lay = self.lay
+        if len(blob) < lay["ehdr"].size:
+            fail("truncated ELF header")
+        (_, self.etype, self.machine, _, self.entry, self.phoff,
+         self.shoff, self.eflags, _, self.phentsize, self.phnum,
+         self.shentsize, self.shnum, self.shstrndx) = \
+            lay["ehdr"].unpack_from(blob, 0)
+
+    def check_header(self):
+        lay = self.lay
+        if self.etype != ET_DYN:
+            fail("e_type is not ET_DYN")
+        if self.machine != lay["machine"]:
+            fail("e_machine %d is not %s" % (
+                self.machine, "EM_ARM" if self.profile == "a32"
+                else "EM_AARCH64"))
+        if self.profile == "a32":
+            if (self.eflags & EF_ARM_EABIMASK) != EF_ARM_EABI_VER5:
+                fail("e_flags 0x%x is not EABI version 5" % self.eflags)
+            if self.eflags & EF_ARM_ABI_FLOAT_SOFT:
+                fail("soft-float ABI (EF_ARM_ABI_FLOAT_SOFT), "
+                     "the profile is hard-float")
+            if not self.eflags & EF_ARM_ABI_FLOAT_HARD:
+                fail("EF_ARM_ABI_FLOAT_HARD is not set in e_flags 0x%x"
+                     % self.eflags)
+        elif self.eflags != 0:
+            fail("e_flags 0x%x is not 0" % self.eflags)
+
+    def parse_tables(self):
+        blob, lay = self.blob, self.lay
+        if self.phentsize < lay["phdr"].size or self.shentsize < lay["shdr"].size:
+            fail("unexpected ELF header size")
+        if self.phoff + self.phnum * self.phentsize > len(blob):
+            fail("truncated ELF program headers")
+        self.phdrs = []
+        for i in range(self.phnum):
+            f = lay["phdr"].unpack_from(blob, self.phoff + i * self.phentsize)
+            if self.cls == ELFCLASS32:
+                p_type, off, vaddr, _, filesz, memsz, flags, align = f
+            else:
+                p_type, flags, off, vaddr, _, filesz, memsz, align = f
+            self.phdrs.append((p_type, flags, off, vaddr, filesz, memsz, align))
+        if self.shnum == 0 or self.shoff == 0:
+            fail("section headers are missing; the check reads them "
+                 "(do not strip them from the image)")
+        if self.shoff + self.shnum * self.shentsize > len(blob):
+            fail("truncated ELF section headers")
+        self.shdrs = [lay["shdr"].unpack_from(blob, self.shoff + i * self.shentsize)
+                      for i in range(self.shnum)]
+        if self.shstrndx >= self.shnum:
+            fail("section name table is missing")
+        names_off, names_size = self.shdrs[self.shstrndx][4:6]
+        if names_off + names_size > len(blob):
+            fail("truncated section name table")
+        self.names = blob[names_off:names_off + names_size]
+
+    def sname(self, off):
+        if off >= len(self.names):
+            return ""
+        end = self.names.find(b"\x00", off)
+        if end < 0:
+            end = len(self.names)
+        return self.names[off:end].decode("ascii", "replace")
+
+    def section(self, wanted):
+        """The section headers named wanted, as (name, type, flags, addr, off, size, ...)."""
+        return [s for s in self.shdrs if self.sname(s[0]) == wanted]
+
+
+def check_segments(img):
+    blob = img.blob
+    loads = []
+    for p_type, flags, off, vaddr, filesz, memsz, align in img.phdrs:
+        del align
+        if p_type == PT_INTERP:
+            fail("PT_INTERP is present")
+        if off + filesz > len(blob):
+            fail("segment extends past the file")
+        if p_type == PT_LOAD:
+            if (flags & PF_W) and (flags & PF_X):
+                fail("PT_LOAD is writable and executable")
+            if memsz < filesz:
+                fail("PT_LOAD p_memsz %d is below p_filesz %d" % (memsz, filesz))
+            loads.append((vaddr, off, filesz, memsz, flags))
+    if len(loads) > 4:
+        fail("%d PT_LOAD segments" % len(loads))
+    if not loads:
+        fail("no PT_LOAD")
+    ordered = sorted((v, m) for v, _, _, m, _ in loads if m)
+    for (v0, m0), (v1, _) in zip(ordered, ordered[1:]):
+        if v0 + m0 > v1:
+            fail("PT_LOAD segments overlap")
+    return loads
+
+
+def vaddr_to_off(loads, vaddr, size):
+    for seg_vaddr, off, filesz, _, _ in loads:
+        if seg_vaddr <= vaddr and vaddr + size <= seg_vaddr + filesz:
+            return off + vaddr - seg_vaddr
+    return None
+
+
+def read_dynamic(img, off, size):
+    """The (tag, value) pairs of a dynamic table; refuse what no app may have."""
+    dyn = img.lay["dyn"]
+    if off + size > len(img.blob) or size % dyn.size:
+        fail("truncated dynamic table")
+    tags = []
+    for n in range(size // dyn.size):
+        tag, val = dyn.unpack_from(img.blob, off + n * dyn.size)
+        if tag == DT_NULL:
+            break
+        if tag == DT_NEEDED:
+            fail("DT_NEEDED")
+        if tag in (DT_RELR, DT_RELRSZ, DT_RELRENT):
+            fail("DT_RELR is not allowed")
+        if tag == DT_JMPREL or (tag == DT_PLTRELSZ and val):
+            fail("DT_JMPREL (PLT relocations) is not allowed")
+        tags.append((tag, val))
+    return tags
+
+
+def check_reloc_table(img, loads, data, kind):
+    """Every entry of one REL or RELA table must be RELATIVE with symbol 0."""
+    lay = img.lay
+    st = lay[kind]
+    if st is None:
+        fail("A64 images use RELA tables only")
+    if len(data) % st.size:
+        fail("relocation table size %d is not a multiple of %d"
+             % (len(data), st.size))
+    count = len(data) // st.size
+    for n in range(count):
+        fields = st.unpack_from(data, n * st.size)
+        r_offset, r_info = fields[0], fields[1]
+        if img.cls == ELFCLASS32:
+            r_type, r_sym = r_info & 0xFF, r_info >> 8
+        else:
+            r_type, r_sym = r_info & 0xFFFFFFFF, r_info >> 32
+        if r_type != lay["reloc_type"] or r_sym != 0:
+            fail("reloc %d is not %s/0" % (n, lay["reloc_name"]))
+        if r_offset % lay["align"]:
+            fail("reloc %d target 0x%x is not %d-byte aligned"
+                 % (n, r_offset, lay["align"]))
+        if not any(v <= r_offset and r_offset + lay["align"] <= v + m
+                   for v, _, _, m, _ in loads):
+            fail("reloc %d target 0x%x is outside every PT_LOAD" % (n, r_offset))
+    return count
+
+
+def check_dynamic(img, loads):
+    """Relocations the loader reads: the PT_DYNAMIC tables (spec 2.2 rule 4)."""
+    segs = [p for p in img.phdrs if p[0] == PT_DYNAMIC]
+    if len(segs) != 1:
+        fail("%d PT_DYNAMIC segments, need exactly 1" % len(segs))
+    _, _, off, _, filesz, _, _ = segs[0]
+    tags = dict(read_dynamic(img, off, filesz))
+    a32 = img.profile == "a32"
+    tables = []
+    if DT_REL in tags or DT_RELSZ in tags or DT_RELENT in tags:
+        if not a32:
+            fail("A64 images use DT_RELA, not DT_REL")
+        tables.append(("rel", tags.get(DT_REL), tags.get(DT_RELSZ),
+                       tags.get(DT_RELENT), 8, "DT_REL"))
+    if DT_RELA in tags or DT_RELASZ in tags or DT_RELAENT in tags:
+        tables.append(("rela", tags.get(DT_RELA), tags.get(DT_RELASZ),
+                       tags.get(DT_RELAENT), 12 if a32 else 24, "DT_RELA"))
+    total = 0
+    for kind, addr, size, ent, want_ent, label in tables:
+        if addr is None or size is None or ent is None:
+            fail("%s, its size and its entry size must all be present" % label)
+        if ent != want_ent:
+            fail("%s entry size %d is not %d" % (label, ent, want_ent))
+        data_off = vaddr_to_off(loads, addr, size)
+        if data_off is None:
+            fail("%s table is not inside a PT_LOAD" % label)
+        total += check_reloc_table(img, loads,
+                                   img.blob[data_off:data_off + size], kind)
+    if total == 0:
+        fail("PT_DYNAMIC has no relocations")
+
+
+def check_section_relocs(img, loads):
+    """The relocation sections the old loader read: same rules for each."""
+    saw = False
+    for name, typ, shflags, addr, off, size, link, info, align, ent in img.shdrs:
+        del addr, link, info, align, ent
+        section = img.sname(name)
+        if typ == SHT_RELR:
+            fail("SHT_RELR section %s is not allowed" % section)
+        if typ in (SHT_REL, SHT_RELA) and (shflags & SHF_ALLOC):
+            saw = True
+            if section not in (".rel.dyn", ".rela.dyn"):
+                fail("allocated relocation is named %s" % section)
+            if off + size > len(img.blob):
+                fail("%s extends past the file" % section)
+            check_reloc_table(img, loads, img.blob[off:off + size],
+                              "rel" if typ == SHT_REL else "rela")
+        if typ == SHT_DYNAMIC:
+            read_dynamic(img, off, size)
+    if not saw:
+        fail("no allocated .rel.dyn or .rela.dyn")
+
+
+def align_up(value, to):
+    return (value + to - 1) & ~(to - 1)
+
+
+def parse_notes(img, off, size, pad):
+    """Every note of one PT_NOTE segment as (offset, owner, type, descsz, desc)."""
+    blob = img.blob
+    end = off + size
+    notes = []
+    pos = off
+    while pos < end:
+        if end - pos < 12:
+            if not any(blob[pos:end]):
+                break
+            fail("note segment has %d stray bytes" % (end - pos))
+        namesz, descsz, ntype = struct.unpack_from("<III", blob, pos)
+        desc = pos + 12 + align_up(namesz, pad)
+        if pos + 12 + namesz > end or desc + descsz > end:
+            fail("note at 0x%x runs past its segment" % pos)
+        name = blob[pos + 12:pos + 12 + namesz]
+        notes.append((pos, name, namesz, ntype, descsz,
+                      blob[desc:desc + descsz]))
+        pos = desc + align_up(descsz, pad)
+    return notes
+
+
+def find_aar_notes(img):
+    found = []
+    for p_type, _, off, _, filesz, _, align in img.phdrs:
+        if p_type != PT_NOTE:
+            continue
+        if off % 4:
+            fail("PT_NOTE is not 4-byte aligned")
+        pad = 8 if (img.cls == ELFCLASS64 and align == 8) else 4
+        for note in parse_notes(img, off, filesz, pad):
+            if note[1].split(b"\x00")[0] == b"AAR":
+                found.append(note)
+    return found
+
+
+def check_note(img):
+    found = find_aar_notes(img)
+    if not found:
+        fail("no AAR note in a PT_NOTE segment")
+    if len(found) != 1:
+        fail("%d AAR notes, need exactly 1" % len(found))
+    pos, name, namesz, ntype, descsz, desc = found[0]
+    if namesz != 4 or name != NOTE_OWNER:
+        fail("note owner is %r, namesz %d" % (name, namesz))
+    if ntype != NOTE_TYPE:
+        fail("note type %d is not %d" % (ntype, NOTE_TYPE))
+    if descsz != NOTE_DESC_BYTES:
+        fail("note descriptor is %d bytes, need %d" % (descsz, NOTE_DESC_BYTES))
+    sections = img.section(NOTE_SECTION)
+    if len(sections) != 1:
+        fail("%d %s sections, need exactly 1" % (len(sections), NOTE_SECTION))
+    sec = sections[0]
+    if sec[1] != SHT_NOTE or not sec[2] & SHF_ALLOC:
+        fail("%s is not an allocated SHT_NOTE section" % NOTE_SECTION)
+    if not (sec[4] <= pos and pos + 12 + 4 + NOTE_DESC_BYTES <= sec[4] + sec[5]):
+        fail("the AAR note is not inside %s" % NOTE_SECTION)
+    (magic, version, profile, api_major, api_minor, stack, _heap, groups_req,
+     groups_opt, reserved) = struct.unpack("<10I", desc)
+    if magic != NOTE_MAGIC:
+        fail("note magic 0x%x" % magic)
+    if version != NOTE_VERSION:
+        fail("note version %d is not %d" % (version, NOTE_VERSION))
+    if profile != PROFILE_NUMBER[img.profile]:
+        fail("note profile %d does not match the %s image"
+             % (profile, img.profile))
+    if api_major != AAR_API_MAJOR:
+        fail("note api major %d is not %d" % (api_major, AAR_API_MAJOR))
+    if api_minor > AAR_API_MINOR:
+        fail("note api_minor_required %d is above %d"
+             % (api_minor, AAR_API_MINOR))
+    if stack != 0 and (stack < STACK_MIN or stack > STACK_MAX or stack % 16):
+        fail("note stack %d is not 0 or 64 KiB..1 MiB, a multiple of 16"
+             % stack)
+    if groups_req & ~GROUPS_KNOWN:
+        fail("note groups_required 0x%x has unknown bits" % groups_req)
+    if groups_opt & ~GROUPS_KNOWN:
+        fail("note groups_optional 0x%x has unknown bits" % groups_opt)
+    if reserved != 0:
+        fail("note reserved word is 0x%x, need 0" % reserved)
+
+
+def check_entry(img, loads):
+    entry = img.entry
+    if img.profile == "a32" and entry & 1:
+        fail("e_entry 0x%x has the Thumb bit set" % entry)
+    if not any(flags & PF_X and v <= entry < v + filesz
+               for v, _, filesz, _, flags in loads):
+        fail("e_entry 0x%x is not inside an executable PT_LOAD" % entry)
+
+
+def check(path, want_profile):
+    img = Image(read_file(path), want_profile)
+    img.check_header()
+    img.parse_tables()
+    loads = check_segments(img)
+    check_dynamic(img, loads)
+    check_section_relocs(img, loads)
+    check_entry(img, loads)
+    check_note(img)
+    return "%s: %s ok: %s only, AAR note v%d ok\n" % (
+        path, img.profile, img.lay["reloc_name"], NOTE_VERSION)
+
+
+def note_bytes(profile, stack, min_heap_mib, groups_required, groups_optional):
+    """The bytes AAR_NOTE() emits: API major, AAR_API_MINOR as the minor."""
+    desc = struct.pack("<10I", NOTE_MAGIC, NOTE_VERSION,
+                       PROFILE_NUMBER[profile], AAR_API_MAJOR, AAR_API_MINOR,
+                       stack, min_heap_mib, groups_required, groups_optional, 0)
+    return struct.pack("<III", len(NOTE_OWNER), NOTE_DESC_BYTES,
+                       NOTE_TYPE) + NOTE_OWNER + desc
+
+
+def expect_note(path, args):
+    img = Image(read_file(path))
+    img.parse_tables()
+    want = note_bytes(img.profile, *args)
+    sections = img.section(NOTE_SECTION)
+    if len(sections) != 1:
+        fail("%d %s sections, need exactly 1" % (len(sections), NOTE_SECTION))
+    off, size = sections[0][4:6]
+    got = img.blob[off:off + size]
+    if got != want:
+        fail("note bytes %s, expected %s" % (got.hex(), want.hex()))
+    return "%s: %s matches %s stack=%d heap=%d required=0x%x optional=0x%x\n" % (
+        path, NOTE_SECTION, img.profile, *args)
+
+
+# A freestanding image links only libaar (an archive under make, plain objects
+# under CMake) and the compiler's libgcc. GNU ld prints both toolchains'
+# members as dir/archive.a(member.o).
+FREESTANDING_ARCHIVES = ("libaar.a", "libgcc.a")
+MAP_MEMBER = re.compile(r"([^\s()]+\.a)\(([^)\s]+)\)")
+
+
+def no_libc(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError as exc:
+        fail(str(exc))
+    if "Linker script and memory map" not in text:
+        fail("not a GNU ld link map")
+    found = {}
+    for archive, member in MAP_MEMBER.findall(text):
+        base = re.split(r"[\\/]", archive)[-1]
+        found.setdefault(base, []).append(member)
+    bad = sorted(base for base in found if base not in FREESTANDING_ARCHIVES)
+    if bad:
+        fail("freestanding link pulled %s" % ", ".join(
+            "%s(%s)" % (base, ", ".join(found[base][:3])) for base in bad))
+    return "%s: no archive but libaar.a and libgcc.a\n" % path
+
+
+def usage():
+    sys.stderr.write(USAGE)
+    return 2
+
+
+def u32_arg(text):
+    value = int(text, 0)
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise ValueError(text)
+    return value
+
+
+def run(label, func, *args):
+    try:
+        sys.stdout.write(func(*args))
+        return 0
+    except CheckError as exc:
+        sys.stderr.write("%s: %s\n" % (label, exc))
+        return 1
+
+
+def main(argv):
+    args = argv[1:]
+    if args and args[0] == "--no-libc":
+        if len(args) != 2:
+            return usage()
+        return run(args[1], no_libc, args[1])
+    if args and args[0] == "--expect-note":
+        if len(args) != 6:
+            return usage()
+        try:
+            numbers = [u32_arg(a) for a in args[2:]]
+        except ValueError:
+            return usage()
+        return run(args[1], expect_note, args[1], numbers)
+    profile = None
+    files = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--profile" or arg.startswith("--profile="):
+            if arg == "--profile":
+                i += 1
+                if i >= len(args):
+                    return usage()
+                profile = args[i]
+            else:
+                profile = arg[len("--profile="):]
+            if profile not in LAYOUT:
+                return usage()
+        elif arg.startswith("-") and arg != "-":
+            return usage()
+        else:
+            files.append(arg)
+        i += 1
+    if not files:
+        return usage()
+    status = 0
+    for path in files:
+        status |= run(path, check, path, profile)
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
