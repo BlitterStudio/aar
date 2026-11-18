@@ -6,6 +6,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -15,6 +16,9 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  SDK_IMAGE: ghcr.io/blitterstudio/aar-sdk
 
 jobs:
   lint:
@@ -26,133 +30,96 @@ jobs:
       - name: actionlint (workflow files)
         run: docker run --rm -v "$PWD":/repo:ro -w /repo rhysd/actionlint:latest -color
 
-  # Links every template as a PIE with the Arm GNU Toolchain on the runner and
-  # runs zzapp-check on the results.
-  arm-check:
-    name: ARM PIE link and zzapp-check
+  # Builds the SDK image (Arm GNU Toolchain 15.3.rel2 and a PIC newlib for both
+  # profiles, pinned by version and sha256 in docker/Dockerfile) and runs
+  # everything that needs it inside the image: make check for A32 and A64, the
+  # CMake examples, and the qemu runtime test.
+  sdk-image:
+    name: SDK image, make check, CMake examples, runtime test
     runs-on: ubuntu-latest
-    env:
-      ARM_TOOLCHAIN_VERSION: 15.3.rel2
-      ARM_TOOLCHAIN_DIR: ${{ github.workspace }}/.toolchain/arm-gnu-toolchain
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Build SDK image
+        run: docker build -f docker/Dockerfile -t aar-sdk:ci .
+      - name: make check (both profiles)
+        run: docker run --rm aar-sdk:ci make check
+      - name: CMake examples (A32 and A64, with newlib)
+        run: |
+          docker run --rm aar-sdk:ci bash -c '
+            set -euo pipefail
+            for profile in a32 a64; do
+              cmake -S "$AAR_SDK/cmake/example" -B "/tmp/example-$profile" \
+                -DCMAKE_TOOLCHAIN_FILE="$AAR_SDK/cmake/aar-toolchain-$profile.cmake"
+              cmake --build "/tmp/example-$profile"
+            done
+          '
+      - name: CMake examples (A32 and A64, freestanding, without the PIC sysroot)
+        run: |
+          docker run --rm aar-sdk:ci bash -c '
+            set -euo pipefail
+            unset AAR_SYSROOT_A32 AAR_SYSROOT_A64
+            for profile in a32 a64; do
+              cmake -S "$AAR_SDK/cmake/example" -B "/tmp/freestanding-$profile" \
+                -DCMAKE_TOOLCHAIN_FILE="$AAR_SDK/cmake/aar-toolchain-$profile.cmake" \
+                -DAAR_FREESTANDING=ON
+              cmake --build "/tmp/freestanding-$profile"
+            done
+          '
+      # libaar on a real instruction stream under qemu user mode. The apps
+      # need the bare-metal toolchain and sysroot of the image; the loader
+      # needs the Linux cross compilers and their libc, and qemu runs both.
+      - name: make check-runtime (qemu user mode)
+        run: |
+          docker run --rm aar-sdk:ci bash -c '
+            set -euo pipefail
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends \
+              qemu-user gcc-arm-linux-gnueabihf libc6-dev-armhf-cross \
+              gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            make check-runtime
+          '
 
-      - name: Install build dependencies
+  # Header layout and the transport model with the host compiler, 64-bit and
+  # -m32, plus a C++ syntax check of every header.
+  abi-host:
+    name: header ABI on the host (64-bit and -m32)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install a multilib compiler
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
-            wget xz-utils make cmake perl ca-certificates python3 g++ texinfo
-
-      # Arm GNU Toolchain with newlib. Ubuntu's gcc-arm-none-eabi package
-      # uses picolibc, which does not match the PIC newlib the apps link.
-      - name: Cache Arm GNU Toolchain
-        id: toolchain-cache
-        uses: actions/cache@v5
-        with:
-          path: ${{ env.ARM_TOOLCHAIN_DIR }}
-          key: arm-gnu-toolchain-${{ env.ARM_TOOLCHAIN_VERSION }}-${{ runner.os }}-${{ runner.arch }}
-
-      - name: Download Arm GNU Toolchain
-        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+            gcc gcc-multilib g++ g++-multilib binutils
+      - name: Layout and transport model tests
+        run: tests/abi_check.sh host
+      - name: Host AAR_NOTE expands to nothing
         run: |
           set -euo pipefail
-          case "${{ runner.arch }}" in
-            X64)   TC_HOST=x86_64;  TC_SHA256=463df9665c246fa13bab2102115bbf83440661b6eb70b44f3dfd4712ca30037a ;;
-            ARM64) TC_HOST=aarch64; TC_SHA256=a0dc18893171d39dec82fd8d57eeab3da836fd3df4b61978db3eccbf4a6bb948 ;;
-            *)     echo "Unsupported runner arch: ${{ runner.arch }}"; exit 1 ;;
-          esac
-          TC_BASE="arm-gnu-toolchain-${ARM_TOOLCHAIN_VERSION}-${TC_HOST}-arm-none-eabi"
-          # From 15.3 on, Arm publishes the toolchain on its GitLab package registry.
-          URL="https://gitlab.arm.com/api/v4/projects/tooling%2Fgnu-toolchains-for-arm/packages/generic/gnu-toolchain/${ARM_TOOLCHAIN_VERSION}/${TC_BASE}.tar.xz"
-          mkdir -p "${ARM_TOOLCHAIN_DIR}"
-          wget -q "$URL" -O toolchain.tar.xz
-          echo "${TC_SHA256}  toolchain.tar.xz" | sha256sum -c -
-          tar xf toolchain.tar.xz --strip-components=1 -C "${ARM_TOOLCHAIN_DIR}"
-          rm toolchain.tar.xz
-
-      - name: Add toolchain to PATH
-        run: echo "${ARM_TOOLCHAIN_DIR}/bin" >> "$GITHUB_PATH"
-
-      - name: Cache ZZApp PIC newlib
-        id: zzapp-pic-newlib-cache
-        uses: actions/cache@v5
-        with:
-          path: ${{ github.workspace }}/.toolchain/zzapp-pic-newlib
-          key: zzapp-pic-newlib-4.6.0.20260123-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build_pic_newlib.sh') }}
-
-      - name: Build ZZApp PIC newlib
-        if: steps.zzapp-pic-newlib-cache.outputs.cache-hit != 'true'
-        env:
-          ZZAPP_PIC_SYSROOT: ${{ github.workspace }}/.toolchain/zzapp-pic-newlib
-          ZZAPP_NEWLIB_CACHE: ${{ github.workspace }}/.toolchain/zzapp-newlib-cache
-        run: sh build_pic_newlib.sh
-
-      - name: ZZApp PIE link and zzapp-check
-        env:
-          ZZAPP_PIC_SYSROOT: ${{ github.workspace }}/.toolchain/zzapp-pic-newlib
-        run: make check
-
-  # Builds the SDK image and runs the checks and the CMake examples inside it.
-  # The image is not pushed to GHCR from this repository yet. Publishing moves
-  # here with the rename of the zzapp names to aar names.
-  sdk-image:
-    name: ZZApp SDK toolchain image
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: ZZApp check unit test
-        run: python3 tests/zzapp_check_test.py
-      - name: Host ZZAPP_NOTE expands to nothing
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends gcc binutils
-          cat > /tmp/zzapp-note-host.c <<'EOF'
-          #include "zzapp_note.h"
-          ZZAPP_NOTE(1, 0)
+          cat > /tmp/aar-note-host.c <<'EOF'
+          #include "aar/note.h"
+          AAR_NOTE(0, 0, 1, 0)
           int host_ok(void) { return 0; }
           EOF
-          gcc -Wall -Wextra -Werror -std=c11 -I include -c -o /tmp/zzapp-note-host.o /tmp/zzapp-note-host.c
-          if readelf -S /tmp/zzapp-note-host.o | grep -q note.zzapp; then
-            echo "host ZZAPP_NOTE emitted a note" >&2
+          gcc -Wall -Wextra -Werror -std=c11 -I include -c -o /tmp/aar-note-host.o /tmp/aar-note-host.c
+          if readelf -S /tmp/aar-note-host.o | grep -q note.aar; then
+            echo "host AAR_NOTE emitted a note" >&2
             exit 1
           fi
-      - name: Build SDK image
-        run: docker build -f docker/Dockerfile -t zz9000-app-sdk:ci .
-      - name: Make templates inside the image
-        run: docker run --rm zz9000-app-sdk:ci make check
-      - name: CMake hello and freestanding templates inside the image
-        run: |
-          docker run --rm zz9000-app-sdk:ci bash -c '
-            set -euo pipefail
-            cmake -S /opt/zzapp-sdk/cmake/example -B /tmp/hello \
-              -DCMAKE_TOOLCHAIN_FILE=/opt/zzapp-sdk/cmake/zzapp-toolchain.cmake
-            cmake --build /tmp/hello
-          '
-      - name: CMake freestanding build without the PIC sysroot
-        run: |
-          docker run --rm zz9000-app-sdk:ci bash -c '
-            set -euo pipefail
-            unset ZZAPP_PIC_SYSROOT
-            cmake -S /opt/zzapp-sdk/cmake/example -B /tmp/freestanding \
-              -DCMAKE_TOOLCHAIN_FILE=/opt/zzapp-sdk/cmake/zzapp-toolchain.cmake \
-              -DZZAPP_FREESTANDING=ON
-            cmake --build /tmp/freestanding
-          '
 
   docs:
-    name: ZZApp API docs
+    name: AAR API docs
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
       - name: API reference covers every public symbol
-        run: python3 docs/check_zzapp_api.py --self-test
+        run: python3 docs/check_aar_api.py --self-test
 
   host:
-    name: ZZApp SDL2 host runner
+    name: SDL2 host runner
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -163,11 +130,49 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends \
             cmake python3 libsdl2-dev
       - name: Configure
-        run: cmake -S host -B build-zzapp-host -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S host-runner -B build-aar-host -DCMAKE_BUILD_TYPE=Debug
       - name: Build
-        run: cmake --build build-zzapp-host --parallel
+        run: cmake --build build-aar-host --parallel
       - name: Test
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
-        run: ctest --test-dir build-zzapp-host --output-on-failure
+        run: ctest --test-dir build-aar-host --output-on-failure
+
+  # Pushes ghcr.io/blitterstudio/aar-sdk on a v* tag and on a manual run only,
+  # after every check passed. It is the only job that can write packages.
+  # Tags: sha-<12 characters of the commit>, the tag name on a tag, and manual
+  # on a workflow_dispatch run.
+  publish:
+    name: Publish the SDK image
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    needs: [lint, sdk-image, abi-host, docs, host]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build SDK image
+        run: docker build -f docker/Dockerfile -t aar-sdk:publish .
+      - name: Smoke test the image to publish
+        run: docker run --rm aar-sdk:publish make check
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Tag and push
+        run: |
+          set -euo pipefail
+          tags=("sha-${GITHUB_SHA::12}")
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tags+=("$GITHUB_REF_NAME")
+          fi
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            tags+=(manual)
+          fi
+          for tag in "${tags[@]}"; do
+            docker tag aar-sdk:publish "$SDK_IMAGE:$tag"
+            docker push "$SDK_IMAGE:$tag"
+          done
