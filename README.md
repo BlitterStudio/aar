@@ -1,23 +1,28 @@
 # AAR (Amiga ARM Runtime)
 
 AAR is a standard way to run native ARM apps from AmigaOS. An app is a
-position-independent ARM ELF that talks to its host through one function
-table (`zzapp.h`). The host loads the ELF, checks it, and gives it a display,
-input, audio, files, a message ring, and a heap. Libraries are meant to use
-the same contract later.
+position-independent ARM ELF that talks to its runtime through one function
+table (`aar/app.h`). The runtime loads the ELF, checks it, and gives it a
+display, input, audio, files, a console, a message queue, a heap and shared
+buffers. An AmigaOS client library starts apps and watches them.
 
-The ZZ9000 is the reference implementation: its firmware runs the apps on the
+There are two profiles: **A32** (ARMv7-A, hard-float, VFPv3 and NEON, ILP32,
+the ZZ9000's Cortex-A9) and **A64** (ARMv8-A AArch64, LP64, for Pi 4 and Pi 5
+class cores). An image belongs to exactly one profile.
+
+The ZZ9000 is the reference implementation: its firmware runs apps on the
 card's ARM cores. The aim is to run the same app binaries on other Amiga
-platforms, such as PiStorm with Emu68 or a CM5 card. This repository holds
-the app-side SDK that does not depend on any one of them: the header, the
-runtime library, the linker script, the build helpers, the image checker, the
-docs, and a host runner that runs an app natively on a PC.
+platforms, such as PiStorm with Emu68 or a CM5 card. This repository holds the
+part that does not depend on any one of them: the headers, the runtime library,
+the linker scripts, the build helpers, the image checker, the docs, the
+transport contract, and a host runner that runs an app natively on a PC.
 
 ## Status
 
-Version 0.x. The app API is 0.4 and may still change. The names are still the
-ones from the ZZ9000 SDK: `zzapp.h`, `ZZAPP_*`, `zz_*`, `libzzapp`, and the
-`zz9000-app-sdk` image. They will be renamed to `aar_` names in a later step.
+Version 0.x. The app API is **0.5**, the first AAR version, and may still
+change before 1.0. It replaces the `zzapp` 0.4 SDK that this repository
+started from: nothing of the old API shipped, so there is no compatibility
+layer. [docs/zzapp-to-aar.md](docs/zzapp-to-aar.md) maps every old name.
 
 The firmware in [BlitterStudio/zz9000-firmware](https://github.com/BlitterStudio/zz9000-firmware)
 pins the commit of this repository it builds against in `sdk/AAR_REF`.
@@ -26,74 +31,84 @@ pins the commit of this repository it builds against in `sdk/AAR_REF`.
 
 | Path | Content |
 | --- | --- |
-| `include/` | `zzapp.h` (the API) and `zzapp_note.h` (`ZZAPP_NOTE()`, the `.zzapp` ELF note) |
-| `src/` | `libzzapp` sources: the `zz_*` wrappers, newlib syscalls, GL wrappers, and the freestanding `mem*` routines |
-| `crt0.S`, `zzapp.ld` | Start-up code and the linker script |
-| `mk/zzapp.mk` | Makefile include for building one app |
-| `cmake/` | `zzapp-toolchain.cmake`, `zzapp.cmake` (`zzapp_add_executable`), and an example project |
-| `build_pic_newlib.sh` | Builds the position-independent newlib that apps link against |
-| `docker/Dockerfile` | SDK image: Arm GNU Toolchain 15.3.rel2, PIC newlib, make, CMake, Python |
-| `tools/zzapp-check` | Checks a finished ELF against the loader contract |
+| `include/aar/` | `app.h` (the table, types and wrappers), `note.h` (`AAR_NOTE()`), `gl.h`, `transport.h`, `ext_zz9000.h` |
+| `libaar/` | `src/` (the `aar_*` and `gl*` wrappers, the libc glue, the freestanding `mem*` routines), and per profile `a32/` and `a64/` with `crt0.S` and `aar.ld` |
+| `mk/aar.mk` | Makefile include for building one app |
+| `cmake/` | `aar.cmake` (`aar_add_executable`), `aar-toolchain-a32.cmake`, `aar-toolchain-a64.cmake`, and an example project |
+| `build_pic_newlib.sh` | Builds the position-independent newlib that apps link against (`AAR_PROFILE=a32` or `a64`) |
+| `docker/Dockerfile` | SDK image: Arm GNU Toolchain 15.3.rel2 for both profiles, PIC newlib for both, make, CMake, Python |
+| `tools/aar-check` | Checks a finished ELF against the load contract |
 | `templates/` | Example apps; `templates/README.md` describes each one |
-| `host/` | `libzzapp-host`, an SDL2 runner for apps on a PC; see `host/README.md` |
-| `tests/` | Tests for the checker, the link map check, FP code generation, and mode switching |
-| `docs/` | The API reference, the developer guide, and the script that checks the reference covers every public symbol |
+| `host-runner/` | An SDL2 runner for apps on a PC; see `host-runner/README.md` |
+| `tests/` | Tests for the checker, the headers and the transport model, the link map check, FP code generation and mode switching |
+| `docs/` | The API reference, the developer guide, the transport contract, the zzapp mapping, and the script that checks the reference covers every public symbol |
 | `Makefile` | Builds every template and runs the checks (`make check`) |
 
 ## Building apps
 
-The Docker image has everything the ARM build needs:
+The Docker image `ghcr.io/blitterstudio/aar-sdk` has everything the ARM build
+needs. It installs this repository at `/opt/aar-sdk` and sets `AAR_SDK`,
+`AAR_SYSROOT_A32` and `AAR_SYSROOT_A64`:
 
 ```sh
-docker build -f docker/Dockerfile -t zz9000-app-sdk .
-docker run --rm -v "$PWD":/src -w /src zz9000-app-sdk make check
+docker build -f docker/Dockerfile -t aar-sdk .
+docker run --rm -v "$PWD":/src -w /src aar-sdk make check
 ```
 
-`make check` builds every template, runs `tools/zzapp-check` on each ELF, and
-runs the tests in `tests/`. ELFs land in `build/<name>.elf`. The image
-sets `ZZAPP_SDK=/opt/zzapp-sdk` and `ZZAPP_PIC_SYSROOT=/opt/zzapp-pic-newlib`.
+`make check` builds every template, runs `tools/aar-check` on each ELF, and
+runs the tests in `tests/`. ELFs land in `build/<profile>/<name>.elf` with a
+`.map` beside each.
 
-An app Makefile includes `mk/zzapp.mk`:
+An app Makefile includes `mk/aar.mk`. `AAR_PROFILE` is `a32` (the default) or
+`a64`:
 
 ```make
-ZZAPP_SDK ?= /opt/zzapp-sdk
+AAR_SDK ?= /opt/aar-sdk
 APP := hello
 SRCS := hello.c
-include $(ZZAPP_SDK)/mk/zzapp.mk
+include $(AAR_SDK)/mk/aar.mk
 ```
 
-With CMake, pass the toolchain file and call `zzapp_add_executable` from
-`cmake/zzapp.cmake`; `cmake/example` shows it:
+With CMake, pass a toolchain file and call `aar_add_executable` from
+`cmake/aar.cmake`; `cmake/example` shows it:
 
 ```sh
 cmake -S cmake/example -B build/hello \
-  -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/zzapp-toolchain.cmake"
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/aar-toolchain-a32.cmake"
 cmake --build build/hello
 ```
 
-Without Docker, install Arm GNU Toolchain 15.3.rel2, run
-`build_pic_newlib.sh`, and set `ZZAPP_SDK` and `ZZAPP_PIC_SYSROOT`. Freestanding
-apps (`ZZAPP_FREESTANDING=1`) link without newlib and need no sysroot.
-`templates/README.md` and `docs/zzapp-developer-guide.md` have the details.
+Without Docker, install Arm GNU Toolchain 15.3.rel2, run `build_pic_newlib.sh`
+once per profile (`AAR_PROFILE=a32` and `AAR_PROFILE=a64`), and set `AAR_SDK`,
+`AAR_SYSROOT_A32` and `AAR_SYSROOT_A64`. Freestanding apps
+(`AAR_FREESTANDING=1`) link without newlib and need no sysroot.
+`templates/README.md` and [docs/aar-developer-guide.md](docs/aar-developer-guide.md)
+have the details.
 
 ## Host runner
 
-`host/` builds `libzzapp-host`, which runs an app as a native process with
-SDL2 standing in for the card:
+`host-runner/` runs an app as a native process with SDL2 standing in for the
+card:
 
 ```sh
-cmake -S host -B build-host
+cmake -S host-runner -B build-host
 cmake --build build-host
 ctest --test-dir build-host --output-on-failure
 ```
 
-`host/README.md` lists the options and where the host differs from the card.
+`host-runner/README.md` lists the options and where the host differs from the
+card.
 
 ## Documentation
 
-- [docs/zzapp-api.md](docs/zzapp-api.md): the API reference.
-- [docs/zzapp-developer-guide.md](docs/zzapp-developer-guide.md): how an app
-  is built, loaded, and run.
+- [docs/aar-api.md](docs/aar-api.md): the API reference, every call, type and
+  constant.
+- [docs/aar-developer-guide.md](docs/aar-developer-guide.md): how an app is
+  built, loaded and run, with the rules for shared buffers, messages and events.
+- [docs/transport.md](docs/transport.md): the transport contract for platform
+  implementers.
+- [docs/zzapp-to-aar.md](docs/zzapp-to-aar.md): the old `zzapp` names and what
+  replaced them.
 
 ## License
 
