@@ -14,12 +14,12 @@
 # leaves out syscalls.c and malloc, the link takes -lgcc but no -lc or -lm,
 # and the build fails if the link map holds an archive other than libzzapp.a
 # and libgcc.a. ZZAPP_PIC_SYSROOT is not needed in that mode. See
-# sdk/docs/zzapp-developer-guide.md.
+# docs/zzapp-developer-guide.md.
 #
 # SPDX-License-Identifier: MIT
 
 ifeq ($(strip $(ZZAPP_SDK)),)
-$(error Set ZZAPP_SDK to the sdk/zzapp directory)
+$(error Set ZZAPP_SDK to the SDK root, the directory that holds mk/zzapp.mk)
 endif
 ifeq ($(strip $(APP)),)
 $(error Set APP to the output name)
@@ -43,7 +43,7 @@ endif
 
 ifeq ($(ZZAPP_FREESTANDING),0)
 ifeq ($(strip $(PIC_SYSROOT)),)
-$(error Set ZZAPP_PIC_SYSROOT to the output of sdk/zzapp/build_pic_newlib.sh)
+$(error Set ZZAPP_PIC_SYSROOT to the output of build_pic_newlib.sh)
 endif
 endif
 

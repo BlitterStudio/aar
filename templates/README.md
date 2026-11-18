@@ -7,7 +7,7 @@ assembler file. Do not include `zzapp_proto.h`. The public API is `zzapp.h`.
 Apps link against PIC newlib from `build_pic_newlib.sh`, except freestanding
 apps (see "Freestanding" below). Stock newlib is not PIC and fails
 `zzapp-check`. Set `ZZAPP_PIC_SYSROOT` to that sysroot and
-`ZZAPP_SDK` to this `sdk/zzapp` directory (or `/opt/zzapp-sdk` in the image).
+`ZZAPP_SDK` to the root of this repository (or `/opt/zzapp-sdk` in the image).
 
 ## Make
 
@@ -25,13 +25,13 @@ removes the build. Optional `CFLAGS` and `LDLIBS` are appended to the SDK
 flags. This repository builds every template through that include:
 
 ```text
-make -C sdk/zzapp check
+make check
 ```
 
-ELFs land in `sdk/zzapp/build/<name>.elf`.
+ELFs land in `build/<name>.elf`.
 
 `ZZAPP_FREESTANDING=1` links without newlib; see "Freestanding" below and
-[the developer guide](../../docs/zzapp-developer-guide.md#freestanding-apps).
+[the developer guide](../docs/zzapp-developer-guide.md#freestanding-apps).
 
 ## CMake
 
@@ -51,7 +51,7 @@ URL and sha256), PIC newlib, Python, make, and CMake. The image sets
 `ZZAPP_SDK`, `ZZAPP_PIC_SYSROOT`, and `PATH`.
 
 ```text
-docker build -f sdk/zzapp/docker/Dockerfile -t zz9000-app-sdk sdk/zzapp
+docker build -f docker/Dockerfile -t zz9000-app-sdk .
 docker run --rm -v "$PWD":/src -w /src zz9000-app-sdk make check
 ```
 

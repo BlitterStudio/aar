@@ -6,12 +6,12 @@
 # normal link may hold freestanding.o. Needs ZZAPP_PIC_SYSROOT and the Arm
 # toolchain on PATH.
 #
-# usage: mode_switch_test.sh <sdk/zzapp dir>
+# usage: mode_switch_test.sh <SDK directory>
 #
 # SPDX-License-Identifier: MIT
 set -eu
 
-SDK=$(CDPATH= cd -- "${1:?usage: mode_switch_test.sh <sdk/zzapp dir>}" && pwd)
+SDK=$(CDPATH= cd -- "${1:?usage: mode_switch_test.sh <SDK directory>}" && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 cd "$SDK"

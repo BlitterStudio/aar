@@ -156,8 +156,9 @@ def ring_run(exe, script_messages, args, stop=False):
 
 
 def check_ringflood(exe):
-    # Known answers shared with sdk/tests/app_ringtest_logic_test.c: pattern
-    # word i of message seq is ring_mix(seq * 4 + i).
+    # Known answers shared with sdk/tests/app_ringtest_logic_test.c in the
+    # zz9000-firmware repository: pattern word i of message seq is
+    # ring_mix(seq * 4 + i).
     vectors = {
         1: (0x249CB285, 0xCC0D53CD, 0x5CEB4D08, 0x18C9AEC4),
         2: (0x4939650B, 0xC27C2913, 0xE9250490, 0x93A0FE04),

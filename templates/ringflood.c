@@ -5,10 +5,10 @@
  * FLOOD it sends sequence-numbered, pattern-checked 32-byte messages as fast
  * as the app-to-host ring takes them and bumps a counter word in a
  * host-visible block on every loop iteration. On CTRL QUIET it stops. The
- * 68k side is zz9k-app-ringtest (sdk/tools). On the PC with the SDL host
- * runner, `ringflood [data-message-count]` leaves the flood after that many
- * DATA messages and exits (0 or no argument runs until the launcher stops
- * the app).
+ * 68k side is zz9k-app-ringtest (sdk/tools in zz9000-firmware). On the PC
+ * with the SDL host runner, `ringflood [data-message-count]` leaves the
+ * flood after that many DATA messages and exits (0 or no argument runs until
+ * the launcher stops the app).
  *
  * Messages are eight little-endian 32-bit words:
  *   INFO  1, 1, counter block offset (0xffffffff if none), block bytes, time

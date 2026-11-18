@@ -1,5 +1,5 @@
-# ZZ9000 app SDK: Arm GNU Toolchain 15.3.rel2, PIC newlib, and sdk/zzapp.
-# Build from the sdk/zzapp directory:
+# ZZ9000 app SDK: Arm GNU Toolchain 15.3.rel2, PIC newlib, and the SDK sources.
+# Build from the repository root:
 #   docker build -f docker/Dockerfile -t zz9000-app-sdk .
 #
 # SPDX-License-Identifier: MIT

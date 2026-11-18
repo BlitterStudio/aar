@@ -2,7 +2,7 @@
 # file. -DZZAPP_FREESTANDING=ON builds both without newlib and needs no
 # ZZAPP_PIC_SYSROOT.
 #
-#   cmake -S sdk/zzapp/cmake/example -B build/cmake-hello \
+#   cmake -S cmake/example -B build/cmake-hello \
 #     -DCMAKE_TOOLCHAIN_FILE=$ZZAPP_SDK/cmake/zzapp-toolchain.cmake
 #   cmake --build build/cmake-hello
 #

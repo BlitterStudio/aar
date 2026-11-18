@@ -8,7 +8,7 @@
 # link takes -lgcc but no -lc or -lm, and a post-build step fails when the
 # link map holds an archive other than libzzapp.a and libgcc.a. Configuring
 # with -DZZAPP_FREESTANDING=ON makes every target freestanding. See
-# sdk/docs/zzapp-developer-guide.md.
+# docs/zzapp-developer-guide.md.
 #
 # SPDX-License-Identifier: MIT
 

@@ -9,7 +9,7 @@ checkouts.
 Build the ARM app with the normal SDK build, then copy it to the Amiga:
 
 ```text
-make -C sdk/zzapp ZZAPP_PIC_SYSROOT=/path/to/pic-newlib build/mgl-conformance.elf
+make ZZAPP_PIC_SYSROOT=/path/to/pic-newlib build/mgl-conformance.elf
 ZZRun RAM:mgl-conformance.elf
 ```
 
@@ -18,7 +18,7 @@ Amiga CLI after installing `minigl.library` and `MINIGL.ZZM`:
 
 ```text
 make -C D:/Github/amiberry-minigl-library \
-  MGL_CONFORMANCE_MATRIX_DIR=D:/Github/zz9000-firmware/sdk/zzapp/templates \
+  MGL_CONFORMANCE_MATRIX_DIR=D:/Github/aar/templates \
   all importlib mgl-conformance
 mgl-conformance
 ```

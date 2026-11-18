@@ -16,7 +16,7 @@ Linux (CI uses this):
 
 ```sh
 sudo apt-get install cmake libsdl2-dev python3
-cmake -S sdk/zzapp/host -B build-host
+cmake -S host -B build-host
 cmake --build build-host
 ctest --test-dir build-host --output-on-failure
 ```
@@ -29,7 +29,7 @@ a Windows fallback. CI itself is Ubuntu only.
 A third-party app in its own CMake project:
 
 ```cmake
-add_subdirectory(sdk/zzapp/host)
+add_subdirectory(path/to/aar/host)
 zzapp_host_executable(myapp SOURCES myapp.c)
 ```
 
