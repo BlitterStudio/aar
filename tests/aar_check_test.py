@@ -52,7 +52,7 @@ def build(profile="a32", **o):
     note = o.get("note", note_bytes(profile))
     kind = o.get("reloc_kind", "rela" if a64 else "rel")
     ent = 8 if kind == "rel" else (24 if a64 else 12)
-    nrel = o.get("reloc_count", 1)
+    nrel = 0 if o.get("no_reloc_tags") else o.get("reloc_count", 1)
 
     phs = ["load0", "load1"] + ([] if o.get("no_dynamic") else ["dynamic"])
     if note is not None and not o.get("no_pt_note"):
@@ -72,7 +72,9 @@ def build(profile="a32", **o):
 
     dyn_fmt = "<qQ" if a64 else "<II"
     dyn = []
-    if o.get("relr"):
+    if o.get("no_reloc_tags"):
+        pass
+    elif o.get("relr"):
         dyn += [(DT_RELR, rel_off), (DT_RELRSZ, 8), (DT_RELRENT, 8)]
     elif o.get("jmprel"):
         dyn += [(DT_JMPREL, rel_off)]
@@ -122,7 +124,7 @@ def build(profile="a32", **o):
                                  off if addr is None else addr, off, size, 0, 0,
                                  8, ent_size))
 
-    if not o.get("no_reloc_section"):
+    if not (o.get("no_reloc_section") or o.get("no_reloc_tags")):
         default_name = ".rela.dyn" if kind == "rela" else ".rel.dyn"
         sh(o.get("reloc_section", default_name),
            o.get("reloc_sh_type", SHT_RELA if kind == "rela" else SHT_REL), 2,
@@ -305,11 +307,16 @@ def elf_rules():
         bad("relocation section with a stray name [%s]" % profile,
             build(profile, reloc_section=".rel.plt"),
             "allocated relocation is named .rel.plt")
-        bad("no relocation section [%s]" % profile,
-            build(profile, no_reloc_section=True),
-            "no allocated .rel.dyn or .rela.dyn")
-        bad("no relocations in PT_DYNAMIC [%s]" % profile,
-            build(profile, reloc_count=0), "PT_DYNAMIC has no relocations")
+        ok("zero relocations, no tables [%s]" % profile,
+           build(profile, no_reloc_tags=True))
+        ok("zero relocations, empty tables [%s]" % profile,
+           build(profile, reloc_count=0))
+        ok("no relocation section, table in PT_DYNAMIC [%s]" % profile,
+           build(profile, no_reloc_section=True))
+        bad("zero relocations, no note [%s]" % profile,
+            build(profile, no_reloc_tags=True, note=None), "no AAR note")
+        bad("relocation symbol still refused beside the zero cases [%s]" % profile,
+            build(profile, reloc_count=1, reloc_sym=1), "reloc 0 is not")
         bad("stripped section headers [%s]" % profile,
             build(profile, strip_sections=True), "section headers are missing")
         bad("DT_RELAENT missing [%s]" % profile,

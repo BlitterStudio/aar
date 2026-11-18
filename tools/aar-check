@@ -290,7 +290,8 @@ def check_reloc_table(img, loads, data, kind):
 
 
 def check_dynamic(img, loads):
-    """Relocations the loader reads: the PT_DYNAMIC tables (spec 2.2 rule 4)."""
+    """Relocations the loader reads: the PT_DYNAMIC tables (spec 2.2 rule 4).
+    An image may have none; a pc-relative link has no relocation table."""
     segs = [p for p in img.phdrs if p[0] == PT_DYNAMIC]
     if len(segs) != 1:
         fail("%d PT_DYNAMIC segments, need exactly 1" % len(segs))
@@ -306,7 +307,6 @@ def check_dynamic(img, loads):
     if DT_RELA in tags or DT_RELASZ in tags or DT_RELAENT in tags:
         tables.append(("rela", tags.get(DT_RELA), tags.get(DT_RELASZ),
                        tags.get(DT_RELAENT), 12 if a32 else 24, "DT_RELA"))
-    total = 0
     for kind, addr, size, ent, want_ent, label in tables:
         if addr is None or size is None or ent is None:
             fail("%s, its size and its entry size must all be present" % label)
@@ -315,22 +315,17 @@ def check_dynamic(img, loads):
         data_off = vaddr_to_off(loads, addr, size)
         if data_off is None:
             fail("%s table is not inside a PT_LOAD" % label)
-        total += check_reloc_table(img, loads,
-                                   img.blob[data_off:data_off + size], kind)
-    if total == 0:
-        fail("PT_DYNAMIC has no relocations")
+        check_reloc_table(img, loads, img.blob[data_off:data_off + size], kind)
 
 
 def check_section_relocs(img, loads):
     """The relocation sections the old loader read: same rules for each."""
-    saw = False
     for name, typ, shflags, addr, off, size, link, info, align, ent in img.shdrs:
         del addr, link, info, align, ent
         section = img.sname(name)
         if typ == SHT_RELR:
             fail("SHT_RELR section %s is not allowed" % section)
         if typ in (SHT_REL, SHT_RELA) and (shflags & SHF_ALLOC):
-            saw = True
             if section not in (".rel.dyn", ".rela.dyn"):
                 fail("allocated relocation is named %s" % section)
             if off + size > len(img.blob):
@@ -339,8 +334,6 @@ def check_section_relocs(img, loads):
                               "rel" if typ == SHT_REL else "rela")
         if typ == SHT_DYNAMIC:
             read_dynamic(img, off, size)
-    if not saw:
-        fail("no allocated .rel.dyn or .rela.dyn")
 
 
 def align_up(value, to):
