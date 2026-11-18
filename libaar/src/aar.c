@@ -10,6 +10,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "aar_internal.h"
+#include "aar/ext_zz9000.h"
 
 const aar_api *aar_api_ptr;
 static const aar_gl *bound_gl;
@@ -499,6 +500,17 @@ void aar_gl_unbind(void)
     if (AAR_API_COVERS(api, gl_unbind) && api->gl_unbind)
         api->gl_unbind();
     bound_gl = 0;
+}
+
+const aar_gl *aar_zz9000_gl_bind_flags(uint32_t surface_id, uint32_t flags)
+{
+    const aar_ext_zz9000 *z = (const aar_ext_zz9000 *)
+        aar_ext(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_MAIN);
+
+    bound_gl = 0;
+    if (AAR_EXT_ZZ9000_COVERS(z, gl_bind_flags) && z->gl_bind_flags)
+        bound_gl = z->gl_bind_flags(surface_id, flags);
+    return bound_gl;
 }
 
 int aar_sha256(const void *data, uint64_t bytes, uint8_t digest[32])

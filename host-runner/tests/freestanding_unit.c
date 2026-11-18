@@ -222,6 +222,92 @@ static void test_gl_gate(void)
     assert(clear_calls == 1);
 }
 
+static aar_ext_zz9000 fake_ext;
+static uint32_t ext_surface;
+static uint32_t ext_flags;
+static int ext_bind_calls;
+
+static const aar_gl *fake_gl_bind_flags(uint32_t surface_id, uint32_t flags)
+{
+    ext_bind_calls++;
+    ext_surface = surface_id;
+    ext_flags = flags;
+    return surface_id == 1u ? &fake_gl : 0;
+}
+
+static const void *fake_ext_lookup(uint32_t platform_id, uint32_t ext_id)
+{
+    return platform_id == AAR_PLATFORM_ZZ9000 && ext_id == AAR_EXT_ZZ9000_MAIN ?
+           (const void *)&fake_ext : 0;
+}
+
+/* aar_zz9000_gl_bind_flags adopts the table of the extension's slot, so the
+ * gl* wrappers reach it, and aar_gl_unbind drops it again. A bare call of
+ * the slot gives the app a table but not the wrappers. */
+static void test_zz9000_gl_bind_flags(void)
+{
+    aar_api api;
+
+    reset(&api);
+    memset(&fake_gl, 0, sizeof fake_gl);
+    fake_gl.size = (uint32_t)sizeof fake_gl;
+    fake_gl.version = AAR_GL_VERSION_ARRAYS;
+    fake_gl.Clear = fake_clear;
+    memset(&fake_ext, 0, sizeof fake_ext);
+    fake_ext.size = (uint32_t)sizeof fake_ext;
+    fake_ext.gl_bind_flags = fake_gl_bind_flags;
+    ext_bind_calls = 0;
+    api.gl_unbind = fake_gl_unbind;
+
+    /* No ext slot: nothing to look up, so nothing to call. */
+    assert(aar_zz9000_gl_bind_flags(1u, 0u) == 0);
+    api.ext = fake_ext_lookup;
+    assert(ext_bind_calls == 0);
+
+    /* The slot alone does not reach the wrappers. */
+    assert(fake_ext.gl_bind_flags(1u, 0u) == &fake_gl);
+    glClear(1u);
+    assert(clear_calls == 0);
+    ext_bind_calls = 0;
+
+    /* The wrapper passes surface and flags on and adopts the table. */
+    assert(aar_zz9000_gl_bind_flags(1u, AAR_ZZ9000_GL_BIND_SYNC_PRESENT) ==
+           &fake_gl);
+    assert(ext_bind_calls == 1 && ext_surface == 1u &&
+           ext_flags == AAR_ZZ9000_GL_BIND_SYNC_PRESENT);
+    glClear(0x4000u);
+    assert(clear_calls == 1 && clear_mask == 0x4000u);
+
+    /* aar_gl_unbind drops it. */
+    aar_gl_unbind();
+    glClear(1u);
+    assert(clear_calls == 1);
+
+    /* A failed bind returns NULL and leaves no stale table behind. */
+    assert(aar_zz9000_gl_bind_flags(1u, 0u) == &fake_gl);
+    assert(aar_zz9000_gl_bind_flags(2u, 0u) == 0);
+    glClear(1u);
+    assert(clear_calls == 1);
+
+    /* A table that ends before the slot, or has it NULL, binds nothing. */
+    assert(aar_zz9000_gl_bind_flags(1u, 0u) == &fake_gl);
+    fake_ext.size = (uint32_t)offsetof(aar_ext_zz9000, gl_bind_flags);
+    ext_bind_calls = 0;
+    assert(aar_zz9000_gl_bind_flags(1u, 0u) == 0 && ext_bind_calls == 0);
+    glClear(1u);
+    assert(clear_calls == 1);
+    fake_ext.size = (uint32_t)sizeof fake_ext;
+    fake_ext.gl_bind_flags = 0;
+    assert(aar_zz9000_gl_bind_flags(1u, 0u) == 0);
+
+    /* The plain aar_gl_bind keeps working next to it. */
+    api.gl_bind = fake_gl_bind;
+    assert(aar_gl_bind(1u) == &fake_gl);
+    glClear(1u);
+    assert(clear_calls == 2);
+    aar_gl_unbind();
+}
+
 enum { BUF = 96 };
 
 static void fill(uint8_t *p, size_t n, unsigned seed)
@@ -291,6 +377,7 @@ int main(void)
     test_size_gate();
     test_publish_and_acquire();
     test_gl_gate();
+    test_zz9000_gl_bind_flags();
     test_mem_routines();
     return 0;
 }

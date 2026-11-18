@@ -36,7 +36,7 @@ structure names: `zz_mem_info` is split into `aar_get_info` and
 | `audio_open`, `audio_close` | same names, group `AAR_GROUP_AUDIO`; rate and channels are negotiated (22050, 44100, 48000 Hz stereo) |
 | (none) | `audio_stats`, optional, audio group (spec 8.4) |
 | `gl_bind`, `gl_swap`, `gl_unbind` | same names, group `AAR_GROUP_GL` |
-| `gl_bind_flags` | dropped from the table; `aar_ext_zz9000.gl_bind_flags` (`aar/ext_zz9000.h`) |
+| `gl_bind_flags` | dropped from the table; `aar_ext_zz9000.gl_bind_flags` (`aar/ext_zz9000.h`), called through `aar_zz9000_gl_bind_flags` |
 | `build_id` | dropped; `aar_ext_zz9000.build_id` |
 | `host_address(const void *, uint32_t *)` | dropped. `shared_alloc` returns the token as `aar_shared.haddr` |
 | `mem_info` | dropped. `info` (`aar_info`, limits and `shared_used`) plus `heap_info`. The legacy `arena_*` fields are gone |
@@ -63,7 +63,7 @@ is `aar_gl` in `aar/gl.h`; the `gl*` wrappers and `gluPerspective`,
 | `zz_free` | `aar_free` or `aar_shared_free` |
 | `zz_host_address` | dropped, see above |
 | `zz_mem_info` | `aar_get_info`, `aar_get_heap_info` |
-| `zz_gl_bind_flags` | `aar_ext_zz9000.gl_bind_flags` |
+| `zz_gl_bind_flags` | `aar_zz9000_gl_bind_flags` (`aar/ext_zz9000.h`), which wraps `aar_ext_zz9000.gl_bind_flags` and records the table for the `gl*` wrappers. Calling the slot directly leaves the `gl*` wrappers without a table |
 | `zz_display_mailbox_replaced` | `aar_display_latest_dropped` |
 | `zzapp_api_ptr`, `zz_main` | `aar_api_ptr`, `aar_main` |
 | `ZZ_API_COVERS`, `ZZ_GL_COVERS` | `AAR_API_COVERS`, `AAR_GL_COVERS` (new: `AAR_API_AT_LEAST`, `AAR_EXT_ZZ9000_COVERS`) |

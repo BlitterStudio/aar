@@ -5,7 +5,8 @@
  *
  * Only the ZZ9000 runtime provides it. An app that uses it is not portable.
  * It holds what zzapp.h 0.x had in the app table and the standard does not
- * keep: the GL bind flags and the two source revision strings.
+ * keep: the GL bind flags (use aar_zz9000_gl_bind_flags) and the two source
+ * revision strings.
  *
  * The table is size-first and append-only. Two uint32_t words come first so
  * the first pointer is at offset 8 on both profiles. Test fields with
@@ -44,7 +45,8 @@ typedef struct aar_ext_zz9000 {
     uint32_t size;     /* sizeof of the table the runtime built */
     uint32_t reserved; /* 0 */
     /* Same as aar_gl_bind() plus AAR_ZZ9000_GL_BIND_* flags. NULL when the
-     * GL group is absent. */
+     * GL group is absent. Call it through aar_zz9000_gl_bind_flags(), which
+     * also hands the table to the gl* wrappers. */
     const aar_gl *(*gl_bind_flags)(uint32_t surface_id, uint32_t flags);
     /* Resident firmware source revision, NUL-terminated, or NULL. */
     const char *build_id;
@@ -67,6 +69,16 @@ _Static_assert(offsetof(aar_ext_zz9000, gl_bind_flags) == 8,
 _Static_assert(sizeof(aar_ext_zz9000) == 8 + 3 * sizeof(void *),
                "ZZ9000 extension has no padding");
 #endif
+
+/* The wrapper to use instead of calling the gl_bind_flags slot yourself.
+ * aar_gl_bind() records the table it returns, and the gl* wrappers forward
+ * to that record; a table returned by a bare call of the slot is never
+ * recorded, so the wrappers would do nothing. This looks up the extension,
+ * calls gl_bind_flags(surface_id, flags) and records the result the same way,
+ * so the gl* wrappers and aar_gl_unbind() work as after aar_gl_bind().
+ * Returns NULL, and records nothing, when the extension, its slot or the GL
+ * group is absent or the bind fails. */
+const aar_gl *aar_zz9000_gl_bind_flags(uint32_t surface_id, uint32_t flags);
 
 #ifdef __cplusplus
 }

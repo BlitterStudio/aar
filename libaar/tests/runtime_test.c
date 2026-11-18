@@ -19,6 +19,7 @@
 
 #include "aar/app.h"
 #include "aar/note.h"
+#include "aar/ext_zz9000.h"
 
 AAR_NOTE(0, 0, 0, 0)
 
@@ -289,6 +290,9 @@ static int test_wrappers(void)
     CHECK(aar_gl_bind(1) == NULL);
     glClear(1);
     CHECK(aar_ext(AAR_PLATFORM_ZZ9000, 1) == NULL);
+    /* No extension table: the bind wrapper finds nothing and binds nothing. */
+    CHECK(aar_zz9000_gl_bind_flags(1, 0) == NULL);
+    glClear(1);
     CHECK(aar_display_latest_dropped() == 0);
     return 0;
 }

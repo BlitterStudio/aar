@@ -1881,8 +1881,9 @@ Binds the app's one GL context to the open surface and returns the table of GL
 1.1 entry points, which the `gl*` wrappers then use. Failure, including a second
 bind before `aar_gl_unbind`, returns NULL. Does not block past context setup.
 Gate: `AAR_API_COVERS(api, gl_bind)`. Missing slot: NULL. Minimum minor: 5.
-**ZZ9000:** the GL implementation is MiniGL on RasterIX. Debug bind flags are in
-the [ZZ9000 extension table](#the-zz9000-extension-table). One app at a time
+**ZZ9000:** the GL implementation is MiniGL on RasterIX. To pass debug bind
+flags use `aar_zz9000_gl_bind_flags` from the
+[ZZ9000 extension table](#the-zz9000-extension-table). One app at a time
 may hold a GL context.
 
 ### aar_gl_swap
@@ -2763,7 +2764,8 @@ Unlocks the arrays locked by `glLockArrays`.
 ## The ZZ9000 extension table
 
 `aar/ext_zz9000.h` holds what the old `zzapp.h` had in its app table and the
-standard does not keep: the GL bind flags and two source revision strings. Only
+standard does not keep: the GL bind flags (through `aar_zz9000_gl_bind_flags`)
+and two source revision strings. Only
 the ZZ9000 runtime provides it, and an app that uses it is not portable. Get it
 with:
 
@@ -2813,6 +2815,25 @@ typedef struct aar_ext_zz9000 {
 |---|---|
 | `size` | Size of the table the runtime built. |
 | `reserved` | 0. |
-| `gl_bind_flags` | The same as `aar_gl_bind` plus `AAR_ZZ9000_GL_BIND_*` flags. NULL when the GL group is absent. Pass 0 for no flags. |
+| `gl_bind_flags` | The same as `aar_gl_bind` plus `AAR_ZZ9000_GL_BIND_*` flags. NULL when the GL group is absent. Pass 0 for no flags. Call it through `aar_zz9000_gl_bind_flags`, which also hands the table to the `gl*` wrappers. |
 | `build_id` | The resident firmware source revision, NUL-terminated, or NULL. |
 | `gl_build_id` | The GL module source revision, NUL-terminated, or NULL. |
+
+### aar_zz9000_gl_bind_flags
+
+```c
+const aar_gl *aar_zz9000_gl_bind_flags(uint32_t surface_id, uint32_t flags);
+```
+
+Binds the app's GL context with `AAR_ZZ9000_GL_BIND_*` flags, and is the call to
+use instead of reaching for the `gl_bind_flags` slot yourself. It looks up the
+extension table with `aar_ext(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_MAIN)`,
+checks with `AAR_EXT_ZZ9000_COVERS` that the table has `gl_bind_flags` and that
+it is not NULL, calls it, and records the returned table where `aar_gl_bind`
+records its own. The `gl*` wrappers forward to that table until
+`aar_gl_unbind`, as after `aar_gl_bind`. Calling the slot directly returns a
+table too, but libaar does not record it, so the `gl*` wrappers would do
+nothing. Returns NULL, and records nothing, when the extension table, the slot
+or the GL group is absent, or the bind fails. Does not block past context
+setup. Pass 0 for no flags. On any other platform the extension table is
+absent and the call returns NULL.
