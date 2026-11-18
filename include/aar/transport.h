@@ -297,7 +297,7 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 /* Files. Paths and names are NUL-terminated bytes in the payload buffer. File
  * and list ids are chosen by the runtime and are small integers from
  * AAR_FD_BASE. */
-#define AAR_OP_FILE_OPEN     0x10u /* path in buf; arg: FD, FLAGS */
+#define AAR_OP_FILE_OPEN     0x10u /* path in buf; arg: FD, FLAGS (AAR_FILE_*) */
 #define AAR_OP_FILE_CLOSE    0x11u /* arg: FD */
 #define AAR_OP_FILE_READ     0x12u /* arg: FD, LEN; bytes go to buf; out: COUNT */
 #define AAR_OP_FILE_WRITE    0x13u /* arg: FD, LEN; bytes come from buf; out: COUNT */

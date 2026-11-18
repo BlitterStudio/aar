@@ -6,8 +6,9 @@
  * the string is opened as a host path.
  *
  * File ids are 16 integers starting at AAR_FD_BASE, and the list ids are a
- * separate table of 16 from the same range. CREATE truncates, like
- * MODE_NEWFILE. map_file reads at most 16 MiB into a runtime-owned shared
+ * separate table of 16 from the same range. The file flags go to the host's
+ * open() as they are (CREATE, TRUNCATE, EXCL), so each is atomic there.
+ * map_file reads at most 16 MiB into a runtime-owned shared
  * block, so the file counts against the shared limit as it does on the
  * ZZ9000. A larger file is AAR_E_NOSPC. A zero-length file is AAR_E_NOMEM,
  * because a shared buffer cannot be empty.
@@ -21,6 +22,7 @@
 
 #include "host_internal.h"
 
+#include <fcntl.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -342,40 +344,90 @@ static int64_t host_tell(FILE *fp)
 #endif
 }
 
+/* open() and fdopen() under the names the runner uses. The Windows C runtime
+ * spells them with an underscore. */
+#ifdef _WIN32
+#define HOST_O_RDONLY _O_RDONLY
+#define HOST_O_RDWR   _O_RDWR
+#define HOST_O_CREAT  _O_CREAT
+#define HOST_O_TRUNC  _O_TRUNC
+#define HOST_O_EXCL   _O_EXCL
+#define HOST_O_BINARY _O_BINARY
+#define host_open(path, oflags) _open((path), (oflags), _S_IREAD | _S_IWRITE)
+#define host_fdopen _fdopen
+#define host_close _close
+#else
+#define HOST_O_RDONLY O_RDONLY
+#define HOST_O_RDWR   O_RDWR
+#define HOST_O_CREAT  O_CREAT
+#define HOST_O_TRUNC  O_TRUNC
+#define HOST_O_EXCL   O_EXCL
+#define HOST_O_BINARY 0
+#define host_open(path, oflags) open((path), (oflags), 0666)
+#define host_fdopen fdopen
+#define host_close close
+#endif
+
 static int api_file_open(const char *path, uint32_t flags)
 {
+    static const uint32_t known = AAR_FILE_READ | AAR_FILE_WRITE |
+        AAR_FILE_CREATE | AAR_FILE_TRUNCATE | AAR_FILE_EXCL;
     char full[4096];
     const char *mode;
     FILE *fp;
-    int creating;
+    int oflags;
+    int fd;
     int slot;
     int rc;
 
-    if ((flags & ~(AAR_FILE_READ | AAR_FILE_WRITE | AAR_FILE_CREATE)) != 0u)
+    if ((flags & ~known) != 0u)
         return AAR_E_INVAL;
-    if ((flags & (AAR_FILE_READ | AAR_FILE_WRITE | AAR_FILE_CREATE)) == 0u)
+    if ((flags & (AAR_FILE_READ | AAR_FILE_WRITE)) == 0u)
         return AAR_E_INVAL;
-    creating = (flags & AAR_FILE_CREATE) != 0u;
-    rc = resolve_open(path, full, sizeof full, creating);
+    /* CREATE and TRUNCATE write; EXCL only qualifies CREATE. */
+    if ((flags & (AAR_FILE_CREATE | AAR_FILE_TRUNCATE)) != 0u &&
+        (flags & AAR_FILE_WRITE) == 0u)
+        return AAR_E_INVAL;
+    if ((flags & AAR_FILE_EXCL) != 0u && (flags & AAR_FILE_CREATE) == 0u)
+        return AAR_E_INVAL;
+    rc = resolve_open(path, full, sizeof full,
+                      (flags & AAR_FILE_CREATE) != 0u);
     if (rc != AAR_OK)
         return rc;
-    if (creating)
-        mode = "wb+";
-    else if (flags & AAR_FILE_WRITE)
+    /* The flags go to open() as they are, so create, exclusive create and
+     * truncate are one atomic operation of the host. The stdio stream is
+     * read and write for any write access, as the old "r+b" and "wb+"
+     * modes were. */
+    if (flags & AAR_FILE_WRITE) {
+        oflags = HOST_O_RDWR;
         mode = "r+b";
-    else
+    } else {
+        oflags = HOST_O_RDONLY;
         mode = "rb";
-    /* Reserve the slot before the creating open: "wb+" truncates, and a
-     * truncation followed by AAR_E_NOMEM would destroy the caller's file. */
+    }
+    if (flags & AAR_FILE_CREATE)
+        oflags |= HOST_O_CREAT;
+    if (flags & AAR_FILE_TRUNCATE)
+        oflags |= HOST_O_TRUNC;
+    if (flags & AAR_FILE_EXCL)
+        oflags |= HOST_O_EXCL;
+    /* Reserve the slot before the open: a truncation or creation followed by
+     * AAR_E_NOMEM would destroy or leave behind the caller's file. */
     for (slot = 0; slot < HOST_FD_COUNT; slot++) {
         if (!fds[slot].used)
             break;
     }
     if (slot == HOST_FD_COUNT)
         return AAR_E_NOMEM;
-    fp = fopen(full, mode);
-    if (!fp)
+    fd = host_open(full, oflags | HOST_O_BINARY);
+    if (fd < 0)
         return io_err();
+    fp = host_fdopen(fd, mode);
+    if (!fp) {
+        rc = io_err();
+        (void)host_close(fd);
+        return rc;
+    }
     fds[slot].used = 1;
     fds[slot].fp = fp;
     return HOST_FD_BASE + slot;

@@ -229,35 +229,22 @@ int _open(const char *path, int flags, ...)
     else
         aflags = AAR_FILE_READ | AAR_FILE_WRITE;
 
-    /* AAR_FILE_CREATE creates or replaces. Open an existing file that is
-     * neither exclusive nor truncated without it. */
+    /* O_CREAT, O_TRUNC and O_EXCL map one to one onto the flags of
+     * aar_file_open, which the runtime applies as a single operation. No
+     * existence check comes first: the client's open decides, so a file that
+     * appears in between cannot be replaced by mistake. O_EXCL means
+     * something only together with O_CREAT. */
     if ((flags & (O_CREAT | O_TRUNC)) != 0 && access == O_RDONLY) {
         errno = EINVAL;
         return -1;
     }
-    if ((flags & O_CREAT) != 0 && (flags & O_TRUNC) != 0 &&
-        (flags & O_EXCL) == 0) {
+    if ((flags & O_CREAT) != 0) {
         aflags |= AAR_FILE_CREATE;
-    } else if ((flags & (O_CREAT | O_TRUNC | O_EXCL)) != 0) {
-        aar_stat st;
-        int rc = aar_file_stat(path, &st);
-
-        if (rc != AAR_OK && rc != AAR_E_NOENT)
-            return fail(rc);
-        if (rc == AAR_OK) {
-            if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) {
-                errno = EEXIST;
-                return -1;
-            }
-            if ((flags & O_TRUNC) != 0)
-                aflags |= AAR_FILE_CREATE;
-        } else if ((flags & O_CREAT) != 0) {
-            aflags |= AAR_FILE_CREATE;
-        } else {
-            errno = ENOENT;
-            return -1;
-        }
+        if ((flags & O_EXCL) != 0)
+            aflags |= AAR_FILE_EXCL;
     }
+    if ((flags & O_TRUNC) != 0)
+        aflags |= AAR_FILE_TRUNCATE;
 
     fd = aar_file_open(path, aflags);
     if (fd < 0)

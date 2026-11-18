@@ -266,9 +266,16 @@ typedef struct aar_event {
 
 /* ---- Files (spec 7.1) ------------------------------------------------------------------ */
 
-#define AAR_FILE_READ   1u
-#define AAR_FILE_WRITE  2u
-#define AAR_FILE_CREATE 4u /* create or replace; combine with AAR_FILE_WRITE */
+#define AAR_FILE_READ     1u
+#define AAR_FILE_WRITE    2u
+/* Create the file if it does not exist; an existing file keeps its contents.
+ * Needs AAR_FILE_WRITE. */
+#define AAR_FILE_CREATE   4u
+/* Truncate an existing file to length 0. Needs AAR_FILE_WRITE. The old
+ * create-or-replace is AAR_FILE_CREATE | AAR_FILE_TRUNCATE. */
+#define AAR_FILE_TRUNCATE 8u
+/* With AAR_FILE_CREATE, fail with AAR_E_EXIST when the file exists. */
+#define AAR_FILE_EXCL     16u
 #define AAR_SEEK_SET 0
 #define AAR_SEEK_CUR 1
 #define AAR_SEEK_END 2

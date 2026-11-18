@@ -1288,16 +1288,31 @@ int aar_file_open(const char *path, uint32_t flags);
 ```
 
 Opens a file and returns a file id, at least `AAR_FD_BASE`, or a negative code.
-`flags` is a combination of `AAR_FILE_READ`, `AAR_FILE_WRITE` and
-`AAR_FILE_CREATE`; any other bit is `AAR_E_INVAL`. An empty or NULL path is
-`AAR_E_INVAL`. A missing file is `AAR_E_NOENT`, a refused path is
+`flags` is a combination of `AAR_FILE_READ`, `AAR_FILE_WRITE`,
+`AAR_FILE_CREATE`, `AAR_FILE_TRUNCATE` and `AAR_FILE_EXCL`; any other bit is
+`AAR_E_INVAL`. At least one of read and write is needed. `AAR_FILE_CREATE` and
+`AAR_FILE_TRUNCATE` need `AAR_FILE_WRITE`, and `AAR_FILE_EXCL` needs
+`AAR_FILE_CREATE`; a combination that breaks these rules is `AAR_E_INVAL`. The
+flags work as `O_CREAT`, `O_TRUNC` and `O_EXCL` do in POSIX, and the client
+applies them as part of this one call, so a libc `open` passes its flags
+straight through. An empty or NULL path is `AAR_E_INVAL`. A missing file
+without `AAR_FILE_CREATE` is `AAR_E_NOENT`, an existing file with
+`AAR_FILE_CREATE | AAR_FILE_EXCL` is `AAR_E_EXIST`, a refused path is
 `AAR_E_ACCES`, and no free id is `AAR_E_NOMEM`. At least `AAR_MIN_FILES` files
 can be open. The call parks until the client replies, stop (`AAR_E_IO`), or 30
 seconds (`AAR_E_TIMEDOUT`); after a timeout the id is not reused for the rest of
 the app's life. Gate: `AAR_API_COVERS(api, file_open)`. Missing slot:
 `AAR_E_NOSYS`. Minimum minor: 5. **ZZ9000:** `AAR_FILE_READ` opens with
-`MODE_OLDFILE`, `AAR_FILE_WRITE` with `MODE_READWRITE`, and `AAR_FILE_CREATE`
-with `MODE_NEWFILE`.
+`MODE_OLDFILE`, `AAR_FILE_WRITE` with `MODE_READWRITE`, and
+`AAR_FILE_CREATE | AAR_FILE_TRUNCATE` with `MODE_NEWFILE`.
+
+**Platform note on `AAR_FILE_EXCL`.** A client that serves files through
+AmigaDOS has no atomic exclusive create. The ZZ9000 client applies
+`AAR_FILE_EXCL` by checking and creating within its single serving loop. That is
+exclusive against the other apps it serves, but not against other Amiga
+programs that create the same file at the same moment. A client that runs on a
+host with an atomic exclusive create, such as the host runner with POSIX
+`open`, passes the flag on and gets full exclusion.
 
 ### aar_file_close
 
@@ -1397,7 +1412,15 @@ minor: 5.
 
 ### AAR_FILE_CREATE
 
-`4u`. Create or replace. Combine with `AAR_FILE_WRITE`. Any bit not listed is `AAR_E_INVAL`.
+`4u`. Create the file if it does not exist. An existing file is opened as it is and keeps its contents. Needs `AAR_FILE_WRITE`. Without this flag a missing file is `AAR_E_NOENT`.
+
+### AAR_FILE_TRUNCATE
+
+`8u`. Truncate an existing file to length 0 when it is opened. Needs `AAR_FILE_WRITE`. It does not create: a missing file is `AAR_E_NOENT` unless `AAR_FILE_CREATE` is also set. `AAR_FILE_CREATE | AAR_FILE_TRUNCATE` creates or replaces, which is what `AAR_FILE_CREATE` meant before 1.0.
+
+### AAR_FILE_EXCL
+
+`16u`. Only with `AAR_FILE_CREATE`: fail with `AAR_E_EXIST` if the file already exists, and leave it untouched. Otherwise create it. How exclusive the check is depends on the client; see the platform note under `aar_file_open`. Any bit not listed among the `AAR_FILE_*` flags is `AAR_E_INVAL`.
 
 ### AAR_SEEK_SET
 

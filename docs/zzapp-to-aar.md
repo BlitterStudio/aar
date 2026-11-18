@@ -83,7 +83,8 @@ is `aar_gl` in `aar/gl.h`; the `gl*` wrappers and `gluPerspective`,
 | `ZZ_ALLOC_UNCACHED` | dropped: it had no effect |
 | `ZZ_ALLOC_HOST_VISIBLE` | dropped as a flag: `aar_shared_alloc` is the host-visible allocator. Its `flags` argument must be 0 |
 | `ZZ_COMPRESS_NONE` .. `ZZ_COMPRESS_LH7` | `AAR_COMPRESS_*`, same numbers |
-| `ZZ_FILE_READ`, `_WRITE`, `_CREATE`; `ZZ_SEEK_SET`, `_CUR`, `_END` | `AAR_FILE_*`, `AAR_SEEK_*`; new `AAR_MODE_FILE`, `AAR_MODE_DIR` (were `ZZAPP_MODE_*` in the proto header) |
+| `ZZ_FILE_READ`, `_WRITE`; `ZZ_SEEK_SET`, `_CUR`, `_END` | `AAR_FILE_*`, `AAR_SEEK_*`; new `AAR_MODE_FILE`, `AAR_MODE_DIR` (were `ZZAPP_MODE_*` in the proto header) |
+| `ZZ_FILE_CREATE` (create or replace) | `AAR_FILE_CREATE \| AAR_FILE_TRUNCATE`. `AAR_FILE_CREATE` alone now creates a missing file and keeps an existing one. New: `AAR_FILE_TRUNCATE` (empty an existing file) and `AAR_FILE_EXCL` (with `AAR_FILE_CREATE`, fail with `AAR_E_EXIST` when the file exists) |
 | `ZZ_DISPLAY_VSYNC` | `AAR_DISPLAY_VSYNC` |
 | `ZZ_DISPLAY_MAILBOX` | `AAR_DISPLAY_LATEST`; `AAR_DISPCAP_LATEST` in `aar_surface.caps` says it is in effect |
 | `ZZ_IMAGE_JPEG`, `_PNG`, `_WEBP` | `AAR_IMAGE_*` |

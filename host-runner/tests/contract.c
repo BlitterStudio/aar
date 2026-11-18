@@ -205,7 +205,8 @@ static int test_reject(void)
         return fail(16, "list missed ok.txt");
     if (!saw_dir)
         return fail(21, "list did not report foo as a directory");
-    fd = aar_file_open("round.bin", AAR_FILE_WRITE | AAR_FILE_CREATE);
+    fd = aar_file_open("round.bin",
+                       AAR_FILE_WRITE | AAR_FILE_CREATE | AAR_FILE_TRUNCATE);
     if (fd < 0)
         return fail(17, "create");
     if (aar_file_write(fd, "abcd", 4u, &n) != AAR_OK || n != 4u)

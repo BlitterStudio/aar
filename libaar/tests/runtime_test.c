@@ -171,6 +171,79 @@ static int test_files(void)
     return 0;
 }
 
+static int slurp(const char *path, char *buf, size_t size)
+{
+    int fd = open(path, O_RDONLY);
+    ssize_t n;
+
+    if (fd < 0)
+        return -1;
+    n = read(fd, buf, size - 1);
+    close(fd);
+    if (n < 0)
+        return -1;
+    buf[n] = 0;
+    return (int)n;
+}
+
+static unsigned stat_calls_so_far(void)
+{
+    struct stat st;
+
+    /* loader.c answers this path with the count of the other stat calls. */
+    return stat("stat-calls.magic", &st) == 0 ? (unsigned)st.st_size : ~0u;
+}
+
+/* O_CREAT, O_TRUNC and O_EXCL reach the runtime as one open call each. */
+static int test_open_flags(void)
+{
+    char buf[16];
+    unsigned before;
+    int fd;
+
+    fd = open("flags.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0 && write(fd, "keep", 4) == 4 && close(fd) == 0);
+
+    /* O_CREAT | O_EXCL on an existing file fails and leaves it alone. */
+    errno = 0;
+    CHECK(open("flags.txt", O_WRONLY | O_CREAT | O_EXCL, 0644) == -1);
+    CHECK(errno == EEXIST);
+    CHECK(slurp("flags.txt", buf, sizeof buf) == 4 && strcmp(buf, "keep") == 0);
+
+    /* O_CREAT without O_TRUNC keeps the contents, and a write lands at 0. */
+    fd = open("flags.txt", O_RDWR | O_CREAT, 0644);
+    CHECK(fd >= 0);
+    CHECK(read(fd, buf, 2) == 2 && memcmp(buf, "ke", 2) == 0);
+    CHECK(lseek(fd, 0, SEEK_SET) == 0 && write(fd, "K", 1) == 1);
+    CHECK(close(fd) == 0);
+    CHECK(slurp("flags.txt", buf, sizeof buf) == 4 && strcmp(buf, "Keep") == 0);
+
+    /* O_TRUNC alone truncates an existing file and does not create. */
+    fd = open("flags.txt", O_WRONLY | O_TRUNC);
+    CHECK(fd >= 0 && close(fd) == 0);
+    CHECK(slurp("flags.txt", buf, sizeof buf) == 0);
+    errno = 0;
+    CHECK(open("flags-missing.txt", O_WRONLY | O_TRUNC) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(open("flags-missing.txt", O_WRONLY) == -1 && errno == ENOENT);
+
+    /* O_CREAT | O_EXCL on a missing file creates it, and the open is one call
+     * of the runtime: no stat of the path comes first that a file appearing
+     * in between could outrun. */
+    before = stat_calls_so_far();
+    fd = open("flags-new.txt", O_WRONLY | O_CREAT | O_EXCL, 0644);
+    CHECK(fd >= 0 && write(fd, "new", 3) == 3 && close(fd) == 0);
+    CHECK(stat_calls_so_far() == before);
+    CHECK(slurp("flags-new.txt", buf, sizeof buf) == 3 && strcmp(buf, "new") == 0);
+
+    /* O_CREAT | O_TRUNC creates or replaces. */
+    fd = open("flags-new.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0 && write(fd, "z", 1) == 1 && close(fd) == 0);
+    CHECK(slurp("flags-new.txt", buf, sizeof buf) == 1 && strcmp(buf, "z") == 0);
+    CHECK(stat_calls_so_far() == before);
+    return 0;
+}
+
 static int test_wrappers(void)
 {
     aar_info info;
@@ -194,7 +267,8 @@ int aar_main(int argc, char **argv)
 {
     CHECK(argc == 2 && strcmp(argv[0], "app") == 0 && strcmp(argv[1], "one") == 0);
     CHECK(aar_api_ptr != NULL);
-    if (test_init_arrays() || test_heap() || test_files() || test_wrappers())
+    if (test_init_arrays() || test_heap() || test_files() ||
+        test_open_flags() || test_wrappers())
         return 1;
     printf("printf %d %s %5.2f\n", 42, "ok", 3.14159);
     puts("runtime_test PASS");

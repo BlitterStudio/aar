@@ -512,6 +512,10 @@ program run:
   `isatty` returns 0.
 - fd 3 and above are files, over `aar_file_*`: `open`, `close`, `read`, `write`,
   `lseek` and `fstat`. `fopen`, `fread`, `fwrite`, `fseek` and `fclose` work.
+  `open` passes `O_CREAT`, `O_TRUNC` and `O_EXCL` to the client as
+  `AAR_FILE_CREATE`, `AAR_FILE_TRUNCATE` and `AAR_FILE_EXCL` in one
+  `aar_file_open` call, with no separate existence check. How exclusive
+  `O_EXCL` is depends on the client; see `aar_file_open` in the API reference.
   The path rules of the client apply. For a directory use `aar_file_list_open`,
   `aar_file_list_next` and `aar_file_list_close`, and for a path use
   `aar_file_stat`.

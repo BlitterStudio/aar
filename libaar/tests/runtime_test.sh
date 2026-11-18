@@ -50,6 +50,10 @@ build freestanding_test libaar/tests/freestanding_test.c 1
 
 run() { # label expected-text env... -- app
   label=$1; want=$2; shift 2
+  # Every run starts with an empty root: the tests create files and expect
+  # to be the ones that create them.
+  rm -rf "$WORK/root"
+  mkdir "$WORK/root"
   out=$(env AAR_ROOT="$WORK/root" "$@" 2>&1) || { echo "$out"; echo "runtime test ($PROFILE): $label failed"; exit 1; }
   case "$out" in
     *"$want"*) ;;

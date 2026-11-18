@@ -373,7 +373,7 @@ flip may leave a second in flight. `AAR_OP_MSG`, `AAR_OP_EVENT` and
 | `AAR_OP_MSG` | `0x01` | either | 32 opaque bytes at `AAR_ENTRY_MSG`. Handled by the client's get and send message calls, not by its service loop. A post keeps `AAR_MSG_RESERVE` entry free. |
 | `AAR_OP_EVENT` | `0x02` | CQ only | Unsolicited: one event at the `AAR_ENTRY_EV_*` offsets, id 0. A full CQ drops it, and the client counts the drop in `AAR_CB_EVENTS_DROPPED`. |
 | `AAR_OP_LOG` | `0x03` | SQ only | One-way and lossy. `buf`, `buf_off` and `buf_len` name one record in a shared log buffer, at most `AAR_LOG_MAX` bytes and never wrapping. The app side may overwrite it after the client has consumed the entry. A full SQ drops the record and counts it in `AAR_CB_LOG_DROPPED`. |
-| `AAR_OP_FILE_OPEN` | `0x10` | request | Path in `buf`; args `AAR_A_FILE_OPEN_FD`, `AAR_A_FILE_OPEN_FLAGS`. |
+| `AAR_OP_FILE_OPEN` | `0x10` | request | Path in `buf`; args `AAR_A_FILE_OPEN_FD`, `AAR_A_FILE_OPEN_FLAGS`. The flags word is the `AAR_FILE_*` combination of `aar_file_open` (read, write, create, truncate, exclusive). The client applies create, truncate and exclusive create as part of this one request. |
 | `AAR_OP_FILE_CLOSE` | `0x11` | request | Arg `AAR_A_FILE_FD`. |
 | `AAR_OP_FILE_READ` | `0x12` | request | Args `AAR_A_FILE_FD`, `AAR_A_FILE_LEN`. The bytes go to `buf`; out `AAR_R_FILE_COUNT`. |
 | `AAR_OP_FILE_WRITE` | `0x13` | request | Args `AAR_A_FILE_FD`, `AAR_A_FILE_LEN`. The bytes come from `buf`; out `AAR_R_FILE_COUNT`. |

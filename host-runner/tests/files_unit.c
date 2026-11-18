@@ -45,6 +45,82 @@ static int file_size(const char *leaf)
     return (int)st.st_size;
 }
 
+static void rm_file(const char *leaf)
+{
+    char path[4096];
+
+    snprintf(path, sizeof path, "%s/%s", UNIT_ROOT, leaf);
+    (void)remove(path);
+}
+
+/* CREATE, TRUNCATE and EXCL are independent, like O_CREAT, O_TRUNC and
+ * O_EXCL, and each open is one call of the host. */
+static void test_create_truncate_excl(void)
+{
+    uint32_t n = 0;
+    char buf[8];
+    int fd;
+
+    host_files_init(UNIT_ROOT, 0);
+    put_file("flags.bin", "keep");
+    rm_file("flags-new.bin");
+    rm_file("flags-missing.bin");
+
+    /* CREATE | EXCL on an existing file: AAR_E_EXIST, contents intact. */
+    assert(api_file_open("flags.bin", AAR_FILE_WRITE | AAR_FILE_CREATE |
+                                      AAR_FILE_EXCL) == AAR_E_EXIST);
+    assert(file_size("flags.bin") == 4);
+
+    /* CREATE alone keeps the contents of an existing file. */
+    fd = api_file_open("flags.bin",
+                       AAR_FILE_READ | AAR_FILE_WRITE | AAR_FILE_CREATE);
+    assert(fd >= HOST_FD_BASE);
+    assert(api_file_read(fd, buf, 4u, &n) == AAR_OK && n == 4u &&
+           memcmp(buf, "keep", 4) == 0);
+    assert(api_file_close(fd) == AAR_OK);
+    assert(file_size("flags.bin") == 4);
+
+    /* TRUNCATE alone empties an existing file but does not create one. */
+    assert(api_file_open("flags-missing.bin",
+                         AAR_FILE_WRITE | AAR_FILE_TRUNCATE) == AAR_E_NOENT);
+    assert(file_size("flags-missing.bin") < 0);
+    fd = api_file_open("flags.bin", AAR_FILE_WRITE | AAR_FILE_TRUNCATE);
+    assert(fd >= HOST_FD_BASE);
+    assert(api_file_close(fd) == AAR_OK);
+    assert(file_size("flags.bin") == 0);
+
+    /* CREATE | EXCL creates a missing file once; the second try fails. */
+    fd = api_file_open("flags-new.bin", AAR_FILE_WRITE | AAR_FILE_CREATE |
+                                        AAR_FILE_EXCL);
+    assert(fd >= HOST_FD_BASE);
+    assert(api_file_write(fd, "new", 3u, &n) == AAR_OK && n == 3u);
+    assert(api_file_close(fd) == AAR_OK);
+    assert(api_file_open("flags-new.bin", AAR_FILE_WRITE | AAR_FILE_CREATE |
+                                          AAR_FILE_EXCL) == AAR_E_EXIST);
+    assert(file_size("flags-new.bin") == 3);
+
+    /* CREATE | TRUNCATE is create or replace. */
+    fd = api_file_open("flags-new.bin", AAR_FILE_WRITE | AAR_FILE_CREATE |
+                                        AAR_FILE_TRUNCATE);
+    assert(fd >= HOST_FD_BASE);
+    assert(api_file_close(fd) == AAR_OK);
+    assert(file_size("flags-new.bin") == 0);
+
+    /* Combinations the standard rejects, and a bit it does not define. */
+    assert(api_file_open("flags.bin", AAR_FILE_READ | AAR_FILE_EXCL) ==
+           AAR_E_INVAL);
+    assert(api_file_open("flags.bin", AAR_FILE_WRITE | AAR_FILE_EXCL) ==
+           AAR_E_INVAL);
+    assert(api_file_open("flags.bin", AAR_FILE_READ | AAR_FILE_CREATE) ==
+           AAR_E_INVAL);
+    assert(api_file_open("flags.bin", AAR_FILE_READ | AAR_FILE_TRUNCATE) ==
+           AAR_E_INVAL);
+    assert(api_file_open("flags.bin", AAR_FILE_CREATE) == AAR_E_INVAL);
+    assert(api_file_open("flags.bin", 0u) == AAR_E_INVAL);
+    assert(api_file_open("flags.bin", AAR_FILE_WRITE | 32u) == AAR_E_INVAL);
+    host_files_shutdown();
+}
+
 static void test_create_keeps_file_when_slots_full(void)
 {
     char name[32];
@@ -61,8 +137,13 @@ static void test_create_keeps_file_when_slots_full(void)
     }
     /* Every slot taken: the create must fail without truncating victim. */
     assert(api_file_open("victim.bin",
-                         AAR_FILE_READ | AAR_FILE_WRITE | AAR_FILE_CREATE) ==
-           AAR_E_NOMEM);
+                         AAR_FILE_READ | AAR_FILE_WRITE | AAR_FILE_CREATE |
+                         AAR_FILE_TRUNCATE) == AAR_E_NOMEM);
+    /* Nor may an exclusive create leave a new file behind. */
+    rm_file("fresh.bin");
+    assert(api_file_open("fresh.bin", AAR_FILE_WRITE | AAR_FILE_CREATE |
+                                      AAR_FILE_EXCL) == AAR_E_NOMEM);
+    assert(file_size("fresh.bin") < 0);
     for (i = 0; i < HOST_FD_COUNT; i++)
         assert(api_file_close(fd[i]) == AAR_OK);
     assert(file_size("victim.bin") == 7);
@@ -157,6 +238,7 @@ int main(void)
 {
     make_dir(UNIT_ROOT);
     test_create_keeps_file_when_slots_full();
+    test_create_truncate_excl();
     test_lists_have_their_own_table();
     test_seek_out_pos_is_optional();
     test_close_reports_flush_failure();

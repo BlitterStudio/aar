@@ -42,7 +42,8 @@ int aar_main(int argc, char **argv)
     aar_unmap_file(input);
     if (rc != AAR_OK)
         return 10;
-    out = aar_file_open(argv[2], AAR_FILE_WRITE | AAR_FILE_CREATE);
+    out = aar_file_open(argv[2], AAR_FILE_WRITE | AAR_FILE_CREATE |
+                        AAR_FILE_TRUNCATE);
     if (out < 0)
         return 20;
     rc = write_all(out, digest, sizeof digest);

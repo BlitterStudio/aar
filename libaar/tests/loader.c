@@ -14,6 +14,9 @@
  *   COHERENT=1       report AAR_INFOF_SHARED_COHERENT, so publish and acquire
  *                    must not reach the table
  *
+ * One path has a meaning of its own: stat-calls.magic stats as a file whose
+ * size is the number of stat calls made so far.
+ *
  * The exit report on stderr counts heap_grow, heap_shrink and
  * publish/acquire calls. The exit status is the app's.
  *
@@ -63,6 +66,7 @@ static unsigned shrink_calls;
 static unsigned publish_calls;
 static int coherent;
 static int files[MAX_FILES];
+static unsigned stat_calls;
 
 static void app_exit(int code)
 {
@@ -178,6 +182,10 @@ static int host_fd(int id)
     return files[id - AAR_FD_BASE];
 }
 
+/* A path with a meaning of its own, for runtime_test: MAGIC_STAT_CALLS stats
+ * as a file whose size is the number of ordinary stat calls so far. */
+#define MAGIC_STAT_CALLS "stat-calls.magic"
+
 static int app_file_open(const char *path, uint32_t flags)
 {
     char full[300];
@@ -189,8 +197,14 @@ static int app_file_open(const char *path, uint32_t flags)
         mode = O_RDWR;
     else if (flags & AAR_FILE_WRITE)
         mode = O_WRONLY;
+    /* The three flags map to open(2) one to one, so the loader's open is as
+     * atomic as the host's. */
     if (flags & AAR_FILE_CREATE)
-        mode |= O_CREAT | O_TRUNC;
+        mode |= O_CREAT;
+    if (flags & AAR_FILE_TRUNCATE)
+        mode |= O_TRUNC;
+    if (flags & AAR_FILE_EXCL)
+        mode |= O_EXCL;
     host_path(full, sizeof full, path);
     fd = open(full, mode, 0644);
     if (fd < 0)
@@ -264,10 +278,18 @@ static int app_file_stat(const char *path, aar_stat *out)
     char full[300];
     struct stat st;
 
+    memset(out, 0, sizeof *out);
+    if (strcmp(path, MAGIC_STAT_CALLS) == 0) {
+        /* Reports how many real stat calls the app made so far, so a test
+         * can see that an operation did not issue one. */
+        out->size = stat_calls;
+        out->mode = AAR_MODE_FILE;
+        return AAR_OK;
+    }
+    stat_calls++;
     host_path(full, sizeof full, path);
     if (stat(full, &st) != 0)
         return aar_error();
-    memset(out, 0, sizeof *out);
     out->size = (uint64_t)st.st_size;
     out->mtime = st.st_mtime;
     out->mode = S_ISDIR(st.st_mode) ? AAR_MODE_DIR : AAR_MODE_FILE;
