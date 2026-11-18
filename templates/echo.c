@@ -1,38 +1,37 @@
 /*
- * Echo every 32-byte client message until the launcher stops the app. The app
- * parks in zz_msg_wait between messages. Firmware older than API 0.4 has no
- * wait, so the app falls back to polling with zz_yield.
+ * Echo every 32-byte client message until the client stops the app. The app
+ * parks in aar_msg_wait between messages.
  *
  * SPDX-License-Identifier: MIT
  */
-#include "zzapp.h"
-#include "zzapp_note.h"
+#include "aar/app.h"
+#include "aar/note.h"
 
-ZZAPP_NOTE(0, 0)
+AAR_NOTE(0, 0, 0, 0)
 
-int zz_main(int argc, char **argv)
+int aar_main(int argc, char **argv)
 {
-    uint8_t message[32];
+    uint8_t message[AAR_MSG_BYTES];
 
     (void)argc;
     (void)argv;
-    while (!zz_should_stop()) {
-        int rc = zz_msg_wait(500000u);
+    while (!aar_should_stop()) {
+        int rc = aar_msg_wait(500000u);
 
-        if (rc == ZZ_ETIMEDOUT)
+        if (rc == AAR_E_TIMEDOUT)
             continue;
-        if (rc != ZZ_OK && rc != ZZ_ENOSYS)
-            break;              /* stop, or a corrupt ring */
-        rc = zz_msg_poll(message);
+        if (rc != AAR_OK)
+            break;              /* stop, or a corrupt queue */
+        rc = aar_msg_poll(message);
         if (rc < 0)
             return 20;
         if (rc == 0) {
-            zz_yield();
+            aar_yield();
             continue;
         }
-        while ((rc = zz_msg_send(message)) == ZZ_EBUSY)
-            zz_yield();
-        if (rc != ZZ_OK)
+        while ((rc = aar_msg_send(message)) == AAR_E_BUSY)
+            aar_yield();
+        if (rc != AAR_OK)
             return 20;
     }
     return 0;

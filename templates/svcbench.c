@@ -1,5 +1,6 @@
 /*
- * Measures table-call round trips without attempting PMU access from PL0.
+ * Measures table-call round trips without attempting PMU access from user
+ * mode. The cycle estimate assumes the ZZ9000's 667 MHz core.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -7,10 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "zzapp.h"
-#include "zzapp_note.h"
+#include "aar/app.h"
+#include "aar/note.h"
 
-ZZAPP_NOTE(0, 0)
+AAR_NOTE(0, 0, 0, 0)
 
 #define SVCBENCH_CALLS 100000u
 #define SVCBENCH_CALLS_PER_SAMPLE 100u
@@ -19,7 +20,7 @@ ZZAPP_NOTE(0, 0)
 
 static uint32_t should_stop_samples[SVCBENCH_SAMPLES];
 static uint32_t time_us_samples[SVCBENCH_SAMPLES];
-static uint32_t mem_info_samples[SVCBENCH_SAMPLES];
+static uint32_t info_samples[SVCBENCH_SAMPLES];
 
 static int compare_u32(const void *left, const void *right)
 {
@@ -50,13 +51,13 @@ static int benchmark_should_stop(void)
     uint32_t sample;
 
     for (sample = 0u; sample < SVCBENCH_SAMPLES; sample++) {
-        uint64_t begin = zz_time_us();
+        uint64_t begin = aar_time_us();
         uint32_t call;
 
         for (call = 0u; call < SVCBENCH_CALLS_PER_SAMPLE; call++)
-            if (zz_should_stop())
+            if (aar_should_stop())
                 return 1;
-        should_stop_samples[sample] = timer_cycles(zz_time_us() - begin);
+        should_stop_samples[sample] = timer_cycles(aar_time_us() - begin);
     }
     return 0;
 }
@@ -66,53 +67,54 @@ static void benchmark_time_us(void)
     uint32_t sample;
 
     for (sample = 0u; sample < SVCBENCH_SAMPLES; sample++) {
-        uint64_t begin = zz_time_us();
+        uint64_t begin = aar_time_us();
         uint32_t call;
 
         for (call = 0u; call < SVCBENCH_CALLS_PER_SAMPLE; call++)
-            (void)zz_time_us();
-        time_us_samples[sample] = timer_cycles(zz_time_us() - begin);
+            (void)aar_time_us();
+        time_us_samples[sample] = timer_cycles(aar_time_us() - begin);
     }
 }
 
-static int benchmark_mem_info(void)
+static int benchmark_info(void)
 {
     uint32_t sample;
-    zzapp_mem_info info;
+    aar_info info;
 
     for (sample = 0u; sample < SVCBENCH_SAMPLES; sample++) {
-        uint64_t begin = zz_time_us();
+        uint64_t begin = aar_time_us();
         uint32_t call;
-        int rc = ZZ_OK;
+        int rc = AAR_OK;
 
         for (call = 0u; call < SVCBENCH_CALLS_PER_SAMPLE; call++) {
-            rc = zz_mem_info(&info);
-            if (rc != ZZ_OK)
+            info.size = (uint32_t)sizeof info;
+            rc = aar_get_info(&info);
+            if (rc != AAR_OK)
                 return rc;
         }
-        mem_info_samples[sample] = timer_cycles(zz_time_us() - begin);
+        info_samples[sample] = timer_cycles(aar_time_us() - begin);
     }
-    return ZZ_OK;
+    return AAR_OK;
 }
 
-int zz_main(int argc, char **argv)
+int aar_main(int argc, char **argv)
 {
     int rc;
 
     (void)argc;
     (void)argv;
-    printf("svcbench: zz_time_us batches; 667 MHz timer-derived cycle estimates "
+    printf("svcbench: aar_time_us batches; 667 MHz timer-derived cycle estimates "
            "(PMU unavailable in user mode)\n");
     if (benchmark_should_stop())
         return 0;
     report("should_stop", should_stop_samples);
     benchmark_time_us();
     report("time_us", time_us_samples);
-    rc = benchmark_mem_info();
-    if (rc != ZZ_OK) {
-        printf("svcbench: mem_info returned %d\n", rc);
+    rc = benchmark_info();
+    if (rc != AAR_OK) {
+        printf("svcbench: info returned %d\n", rc);
         return 20;
     }
-    report("mem_info", mem_info_samples);
+    report("info", info_samples);
     return 0;
 }

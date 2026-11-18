@@ -1,5 +1,7 @@
 /*
- * Measures one SVC round trip at each firmware probe boundary.
+ * Measures one SVC round trip at each firmware probe boundary (A32 only: the
+ * probes are a firmware build option of the ZZ9000), then three table calls
+ * with the cycle counter. User mode needs PMUSERENR.EN set for the counter.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -7,13 +9,37 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "zzapp.h"
-#include "zzapp_note.h"
+#include "aar/app.h"
+#include "aar/note.h"
 
-ZZAPP_NOTE(0, 0)
+AAR_NOTE(0, 0, 0, 0)
 
 #define SVCPROBE_SAMPLES 10000u
 #define SVCPROBE_WARMUP 256u
+
+static uint32_t samples[SVCPROBE_SAMPLES];
+static volatile uint32_t sink;
+
+#if defined(__aarch64__)
+
+static uint32_t read_pmccntr(void)
+{
+    uint64_t value;
+
+    __asm__ volatile("isb\n\tmrs %0, pmccntr_el0"
+                     : "=r"(value) : : "memory");
+    return (uint32_t)value;
+}
+
+static uint32_t read_pmuserenr(void)
+{
+    uint64_t value;
+
+    __asm__ volatile("mrs %0, pmuserenr_el0" : "=r"(value) : : "memory");
+    return (uint32_t)value;
+}
+
+#else
 
 enum {
     SVC_PROBE_P0 = 0x100u,
@@ -22,9 +48,6 @@ enum {
     SVC_PROBE_P3,
     SVC_PROBE_P4
 };
-
-static uint32_t samples[SVCPROBE_SAMPLES];
-static volatile uint32_t sink;
 
 static uint32_t read_pmccntr(void)
 {
@@ -53,6 +76,8 @@ static int svc_probe(uint32_t number)
                      "r1", "r2", "r3", "lr", "memory", "cc");
     return (int)result;
 }
+
+#endif
 
 static int compare_u32(const void *left, const void *right)
 {
@@ -113,24 +138,34 @@ static void report(const char *name, uint32_t overhead)
     report((name), (overhead)); \
 } while (0)
 
-int zz_main(int argc, char **argv)
+static int get_info(aar_info *info)
+{
+    info->size = (uint32_t)sizeof *info;
+    return aar_get_info(info);
+}
+
+int aar_main(int argc, char **argv)
 {
     uint32_t pair_cost;
     uint32_t pmuserenr;
-    int status;
-    zzapp_mem_info info;
+    aar_info info;
 
     (void)argc;
     (void)argv;
-    status = svc_probe(SVC_PROBE_P0);
-    if (status == ZZ_ENOSYS) {
-        printf("svcprobe: firmware built without ZZAPP_SVC_PROBES\n");
-        return 0;
+#if !defined(__aarch64__)
+    {
+        int status = svc_probe(SVC_PROBE_P0);
+
+        if (status == AAR_E_NOSYS) {
+            printf("svcprobe: firmware built without SVC probes\n");
+            return 0;
+        }
+        if (status != AAR_OK) {
+            printf("svcprobe: unexpected P0 result %d\n", status);
+            return 1;
+        }
     }
-    if (status != ZZ_OK) {
-        printf("svcprobe: unexpected P0 result %d\n", status);
-        return 1;
-    }
+#endif
     pmuserenr = read_pmuserenr();
     if ((pmuserenr & 1U) == 0U) {
         printf("svcprobe: PMUSERENR.EN is clear\n");
@@ -140,13 +175,15 @@ int zz_main(int argc, char **argv)
     pair_cost = measure_read_pair();
     printf("svcprobe: empty PMCCNTR read pair median %lu cycles (subtracted)\n",
            (unsigned long)pair_cost);
+#if !defined(__aarch64__)
     MEASURE("P0", svc_probe(SVC_PROBE_P0), pair_cost);
     MEASURE("P1", svc_probe(SVC_PROBE_P1), pair_cost);
     MEASURE("P2", svc_probe(SVC_PROBE_P2), pair_cost);
     MEASURE("P3", svc_probe(SVC_PROBE_P3), pair_cost);
     MEASURE("P4", svc_probe(SVC_PROBE_P4), pair_cost);
-    MEASURE("should_stop", zz_should_stop(), pair_cost);
-    MEASURE("time_us", zz_time_us(), pair_cost);
-    MEASURE("mem_info", zz_mem_info(&info), pair_cost);
+#endif
+    MEASURE("should_stop", aar_should_stop(), pair_cost);
+    MEASURE("time_us", aar_time_us(), pair_cost);
+    MEASURE("info", get_info(&info), pair_cost);
     return 0;
 }

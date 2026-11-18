@@ -1,21 +1,21 @@
 /*
- * Freestanding template: no newlib. Build it with ZZAPP_FREESTANDING=1
- * (make) or FREESTANDING (CMake). The image links crt0, libzzapp and libgcc
- * only. It brings its own bump allocator over the app heap, formats its own
- * log line, and implements its own hash. The struct copy below compiles to a
- * call to memcpy, which libzzapp provides in this mode.
+ * Freestanding template: no newlib. Build it with AAR_FREESTANDING=1 (make)
+ * or FREESTANDING (CMake). The image links crt0, libaar and libgcc only. It
+ * brings its own bump allocator over the app heap, formats its own log line,
+ * and implements its own hash. The struct copy below may compile to a call
+ * to memcpy, which libaar provides in this mode.
  *
  * SPDX-License-Identifier: MIT
  */
-#include "zzapp.h"
-#include "zzapp_note.h"
+#include "aar/app.h"
+#include "aar/note.h"
 
-ZZAPP_NOTE(0, 0)
+AAR_NOTE(0, 0, 0, 0)
 
-/* Larger than one heap step, so the template exercises zz_heap_grow. */
+/* Larger than one heap step, so the template exercises aar_heap_grow. */
 #define BUF_BYTES (3u << 20)
 
-#define HEAP_STEP (1u << 20)
+#define HEAP_STEP AAR_HEAP_GRANULE
 
 static uint8_t *heap_cur;
 static uint8_t *heap_end;
@@ -23,9 +23,9 @@ static uint8_t *heap_end;
 static void heap_init(void)
 {
     void *base = 0;
-    uint32_t bytes = 0;
+    uint64_t bytes = 0;
 
-    zz_heap_range(&base, &bytes);
+    aar_heap_range(&base, &bytes);
     heap_cur = (uint8_t *)base;
     heap_end = (uint8_t *)base + bytes;
 }
@@ -47,7 +47,7 @@ static void *bump_alloc(uint32_t bytes, uint32_t align)
                           ~(uintptr_t)(HEAP_STEP - 1u));
         /* The table grows the heap at its end, so the new range must start
          * where the old one stopped. */
-        if (zz_heap_grow(step, &old_break) != ZZ_OK ||
+        if (aar_heap_grow(step, &old_break) != AAR_OK ||
             (uint8_t *)old_break != heap_end)
             return 0;
         heap_end += step;
@@ -88,8 +88,8 @@ static char *put_hex(char *out, uint32_t v)
     return out;
 }
 
-/* Dividing by 10 calls __aeabi_uidiv from libgcc: the Cortex-A9 has no
- * integer divide instruction. */
+/* On A32, dividing by 10 calls __aeabi_uidiv from libgcc: the Cortex-A9 has
+ * no integer divide instruction. */
 static char *put_dec(char *out, uint32_t v)
 {
     char tmp[10];
@@ -108,10 +108,10 @@ static void fail(void)
 {
     static const char bad[] = "freestanding FAIL\n";
 
-    zz_log(bad, sizeof bad - 1u);
+    aar_log(bad, sizeof bad - 1u);
 }
 
-int zz_main(int argc, char **argv)
+int aar_main(int argc, char **argv)
 {
     uint8_t *buf;
     block *src;
@@ -131,13 +131,6 @@ int zz_main(int argc, char **argv)
         fail();
         return 1;
     }
-#ifdef ZZAPP_FREESTANDING
-    /* Without ZZ_ALLOC_HOST_VISIBLE, zz_alloc has no heap to draw from. */
-    if (zz_alloc(64u, 8u, 0u) != 0) {
-        fail();
-        return 1;
-    }
-#endif
     heap_init();
     buf = (uint8_t *)bump_alloc(BUF_BYTES, 64u);
     src = (block *)bump_alloc(sizeof(block), 8u);
@@ -167,6 +160,6 @@ int zz_main(int argc, char **argv)
     end = put_str(end, " heap_kib=");
     end = put_dec(end, (uint32_t)((uint8_t *)dst + sizeof *dst - (uint8_t *)buf) / 1024u);
     *end++ = '\n';
-    zz_log(line, (uint32_t)(end - line));
+    aar_log(line, (uint32_t)(end - line));
     return 0;
 }
