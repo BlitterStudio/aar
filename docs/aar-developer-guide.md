@@ -304,8 +304,9 @@ mark). A runtime with `AAR_GROUP_INPUT` also delivers `AAR_EV_KEY_DOWN`,
 the up bit, or an `AAR_BREAK_*` value. `dx` and `dy` are mouse deltas, or
 joystick axes in -1, 0 and 1. `buttons` holds the key qualifiers, mouse buttons
 in bits 0 to 2 (left, right, middle), or joystick fire in bit 0. Map raw keys
-yourself. The queue holds at least 256 events; when it is full the client drops
-the new event and counts the drop.
+yourself. The runtime keeps at least 64 events; when the completion queue is
+full the client drops the newest event and counts the drop. The client
+coalesces mouse motion before it posts.
 
 Ctrl-D, Ctrl-E and Ctrl-F in the display window are raw keys and also
 `AAR_EV_BREAK` with codes 4, 5 and 6. They are not console end of input.

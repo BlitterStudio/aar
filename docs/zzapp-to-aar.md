@@ -139,14 +139,14 @@ standard. They stay private to the firmware and its library and keep their
 | `ZZAPP_END_*` | `AAR_END_*` (`AMIGA_RESET` is `PLATFORM_RESET`, `CORE_RESTART` is `RUNTIME_RESTART`) |
 | `ZZAPP_BLOCK_*` | dropped (a debugging aid of the list reply) |
 | `ZZAPP_F_*` flags | `AAR_CBF_DISPLAY`, `_AUDIO`, `_GL`, `_CONSOLE`; launcher capability bits become `aar_surface.caps` and the group bits |
-| `ZZAPP_INPUT_*` ring (256 events) | unsolicited `AAR_OP_EVENT` entries in the completion queue |
+| `ZZAPP_INPUT_*` ring (256 events) | unsolicited `AAR_OP_EVENT` entries in the completion queue (the runtime keeps at least 64; the client coalesces mouse motion) |
 | `ZZAPP_LOG_*` ring | `AAR_OP_LOG` entries naming a record in a shared log buffer |
 | `ZZAPP_FILE_*`, `zzapp_file_wire`, `ZZAPP_FILE_OP_*` | `AAR_OP_FILE_*` and `AAR_OP_LIST_*` requests with `AAR_A_FILE_*` and `AAR_R_FILE_*` word indices; paths travel in a shared buffer |
 | `ZZAPP_FILE_READ/WRITE/CREATE`, `ZZAPP_SEEK_*`, `ZZAPP_MODE_*`, `ZZAPP_PATH_MAX`, `ZZAPP_FD_BASE` | `AAR_FILE_*`, `AAR_SEEK_*`, `AAR_MODE_*`, `AAR_PATH_MAX`, `AAR_FD_BASE` |
 | `ZZAPP_DATA_*`, `ZZAPP_STAGING_*`, `ZZAPP_CHUNK_*` | dropped: file payloads are shared buffers named by `buf`, `buf_off`, `buf_len` |
 | `ZZAPP_CONSOLE_*` rings | `AAR_OP_CONSOLE_WRITE`, `AAR_OP_CONSOLE_READ`; the bytes sit in a console buffer named by the entry |
 | `ZZAPP_AUDIO_*` ring and header | `AAR_AUDIO_RING_*`, `AAR_AUDIO_ROUTE_*` (`ROUTE_CARD` is `ROUTE_PLATFORM`), `AAR_AUDIO_FORMAT_S16LE` |
-| `ZZAPP_MSG_H2A_*`, `ZZAPP_MSG_A2H_*`, `ZZAPP_MSG_CAP` (64), `zzapp_wire_msg` | `AAR_OP_MSG` entries (32 bytes at `AAR_ENTRY_MSG`), `AAR_MSG_BYTES`, `AAR_MSG_CAPACITY` (63) |
+| `ZZAPP_MSG_H2A_*`, `ZZAPP_MSG_A2H_*`, `ZZAPP_MSG_CAP` (64), `zzapp_wire_msg` | `AAR_OP_MSG` entries (32 bytes at `AAR_ENTRY_MSG`), `AAR_MSG_BYTES`, `AAR_MSG_CAPACITY` (63); the client posts only while it has a message credit (`AAR_CB_MSG_CONSUMED`) |
 | `ZZAPP_PALETTE_*` | `AAR_OP_DISPLAY_PALETTE`, colors in a shared buffer |
 | `ZZAPP_ARGV_*` (argv area) | `AAR_MIN_ARGS`, `AAR_MIN_ARG_BYTES`; the strings are delivered by the load and start calls, not by a fixed area |
 | `ZZAPP_WINDOW_BYTES` and every `*_OFF` | dropped: no per-app window |
