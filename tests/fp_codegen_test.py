@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Check the code generation claims in the developer guide's bit-identical
-maths section against the installed arm-none-eabi-gcc. No pytest.
+maths section against the installed toolchain. No pytest.
 
-Set CROSS to the toolchain prefix (default arm-none-eabi-). A claim that the
-compiler stops honouring fails here, so a toolchain bump cannot change float
-results unnoticed.
+Usage: fp_codegen_test.py [a32|a64]     (default: AAR_PROFILE, else a32)
+
+Set CROSS to the toolchain prefix (default arm-none-eabi- for a32,
+aarch64-none-elf- for a64). A claim that the compiler stops honouring fails
+here, so a toolchain bump cannot change float results unnoticed.
 """
 import os
 import re
@@ -12,10 +14,20 @@ import subprocess
 import sys
 import tempfile
 
-CC = os.environ.get("CROSS", "arm-none-eabi-") + "gcc"
-# The SDK's float flags from mk/zzapp.mk.
-SDK = ["-mcpu=cortex-a9", "-marm", "-mfpu=neon", "-mfloat-abi=hard", "-fPIE",
-       "-O2", "-fno-strict-aliasing", "-std=c11"]
+PROFILE = (sys.argv[1] if len(sys.argv) > 1
+           else os.environ.get("AAR_PROFILE", "a32"))
+if PROFILE not in ("a32", "a64"):
+    sys.exit("usage: fp_codegen_test.py [a32|a64]")
+
+CC = os.environ.get("CROSS", "arm-none-eabi-" if PROFILE == "a32"
+                    else "aarch64-none-elf-") + "gcc"
+# The SDK's float flags from mk/aar.mk.
+if PROFILE == "a32":
+    SDK = ["-mcpu=cortex-a9", "-marm", "-mfpu=neon", "-mfloat-abi=hard"]
+else:
+    SDK = ["-march=armv8-a"]
+SDK += ["-fPIE", "-O2", "-fno-strict-aliasing", "-ffp-contract=off",
+        "-std=c11"]
 
 KERNELS = r"""
 #include <math.h>
@@ -72,10 +84,14 @@ def function(asm, name):
 
 def check(cond, what):
     if not cond:
-        raise SystemExit("fp codegen: %s" % what)
+        raise SystemExit("fp codegen (%s): %s" % (PROFILE, what))
 
 
-def main():
+def replace_opt(flags, new):
+    return [f for f in flags if f != "-O2"] + [new]
+
+
+def check_a32():
     rc, asm, err = compile_c(KERNELS, SDK)
     check(rc == 0, "kernel compile failed: " + err)
 
@@ -92,7 +108,7 @@ def main():
         check(function(asm2, "muladd_f") == function(asm, "muladd_f"),
               "-ffp-contract=%s changes muladd_f" % contract)
 
-    o3 = [f for f in SDK if f != "-O2"] + ["-O3"]
+    o3 = replace_opt(SDK, "-O3")
     rc, asm3, err = compile_c(KERNELS, o3)
     check(rc == 0, "-O3 compile failed: " + err)
     for name in ("add_arr", "dot"):
@@ -119,7 +135,75 @@ def main():
     check(rc != 0 and "vfmaq_f32" in err,
           "vfmaq_f32 compiles with -mfpu=neon: the target gained FMA")
 
-    sys.stdout.write("fp codegen: ok\n")
+
+def check_a64():
+    """A64 has fused multiply-add in the base architecture, so the guarantee
+    is different: the SDK flags (-ffp-contract=off) keep a multiply and an add
+    apart in every language mode, and fusing is only what the program asks for
+    (__builtin_fmaf, vfmaq_f32)."""
+    rc, asm, err = compile_c(KERNELS, SDK)
+    check(rc == 0, "kernel compile failed: " + err)
+
+    for name in ("muladd_f", "muladd_d"):
+        body = function(asm, name)
+        check("fmadd" not in body and "fnmadd" not in body and
+              "fmsub" not in body and "fnmsub" not in body,
+              "%s uses a fused multiply-add" % name)
+        check("fmul" in body and "fadd" in body,
+              "%s is not a multiply and an add" % name)
+    check("fmadd" in function(asm, "fused_f"),
+          "__builtin_fmaf is no longer an inline fused multiply-add")
+
+    # The flag, not the language mode, is what keeps results apart: GNU mode
+    # fuses by default, the SDK flags do not.
+    gnu = [f for f in SDK if f != "-std=c11"] + ["-std=gnu11"]
+    rc, asm2, err = compile_c(KERNELS, gnu)
+    check(rc == 0, "gnu11 compile failed: " + err)
+    check(function(asm2, "muladd_f") == function(asm, "muladd_f"),
+          "-std=gnu11 with the SDK flags fuses muladd_f")
+    no_flag = [f for f in gnu if f != "-ffp-contract=off"]
+    rc, asm3, err = compile_c(KERNELS, no_flag)
+    check(rc == 0, "gnu11 without the flag failed: " + err)
+    check("fmadd" in function(asm3, "muladd_f"),
+          "control: -std=gnu11 without -ffp-contract=off no longer fuses, so "
+          "the check above proves nothing")
+
+    o3 = replace_opt(SDK, "-O3")
+    rc, asm4, err = compile_c(KERNELS, o3)
+    check(rc == 0, "-O3 compile failed: " + err)
+    # GCC may vectorise the exact products, but the sum stays a scalar chain in
+    # source order: no vector add, no fused accumulate, no pairwise add.
+    check(not re.search(r"\tf(add|mla)\tv|\tfaddp", function(asm4, "dot")),
+          "-O3 reassociated the dot reduction onto vector registers without "
+          "fast-math")
+    rc, asm5, err = compile_c(KERNELS, o3 + ["-ffast-math"])
+    check(rc == 0, "-ffast-math compile failed: " + err)
+    check(re.search(r"\tf(add|mla)\tv|\tfaddp", function(asm5, "dot")),
+          "control: -ffast-math no longer vectorises dot, so the check above "
+          "proves nothing")
+
+    check("bl\t" not in function(asm, "folded"),
+          "sinf(0.5f) is no longer folded")
+    rc, asm6, err = compile_c(KERNELS, SDK + ["-fno-builtin"])
+    check(rc == 0 and "sinf" in function(asm6, "folded"),
+          "-fno-builtin does not call sinf")
+
+    rc, asm7, err = compile_c(NEON_MLA, SDK)
+    check(rc == 0 and re.search(r"\tfmul\tv", asm7) and
+          re.search(r"\tfadd\tv", asm7),
+          "vmlaq_f32 is not a separate multiply and add")
+    check("fmla" not in asm7, "vmlaq_f32 became a fused operation")
+    rc, asm8, err = compile_c(NEON_FMA, SDK)
+    check(rc == 0 and re.search(r"\tfmla\tv", asm8),
+          "vfmaq_f32 is not a fused multiply-accumulate")
+
+
+def main():
+    if PROFILE == "a32":
+        check_a32()
+    else:
+        check_a64()
+    sys.stdout.write("fp codegen (%s): ok\n" % PROFILE)
 
 
 if __name__ == "__main__":

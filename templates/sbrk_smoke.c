@@ -5,11 +5,11 @@
  * SPDX-License-Identifier: MIT
  */
 #include <stdlib.h>
-#include "zzapp_note.h"
+#include "aar/note.h"
 
-ZZAPP_NOTE(0, 0)
+AAR_NOTE(0, 0, 0, 0)
 
-int zz_main(int argc, char **argv)
+int aar_main(int argc, char **argv)
 {
     void *p;
 

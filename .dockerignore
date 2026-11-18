@@ -1,5 +1,9 @@
+.git
+.worktrees
 build
-*.o
-*.elf
-*.a
-*.d
+build-*
+.build-pic-newlib*
+**/*.o
+**/*.elf
+**/*.a
+**/*.d
