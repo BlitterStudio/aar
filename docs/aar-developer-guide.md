@@ -608,16 +608,17 @@ a call over 50 ms is logged and a call over 10 seconds stops the app.
 
 The host runner in `host-runner/` runs an app as a native process, with SDL2
 standing in for the card. It implements the core API with host semantics and
-the display, input and audio groups, including plain host-memory heap growth.
-It is being ported to the AAR names in the next step; its README,
+the display, input, audio and services groups, with shared buffers whose
+tokens the runner can resolve, and plain host-memory heap growth. Its README,
 [host-runner/README.md](../host-runner/README.md), is the reference for its
 options, input and message scripts, key mapping and the differences from the
-card. Compression, image and audio decode, and GL return `AAR_E_NOSYS` there. A
-build for the runner uses `AAR_HOST` (or a host compiler) so `AAR_NOTE`
-vanishes. The runner always links the host C library and ignores the
-freestanding mode, so an app that calls `malloc` runs there and fails to link
-for the card in freestanding mode. Timing, memory limits and the watchdog are
-not the card's, so check performance and limits on hardware.
+card. There is no GL group there; compression, image and audio decode return
+`AAR_E_NOSYS` while SHA-256 works. A build for the runner needs no define on a
+host compiler, because `AAR_NOTE` vanishes unless the compiler targets Arm
+(`AAR_HOST` forces it). The runner always links the host C library and ignores
+the freestanding mode, so an app that calls `malloc` runs there and fails to
+link for the card in freestanding mode. Timing, memory limits and the watchdog
+are not the card's, so check performance and limits on hardware.
 
 ## Debugging
 

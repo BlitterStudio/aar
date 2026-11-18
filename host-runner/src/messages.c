@@ -1,8 +1,9 @@
 /*
- * Two 64-by-32 rings, matching the card. Without --msg-script, zz_msg_send
- * loops back into the queue zz_msg_poll reads, so a host app can talk to
- * itself. With --msg-script, script lines are host-to-app messages and
- * zz_msg_send is recorded as app-to-host and is not fed back.
+ * Two queues of 64 slots with one kept free, so each direction holds
+ * AAR_MSG_CAPACITY (63) messages. Without --msg-script, aar_msg_send loops
+ * back into the queue aar_msg_poll reads, so a host app can talk to itself.
+ * With --msg-script, script lines are host-to-app messages and aar_msg_send is
+ * recorded as app-to-host and is not fed back.
  *
  * Script lines: 64 hex digits, a quoted string padded with NULs to 32 bytes,
  * or "stop". "stop" asks the runner to stop once every injected message has
@@ -21,8 +22,8 @@ struct script_msg {
     uint8_t bytes[HOST_MSG_BYTES];
 };
 
-static uint8_t h2a[HOST_MSG_CAP][HOST_MSG_BYTES];
-static uint8_t a2h[HOST_MSG_CAP][HOST_MSG_BYTES];
+static uint8_t h2a[HOST_MSG_SLOTS][HOST_MSG_BYTES];
+static uint8_t a2h[HOST_MSG_SLOTS][HOST_MSG_BYTES];
 static uint32_t h2a_head, h2a_tail;
 static uint32_t a2h_head, a2h_tail;
 static struct script_msg *script;
@@ -43,7 +44,7 @@ static int ring_push(uint8_t ring[][HOST_MSG_BYTES], uint32_t *head,
 {
     if (ring_full(*head, tail))
         return 0;
-    memcpy(ring[*head & (HOST_MSG_CAP - 1u)], msg, HOST_MSG_BYTES);
+    memcpy(ring[*head & (HOST_MSG_SLOTS - 1u)], msg, HOST_MSG_BYTES);
     *head += 1u;
     return 1;
 }
@@ -53,7 +54,7 @@ static int ring_pop(uint8_t ring[][HOST_MSG_BYTES], uint32_t head,
 {
     if (head == *tail)
         return 0;
-    memcpy(msg, ring[*tail & (HOST_MSG_CAP - 1u)], HOST_MSG_BYTES);
+    memcpy(msg, ring[*tail & (HOST_MSG_SLOTS - 1u)], HOST_MSG_BYTES);
     *tail += 1u;
     return 1;
 }
@@ -122,7 +123,7 @@ static int load_script(const char *path)
 
     fp = fopen(path, "rb");
     if (!fp) {
-        fprintf(stderr, "zzapp-host: cannot open message script %s\n", path);
+        fprintf(stderr, "aar-host: cannot open message script %s\n", path);
         return -1;
     }
     while (fgets(line, sizeof line, fp)) {
@@ -143,7 +144,7 @@ static int load_script(const char *path)
             continue;
         }
         if (!parse_hex(p, msg) && !parse_quoted(p, msg)) {
-            fprintf(stderr, "zzapp-host: bad message script line %u\n", lineno);
+            fprintf(stderr, "aar-host: bad message script line %u\n", lineno);
             fclose(fp);
             return -1;
         }
@@ -173,35 +174,35 @@ static void record_sent(const void *msg)
 static int api_msg_send(const void *msg)
 {
     if (!msg)
-        return ZZ_EINVAL;
+        return AAR_E_INVAL;
     if (script_mode) {
         if (!ring_push(a2h, &a2h_head, a2h_tail, msg))
-            return ZZ_EBUSY;
+            return AAR_E_BUSY;
         record_sent(msg);
         /* Nothing drains a2h; the message is already recorded. Release
-         * the slot now, or the 65th send wedges with ZZ_EBUSY forever. */
+         * the slot now, or the queue wedges with AAR_E_BUSY forever. */
         a2h_tail = a2h_head;
         if (script_stop && script_injected == script_count &&
             recorded >= script_count)
             host_request_stop();
-        return ZZ_OK;
+        return AAR_OK;
     }
     if (!ring_push(h2a, &h2a_head, h2a_tail, msg))
-        return ZZ_EBUSY;
-    return ZZ_OK;
+        return AAR_E_BUSY;
+    return AAR_OK;
 }
 
 static int api_msg_poll(void *msg)
 {
     if (!msg)
-        return ZZ_EINVAL;
+        return AAR_E_INVAL;
     if (!ring_pop(h2a, h2a_head, &h2a_tail, msg))
         return 0;
     return 1;
 }
 
-/* Ready, then a zero timeout, then stop, then the deadline: the same order
- * as the card, where a message already queued always wins. */
+/* Ready, then a zero timeout, then stop, then the deadline: a message that is
+ * already queued always wins, so a stop never hides one. */
 static int api_msg_wait(uint32_t timeout_us)
 {
     uint64_t deadline = host_time_us() + timeout_us;
@@ -210,14 +211,14 @@ static int api_msg_wait(uint32_t timeout_us)
         uint64_t now;
 
         if (h2a_head != h2a_tail)
-            return ZZ_OK;
+            return AAR_OK;
         if (timeout_us == 0u)
-            return ZZ_ETIMEDOUT;
+            return AAR_E_TIMEDOUT;
         if (host_stop_requested())
-            return ZZ_EIO;
+            return AAR_E_IO;
         now = host_time_us();
         if (now >= deadline)
-            return ZZ_ETIMEDOUT;
+            return AAR_E_TIMEDOUT;
         host_pump();
         if (h2a_head != h2a_tail)
             continue;
@@ -251,7 +252,7 @@ int host_messages_init(void)
     if (opt->msg_out) {
         msg_out = fopen(opt->msg_out, "wb");
         if (!msg_out) {
-            fprintf(stderr, "zzapp-host: cannot open %s\n", opt->msg_out);
+            fprintf(stderr, "aar-host: cannot open %s\n", opt->msg_out);
             return -1;
         }
     }
@@ -272,7 +273,7 @@ void host_messages_shutdown(void)
     script_count = 0;
 }
 
-void host_messages_bind(zzapp_api *api)
+void host_messages_bind(aar_api *api)
 {
     api->msg_send = api_msg_send;
     api->msg_poll = api_msg_poll;

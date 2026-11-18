@@ -1,7 +1,7 @@
 /*
- * Host runner entry. Parses launcher options, installs a fully populated
- * API 0.3 table, and calls zz_main. argv[0] is the program name, as on the
- * card. zz_exit does not return.
+ * Host runner entry. Parses runner options, installs the aar_api table of this
+ * runner (groups display, input, audio and services), and calls aar_main.
+ * argv[0] is the program name, as on a target. aar_exit does not return.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -9,6 +9,7 @@
 #define SDL_MAIN_HANDLED
 #endif
 #include "host_internal.h"
+#include "aar_internal.h"
 
 #include <SDL.h>
 
@@ -30,7 +31,6 @@ static volatile sig_atomic_t sig_stop;
 static int finished;
 static int sdl_video;
 static int exit_code;
-static const char build_id[] = "zzapp-host";
 static uint64_t perf_origin;
 static uint64_t perf_freq;
 
@@ -114,7 +114,7 @@ static void install_stop_handlers(void)
 static void usage(FILE *fp)
 {
     fputs(
-        "zzapp-host runs a host build of a ZZ9000 app.\n"
+        "aar-host runs a host build of an AAR app.\n"
         "\n"
         "  app [runner options] [--] [app arguments]\n"
         "\n"
@@ -124,7 +124,7 @@ static void usage(FILE *fp)
         "  --scale N        window scale, 1..8 (default 1)\n"
         "  --headless       dummy SDL video/audio, no visible window\n"
         "  --frames N       stop after N presented frames\n"
-        "  --input FILE     scripted ZZ_EV_* events\n"
+        "  --input FILE     scripted AAR_EV_* events\n"
         "  --audio-null     consume PCM on yield instead of SDL audio\n"
         "  --audio-frames N stop after N consumed PCM frames\n"
         "  --audio-dump FILE  write consumed PCM (S16LE stereo)\n"
@@ -133,7 +133,7 @@ static void usage(FILE *fp)
         "  --dump-front FILE  write the last presented surface bytes\n"
         "  --help           show this text\n"
         "\n"
-        "App arguments after the runner options are passed to zz_main.\n"
+        "App arguments after the runner options are passed to aar_main.\n"
         "argv[0] is this program's name. A '--' ends runner options.\n",
         fp);
 }
@@ -141,7 +141,7 @@ static void usage(FILE *fp)
 static int need_value(int i, int argc, char **argv, const char **out)
 {
     if (i + 1 >= argc || argv[i + 1][0] == 0) {
-        fprintf(stderr, "zzapp-host: %s needs a value\n", argv[i]);
+        fprintf(stderr, "aar-host: %s needs a value\n", argv[i]);
         return -1;
     }
     *out = argv[i + 1];
@@ -196,7 +196,7 @@ static int parse_args(int argc, char **argv, int *app_from)
             uint32_t n = 0;
             if (need_value(i, argc, argv, &val) != 0 ||
                 parse_u32(val, &n, 1u, 8u) != 0) {
-                fprintf(stderr, "zzapp-host: --scale needs 1..8\n");
+                fprintf(stderr, "aar-host: --scale needs 1..8\n");
                 return -1;
             }
             opt.scale = (int)n;
@@ -204,7 +204,7 @@ static int parse_args(int argc, char **argv, int *app_from)
         } else if (strcmp(a, "--frames") == 0) {
             if (need_value(i, argc, argv, &val) != 0 ||
                 parse_u32(val, &opt.frames_limit, 1u, 1000000u) != 0) {
-                fprintf(stderr, "zzapp-host: --frames needs a positive integer\n");
+                fprintf(stderr, "aar-host: --frames needs a positive integer\n");
                 return -1;
             }
             i++;
@@ -215,7 +215,7 @@ static int parse_args(int argc, char **argv, int *app_from)
         } else if (strcmp(a, "--audio-frames") == 0) {
             if (need_value(i, argc, argv, &val) != 0 ||
                 parse_u32(val, &opt.audio_frames, 1u, 100000000u) != 0) {
-                fprintf(stderr, "zzapp-host: --audio-frames needs a positive integer\n");
+                fprintf(stderr, "aar-host: --audio-frames needs a positive integer\n");
                 return -1;
             }
             i++;
@@ -236,7 +236,7 @@ static int parse_args(int argc, char **argv, int *app_from)
                 return -1;
             i++;
         } else {
-            fprintf(stderr, "zzapp-host: unknown option %s\n", a);
+            fprintf(stderr, "aar-host: unknown option %s\n", a);
             return -1;
         }
     }
@@ -276,8 +276,8 @@ static void api_log(const char *msg, uint32_t len)
 {
     if (!msg)
         return;
-    if (len > 1024u)
-        len = 1024u;
+    if (len > AAR_LOG_MAX)
+        len = AAR_LOG_MAX;
     if (len)
         fwrite(msg, 1, len, stdout);
     if (len == 0u || msg[len - 1u] != '\n')
@@ -285,14 +285,60 @@ static void api_log(const char *msg, uint32_t len)
     fflush(stdout);
 }
 
-static void bind_lifecycle(zzapp_api *api)
+/* Fills at most out->size bytes, as aar_get_info documents, and zeroes the
+ * bytes the caller's structure has past what this runner knows. */
+static int api_info(aar_info *out)
+{
+    aar_info info;
+    uint32_t size;
+
+    if (!out)
+        return AAR_E_INVAL;
+    size = out->size;
+    if (size < (uint32_t)sizeof out->size)
+        return AAR_E_INVAL;
+    memset(&info, 0, sizeof info);
+    info.size = size;
+    /* The profile names the data model of the app; a native app has the
+     * model of the host. */
+    info.profile = sizeof(void *) == 8u ? AAR_PROFILE_A64 : AAR_PROFILE_A32;
+    info.platform_id = AAR_PLATFORM_NONE;
+    info.flags = AAR_INFOF_SHARED_COHERENT;
+    info.groups = HOST_GROUPS;
+    info.heap_granule = AAR_HEAP_GRANULE;
+    info.shared_granule = HOST_SHARED_GRANULE;
+    info.msg_capacity = HOST_MSG_CAP;
+    info.sleep_granule_us = 1000u;
+    info.stall_limit_ms = AAR_STALL_LIMIT_MIN_MS;
+    info.stop_grace_ms = 0u; /* the host never forces a stop */
+    info.cpu_features = 0u;
+    info.shared_limit = HOST_SHARED_LIMIT;
+    info.shared_used = host_shared_used();
+    info.max_files = HOST_FD_COUNT;
+    memcpy(out, &info, size < sizeof info ? size : sizeof info);
+    if (size > sizeof info)
+        memset((uint8_t *)out + sizeof info, 0, size - sizeof info);
+    return AAR_OK;
+}
+
+/* No platform extension exists on the host. */
+static const void *api_ext(uint32_t platform_id, uint32_t ext_id)
+{
+    (void)platform_id;
+    (void)ext_id;
+    return 0;
+}
+
+static void bind_lifecycle(aar_api *api)
 {
     api->exit = api_exit;
     api->yield = api_yield;
     api->should_stop = api_should_stop;
     api->time_us = api_time_us;
     api->sleep_us = api_sleep_us;
+    api->info = api_info;
     api->log = api_log;
+    api->ext = api_ext;
 }
 
 static void host_finish(void)
@@ -303,7 +349,7 @@ static void host_finish(void)
     host_pump();
     if (opt.dump_front)
         host_display_dump(opt.dump_front);
-    fprintf(stderr, "zzapp-host: exit=%d flips=%u audio_frames=%u\n", exit_code,
+    fprintf(stderr, "aar-host: exit=%d flips=%u audio_frames=%u\n", exit_code,
             host_display_flips(), host_audio_frames_consumed());
     host_audio_shutdown();
     host_display_shutdown();
@@ -321,17 +367,17 @@ static int run_selftest(void)
 
     rc = host_services_selftest();
     if (rc) {
-        fprintf(stderr, "zzapp-host: service selftest %d\n", rc);
+        fprintf(stderr, "aar-host: service selftest %d\n", rc);
         return 1;
     }
     rc = host_display_selftest();
     if (rc) {
-        fprintf(stderr, "zzapp-host: display selftest %d\n", rc);
+        fprintf(stderr, "aar-host: display selftest %d\n", rc);
         return 1;
     }
     rc = host_input_selftest();
     if (rc) {
-        fprintf(stderr, "zzapp-host: input selftest %d\n", rc);
+        fprintf(stderr, "aar-host: input selftest %d\n", rc);
         return 1;
     }
     return 0;
@@ -339,7 +385,7 @@ static int run_selftest(void)
 
 int main(int argc, char **argv)
 {
-    static zzapp_api api;
+    static aar_api api;
     int app_from = argc;
     int app_argc;
     char **app_argv;
@@ -348,7 +394,7 @@ int main(int argc, char **argv)
 
     opt.root = ".";
     opt.scale = 1;
-    self = getenv("ZZAPP_HOST_SELFTEST");
+    self = getenv("AAR_HOST_SELFTEST");
     if (self && self[0] && strcmp(self, "0") != 0)
         opt.selftest = 1;
     if (parse_args(argc, argv, &app_from) != 0)
@@ -359,7 +405,7 @@ int main(int argc, char **argv)
         SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);
     }
     if (SDL_Init(SDL_INIT_TIMER) != 0) {
-        fprintf(stderr, "zzapp-host: SDL timer init failed: %s\n", SDL_GetError());
+        fprintf(stderr, "aar-host: SDL timer init failed: %s\n", SDL_GetError());
         return 10;
     }
     perf_freq = SDL_GetPerformanceFrequency();
@@ -367,7 +413,7 @@ int main(int argc, char **argv)
     if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) == 0)
         sdl_video = 1;
     else
-        fprintf(stderr, "zzapp-host: SDL video init failed: %s\n", SDL_GetError());
+        fprintf(stderr, "aar-host: SDL video init failed: %s\n", SDL_GetError());
     atexit(host_finish);
     host_memory_init();
     if (host_files_init(opt.root, opt.abs_paths) != 0)
@@ -377,8 +423,9 @@ int main(int argc, char **argv)
         return 10;
     memset(&api, 0, sizeof api);
     api.size = (uint32_t)sizeof api;
-    api.version = ZZAPP_API_VERSION;
-    api.build_id = build_id;
+    api.version = AAR_API_VERSION;
+    api.groups = HOST_GROUPS;
+    api.platform_id = AAR_PLATFORM_NONE;
     bind_lifecycle(&api);
     host_memory_bind(&api);
     host_files_bind(&api);
@@ -388,7 +435,7 @@ int main(int argc, char **argv)
     host_console_bind(&api);
     host_messages_bind(&api);
     host_services_bind(&api);
-    zzapp_api_ptr = &api;
+    aar_crt0_bind(&api);
     if (opt.selftest) {
         exit_code = run_selftest();
         return exit_code;
@@ -400,7 +447,7 @@ int main(int argc, char **argv)
     app_argv[0] = argv[0];
     for (i = 0; i < argc - app_from; i++)
         app_argv[i + 1] = argv[app_from + i];
-    exit_code = zz_main(app_argc, app_argv);
+    exit_code = aar_main(app_argc, app_argv);
     free(app_argv);
     return exit_code;
 }

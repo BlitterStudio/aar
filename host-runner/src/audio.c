@@ -1,11 +1,14 @@
 /*
- * Stereo S16LE ring, 8192 frames, 22050 Hz only. That is the rate the card
- * fabric producer grants. Other rates and channel counts are ZZ_EINVAL.
+ * Stereo S16LE ring of 8192 frames at 22050, 44100 or 48000 Hz; the granted
+ * rate is the requested one. Other rates and channel counts are
+ * AAR_E_INVAL. The ring is plain host memory shared with the SDL callback,
+ * not with a client, as the standard describes.
  *
- * Without --audio-null the SDL callback advances read_frame. With
- * --audio-null, yield consumes written frames on the app thread, which is
- * what the tone test counts. --audio-frames N stops after N consumed frames.
- * --audio-dump records those consumed frames.
+ * Without --audio-null the SDL callback advances read_frame and counts an
+ * underrun whenever the ring cannot fill a buffer. With --audio-null, yield
+ * consumes written frames on the app thread, which is what the tone test
+ * counts, and no underrun is counted. --audio-frames N stops after N consumed
+ * frames. --audio-dump records those consumed frames.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -28,6 +31,8 @@ struct host_audio {
     void *block;
     FILE *dump;
     uint32_t consumed;
+    uint32_t rate;
+    volatile uint32_t underruns;
     SDL_AudioDeviceID dev;
 };
 
@@ -74,6 +79,8 @@ static void audio_cb(void *userdata, Uint8 *stream, int len)
     avail = write - read;
     if (avail > HOST_AUDIO_FRAMES)
         avail = 0;
+    if (avail < frames)
+        audio.underruns++;
     if (avail > frames)
         avail = frames;
     for (i = 0; i < avail; i++) {
@@ -83,35 +90,39 @@ static void audio_cb(void *userdata, Uint8 *stream, int len)
     consume(avail, 0);
 }
 
-static int api_audio_open(uint32_t rate, uint32_t channels, zzapp_audio *out)
+static int api_audio_open(uint32_t rate, uint32_t channels, aar_audio *out)
 {
     const struct host_options *opt = host_options();
     size_t bytes;
     SDL_AudioSpec want, have;
 
     if (host_stop_requested())
-        return ZZ_EIO;
+        return AAR_E_IO;
     if (!out)
-        return ZZ_EINVAL;
-    if (channels != 2u || rate != HOST_AUDIO_RATE)
-        return ZZ_EINVAL;
+        return AAR_E_INVAL;
+    if (channels != 2u ||
+        (rate != AAR_AUDIO_RATE_22050 && rate != AAR_AUDIO_RATE_44100 &&
+         rate != AAR_AUDIO_RATE_48000))
+        return AAR_E_INVAL;
     if (audio.open)
-        return ZZ_EBUSY;
+        return AAR_E_BUSY;
     bytes = sizeof(uint32_t) * 2u + HOST_AUDIO_FRAMES * 2u * sizeof(int16_t);
     audio.block = calloc(1, bytes);
     if (!audio.block)
-        return ZZ_ENOMEM;
+        return AAR_E_NOMEM;
     audio.read_frame = (volatile uint32_t *)audio.block;
     audio.write_frame = audio.read_frame + 1;
     audio.samples = (int16_t *)(audio.read_frame + 2);
+    audio.rate = rate;
+    audio.underruns = 0;
     if (!opt->audio_null) {
         if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
             free(audio.block);
             audio.block = 0;
-            return ZZ_EIO;
+            return AAR_E_IO;
         }
         memset(&want, 0, sizeof want);
-        want.freq = (int)HOST_AUDIO_RATE;
+        want.freq = (int)rate;
         want.format = AUDIO_S16LSB;
         want.channels = 2;
         want.samples = 1024;
@@ -120,7 +131,7 @@ static int api_audio_open(uint32_t rate, uint32_t channels, zzapp_audio *out)
         if (!audio.dev) {
             free(audio.block);
             audio.block = 0;
-            return ZZ_EIO;
+            return AAR_E_IO;
         }
         SDL_PauseAudioDevice(audio.dev, 0);
     }
@@ -130,17 +141,17 @@ static int api_audio_open(uint32_t rate, uint32_t channels, zzapp_audio *out)
     out->frames = HOST_AUDIO_FRAMES;
     out->read_frame = audio.read_frame;
     out->write_frame = audio.write_frame;
-    out->rate = HOST_AUDIO_RATE;
+    out->rate = rate;
     out->channels = 2u;
-    return ZZ_OK;
+    return AAR_OK;
 }
 
 static int api_audio_close(void)
 {
     if (host_stop_requested())
-        return ZZ_EIO;
+        return AAR_E_IO;
     if (!audio.open)
-        return ZZ_EINVAL;
+        return AAR_E_INVAL;
     if (audio.dev) {
         SDL_LockAudioDevice(audio.dev);
         SDL_PauseAudioDevice(audio.dev, 1);
@@ -154,7 +165,27 @@ static int api_audio_close(void)
     audio.samples = 0;
     audio.read_frame = 0;
     audio.write_frame = 0;
-    return ZZ_OK;
+    return AAR_OK;
+}
+
+/* Fills at most out->size bytes and zeroes the rest, as for aar_info. */
+static int api_audio_stats(aar_audio_stats *out)
+{
+    aar_audio_stats stats;
+    uint32_t size;
+
+    if (!out)
+        return AAR_E_INVAL;
+    size = out->size;
+    if (size < (uint32_t)sizeof out->size || !audio.open)
+        return AAR_E_INVAL;
+    memset(&stats, 0, sizeof stats);
+    stats.size = size;
+    stats.underruns = audio.underruns;
+    memcpy(out, &stats, size < sizeof stats ? size : sizeof stats);
+    if (size > sizeof stats)
+        memset((uint8_t *)out + sizeof stats, 0, size - sizeof stats);
+    return AAR_OK;
 }
 
 void host_audio_pump(void)
@@ -195,7 +226,7 @@ int host_audio_init(void)
         return 0;
     audio.dump = fopen(opt->audio_dump, "wb");
     if (!audio.dump) {
-        fprintf(stderr, "zzapp-host: cannot open %s\n", opt->audio_dump);
+        fprintf(stderr, "aar-host: cannot open %s\n", opt->audio_dump);
         return -1;
     }
     return 0;
@@ -211,8 +242,9 @@ void host_audio_shutdown(void)
     }
 }
 
-void host_audio_bind(zzapp_api *api)
+void host_audio_bind(aar_api *api)
 {
     api->audio_open = api_audio_open;
     api->audio_close = api_audio_close;
+    api->audio_stats = api_audio_stats;
 }

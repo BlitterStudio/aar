@@ -1,8 +1,8 @@
 /*
  * memmove must not depend on the weak memcpy: an app may legally replace
  * memcpy with a copy that runs backward. This program links freestanding.c
- * as its own object (names prefixed zzfs_ by the build) and defines a strong,
- * backward-copying zzfs_memcpy that overrides the weak one.
+ * as its own object (names prefixed aarfs_ by the build) and defines a strong,
+ * backward-copying aarfs_memcpy that overrides the weak one.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -11,11 +11,11 @@
 #include <stdint.h>
 #include <string.h>
 
-void *zzfs_memmove(void *dst, const void *src, size_t n);
+void *aarfs_memmove(void *dst, const void *src, size_t n);
 
 static unsigned replacement_calls;
 
-void *zzfs_memcpy(void *dst, const void *src, size_t n)
+void *aarfs_memcpy(void *dst, const void *src, size_t n)
 {
     uint8_t *d = (uint8_t *)dst + n;
     const uint8_t *s = (const uint8_t *)src + n;
@@ -42,14 +42,14 @@ int main(void)
             memcpy(ref, buf, sizeof buf);
             /* Overlapping, destination below source: forward is required. */
             memmove(ref, ref + off, n);
-            assert(zzfs_memmove(buf, buf + off, n) == buf);
+            assert(aarfs_memmove(buf, buf + off, n) == buf);
             assert(memcmp(buf, ref, sizeof buf) == 0);
             /* Destination above source. */
             for (i = 0; i < sizeof buf; ++i)
                 buf[i] = (uint8_t)(i * 7u + 3u);
             memcpy(ref, buf, sizeof buf);
             memmove(ref + off, ref, n);
-            assert(zzfs_memmove(buf + off, buf, n) == buf + off);
+            assert(aarfs_memmove(buf + off, buf, n) == buf + off);
             assert(memcmp(buf, ref, sizeof buf) == 0);
         }
     }

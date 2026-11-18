@@ -1,10 +1,11 @@
 /*
- * SDL keyboard, mouse and joystick events become ZZ_EV_* with Amiga raw key
- * codes. The up bit is not stored in code; the event type distinguishes it,
- * matching ZZRun. Qualifiers sit in buttons using the Amiga IEQUALIFIER bits.
- * Ctrl-D/E/F (raw 0x22/0x12/0x23) also enqueue ZZ_EV_BREAK with codes 4/5/6.
- * Window close and Ctrl-C enqueue one ZZ_EV_STOP and set the stop flag.
- * The queue holds 256 events and drops the newest when full.
+ * SDL keyboard, mouse and joystick events become AAR_EV_* with Amiga raw key
+ * codes. The up bit is not stored in code; the event type distinguishes it.
+ * Qualifiers sit in buttons using the Amiga IEQUALIFIER bits. Ctrl-D/E/F (raw
+ * 0x22/0x12/0x23) also enqueue AAR_EV_BREAK with codes 4/5/6. Window close and
+ * Ctrl-C enqueue one AAR_EV_STOP and set the stop flag. The queue holds 256
+ * events and drops the newest when full. aar_event_poll delivers the lifecycle
+ * events and, as this runner has the input group, the input events.
  *
  * --input FILE injects scripted events before the app starts. Lines:
  *   key down|up <raw> [qualifiers]
@@ -12,9 +13,12 @@
  *   mousebtn <1|2|3> down|up
  *   joy <port> <dx> <dy> <buttons>
  *   break <4|5|6>
+ *   lowmem
  *   stop
  *   resize <w> <h>
- * Numbers accept a 0x prefix. '#' starts a comment.
+ * Numbers accept a 0x prefix. '#' starts a comment. lowmem enqueues
+ * AAR_EV_LOW_MEMORY, which the host has no pool to raise by itself. resize
+ * enqueues AAR_EV_RESIZE, which a runtime never sends on its own.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -40,7 +44,7 @@
 #define HOST_QUAL_NUMPAD 0x0100u
 #define HOST_QUAL_REPEAT 0x0200u
 
-static zzapp_event queue[HOST_INPUT_CAP];
+static aar_event queue[HOST_INPUT_CAP];
 static uint32_t q_head, q_tail;
 static uint32_t drops;
 static uint16_t mouse_buttons;
@@ -197,18 +201,18 @@ static uint16_t break_for_raw(uint16_t raw, uint16_t qual)
     if ((qual & HOST_QUAL_CTRL) == 0u)
         return 0;
     if (raw == 0x22u)
-        return ZZ_BREAK_CTRL_D;
+        return AAR_BREAK_CTRL_D;
     if (raw == 0x12u)
-        return ZZ_BREAK_CTRL_E;
+        return AAR_BREAK_CTRL_E;
     if (raw == 0x23u)
-        return ZZ_BREAK_CTRL_F;
+        return AAR_BREAK_CTRL_F;
     return 0;
 }
 
 static void push_event(uint16_t type, uint16_t code, int16_t dx, int16_t dy,
                        uint16_t buttons)
 {
-    zzapp_event *ev;
+    aar_event *ev;
 
     if (q_head - q_tail >= HOST_INPUT_CAP) {
         drops++;
@@ -229,7 +233,7 @@ static void note_stop(void)
 {
     host_request_stop();
     if (!stop_event_sent) {
-        push_event(ZZ_EV_STOP, 0, 0, 0, 0);
+        push_event(AAR_EV_STOP, 0, 0, 0, 0);
         stop_event_sent = 1;
     }
 }
@@ -244,12 +248,12 @@ static void on_key(const SDL_KeyboardEvent *key)
 
     if (!raw_from_scan(key->keysym.scancode, &raw, &keypad))
         return;
-    type = key->type == SDL_KEYUP ? ZZ_EV_KEY_UP : ZZ_EV_KEY_DOWN;
+    type = key->type == SDL_KEYUP ? AAR_EV_KEY_UP : AAR_EV_KEY_DOWN;
     qual = qualifiers(key->keysym.mod, keypad, key->repeat);
     push_event(type, raw, 0, 0, qual);
-    brk = type == ZZ_EV_KEY_DOWN ? break_for_raw(raw, qual) : 0;
+    brk = type == AAR_EV_KEY_DOWN ? break_for_raw(raw, qual) : 0;
     if (brk)
-        push_event(ZZ_EV_BREAK, brk, 0, 0, qual);
+        push_event(AAR_EV_BREAK, brk, 0, 0, qual);
 }
 
 static void on_button(const SDL_MouseButtonEvent *btn)
@@ -273,7 +277,7 @@ static void on_button(const SDL_MouseButtonEvent *btn)
         mouse_buttons |= bit;
     else
         mouse_buttons = (uint16_t)(mouse_buttons & ~bit);
-    push_event(ZZ_EV_MOUSE, id, 0, 0, mouse_buttons);
+    push_event(AAR_EV_MOUSE, id, 0, 0, mouse_buttons);
 }
 
 static int axis_dir(Sint16 v)
@@ -323,7 +327,7 @@ static void poll_joysticks(void)
         joy_valid[n] = 1;
         /* SDL joystick 0 is the Amiga game port (port 1). */
         port = n == 0 ? 1u : 0u;
-        push_event(ZZ_EV_JOY, port, (int16_t)dx, (int16_t)dy, fire ? 1u : 0u);
+        push_event(AAR_EV_JOY, port, (int16_t)dx, (int16_t)dy, fire ? 1u : 0u);
     }
 }
 
@@ -349,7 +353,7 @@ static int load_input(const char *path)
 
     fp = fopen(path, "rb");
     if (!fp) {
-        fprintf(stderr, "zzapp-host: cannot open input script %s\n", path);
+        fprintf(stderr, "aar-host: cannot open input script %s\n", path);
         return -1;
     }
     while (fgets(line, sizeof line, fp)) {
@@ -381,9 +385,9 @@ static int load_input(const char *path)
             if (ntok >= 4 && parse_i(tok[3], &b))
                 qual = (uint16_t)b;
             if (strcmp(tok[1], "down") == 0)
-                push_event(ZZ_EV_KEY_DOWN, (uint16_t)a, 0, 0, qual);
+                push_event(AAR_EV_KEY_DOWN, (uint16_t)a, 0, 0, qual);
             else if (strcmp(tok[1], "up") == 0)
-                push_event(ZZ_EV_KEY_UP, (uint16_t)a, 0, 0, qual);
+                push_event(AAR_EV_KEY_UP, (uint16_t)a, 0, 0, qual);
             else
                 goto bad;
         } else if (ntok >= 3 && strcmp(tok[0], "mouse") == 0 &&
@@ -391,7 +395,7 @@ static int load_input(const char *path)
             uint16_t buttons = 0;
             if (ntok >= 4 && parse_i(tok[3], &c))
                 buttons = (uint16_t)c;
-            push_event(ZZ_EV_MOUSE, 0, (int16_t)a, (int16_t)b, buttons);
+            push_event(AAR_EV_MOUSE, 0, (int16_t)a, (int16_t)b, buttons);
         } else if (ntok >= 3 && strcmp(tok[0], "mousebtn") == 0 &&
                    parse_i(tok[1], &a)) {
             uint16_t bit = a == 1 ? 1u : a == 2 ? 2u : a == 3 ? 4u : 0u;
@@ -401,18 +405,20 @@ static int load_input(const char *path)
                 mouse_buttons |= bit;
             else
                 mouse_buttons = (uint16_t)(mouse_buttons & ~bit);
-            push_event(ZZ_EV_MOUSE, (uint16_t)a, 0, 0, mouse_buttons);
+            push_event(AAR_EV_MOUSE, (uint16_t)a, 0, 0, mouse_buttons);
         } else if (ntok >= 5 && strcmp(tok[0], "joy") == 0 &&
                    parse_i(tok[1], &a) && parse_i(tok[2], &b) &&
                    parse_i(tok[3], &c) && parse_i(tok[4], &d)) {
-            push_event(ZZ_EV_JOY, (uint16_t)a, (int16_t)b, (int16_t)c,
+            push_event(AAR_EV_JOY, (uint16_t)a, (int16_t)b, (int16_t)c,
                        (uint16_t)d);
         } else if (ntok >= 2 && strcmp(tok[0], "break") == 0 &&
                    parse_i(tok[1], &a)) {
-            push_event(ZZ_EV_BREAK, (uint16_t)a, 0, 0, 0);
+            push_event(AAR_EV_BREAK, (uint16_t)a, 0, 0, 0);
         } else if (ntok >= 3 && strcmp(tok[0], "resize") == 0 &&
                    parse_i(tok[1], &a) && parse_i(tok[2], &b)) {
-            push_event(ZZ_EV_RESIZE, 0, (int16_t)a, (int16_t)b, 0);
+            push_event(AAR_EV_RESIZE, 0, (int16_t)a, (int16_t)b, 0);
+        } else if (ntok == 1 && strcmp(tok[0], "lowmem") == 0) {
+            push_event(AAR_EV_LOW_MEMORY, 0, 0, 0, 0);
         } else if (ntok == 1 && strcmp(tok[0], "stop") == 0) {
             note_stop();
         } else {
@@ -420,7 +426,7 @@ static int load_input(const char *path)
         }
         continue;
     bad:
-        fprintf(stderr, "zzapp-host: bad input script line %u\n", lineno);
+        fprintf(stderr, "aar-host: bad input script line %u\n", lineno);
         fclose(fp);
         return -1;
     }
@@ -428,18 +434,18 @@ static int load_input(const char *path)
     return 0;
 }
 
-static int api_input_poll(zzapp_event *out, uint32_t max, uint32_t *out_n)
+static int api_event_poll(aar_event *out, uint32_t max, uint32_t *out_n)
 {
     uint32_t n = 0;
 
     if (!out_n || (max && !out))
-        return ZZ_EINVAL;
+        return AAR_E_INVAL;
     while (n < max && q_tail != q_head) {
         out[n++] = queue[q_tail & (HOST_INPUT_CAP - 1u)];
         q_tail++;
     }
     *out_n = n;
-    return ZZ_OK;
+    return AAR_OK;
 }
 
 void host_input_pump(void)
@@ -461,7 +467,7 @@ void host_input_pump(void)
             on_button(&ev.button);
         else if (ev.type == SDL_MOUSEMOTION &&
                  (ev.motion.xrel || ev.motion.yrel))
-            push_event(ZZ_EV_MOUSE, 0, (int16_t)ev.motion.xrel,
+            push_event(AAR_EV_MOUSE, 0, (int16_t)ev.motion.xrel,
                        (int16_t)ev.motion.yrel, mouse_buttons);
     }
     poll_joysticks();
@@ -473,7 +479,7 @@ int host_input_selftest(void)
     uint16_t raw = 0;
     int keypad = 0;
     SDL_Event ev;
-    zzapp_event got[4];
+    aar_event got[4];
     uint32_t n = 0;
     int saw_key = 0;
     int saw_break = 0;
@@ -505,18 +511,18 @@ int host_input_selftest(void)
     ev.key.keysym.scancode = SDL_SCANCODE_D;
     ev.key.keysym.mod = KMOD_LCTRL;
     if (SDL_PushEvent(&ev) < 0)
-        return 6;
+        return 9;
     host_input_pump();
-    if (api_input_poll(got, 4u, &n) != ZZ_OK)
-        return 7;
+    if (api_event_poll(got, 4u, &n) != AAR_OK)
+        return 10;
     for (i = 0; i < n; i++) {
-        if (got[i].type == ZZ_EV_KEY_DOWN && got[i].code == 0x22u)
+        if (got[i].type == AAR_EV_KEY_DOWN && got[i].code == 0x22u)
             saw_key = 1;
-        if (got[i].type == ZZ_EV_BREAK && got[i].code == ZZ_BREAK_CTRL_D)
+        if (got[i].type == AAR_EV_BREAK && got[i].code == AAR_BREAK_CTRL_D)
             saw_break = 1;
     }
     if (!saw_key || !saw_break)
-        return 8;
+        return 11;
     return 0;
 }
 
@@ -551,7 +557,7 @@ void host_input_shutdown(void)
     }
 }
 
-void host_input_bind(zzapp_api *api)
+void host_input_bind(aar_api *api)
 {
-    api->input_poll = api_input_poll;
+    api->event_poll = api_event_poll;
 }

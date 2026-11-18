@@ -67,20 +67,20 @@ def tone(frames):
 def check_hello(exe):
     proc = run(exe, ["--headless"])
     expect_ok(proc)
-    if b"hello zzapp" not in proc.stdout:
+    if b"hello aar" not in proc.stdout:
         show(proc)
         raise SystemExit("hello text missing")
 
 
 def check_console(exe):
-    proc = run(exe, ["--headless", "--", "one"], input_bytes=b"Hello, zzapp!\n")
+    proc = run(exe, ["--headless", "--", "one"], input_bytes=b"Hello, aar!\n")
     expect_ok(proc)
     text = proc.stdout.decode("utf-8", "replace")
     err = proc.stderr.decode("utf-8", "replace")
     if "console: 1 argument(s) [one]" not in text:
         show(proc)
         raise SystemExit("console banner")
-    if "HELLO, ZZAPP!\n" not in text:
+    if "HELLO, AAR!\n" not in text:
         show(proc)
         raise SystemExit("console echo")
     if "EOF after 1 line" not in text:
@@ -175,8 +175,11 @@ def check_ringflood(exe):
     msgs = ring_run(exe, [ring_ping(7), ring_ping(8), ring_ping(9),
                           ring_ctrl(1, 1)], [str(count)])
     info = msgs[0]
+    # Word 2 is the shared block token (aar_shared.haddr), word 3 its size.
     if info[0] != 1 or info[1] != 1 or info[3] != 4096 or info[2] == 0xFFFFFFFF:
         raise SystemExit(f"INFO message {info}")
+    if info[2] == 0 or info[2] & 0xFFF:
+        raise SystemExit(f"INFO token {info[2]:#x} is not a granule-aligned token")
     kinds = [m[0] for m in msgs]
     if kinds[:5] != [1, 6, 6, 6, 8]:
         raise SystemExit(f"quiet start sent {kinds[:5]}, not INFO, 3 PONG, ACK")
@@ -227,7 +230,7 @@ def check_ringflood(exe):
 
 def check_filter(exe):
     with tempfile.TemporaryDirectory() as root:
-        data = b"zzapp-host filter\n"
+        data = b"aar-host filter\n"
         with open(os.path.join(root, "in.bin"), "wb") as fh:
             fh.write(data)
         proc = run(exe, ["--root", root, "--", "in.bin", "out.bin"])
@@ -316,6 +319,15 @@ def check_mailbox(exe):
     expect_ok(proc)
 
 
+def check_nogl(exe):
+    # The runner has no GL group: aar_gl_bind returns NULL, and the template
+    # ends with 2 before it draws anything.
+    proc = run(exe, ["--headless"])
+    if proc.returncode != 2:
+        show(proc)
+        raise SystemExit(f"expected exit 2 without the GL group, got {proc.returncode}")
+
+
 def check_constop(exe):
     if os.name != "posix":
         return
@@ -333,7 +345,7 @@ def check_constop(exe):
         env=merged,
     )
     try:
-        time.sleep(0.5)  # let the app block in zz_console_read on the empty pipe
+        time.sleep(0.5)  # let the app block in aar_console_read on the empty pipe
         proc.send_signal(signal.SIGTERM)
         try:
             rc = proc.wait(timeout=10)
@@ -363,7 +375,7 @@ def check_pixelsstop(exe):
         env=merged,
     )
     try:
-        time.sleep(0.5)  # let pixels block in zz_display_flip
+        time.sleep(0.5)  # let pixels block in aar_display_flip
         proc.send_signal(signal.SIGTERM)
         try:
             rc = proc.wait(timeout=10)
@@ -413,14 +425,14 @@ def check_msgwaitstop(exe):
         env=merged,
     )
     try:
-        time.sleep(0.5)  # let the app park in zz_msg_wait with 30 s to go
+        time.sleep(0.5)  # let the app park in aar_msg_wait with 30 s to go
         proc.send_signal(signal.SIGTERM)
         try:
             rc = proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            raise SystemExit("zz_msg_wait not interrupted by SIGTERM")
+            raise SystemExit("aar_msg_wait not interrupted by SIGTERM")
         if rc != 0:
-            raise SystemExit(f"expected ZZ_EIO and exit 0, got {rc}")
+            raise SystemExit(f"expected AAR_E_IO and exit 0, got {rc}")
     finally:
         proc.stdin.close()
         proc.kill()
@@ -478,7 +490,7 @@ def check_tone(exe):
 
 
 def check_keys(exe):
-    proc = run(exe, ["--headless"], env={"ZZAPP_HOST_SELFTEST": "1"})
+    proc = run(exe, ["--headless"], env={"AAR_HOST_SELFTEST": "1"})
     expect_ok(proc)
 
 
@@ -500,15 +512,21 @@ def check_contract(exe):
         prepare_root(root)
         proc = run(exe, ["--headless", "--root", root, "--", "reject"])
         expect_ok(proc)
+        proc = run(exe, ["--headless", "--", "table"])
+        expect_ok(proc)
         proc = run(exe, ["--headless", "--", "display"])
         expect_ok(proc)
         proc = run(exe, ["--", "services"])
+        expect_ok(proc)
+        proc = run(exe, ["--headless", "--", "memory"])
+        expect_ok(proc)
+        proc = run(exe, ["--headless", "--audio-null", "--", "audio"])
         expect_ok(proc)
         proc = run(exe, ["--headless", "--", "msgwait"])
         expect_ok(proc)
         script = os.path.join(root, "input.txt")
         with open(script, "w", encoding="ascii") as fh:
-            fh.write("key down 0x22 8\nbreak 4\n")
+            fh.write("key down 0x22 8\nbreak 4\nlowmem\n")
         proc = run(exe, ["--headless", "--input", script, "--", "input"])
         expect_ok(proc)
     with tempfile.TemporaryDirectory() as cwd:
@@ -532,6 +550,7 @@ CHECKS = {
     "msgflood": check_msgflood,
     "conshort": check_conshort,
     "mailbox": check_mailbox,
+    "nogl": check_nogl,
     "constop": check_constop,
     "pixelsstop": check_pixelsstop,
     "msgwaitstop": check_msgwaitstop,

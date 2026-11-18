@@ -1,9 +1,11 @@
 /*
- * Card services on the host. SHA-256 is implemented here. Decompress, image
- * decode and audio decode return ZZ_ENOSYS: the in-tree decoders are GPL
- * firmware glue, a downloaded third-party tree, or an LHA decoder with its
- * own licence and a FILE* interface. None of those belong in this MIT library.
- * GL is parked; bind returns NULL, which is the documented failure.
+ * Services group on the host. SHA-256 is implemented here. Decompress, image
+ * decode and audio decode return AAR_E_NOSYS, which the group allows for an
+ * algorithm or codec the platform does not provide: the in-tree decoders are
+ * GPL firmware glue, a downloaded third-party tree, or an LHA decoder with
+ * its own licence and a FILE* interface. None of those belong in this MIT
+ * library. The GL group is absent: its slots stay NULL and the groups word
+ * has no GL bit.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -85,15 +87,15 @@ static void sha256_block(uint32_t state[8], const uint8_t block[64])
     state[7] += h;
 }
 
-static void sha256_bytes(const uint8_t *data, uint32_t bytes, uint8_t digest[32])
+static void sha256_bytes(const uint8_t *data, uint64_t bytes, uint8_t digest[32])
 {
     uint32_t state[8] = {
         0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
         0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u
     };
     uint8_t block[64];
-    uint32_t off = 0;
-    uint64_t bits = (uint64_t)bytes * 8u;
+    uint64_t off = 0;
+    uint64_t bits = bytes * 8u;
     uint32_t i;
 
     while (bytes - off >= 64u) {
@@ -102,7 +104,7 @@ static void sha256_bytes(const uint8_t *data, uint32_t bytes, uint8_t digest[32]
     }
     memset(block, 0, sizeof block);
     if (bytes > off)
-        memcpy(block, data + off, bytes - off);
+        memcpy(block, data + off, (size_t)(bytes - off));
     block[bytes - off] = 0x80u;
     if (bytes - off >= 56u) {
         sha256_block(state, block);
@@ -119,17 +121,17 @@ static void sha256_bytes(const uint8_t *data, uint32_t bytes, uint8_t digest[32]
     }
 }
 
-static int api_sha256(const void *data, uint32_t bytes, uint8_t digest[32])
+static int api_sha256(const void *data, uint64_t bytes, uint8_t digest[32])
 {
-    if (!data || !digest)
-        return ZZ_EINVAL;
+    if ((!data && bytes) || !digest)
+        return AAR_E_INVAL;
     sha256_bytes((const uint8_t *)data, bytes, digest);
-    return ZZ_OK;
+    return AAR_OK;
 }
 
 static int api_decompress(uint32_t algorithm, uint32_t flags, const void *src,
-                          uint32_t src_bytes, void *dst, uint32_t dst_bytes,
-                          zzapp_service_result *out)
+                          uint64_t src_bytes, void *dst, uint64_t dst_bytes,
+                          aar_service_result *out)
 {
     (void)algorithm;
     (void)flags;
@@ -138,46 +140,46 @@ static int api_decompress(uint32_t algorithm, uint32_t flags, const void *src,
     (void)dst;
     (void)dst_bytes;
     (void)out;
-    return ZZ_ENOSYS;
+    return AAR_E_NOSYS;
 }
 
-static int api_image_open(const zzapp_image_open *open, uint32_t *session,
-                          zzapp_image_result *out)
+static int api_image_open(const aar_image_params *params, uint32_t *session,
+                          aar_image_result *out)
 {
-    (void)open;
+    (void)params;
     (void)session;
     (void)out;
-    return ZZ_ENOSYS;
+    return AAR_E_NOSYS;
 }
 
 static int api_image_decode(uint32_t session, const void *src,
                             uint32_t src_bytes, uint32_t flags,
-                            zzapp_image_result *out)
+                            aar_image_result *out)
 {
     (void)session;
     (void)src;
     (void)src_bytes;
     (void)flags;
     (void)out;
-    return ZZ_ENOSYS;
+    return AAR_E_NOSYS;
 }
 
 static int api_image_close(uint32_t session)
 {
     (void)session;
-    return ZZ_ENOSYS;
+    return AAR_E_NOSYS;
 }
 
 static int api_audio_decode_open(uint32_t codec, uint32_t *session)
 {
     (void)codec;
     (void)session;
-    return ZZ_ENOSYS;
+    return AAR_E_NOSYS;
 }
 
 static int api_audio_decode(uint32_t session, const void *src,
                             uint32_t src_bytes, uint32_t flags, int16_t *pcm,
-                            uint32_t pcm_frames, zzapp_audio_decode_result *out)
+                            uint32_t pcm_frames, aar_audio_decode_result *out)
 {
     (void)session;
     (void)src;
@@ -186,37 +188,16 @@ static int api_audio_decode(uint32_t session, const void *src,
     (void)pcm;
     (void)pcm_frames;
     (void)out;
-    return ZZ_ENOSYS;
+    return AAR_E_NOSYS;
 }
 
 static int api_audio_decode_close(uint32_t session)
 {
     (void)session;
-    return ZZ_ENOSYS;
+    return AAR_E_NOSYS;
 }
 
-static const zzapp_gl *api_gl_bind(uint32_t surface_id)
-{
-    (void)surface_id;
-    return 0;
-}
-
-static const zzapp_gl *api_gl_bind_flags(uint32_t surface_id, uint32_t flags)
-{
-    (void)surface_id;
-    (void)flags;
-    return 0;
-}
-
-static void api_gl_swap(void)
-{
-}
-
-static void api_gl_unbind(void)
-{
-}
-
-void host_services_bind(zzapp_api *api)
+void host_services_bind(aar_api *api)
 {
     api->sha256 = api_sha256;
     api->decompress = api_decompress;
@@ -226,10 +207,6 @@ void host_services_bind(zzapp_api *api)
     api->audio_decode_open = api_audio_decode_open;
     api->audio_decode = api_audio_decode;
     api->audio_decode_close = api_audio_decode_close;
-    api->gl_bind = api_gl_bind;
-    api->gl_bind_flags = api_gl_bind_flags;
-    api->gl_swap = api_gl_swap;
-    api->gl_unbind = api_gl_unbind;
 }
 
 int host_services_selftest(void)
@@ -242,14 +219,12 @@ int host_services_selftest(void)
     };
     uint8_t digest[32];
 
-    if (api_sha256(abc, 3u, digest) != ZZ_OK)
+    if (api_sha256(abc, 3u, digest) != AAR_OK)
         return 1;
     if (memcmp(digest, expect, 32) != 0)
         return 2;
-    if (api_decompress(ZZ_COMPRESS_ZLIB, 0, abc, 3u, digest, 32u, 0) !=
-        ZZ_ENOSYS)
+    if (api_decompress(AAR_COMPRESS_ZLIB, 0, abc, 3u, digest, 32u, 0) !=
+        AAR_E_NOSYS)
         return 3;
-    if (api_gl_bind(1u) != 0)
-        return 4;
     return 0;
 }

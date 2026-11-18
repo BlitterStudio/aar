@@ -1,10 +1,10 @@
 /*
- * Console rings are the process stdin/stdout. A stop during a read returns
- * ZZ_EIO. EOF is ZZ_OK and zero bytes. Writes are not dropped.
+ * The console is the process stdin and stdout. A stop during a read returns
+ * AAR_E_IO. End of input is AAR_OK and zero bytes. Writes are not dropped.
  *
- * On the card, newlib routes fd 1 and fd 2 through one ring. The host does
- * not link those syscalls, so printf and fprintf(stderr) stay on the C
- * library. zz_console_write still writes stdout.
+ * On a target, newlib routes fd 1 and fd 2 through the console calls. The host
+ * does not link those syscalls, so printf and fprintf(stderr) stay on the C
+ * library. aar_console_write still writes stdout.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -70,14 +70,14 @@ static int api_console_write(const void *buf, uint32_t len, uint32_t *out_n)
     const uint8_t *p = (const uint8_t *)buf;
     uint32_t done = 0;
 
-    if (!buf || !out_n)
-        return ZZ_EINVAL;
+    if ((!buf && len) || !out_n)
+        return AAR_E_INVAL;
     while (done < len) {
         size_t n = fwrite(p + done, 1, (size_t)(len - done), stdout);
         if (n == 0) {
             if (ferror(stdout)) {
                 *out_n = done;
-                return ZZ_EIO;
+                return AAR_E_IO;
             }
             break;
         }
@@ -85,37 +85,37 @@ static int api_console_write(const void *buf, uint32_t len, uint32_t *out_n)
     }
     if (fflush(stdout) != 0) {
         *out_n = done;
-        return ZZ_EIO;
+        return AAR_E_IO;
     }
     *out_n = done;
-    return done == len ? ZZ_OK : ZZ_EIO;
+    return done == len ? AAR_OK : AAR_E_IO;
 }
 
 static int api_console_read(void *buf, uint32_t len, uint32_t *out_n)
 {
     read_len_t n;
 
-    if (!buf || !out_n)
-        return ZZ_EINVAL;
+    if ((!buf && len) || !out_n)
+        return AAR_E_INVAL;
     if (len == 0u) {
         *out_n = 0;
-        return ZZ_OK;
+        return AAR_OK;
     }
     if (host_stop_requested())
-        return ZZ_EIO;
+        return AAR_E_IO;
     /*
-     * The card returns as soon as any input is available. fread would
+     * A platform returns as soon as any input is available. fread would
      * block until the full length or EOF; wait in slices so a stop
-     * request (Ctrl-C, SIGTERM) interrupts a blocked read like the card.
+     * request (Ctrl-C, SIGTERM) interrupts a blocked read.
      */
     for (;;) {
         int ready;
 
         if (host_stop_requested())
-            return ZZ_EIO;
+            return AAR_E_IO;
         ready = wait_stdin(200u);
         if (ready < 0)
-            return ZZ_EIO;
+            return AAR_E_IO;
         if (ready == 0)
             continue; /* timeout: re-check the stop flag */
         do {
@@ -123,21 +123,21 @@ static int api_console_read(void *buf, uint32_t len, uint32_t *out_n)
         } while (n < 0 && errno == EINTR);
         if (n == 0) {
             if (host_stop_requested())
-                return ZZ_EIO;
+                return AAR_E_IO;
             *out_n = 0;
-            return ZZ_OK; /* EOF */
+            return AAR_OK; /* end of input */
         }
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
                 continue; /* spurious readiness */
-            return ZZ_EIO;
+            return AAR_E_IO;
         }
         *out_n = (uint32_t)n;
-        return ZZ_OK;
+        return AAR_OK;
     }
 }
 
-void host_console_bind(zzapp_api *api)
+void host_console_bind(aar_api *api)
 {
     api->console_write = api_console_write;
     api->console_read = api_console_read;

@@ -1,14 +1,16 @@
 /*
- * One display surface. Layouts match the card defaults: RGB565 is
+ * One display surface. Layouts match the ZZ9000 defaults: RGB565 is
  * big-endian in memory, BGRA8888 is byte order B,G,R,A, CLUT8 is indices.
- * Pitch is width times bytes per pixel; the card may pad, so apps must use
- * surface.pitch.
+ * Pitch is width times bytes per pixel; a platform may pad, so apps must use
+ * surface.pitch. The surface grants AAR_DISPCAP_ASYNC and AAR_DISPCAP_CLUT8,
+ * and AAR_DISPCAP_LATEST when the open asked for AAR_DISPLAY_LATEST.
  *
- * A synchronous flip presents the back buffer and swaps. flip_async in
- * strict mode stays pending until yield or vsync, so flip_idle can return 0.
- * Mailbox mode keeps three buffers: a second flip before vblank replaces the
- * pending page, increments the replaced counter, and returns a buffer to
- * drawing immediately, so flip_idle stays 1.
+ * A synchronous flip presents the back buffer and swaps. flip_async in plain
+ * mode stays pending until yield or vsync, so flip_idle can return 0, and a
+ * flip or refresh while it is pending is AAR_E_BUSY. Latest mode keeps three
+ * buffers: a flip before the pending frame is shown replaces that frame,
+ * counts it as dropped, and returns a buffer to drawing at once, so flip_idle
+ * stays 1.
  *
  * --frames N sets stop after N presented frames. --scale N sizes the window
  * only; the surface stays at the app's resolution.
@@ -29,14 +31,14 @@
 struct host_display {
     int open;
     uint32_t id;
-    uint32_t w, h, pitch, format, layout, flags;
+    uint32_t w, h, pitch, format, layout, flags, caps;
     uint8_t *buf[3];
     int nbuf;
     int showing;
     int drawing;
     int pending;
-    uint32_t mailbox_replaced;
-    int mailbox;
+    uint32_t dropped;
+    int latest;
     uint32_t palette[256];
     uint8_t *convert;
     uint8_t *shown;
@@ -51,23 +53,23 @@ static struct host_display disp;
 
 static uint32_t bpp_of(uint32_t format)
 {
-    if (format == ZZ_FMT_RGB565)
+    if (format == AAR_FMT_RGB565)
         return 2u;
-    if (format == ZZ_FMT_BGRA8888)
+    if (format == AAR_FMT_BGRA8888)
         return 4u;
-    if (format == ZZ_FMT_CLUT8)
+    if (format == AAR_FMT_CLUT8)
         return 1u;
     return 0u;
 }
 
 static uint32_t layout_of(uint32_t format)
 {
-    if (format == ZZ_FMT_RGB565)
-        return ZZ_LAYOUT_RGB565_BE;
-    if (format == ZZ_FMT_BGRA8888)
-        return ZZ_LAYOUT_BGRA8888;
-    if (format == ZZ_FMT_CLUT8)
-        return ZZ_LAYOUT_CLUT8;
+    if (format == AAR_FMT_RGB565)
+        return AAR_LAYOUT_RGB565_BE;
+    if (format == AAR_FMT_BGRA8888)
+        return AAR_LAYOUT_BGRA8888;
+    if (format == AAR_FMT_CLUT8)
+        return AAR_LAYOUT_CLUT8;
     return 0u;
 }
 
@@ -107,18 +109,18 @@ static void convert_row(const uint8_t *src, uint32_t format, uint32_t layout,
 
     for (x = 0; x < width; x++) {
         uint8_t *px = dst + x * 4u;
-        if (format == ZZ_FMT_RGB565) {
-            int le = layout == ZZ_LAYOUT_RGB565_LE ||
-                     layout == ZZ_LAYOUT_BGR565_LE;
-            int bgr = layout == ZZ_LAYOUT_BGR565_BE ||
-                      layout == ZZ_LAYOUT_BGR565_LE;
+        if (format == AAR_FMT_RGB565) {
+            int le = layout == AAR_LAYOUT_RGB565_LE ||
+                     layout == AAR_LAYOUT_BGR565_LE;
+            int bgr = layout == AAR_LAYOUT_BGR565_BE ||
+                      layout == AAR_LAYOUT_BGR565_LE;
             expand565(load565(src + x * 2u, le), bgr, px);
-        } else if (format == ZZ_FMT_BGRA8888 && layout == ZZ_LAYOUT_RGBA8888) {
+        } else if (format == AAR_FMT_BGRA8888 && layout == AAR_LAYOUT_RGBA8888) {
             px[0] = src[x * 4u + 2u];
             px[1] = src[x * 4u + 1u];
             px[2] = src[x * 4u];
             px[3] = src[x * 4u + 3u];
-        } else if (format == ZZ_FMT_BGRA8888) {
+        } else if (format == AAR_FMT_BGRA8888) {
             px[0] = src[x * 4u];
             px[1] = src[x * 4u + 1u];
             px[2] = src[x * 4u + 2u];
@@ -148,21 +150,21 @@ int host_display_selftest(void)
     uint8_t index = 7u;
     uint32_t pal[256];
 
-    convert_row(be, ZZ_FMT_RGB565, ZZ_LAYOUT_RGB565_BE, 1u, 0, dst);
+    convert_row(be, AAR_FMT_RGB565, AAR_LAYOUT_RGB565_BE, 1u, 0, dst);
     if (!expect_bgra(dst, 0, 0, 255))
         return 1;
-    convert_row(le, ZZ_FMT_RGB565, ZZ_LAYOUT_RGB565_LE, 1u, 0, dst);
+    convert_row(le, AAR_FMT_RGB565, AAR_LAYOUT_RGB565_LE, 1u, 0, dst);
     if (!expect_bgra(dst, 0, 0, 255))
         return 2;
-    convert_row(bgr, ZZ_FMT_RGB565, ZZ_LAYOUT_BGR565_BE, 1u, 0, dst);
+    convert_row(bgr, AAR_FMT_RGB565, AAR_LAYOUT_BGR565_BE, 1u, 0, dst);
     if (!expect_bgra(dst, 0, 0, 255))
         return 3;
-    convert_row(bgra, ZZ_FMT_BGRA8888, ZZ_LAYOUT_BGRA8888, 1u, 0, dst);
+    convert_row(bgra, AAR_FMT_BGRA8888, AAR_LAYOUT_BGRA8888, 1u, 0, dst);
     if (!expect_bgra(dst, 0, 0, 255))
         return 4;
     memset(pal, 0, sizeof pal);
     pal[7] = 0x0000ff00u;
-    convert_row(&index, ZZ_FMT_CLUT8, ZZ_LAYOUT_CLUT8, 1u, pal, dst);
+    convert_row(&index, AAR_FMT_CLUT8, AAR_LAYOUT_CLUT8, 1u, pal, dst);
     if (!expect_bgra(dst, 0, 255, 0))
         return 5;
     return 0;
@@ -227,12 +229,12 @@ static void complete_pending(void)
     present_buffer(was);
     disp.showing = was;
     disp.pending = -1;
-    if (!disp.mailbox)
+    if (!disp.latest)
         disp.drawing = disp.drawing == was ? (was ^ 1) : disp.drawing;
     count_flip();
 }
 
-static void fill_surface(zzapp_surface *out)
+static void fill_surface(aar_surface *out)
 {
     memset(out, 0, sizeof *out);
     out->id = disp.id;
@@ -241,14 +243,13 @@ static void fill_surface(zzapp_surface *out)
     out->pitch = disp.pitch;
     out->format = disp.format;
     out->layout = disp.layout;
+    out->caps = disp.caps;
     out->front = disp.buf[disp.showing];
     out->back = disp.buf[disp.drawing];
-    out->card_front = 0x00200000u + (uint32_t)disp.showing * disp.shown_bytes;
-    out->card_back = 0x00200000u + (uint32_t)disp.drawing * disp.shown_bytes;
 }
 
 static int api_display_open(uint32_t w, uint32_t h, uint32_t format,
-                            uint32_t flags, zzapp_surface *out)
+                            uint32_t flags, aar_surface *out)
 {
     const struct host_options *opt = host_options();
     uint32_t bpp;
@@ -256,23 +257,23 @@ static int api_display_open(uint32_t w, uint32_t h, uint32_t format,
     uint64_t bytes;
     int i;
     if (host_stop_requested())
-        return ZZ_EIO;
+        return AAR_E_IO;
 
     if (!out)
-        return ZZ_EINVAL;
+        return AAR_E_INVAL;
     if (disp.open)
-        return ZZ_EBUSY;
+        return AAR_E_BUSY;
     bpp = bpp_of(format);
-    if (!w || !h || !bpp || w > 4096u || h > 4096u)
-        return ZZ_EINVAL;
-    if ((flags & ~(ZZ_DISPLAY_VSYNC | ZZ_DISPLAY_MAILBOX)) != 0u)
-        return ZZ_EINVAL;
+    if (!w || !h || !bpp || w > AAR_DISPLAY_MAX_DIM || h > AAR_DISPLAY_MAX_DIM)
+        return AAR_E_INVAL;
+    if ((flags & ~(AAR_DISPLAY_VSYNC | AAR_DISPLAY_LATEST)) != 0u)
+        return AAR_E_INVAL;
     pitch = w * bpp;
     bytes = (uint64_t)pitch * h;
-    if (bytes == 0u || bytes > (16u << 20))
-        return ZZ_ENOMEM;
+    if (bytes == 0u || bytes > (64u << 20))
+        return AAR_E_NOMEM;
     if (!host_sdl_video_ok())
-        return ZZ_EIO;
+        return AAR_E_IO;
     free(disp.shown);
     free(disp.convert);
     memset(&disp, 0, sizeof disp);
@@ -283,8 +284,10 @@ static int api_display_open(uint32_t w, uint32_t h, uint32_t format,
     disp.format = format;
     disp.layout = layout_of(format);
     disp.flags = flags;
-    disp.mailbox = (flags & ZZ_DISPLAY_MAILBOX) != 0u;
-    disp.nbuf = disp.mailbox ? 3 : 2;
+    disp.latest = (flags & AAR_DISPLAY_LATEST) != 0u;
+    disp.caps = AAR_DISPCAP_ASYNC | AAR_DISPCAP_CLUT8 |
+                (disp.latest ? AAR_DISPCAP_LATEST : 0u);
+    disp.nbuf = disp.latest ? 3 : 2;
     disp.showing = 0;
     disp.drawing = 1;
     disp.id = 1u;
@@ -301,7 +304,7 @@ static int api_display_open(uint32_t w, uint32_t h, uint32_t format,
     if (!disp.shown || !disp.convert)
         goto fail;
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
-    disp.win = SDL_CreateWindow("zzapp-host", SDL_WINDOWPOS_UNDEFINED,
+    disp.win = SDL_CreateWindow("aar-host", SDL_WINDOWPOS_UNDEFINED,
                                 SDL_WINDOWPOS_UNDEFINED, (int)w * opt->scale,
                                 (int)h * opt->scale,
                                 opt->headless ? SDL_WINDOW_HIDDEN : 0);
@@ -321,7 +324,7 @@ static int api_display_open(uint32_t w, uint32_t h, uint32_t format,
         goto fail;
     disp.open = 1;
     fill_surface(out);
-    return ZZ_OK;
+    return AAR_OK;
 fail:
     for (i = 0; i < 3; i++)
         free(disp.buf[i]);
@@ -335,7 +338,7 @@ fail:
         SDL_DestroyWindow(disp.win);
     memset(&disp, 0, sizeof disp);
     disp.pending = -1;
-    return ZZ_EIO;
+    return AAR_E_IO;
 }
 
 static int valid_id(uint32_t id)
@@ -346,26 +349,30 @@ static int valid_id(uint32_t id)
 static int api_display_flip(uint32_t surface_id)
 {
     if (host_stop_requested())
-        return ZZ_EIO;
+        return AAR_E_IO;
     if (!valid_id(surface_id))
-        return ZZ_EINVAL;
-    if (disp.pending >= 0)
-        complete_pending();
+        return AAR_E_INVAL;
+    if (disp.pending >= 0) {
+        if (!disp.latest)
+            return AAR_E_BUSY;
+        /* Latest mode: this frame replaces the one still pending. */
+        disp.dropped++;
+        disp.pending = -1;
+    }
     present_buffer(disp.drawing);
     if (host_stop_requested())
-        return ZZ_EIO;
+        return AAR_E_IO;
     disp.showing = disp.drawing;
     /*
      * Pick the next drawing buffer from the live rotation (showing /
-     * pending / free), like the firmware mailbox rules. The old
-     * `drawing ^= 1` assumed two buffers and produced index 3 after a
-     * mailbox async flip left drawing at 2.
+     * pending / free). A fixed `drawing ^= 1` assumes two buffers and
+     * produces index 3 after a latest-mode async flip left drawing at 2.
      */
     disp.drawing = spare_buffer();
     if (disp.drawing == disp.showing)
         disp.drawing = (disp.showing + 1) % disp.nbuf;
     count_flip();
-    return ZZ_OK;
+    return AAR_OK;
 }
 
 static int api_display_flip_async(uint32_t surface_id)
@@ -373,38 +380,40 @@ static int api_display_flip_async(uint32_t surface_id)
     int old;
 
     if (!valid_id(surface_id))
-        return ZZ_EINVAL;
-    if (!disp.mailbox) {
+        return AAR_E_INVAL;
+    if (!disp.latest) {
         if (disp.pending >= 0)
-            return ZZ_EBUSY;
+            return AAR_E_BUSY;
         disp.pending = disp.drawing;
-        return ZZ_OK;
+        return AAR_OK;
     }
     if (disp.pending >= 0)
-        disp.mailbox_replaced++;
+        disp.dropped++;
     old = disp.pending;
     disp.pending = disp.drawing;
     disp.drawing = spare_buffer();
     if (disp.drawing == disp.pending)
         disp.drawing = old >= 0 ? old : (disp.showing ^ 1);
-    return ZZ_OK;
+    return AAR_OK;
 }
 
 static int api_display_flip_idle(void)
 {
     if (!disp.open)
-        return 0;
-    if (disp.mailbox)
+        return AAR_E_INVAL;
+    if (disp.latest)
         return 1;
     return disp.pending < 0;
 }
 
-static int api_display_refresh(zzapp_surface *surface)
+static int api_display_refresh(aar_surface *surface)
 {
     if (!surface || !disp.open || surface->id != disp.id)
-        return ZZ_EINVAL;
+        return AAR_E_INVAL;
+    if (!disp.latest && disp.pending >= 0)
+        return AAR_E_BUSY;
     fill_surface(surface);
-    return ZZ_OK;
+    return AAR_OK;
 }
 
 static int api_display_set_palette(uint32_t surface_id, uint32_t first,
@@ -413,29 +422,29 @@ static int api_display_set_palette(uint32_t surface_id, uint32_t first,
     uint32_t i;
 
     if (!valid_id(surface_id))
-        return ZZ_EINVAL;
-    if (disp.format != ZZ_FMT_CLUT8)
-        return ZZ_EINVAL;
+        return AAR_E_INVAL;
+    if (disp.format != AAR_FMT_CLUT8)
+        return AAR_E_INVAL;
     if (!rgb || count == 0u || first > 255u || count > 256u - first)
-        return ZZ_EINVAL;
+        return AAR_E_INVAL;
     for (i = 0; i < count; i++)
         disp.palette[first + i] = rgb[i];
-    return ZZ_OK;
+    return AAR_OK;
 }
 
-static uint32_t api_display_mailbox_replaced(void)
+static uint32_t api_display_latest_dropped(void)
 {
-    if (!disp.open || !disp.mailbox)
+    if (!disp.open || !disp.latest)
         return 0u;
-    return disp.mailbox_replaced;
+    return disp.dropped;
 }
 
 static int api_display_vsync(void)
 {
     if (!disp.open)
-        return ZZ_EINVAL;
+        return AAR_E_INVAL;
     host_display_pump();
-    return ZZ_OK;
+    return AAR_OK;
 }
 
 static int api_display_close(uint32_t surface_id)
@@ -443,7 +452,7 @@ static int api_display_close(uint32_t surface_id)
     int i;
 
     if (!valid_id(surface_id))
-        return ZZ_EINVAL;
+        return AAR_E_INVAL;
     if (disp.tex)
         SDL_DestroyTexture(disp.tex);
     if (disp.ren)
@@ -461,18 +470,13 @@ static int api_display_close(uint32_t surface_id)
     disp.win = 0;
     disp.open = 0;
     disp.pending = -1;
-    return ZZ_OK;
+    return AAR_OK;
 }
 
 void host_display_pump(void)
 {
     if (!disp.open)
         return;
-    if (disp.mailbox) {
-        if (disp.pending >= 0)
-            complete_pending();
-        return;
-    }
     if (disp.pending >= 0)
         complete_pending();
 }
@@ -495,11 +499,11 @@ void host_display_dump(const char *path)
         return;
     fp = fopen(path, "wb");
     if (!fp) {
-        fprintf(stderr, "zzapp-host: cannot write %s\n", path);
+        fprintf(stderr, "aar-host: cannot write %s\n", path);
         return;
     }
     if (fwrite(src, 1, n, fp) != n)
-        fprintf(stderr, "zzapp-host: short write %s\n", path);
+        fprintf(stderr, "aar-host: short write %s\n", path);
     fclose(fp);
 }
 
@@ -524,15 +528,15 @@ void host_display_shutdown(void)
     disp.convert = 0;
 }
 
-void host_display_bind(zzapp_api *api)
+void host_display_bind(aar_api *api)
 {
     api->display_open = api_display_open;
     api->display_flip = api_display_flip;
     api->display_flip_async = api_display_flip_async;
     api->display_flip_idle = api_display_flip_idle;
     api->display_refresh = api_display_refresh;
-    api->display_set_palette = api_display_set_palette;
-    api->display_mailbox_replaced = api_display_mailbox_replaced;
     api->display_vsync = api_display_vsync;
+    api->display_set_palette = api_display_set_palette;
     api->display_close = api_display_close;
+    api->display_latest_dropped = api_display_latest_dropped;
 }
