@@ -397,10 +397,26 @@ runtime reads the client's own head index.
 
 An entry's `op` says what it is. A **request** is a submission-queue entry
 that expects a completion: the client replies with a completion-queue entry
-with the same `op` and `id`, a `result`, and `out[]`. The app is
-single-threaded, so at most one request parks it at a time. An asynchronous
-flip may leave a second in flight. `AAR_OP_MSG`, `AAR_OP_EVENT` and
-`AAR_OP_LOG` are not requests: they take no completion.
+with the same `op` and `id`, a `result`, and `out[]`. `AAR_OP_MSG`,
+`AAR_OP_EVENT` and `AAR_OP_LOG` are not requests: they take no completion.
+
+The app is single-threaded, so at most one request **parks** it, meaning the
+app waits for that request's completion before it continues. A request does
+not have to park. Some API calls submit a request and return without waiting
+for the completion, for example a console write or a display palette update.
+Such a request is still a request: its completion arrives later and the
+runtime must consume it. An asynchronous flip likewise may leave a second
+request in flight. So other requests can be in flight beside the parking
+one, and the runtime must not assume one outstanding request.
+
+A runtime that submits a request without waiting must keep every buffer the
+request names unchanged and valid until the completion arrives. The API call
+returning, or the client having read the entry, does not release that storage.
+A runtime may coalesce palette updates that are queued and not yet submitted,
+provided each changed palette index ends with the value from the latest
+update, and indices that no update named are left as they were. Neither the
+return of `aar_display_set_palette` nor a display flip promises the new
+colors are visible; the transport only promises the completion.
 
 | Symbol | Value | Direction | Meaning |
 |---|---|---|---|
@@ -421,7 +437,7 @@ flip may leave a second in flight. `AAR_OP_MSG`, `AAR_OP_EVENT` and
 | `AAR_OP_CONSOLE_READ` | `0x21` | request | `buf_len` is the room; the client fills it; out `AAR_R_CONSOLE_COUNT`, 0 at the end of input. |
 | `AAR_OP_DISPLAY_OPEN` | `0x30` | request | Args `AAR_A_DISPLAY_OPEN_W`, `_H`, `_FORMAT`, `_FLAGS`; out `AAR_R_DISPLAY_OPEN_ID`, `_PITCH`, `_LAYOUT`, `_FRONT`, `_BACK`, `_SPARE`. The reply's `flags` carry the `AAR_DISPCAP_*` caps. |
 | `AAR_OP_DISPLAY_FLIP` | `0x31` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_FLIP_FLAGS`. Replied when shown; out `AAR_R_DISPLAY_FLIP_FRONT`, `_BACK`, `_PITCH`, `_LAYOUT`, `_DROPPED`. A platform that owns the display buffers (a card-owned latest-frame mode) may complete a flip itself and never send it to the client. |
-| `AAR_OP_DISPLAY_PALETTE` | `0x32` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_PALETTE_FIRST`, `AAR_A_DISPLAY_PALETTE_COUNT`. The colors are big-endian `0x00RRGGBB` words in `buf`. |
+| `AAR_OP_DISPLAY_PALETTE` | `0x32` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_PALETTE_FIRST`, `AAR_A_DISPLAY_PALETTE_COUNT`. The colors are big-endian `0x00RRGGBB` words in `buf`, which stay unchanged until the completion. The API call that submits it does not park the app, so more requests can be in flight. |
 | `AAR_OP_DISPLAY_CLOSE` | `0x33` | request | Arg `AAR_A_DISPLAY_ID`. |
 | `AAR_OP_AUDIO_OPEN` | `0x40` | request | Args `AAR_A_AUDIO_OPEN_RATE`, `_CHANNELS`, `_ROUTE`. The runtime allocates the audio ring first and names it in `buf` and `buf_len`; out `AAR_R_AUDIO_OPEN_RATE`, `_CHANNELS`, `_RING` (the request's `buf`, echoed), `_RING_BYTES`, `_FRAMES`. |
 | `AAR_OP_AUDIO_CLOSE` | `0x41` | request | No arguments. |
