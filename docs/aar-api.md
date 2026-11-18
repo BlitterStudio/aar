@@ -1481,9 +1481,12 @@ queue returns `AAR_OK` and 0. It never blocks: an app that has nothing to do
 uses `aar_msg_wait`, `aar_sleep_us` or `aar_yield`, not a spin. NULL `out_n`,
 or NULL `out` with non-zero `max`, is `AAR_E_INVAL`. It always returns the
 lifecycle events `AAR_EV_STOP` and `AAR_EV_LOW_MEMORY`; with `AAR_GROUP_INPUT`
-it also returns the input events. Events are delivered in order. The queue holds
-at least 256 events; when it is full the client drops the new event and counts
-the drop. Gate: `AAR_API_COVERS(api, event_poll)`. Missing slot: `AAR_E_NOSYS`.
+it also returns the input events. Events are delivered in order. The runtime
+keeps at least 64 events. When the completion queue is full the client drops
+the newest event and counts the drop (`AAR_CB_EVENTS_DROPPED`), and the client
+coalesces mouse motion (it sums `dx` and `dy` and combines the buttons) before
+it posts, so an app that polls every frame does not lose input. Gate:
+`AAR_API_COVERS(api, event_poll)`. Missing slot: `AAR_E_NOSYS`.
 Minimum minor: 5.
 
 ### AAR_EV_KEY_DOWN
@@ -1532,7 +1535,10 @@ Minimum minor: 5.
 
 A message is exactly `AAR_MSG_BYTES` (32) opaque bytes. Each direction is a
 FIFO that holds at least `aar_info.msg_capacity` messages and never drops or
-reorders. The content is the protocol of the app and its client. A convention
+reorders. The client posts a message only while fewer than `msg_capacity`
+messages sent to the app are waiting unread, and otherwise its send call
+answers `AAR_E_BUSY`, so a full inbox never holds up a reply. The content is
+the protocol of the app and its client. A convention
 is recommended but not required: word 0 is a type, and words are little-endian
 when the app writes them. Messages remain readable by the client after the app
 has exited, until the client closes its handle. For data that travels with a

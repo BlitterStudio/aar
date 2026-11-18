@@ -1,6 +1,6 @@
 /*
  * Test of the reference transport model in aar/transport.h: handle helpers,
- * big-endian entry layout, queue full and empty, wraparound of the
+ * big-endian entry layout, queue full and empty, message credits, wraparound of the
  * free-running indices past 2^32, message reserve, unsolicited completion
  * entries, barrier ordering, and the control block helpers. Pure host code,
  * single thread; the barrier hooks are test probes.
@@ -614,6 +614,7 @@ static void test_control_block(void)
           mem.b[AAR_CB_HANDLE + 2] == 0x01 && mem.b[AAR_CB_HANDLE + 3] == 0x02);
     /* Everything else is zero. */
     CHECK_EQ(aar_get_be32(mem.b + AAR_CB_STATE), 0);
+    CHECK_EQ(aar_get_be32(mem.b + AAR_CB_MSG_CONSUMED), 0);
     CHECK_EQ(aar_get_be32(mem.b + AAR_CB_SQ_TAIL), 0);
     CHECK_EQ(aar_get_be32(mem.b + AAR_CB_CQ_HEAD), 0);
     CHECK_EQ(aar_get_be32(mem.b + 0xFFC), 0);
@@ -669,6 +670,334 @@ static void test_control_block(void)
     }
 }
 
+/* ---- Message credits ------------------------------------------------------------------ */
+
+/* The platform side of the client-to-app direction: a pump that moves entries
+ * from the CQ into a bounded inbox, the way the runtime does. A message that
+ * finds the inbox full is left in the CQ and the pump stops (a stall): the
+ * completion behind it is then unreachable. The app consumes from the inbox and
+ * the platform publishes the count in AAR_CB_MSG_CONSUMED. */
+struct platform {
+    uint32_t inbox[AAR_MSG_CAPACITY]; /* sequence numbers, a FIFO */
+    unsigned in_head, in_n;
+    uint32_t consumed;     /* free-running, mirrors AAR_CB_MSG_CONSUMED */
+    unsigned stalls;       /* times a message found the inbox full */
+    unsigned completions;  /* completions the pump reached */
+    uint32_t last_id;
+    unsigned events;
+};
+
+static void platform_start(struct platform *p, uint32_t consumed)
+{
+    memset(p, 0, sizeof(*p));
+    p->consumed = consumed;
+    aar_put_be32(mem.b + AAR_CB_MSG_CONSUMED, consumed);
+}
+
+/* Runs until the CQ is empty or a message cannot be taken. */
+static void platform_pump(struct platform *p, const aar_queue *cq)
+{
+    const volatile uint8_t *slot;
+
+    while (aar_queue_peek(cq, 0, &slot) == 1) {
+        unsigned op = aar_get_be16(slot + AAR_ENTRY_OP);
+
+        if (op == AAR_OP_MSG) {
+            uint8_t m[AAR_MSG_BYTES];
+
+            if (p->in_n == AAR_MSG_CAPACITY) {
+                p->stalls++;
+                return;
+            }
+            aar_entry_get_msg(slot, m);
+            p->inbox[(p->in_head + p->in_n) % AAR_MSG_CAPACITY] =
+                (uint32_t)m[0] | (uint32_t)m[1] << 8 | (uint32_t)m[2] << 16 |
+                (uint32_t)m[3] << 24;
+            p->in_n++;
+        } else if (op == AAR_OP_EVENT) {
+            p->events++;
+        } else {
+            p->completions++;
+            p->last_id = aar_get_be32(slot + AAR_ENTRY_ID);
+        }
+        aar_queue_pop(cq, 0);
+    }
+}
+
+/* The app takes one message from the inbox; the platform publishes the count. */
+static int platform_app_take(struct platform *p, uint32_t *seq)
+{
+    if (p->in_n == 0u)
+        return 0;
+    *seq = p->inbox[p->in_head];
+    p->in_head = (p->in_head + 1u) % AAR_MSG_CAPACITY;
+    p->in_n--;
+    p->consumed++;
+    aar_put_be32(mem.b + AAR_CB_MSG_CONSUMED, p->consumed);
+    return 1;
+}
+
+static void msg_with_seq(uint8_t msg[AAR_MSG_BYTES], uint32_t seq)
+{
+    memset(msg, 0, AAR_MSG_BYTES);
+    msg[0] = (uint8_t)seq;
+    msg[1] = (uint8_t)(seq >> 8);
+    msg[2] = (uint8_t)(seq >> 16);
+    msg[3] = (uint8_t)(seq >> 24);
+}
+
+static void test_credit_arithmetic(void)
+{
+    /* The arithmetic is modulo 2^32, so it holds across the wrap. */
+    CHECK_EQ(aar_msg_outstanding(0, 0, 63), 0);
+    CHECK_EQ(aar_msg_credits_left(0, 0, 63), 63);
+    CHECK_EQ(aar_msg_credits_left(62, 0, 63), 1);
+    CHECK_EQ(aar_msg_credits_left(63, 0, 63), 0);
+    CHECK(aar_msg_credit_ok(62, 0, 63));
+    CHECK(!aar_msg_credit_ok(63, 0, 63));
+    CHECK_EQ(aar_msg_credits_left(100, 40, 63), 3);
+    CHECK_EQ(aar_msg_credits_left(100, 37, 63), 0);
+
+    /* posted has wrapped past 2^32, consumed has not. */
+    CHECK_EQ(aar_msg_outstanding(0x0000000Au, 0xFFFFFFF0u, 63), 26);
+    CHECK_EQ(aar_msg_credits_left(0x0000000Au, 0xFFFFFFF0u, 63), 37);
+    CHECK(aar_msg_credit_ok(0x0000000Au, 0xFFFFFFF0u, 63));
+    CHECK_EQ(aar_msg_outstanding(0x0000001Eu, 0xFFFFFFF0u, 63), 46);
+    CHECK_EQ(aar_msg_credits_left(0x0000002Eu, 0xFFFFFFF0u, 63), 1);
+    CHECK_EQ(aar_msg_credits_left(0x0000002Fu, 0xFFFFFFF0u, 63), 0);
+    CHECK(aar_msg_credit_ok(0x0000002Eu, 0xFFFFFFF0u, 63));
+    CHECK(!aar_msg_credit_ok(0x0000002Fu, 0xFFFFFFF0u, 63));
+    /* The last credit on either side of the wrap. */
+    CHECK(aar_msg_credit_ok(0xFFFFFFFFu, 0xFFFFFFFFu - 62u, 63));
+    CHECK(!aar_msg_credit_ok(0u, 0xFFFFFFFFu - 62u, 63));
+    CHECK(aar_msg_credit_ok(1u, 0xFFFFFFFFu - 60u, 63));
+    CHECK(!aar_msg_credit_ok(2u, 0xFFFFFFFFu - 60u, 63));
+
+    /* Another depth: capacity is depth - 1. */
+    CHECK_EQ(aar_msg_credits_left(100, 0, AAR_MSG_CAPACITY_FOR(128)), 27);
+    CHECK(!aar_msg_credit_ok(127, 0, AAR_MSG_CAPACITY_FOR(128)));
+    CHECK(aar_msg_credit_ok(126, 0, AAR_MSG_CAPACITY_FOR(128)));
+
+    /* A consumed word ahead of posted, or more outstanding than the capacity,
+     * is corrupt: never a credit. */
+    CHECK_EQ(aar_msg_outstanding(5, 6, 63), AAR_E_IO);
+    CHECK_EQ(aar_msg_credits_left(5, 6, 63), AAR_E_IO);
+    CHECK(!aar_msg_credit_ok(5, 6, 63));
+    CHECK_EQ(aar_msg_credits_left(64, 0, 63), AAR_E_IO);
+    CHECK(!aar_msg_credit_ok(64, 0, 63));
+}
+
+static void test_credit_post(void)
+{
+    aar_queue sq, cq;
+    uint8_t msg[AAR_MSG_BYTES];
+    uint32_t posted;
+    uint32_t tail;
+    unsigned i;
+    int pass;
+
+    /* Once from zero and once with both counts about to wrap. */
+    for (pass = 0; pass < 2; pass++) {
+        uint32_t start = pass ? 0xFFFFFFE0u : 0u;
+        struct platform p;
+        aar_completion c;
+
+        clear_mem();
+        bind_pair(&sq, &cq);
+        platform_start(&p, start);
+        posted = start;
+
+        /* 63 messages, then the credit is spent: BUSY, queue untouched. */
+        for (i = 0; i < AAR_MSG_CAPACITY; i++) {
+            msg_with_seq(msg, i);
+            CHECK_EQ(aar_cb_post_msg(&cq, mem.b, &posted, msg, 0, 0), AAR_OK);
+        }
+        CHECK_EQ(posted, start + AAR_MSG_CAPACITY);
+        tail = aar_get_be32(mem.b + AAR_CB_CQ_TAIL);
+        CHECK_EQ(aar_cb_post_msg(&cq, mem.b, &posted, msg, 0, 0), AAR_E_BUSY);
+        CHECK_EQ(posted, start + AAR_MSG_CAPACITY);
+        CHECK_EQ(aar_get_be32(mem.b + AAR_CB_CQ_TAIL), tail);
+
+        /* A completion still fits behind 63 messages and is reached with the app
+         * consuming nothing: the inbox takes all 63 and never stalls. */
+        memset(&c, 0, sizeof(c));
+        c.op = AAR_OP_FILE_CLOSE;
+        c.id = 4242;
+        CHECK_EQ(aar_queue_post_completion(&cq, &c, 0, 0), AAR_OK);
+        platform_pump(&p, &cq);
+        CHECK_EQ(p.stalls, 0);
+        CHECK_EQ(p.completions, 1);
+        CHECK_EQ(p.last_id, 4242);
+        CHECK_EQ(p.in_n, AAR_MSG_CAPACITY);
+
+        /* The queue is empty again, yet the credit is still spent: it returns
+         * only when the app consumes, not when the queue drains. */
+        CHECK_EQ(aar_cb_post_msg(&cq, mem.b, &posted, msg, 0, 0), AAR_E_BUSY);
+        {
+            uint32_t seq = 0;
+
+            CHECK(platform_app_take(&p, &seq));
+            CHECK_EQ(seq, 0);
+        }
+        CHECK_EQ(aar_cb_msg_consumed(mem.b), start + 1u);
+        msg_with_seq(msg, 1000);
+        CHECK_EQ(aar_cb_post_msg(&cq, mem.b, &posted, msg, 0, 0), AAR_OK);
+        CHECK_EQ(aar_cb_post_msg(&cq, mem.b, &posted, msg, 0, 0), AAR_E_BUSY);
+        platform_pump(&p, &cq);
+        CHECK_EQ(p.stalls, 0);
+        CHECK_EQ(p.in_n, AAR_MSG_CAPACITY);
+
+        /* A corrupt consumed word stops posts with AAR_E_IO. */
+        aar_put_be32(mem.b + AAR_CB_MSG_CONSUMED, posted + 1u);
+        CHECK_EQ(aar_cb_post_msg(&cq, mem.b, &posted, msg, 0, 0), AAR_E_IO);
+    }
+}
+
+/* Without credits a client can fill the inbox and then queue a completion
+ * behind more messages: the platform cannot reach it. With credits it can. */
+static void test_credit_head_of_line(void)
+{
+    aar_queue sq, cq;
+    struct platform p;
+    uint8_t msg[AAR_MSG_BYTES];
+    aar_completion c;
+    uint32_t posted = 0;
+    unsigned i;
+
+    memset(&c, 0, sizeof(c));
+    c.op = AAR_OP_CONSOLE_READ;
+    c.id = 9;
+
+    /* No credits: the hazard. */
+    clear_mem();
+    bind_pair(&sq, &cq);
+    platform_start(&p, 0);
+    for (i = 0; i < AAR_MSG_CAPACITY; i++) {
+        msg_with_seq(msg, i);
+        CHECK_EQ(aar_queue_post_msg(&cq, msg, 0, 0), AAR_OK);
+    }
+    platform_pump(&p, &cq);
+    CHECK_EQ(p.in_n, AAR_MSG_CAPACITY);
+    for (i = 0; i < AAR_MSG_CAPACITY; i++) {
+        msg_with_seq(msg, 100 + i);
+        CHECK_EQ(aar_queue_post_msg(&cq, msg, 0, 0), AAR_OK);
+    }
+    CHECK_EQ(aar_queue_post_completion(&cq, &c, 0, 0), AAR_OK);
+    platform_pump(&p, &cq);
+    CHECK(p.stalls > 0);
+    CHECK_EQ(p.completions, 0); /* unreachable behind the messages */
+
+    /* With credits the second batch is refused, so the completion is reached. */
+    clear_mem();
+    bind_pair(&sq, &cq);
+    platform_start(&p, 0);
+    for (i = 0; i < AAR_MSG_CAPACITY; i++) {
+        msg_with_seq(msg, i);
+        CHECK_EQ(aar_cb_post_msg(&cq, mem.b, &posted, msg, 0, 0), AAR_OK);
+    }
+    platform_pump(&p, &cq);
+    CHECK_EQ(p.in_n, AAR_MSG_CAPACITY);
+    for (i = 0; i < AAR_MSG_CAPACITY; i++) {
+        msg_with_seq(msg, 100 + i);
+        CHECK_EQ(aar_cb_post_msg(&cq, mem.b, &posted, msg, 0, 0), AAR_E_BUSY);
+    }
+    CHECK_EQ(aar_queue_post_completion(&cq, &c, 0, 0), AAR_OK);
+    platform_pump(&p, &cq);
+    CHECK_EQ(p.stalls, 0);
+    CHECK_EQ(p.completions, 1);
+    CHECK_EQ(p.last_id, 9);
+}
+
+/* A long randomised run of a client that respects credits against the pump.
+ * The app consumes at random but, while it waits for a completion, not at all.
+ * Invariants: the inbox never overflows, the pump never stalls, messages come
+ * out in order, and every completion is reached while nothing is consumed. */
+static void test_credit_model_run(void)
+{
+    static const uint32_t starts[] = {0u, 0xFFFFFF00u, 0xFFFFFFC1u};
+    unsigned s;
+
+    for (s = 0; s < sizeof(starts) / sizeof(starts[0]); s++) {
+        aar_queue sq, cq;
+        struct platform p;
+        uint8_t msg[AAR_MSG_BYTES];
+        aar_completion c;
+        uint32_t posted = starts[s];
+        uint32_t next_seq = 0, expect_seq = 0, id = 1;
+        uint32_t rng = 0x12345678u + s;
+        unsigned step, done_completions = 0, wanted_completions = 0;
+        unsigned busy = 0, posted_msgs = 0;
+
+        clear_mem();
+        bind_pair(&sq, &cq);
+        platform_start(&p, starts[s]);
+        memset(&c, 0, sizeof(c));
+        c.op = AAR_OP_FILE_READ;
+
+        for (step = 0; step < 200000; step++) {
+            unsigned r;
+            uint32_t inflight;
+
+            rng = rng * 1664525u + 1013904223u;
+            r = (rng >> 16) & 0xFFu;
+
+            if (r < 140u) {
+                /* The client posts a message when it can. */
+                int rc;
+
+                msg_with_seq(msg, next_seq);
+                rc = aar_cb_post_msg(&cq, mem.b, &posted, msg, 0, 0);
+                CHECK(rc == AAR_OK || rc == AAR_E_BUSY);
+                if (rc == AAR_OK) {
+                    next_seq++;
+                    posted_msgs++;
+                } else {
+                    busy++;
+                }
+            } else if (r < 160u) {
+                aar_event ev;
+
+                memset(&ev, 0, sizeof(ev));
+                ev.type = AAR_EV_MOUSE;
+                (void)aar_queue_post_event(&cq, &ev, 0, 0);
+            } else if (r < 200u) {
+                /* The app asks for something and waits: it consumes nothing
+                 * until the completion is reached. */
+                c.id = id++;
+                if (aar_queue_post_completion(&cq, &c, 0, 0) == AAR_OK) {
+                    unsigned before = p.completions;
+
+                    wanted_completions++;
+                    platform_pump(&p, &cq);
+                    CHECK_EQ(p.completions, before + 1u);
+                    CHECK_EQ(p.last_id, c.id);
+                    done_completions++;
+                }
+            } else if (r < 230u) {
+                platform_pump(&p, &cq);
+            } else {
+                uint32_t seq = 0;
+                unsigned k = r & 3u;
+
+                while (k-- && platform_app_take(&p, &seq)) {
+                    CHECK_EQ(seq, expect_seq);
+                    expect_seq++;
+                }
+            }
+
+            /* Messages in the CQ plus the inbox never exceed the capacity. */
+            inflight = posted - p.consumed;
+            CHECK(inflight <= AAR_MSG_CAPACITY);
+            CHECK_EQ(p.stalls, 0);
+            CHECK(p.in_n <= AAR_MSG_CAPACITY);
+        }
+        CHECK_EQ(done_completions, wanted_completions);
+        CHECK(wanted_completions > 1000u);
+        CHECK(posted_msgs > 1000u);
+        CHECK(busy > 100u); /* the credit limit was really reached */
+    }
+}
+
 int main(void)
 {
     test_handles();
@@ -681,6 +1010,10 @@ int main(void)
     test_unsolicited();
     test_barriers();
     test_control_block();
+    test_credit_arithmetic();
+    test_credit_post();
+    test_credit_head_of_line();
+    test_credit_model_run();
     printf("transport_model_test: %lu checks, %lu failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

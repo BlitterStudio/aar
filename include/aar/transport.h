@@ -135,6 +135,7 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_CB_PROGRESS_HI    0x050u /* load progress, bytes, advances every step */
 #define AAR_CB_PROGRESS_LO    0x054u
 #define AAR_CB_LEASE_PERIOD_MS 0x058u
+#define AAR_CB_MSG_CONSUMED   0x05Cu /* client-to-app messages the app has taken from its inbox, free-running */
 
 /* Requests from the client. Writer: client. */
 #define AAR_CB_STOP_REQUEST   0x080u /* non-zero asks the app to stop */
@@ -279,10 +280,14 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
  *
  *   AAR_OP_MSG   either queue. 32 opaque bytes at AAR_ENTRY_MSG. Handled by
  *                AARGetMessage and AARSendMessage, not AARServiceNext. A
- *                message post keeps AAR_MSG_RESERVE entry free.
+ *                message post keeps AAR_MSG_RESERVE entry free. On the CQ the
+ *                client also posts only while it has a credit (see Message
+ *                credits below): posted - AAR_CB_MSG_CONSUMED < msg_capacity,
+ *                else AAR_E_BUSY.
  *   AAR_OP_EVENT CQ only, unsolicited: one event at AAR_ENTRY_EV_*, id 0. The
- *                client posts it with AARPostEvent. A full CQ drops it and the
- *                client counts the drop in AAR_CB_EVENTS_DROPPED.
+ *                client posts it with AARPostEvent. A full CQ drops the new
+ *                event and the client counts the drop in AAR_CB_EVENTS_DROPPED.
+ *                The client may coalesce mouse motion before it posts.
  *   AAR_OP_LOG   SQ only, one-way, lossy. buf, buf_off, buf_len name one
  *                record in a shared log buffer (at most AAR_LOG_MAX bytes, never
  *                wrapping), which the app side may overwrite after the client
@@ -313,12 +318,12 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 
 /* Display. */
 #define AAR_OP_DISPLAY_OPEN    0x30u /* arg: W, H, FORMAT, FLAGS; out: ID, PITCH, LAYOUT, FRONT, BACK, SPARE; reply flags: AAR_DISPCAP_* */
-#define AAR_OP_DISPLAY_FLIP    0x31u /* arg: ID, FLAGS; replied when shown; out: FRONT, BACK, PITCH, LAYOUT, DROPPED */
+#define AAR_OP_DISPLAY_FLIP    0x31u /* arg: ID, FLAGS; replied when shown; out: FRONT, BACK, PITCH, LAYOUT, DROPPED. A platform that owns the display buffers may complete a flip itself without sending it to the client */
 #define AAR_OP_DISPLAY_PALETTE 0x32u /* arg: ID, FIRST, COUNT; colors in buf, big-endian 0x00RRGGBB words */
 #define AAR_OP_DISPLAY_CLOSE   0x33u /* arg: ID */
 
 /* Audio. */
-#define AAR_OP_AUDIO_OPEN      0x40u /* arg: RATE, CHANNELS, ROUTE; out: RATE, CHANNELS, RING, RING_BYTES, FRAMES */
+#define AAR_OP_AUDIO_OPEN      0x40u /* arg: RATE, CHANNELS, ROUTE; ring named in buf, buf_len (allocated by the runtime); out: RATE, CHANNELS, RING (echoes buf), RING_BYTES, FRAMES */
 #define AAR_OP_AUDIO_CLOSE     0x41u
 
 /* Argument and result word indices (into arg[] and out[]). A_ is a request
@@ -368,15 +373,16 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_A_AUDIO_OPEN_ROUTE    2u /* AAR_AUDIO_ROUTE_* */
 #define AAR_R_AUDIO_OPEN_RATE     0u /* granted */
 #define AAR_R_AUDIO_OPEN_CHANNELS 1u
-#define AAR_R_AUDIO_OPEN_RING     2u /* token of the audio ring buffer */
+#define AAR_R_AUDIO_OPEN_RING     2u /* token of the audio ring buffer: the request's buf, echoed */
 #define AAR_R_AUDIO_OPEN_RING_BYTES 3u
 #define AAR_R_AUDIO_OPEN_FRAMES   4u /* ring capacity, power of two */
 #define AAR_AUDIO_ROUTE_PLATFORM 0u /* the platform's own mixer or fabric */
 #define AAR_AUDIO_ROUTE_AHI      1u /* AHI through the client; it reads PCM with AARAudioRead */
 
 /*
- * Audio ring buffer (the shared buffer named by AAR_R_AUDIO_OPEN_RING). Unlike
- * the control block it is LITTLE-endian, because the app, the runtime and the
+ * Audio ring buffer. The runtime allocates it and names it in the AUDIO_OPEN
+ * request (buf, buf_len); the completion echoes it in AAR_R_AUDIO_OPEN_RING.
+ * Unlike the control block it is LITTLE-endian, because the app, the runtime and the
  * S16LE samples are: the client library byte swaps the words it reads. Each
  * index has its own line and one writer.
  *   0x00 write_frame  free-running frame count, the app advances
@@ -869,6 +875,85 @@ static inline int aar_cb_queue_bind(aar_queue *q, volatile void *cb,
     return AAR_OK;
 }
 
+/* ---- Message credits (client to app direction) ---------------------------------------------- */
+
+/*
+ * Messages and completions share the CQ, which is a FIFO released in order. If
+ * the client could post messages without limit, the platform would have to
+ * stop taking entries once its inbox was full, and a completion queued behind
+ * those messages could not be reached. Credits remove that: the platform writes
+ * AAR_CB_MSG_CONSUMED, a free-running count of the messages the app has taken
+ * from its inbox (not merely moved out of the CQ); the client keeps its own
+ * free-running count of the messages it has posted. The client posts an
+ * AAR_OP_MSG only while
+ *
+ *     posted - consumed < msg_capacity       (modulo 2^32)
+ *
+ * and answers AAR_E_BUSY otherwise. Then the messages in the CQ plus the inbox
+ * never exceed msg_capacity, an inbox of msg_capacity entries always has room,
+ * and the platform never has to leave a message in the CQ.
+ *
+ * msg_capacity is AAR_MSG_CAPACITY_FOR(depth). The count posted is the client's
+ * own state; only AAR_CB_MSG_CONSUMED is shared.
+ */
+
+/* Messages posted and not yet consumed, or AAR_E_IO when consumed is ahead of
+ * posted or more than `capacity` are outstanding (the word is corrupt). */
+static inline int aar_msg_outstanding(uint32_t posted, uint32_t consumed,
+                                      uint32_t capacity)
+{
+    uint32_t n = posted - consumed;
+
+    return n > capacity ? AAR_E_IO : (int)n;
+}
+
+/* Credits left: capacity minus the outstanding messages, 0 when none, or
+ * AAR_E_IO as above. */
+static inline int aar_msg_credits_left(uint32_t posted, uint32_t consumed,
+                                       uint32_t capacity)
+{
+    int n = aar_msg_outstanding(posted, consumed, capacity);
+
+    return n < 0 ? n : (int)capacity - n;
+}
+
+/* 1 when the client may post one more message, else 0 (no credit, or the
+ * consumed word is corrupt). */
+static inline int aar_msg_credit_ok(uint32_t posted, uint32_t consumed,
+                                    uint32_t capacity)
+{
+    return aar_msg_credits_left(posted, consumed, capacity) > 0;
+}
+
+/* The platform's count of consumed messages, from the control block. */
+static inline uint32_t aar_cb_msg_consumed(const volatile void *cb)
+{
+    return aar_get_be32((const volatile uint8_t *)cb + AAR_CB_MSG_CONSUMED);
+}
+
+/* The client's message post: checks the credit, then posts on the CQ and
+ * advances *posted by one. AAR_E_BUSY when there is no credit or the queue has
+ * no room, AAR_E_IO on a corrupt consumed word or corrupt indices. `cq` is the
+ * CQ view of this control block. *posted is unchanged on failure. */
+static inline int aar_cb_post_msg(const aar_queue *cq, const volatile void *cb,
+                                  uint32_t *posted, const void *msg,
+                                  aar_barrier_fn acquire,
+                                  aar_barrier_fn release)
+{
+    uint32_t capacity = AAR_MSG_CAPACITY_FOR(cq->depth);
+    int left = aar_msg_credits_left(*posted, aar_cb_msg_consumed(cb), capacity);
+    int rc;
+
+    if (left < 0)
+        return left;
+    if (left == 0)
+        return AAR_E_BUSY;
+    rc = aar_queue_post_msg(cq, msg, acquire, release);
+    if (rc == AAR_OK)
+        *posted += 1u;
+    return rc;
+}
+
 /* ---- Layout checks -------------------------------------------------------------------------------------------------------------- */
 
 AAR_STATIC_ASSERT(AAR_CB_SQ_DESC == 0x1C0u && AAR_CB_SQ_TAIL == 0x200u &&
@@ -883,6 +968,10 @@ AAR_STATIC_ASSERT((AAR_CB_SQ_TAIL % AAR_CB_LINE_BYTES) == 0u &&
                   "every index and the lease counter own a 64-byte line");
 AAR_STATIC_ASSERT(AAR_CB_CQ_HEAD + AAR_CB_LINE_BYTES <= AAR_CB_BYTES,
                   "queues fit in the control block");
+AAR_STATIC_ASSERT(AAR_CB_MSG_CONSUMED == 0x05Cu &&
+                  AAR_CB_MSG_CONSUMED / AAR_CB_LINE_BYTES ==
+                      AAR_CB_STATE / AAR_CB_LINE_BYTES,
+                  "msg_consumed is in the platform-written lifecycle line");
 AAR_STATIC_ASSERT(AAR_ENTRY_BYTES == 4u * AAR_ENTRY_WORDS, "entry words");
 AAR_STATIC_ASSERT(AAR_ENTRY_BODY + AAR_ENTRY_BODY_BYTES == AAR_ENTRY_BYTES,
                   "entry body");

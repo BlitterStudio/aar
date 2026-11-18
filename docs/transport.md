@@ -115,6 +115,7 @@ space is reserved and zero.
 | `AAR_CB_FLAGS` | `0x04C` | `AAR_CBF_*`. |
 | `AAR_CB_PROGRESS_HI`, `AAR_CB_PROGRESS_LO` | `0x050`, `0x054` | Load progress in bytes. It advances at every step, and the lease extends while it does. |
 | `AAR_CB_LEASE_PERIOD_MS` | `0x058` | The lease period the platform applies. |
+| `AAR_CB_MSG_CONSUMED` | `0x05C` | A free-running count of the client-to-app messages the app has taken from its inbox. The client reads it to know how many message credits it has (see [Message credits](#message-credits)). |
 
 The lifecycle flags in `AAR_CB_FLAGS`:
 
@@ -358,6 +359,40 @@ without a barrier. Every index is a free-running `uint32_t`; a count above
 | `aar_queue_peek` | Consumer step 1: returns 1 with the oldest slot, 0 when empty, `AAR_E_IO` on corrupt indices. The slot stays valid until the pop. |
 | `aar_queue_pop` | Consumer step 3: the release barrier, then the new head. Call it only after a peek that returned 1. |
 
+### Message credits
+
+Messages and completions share the completion queue, and the consumer releases
+a FIFO in order. If the client could post messages without limit, the runtime's
+inbox would fill, the runtime would have to leave a message in the queue, and a
+completion behind it could not be reached until the app drained its inbox,
+which an app that waits for that completion cannot do. **Message credits**
+prevent this.
+
+The platform writes `AAR_CB_MSG_CONSUMED`: the number of messages the app has
+taken from its inbox, not the number moved out of the queue. The client keeps
+its own free-running count of the messages it has posted. Both are `uint32_t`
+and wrap. The client posts an `AAR_OP_MSG` only while
+
+```
+posted - consumed < msg_capacity        (modulo 2^32)
+```
+
+and otherwise returns `AAR_E_BUSY` without touching the queue. Messages in the
+queue plus the inbox therefore never exceed `msg_capacity` (`AAR_MSG_CAPACITY`
+at the default depth), so an inbox of that size always has room, the runtime
+never stops draining at a message, and a completion is always reachable. The
+one entry `AAR_MSG_RESERVE` keeps free is a second guard for the completion of
+the call in flight. The app-to-client direction needs no credit word: the
+runtime reads the client's own head index.
+
+| Symbol | Meaning |
+|---|---|
+| `aar_msg_outstanding` | `posted - consumed`, or `AAR_E_IO` when it exceeds the capacity (the word is corrupt or ahead of `posted`). |
+| `aar_msg_credits_left` | The capacity minus the outstanding messages, 0 when none, or `AAR_E_IO`. |
+| `aar_msg_credit_ok` | 1 when the client may post one more message. |
+| `aar_cb_msg_consumed` | Reads `AAR_CB_MSG_CONSUMED` from a control block. |
+| `aar_cb_post_msg` | The client's message post: checks the credit, posts on the completion queue with `aar_queue_post_msg`, and advances the caller's `posted` count on success. `AAR_E_BUSY` without credit or room, `AAR_E_IO` on a corrupt word. |
+
 ## Operations
 
 An entry's `op` says what it is. A **request** is a submission-queue entry
@@ -370,8 +405,8 @@ flip may leave a second in flight. `AAR_OP_MSG`, `AAR_OP_EVENT` and
 | Symbol | Value | Direction | Meaning |
 |---|---|---|---|
 | `AAR_OP_NONE` | `0x00` | | Not an operation. |
-| `AAR_OP_MSG` | `0x01` | either | 32 opaque bytes at `AAR_ENTRY_MSG`. Handled by the client's get and send message calls, not by its service loop. A post keeps `AAR_MSG_RESERVE` entry free. |
-| `AAR_OP_EVENT` | `0x02` | CQ only | Unsolicited: one event at the `AAR_ENTRY_EV_*` offsets, id 0. A full CQ drops it, and the client counts the drop in `AAR_CB_EVENTS_DROPPED`. |
+| `AAR_OP_MSG` | `0x01` | either | 32 opaque bytes at `AAR_ENTRY_MSG`. Handled by the client's get and send message calls, not by its service loop. A post keeps `AAR_MSG_RESERVE` entry free. On the CQ the client also posts only while it has a message credit, else `AAR_E_BUSY`. |
+| `AAR_OP_EVENT` | `0x02` | CQ only | Unsolicited: one event at the `AAR_ENTRY_EV_*` offsets, id 0. A full CQ drops the new event, and the client counts the drop in `AAR_CB_EVENTS_DROPPED`. The queue is shared with completions and messages, so a runtime keeps at least 64 events and never promises more. The client coalesces mouse motion (sums `dx` and `dy`, combines the buttons) before it posts. |
 | `AAR_OP_LOG` | `0x03` | SQ only | One-way and lossy. `buf`, `buf_off` and `buf_len` name one record in a shared log buffer, at most `AAR_LOG_MAX` bytes and never wrapping. The app side may overwrite it after the client has consumed the entry. A full SQ drops the record and counts it in `AAR_CB_LOG_DROPPED`. |
 | `AAR_OP_FILE_OPEN` | `0x10` | request | Path in `buf`; args `AAR_A_FILE_OPEN_FD`, `AAR_A_FILE_OPEN_FLAGS`. The flags word is the `AAR_FILE_*` combination of `aar_file_open` (read, write, create, truncate, exclusive). The client applies create, truncate and exclusive create as part of this one request. |
 | `AAR_OP_FILE_CLOSE` | `0x11` | request | Arg `AAR_A_FILE_FD`. |
@@ -385,10 +420,10 @@ flip may leave a second in flight. `AAR_OP_MSG`, `AAR_OP_EVENT` and
 | `AAR_OP_CONSOLE_WRITE` | `0x20` | request | The bytes are in a console buffer named by `buf`, `buf_off`, `buf_len`; out `AAR_R_CONSOLE_COUNT` consumed. |
 | `AAR_OP_CONSOLE_READ` | `0x21` | request | `buf_len` is the room; the client fills it; out `AAR_R_CONSOLE_COUNT`, 0 at the end of input. |
 | `AAR_OP_DISPLAY_OPEN` | `0x30` | request | Args `AAR_A_DISPLAY_OPEN_W`, `_H`, `_FORMAT`, `_FLAGS`; out `AAR_R_DISPLAY_OPEN_ID`, `_PITCH`, `_LAYOUT`, `_FRONT`, `_BACK`, `_SPARE`. The reply's `flags` carry the `AAR_DISPCAP_*` caps. |
-| `AAR_OP_DISPLAY_FLIP` | `0x31` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_FLIP_FLAGS`. Replied when shown; out `AAR_R_DISPLAY_FLIP_FRONT`, `_BACK`, `_PITCH`, `_LAYOUT`, `_DROPPED`. |
+| `AAR_OP_DISPLAY_FLIP` | `0x31` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_FLIP_FLAGS`. Replied when shown; out `AAR_R_DISPLAY_FLIP_FRONT`, `_BACK`, `_PITCH`, `_LAYOUT`, `_DROPPED`. A platform that owns the display buffers (a card-owned latest-frame mode) may complete a flip itself and never send it to the client. |
 | `AAR_OP_DISPLAY_PALETTE` | `0x32` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_PALETTE_FIRST`, `AAR_A_DISPLAY_PALETTE_COUNT`. The colors are big-endian `0x00RRGGBB` words in `buf`. |
 | `AAR_OP_DISPLAY_CLOSE` | `0x33` | request | Arg `AAR_A_DISPLAY_ID`. |
-| `AAR_OP_AUDIO_OPEN` | `0x40` | request | Args `AAR_A_AUDIO_OPEN_RATE`, `_CHANNELS`, `_ROUTE`; out `AAR_R_AUDIO_OPEN_RATE`, `_CHANNELS`, `_RING`, `_RING_BYTES`, `_FRAMES`. |
+| `AAR_OP_AUDIO_OPEN` | `0x40` | request | Args `AAR_A_AUDIO_OPEN_RATE`, `_CHANNELS`, `_ROUTE`. The runtime allocates the audio ring first and names it in `buf` and `buf_len`; out `AAR_R_AUDIO_OPEN_RATE`, `_CHANNELS`, `_RING` (the request's `buf`, echoed), `_RING_BYTES`, `_FRAMES`. |
 | `AAR_OP_AUDIO_CLOSE` | `0x41` | request | No arguments. |
 
 File and list ids are chosen by the runtime and are small integers from
@@ -432,7 +467,7 @@ completion. A 64-bit value is `_HI` then `_LO`.
 | `AAR_A_AUDIO_OPEN_RATE`, `AAR_A_AUDIO_OPEN_CHANNELS` | 0, 1 | audio open |
 | `AAR_A_AUDIO_OPEN_ROUTE` | 2 | audio open; `AAR_AUDIO_ROUTE_*` |
 | `AAR_R_AUDIO_OPEN_RATE`, `AAR_R_AUDIO_OPEN_CHANNELS` | 0, 1 | audio open, the granted values |
-| `AAR_R_AUDIO_OPEN_RING` | 2 | audio open. Token of the audio ring buffer. |
+| `AAR_R_AUDIO_OPEN_RING` | 2 | audio open. Token of the audio ring buffer: the `buf` of the request, echoed. |
 | `AAR_R_AUDIO_OPEN_RING_BYTES` | 3 | audio open |
 | `AAR_R_AUDIO_OPEN_FRAMES` | 4 | audio open. Ring capacity, a power of two. |
 
@@ -444,7 +479,8 @@ completion. A 64-bit value is `_HI` then `_LO`.
 
 ### The audio ring buffer
 
-The shared buffer named by `AAR_R_AUDIO_OPEN_RING`. Unlike the control block it
+The shared buffer that the runtime allocates at audio open and names in the
+request's `buf`; the completion echoes it in `AAR_R_AUDIO_OPEN_RING`. Unlike the control block it
 is **little-endian**. Each index has its own line and one writer.
 `aar_audio.write_frame` and `aar_audio.read_frame` point at the first two
 words.

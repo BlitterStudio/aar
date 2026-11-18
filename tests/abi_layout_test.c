@@ -446,7 +446,8 @@ static void test_transport_layout(void)
         AAR_CB_MAGIC, AAR_CB_VERSION, AAR_CB_SIZE, AAR_CB_HANDLE,
         AAR_CB_PROFILE, AAR_CB_STATE, AAR_CB_END_REASON, AAR_CB_EXIT_CODE,
         AAR_CB_FLAGS, AAR_CB_PROGRESS_HI, AAR_CB_PROGRESS_LO,
-        AAR_CB_LEASE_PERIOD_MS, AAR_CB_STOP_REQUEST, AAR_CB_CLIENT_PRESENT,
+        AAR_CB_LEASE_PERIOD_MS, AAR_CB_MSG_CONSUMED, AAR_CB_STOP_REQUEST,
+        AAR_CB_CLIENT_PRESENT,
         AAR_CB_LEASE_COUNTER, AAR_CB_EVENTS_DROPPED, AAR_CB_CQ_FULL,
         AAR_CB_FAULT_CLASS, AAR_CB_FAULT_SYNDROME, AAR_CB_FAULT_PSTATE,
         AAR_CB_FAULT_PC_HI, AAR_CB_FAULT_PC_LO, AAR_CB_FAULT_SP_HI,
@@ -487,6 +488,28 @@ static void test_transport_layout(void)
     CHECK_EQ(AAR_CB_CQ_TAIL, 0x2C0);
     CHECK_EQ(AAR_CB_CQ_HEAD, 0x300);
     CHECK_EQ(AAR_CB_LEASE_COUNTER, 0x0C0);
+    CHECK_EQ(AAR_CB_MSG_CONSUMED, 0x05C);
+    CHECK_EQ(AAR_CB_LAYOUT_VERSION, 1);
+
+    /* The message credit word has one writer, the platform: it sits in the
+     * lifecycle line, and no word with another writer shares that line. The
+     * client writes the stop request, the present flag, the lease line, the
+     * limits, and the CQ tail and SQ head; none may be in the credit line. */
+    {
+        static const unsigned client_words[] = {
+            AAR_CB_STOP_REQUEST, AAR_CB_CLIENT_PRESENT, AAR_CB_LEASE_COUNTER,
+            AAR_CB_EVENTS_DROPPED, AAR_CB_CQ_FULL, AAR_CB_PRIVATE_MIB,
+            AAR_CB_SHARED_MIB, AAR_CB_WEIGHT, AAR_CB_SQ_HEAD, AAR_CB_CQ_TAIL,
+        };
+
+        CHECK_EQ(AAR_CB_MSG_CONSUMED / AAR_CB_LINE_BYTES,
+                 AAR_CB_STATE / AAR_CB_LINE_BYTES);
+        CHECK_EQ(AAR_CB_MSG_CONSUMED / AAR_CB_LINE_BYTES,
+                 AAR_CB_LEASE_PERIOD_MS / AAR_CB_LINE_BYTES);
+        for (i = 0; i < sizeof(client_words) / sizeof(client_words[0]); i++)
+            CHECK(client_words[i] / AAR_CB_LINE_BYTES !=
+                  AAR_CB_MSG_CONSUMED / AAR_CB_LINE_BYTES);
+    }
     CHECK_EQ(AAR_CB_MAGIC_VALUE, 0x41415243u);
 
     /* Every word that changes hands owns its 64-byte line: no other listed
