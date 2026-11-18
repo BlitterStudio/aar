@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+*.elf binary
+*.a binary
+*.o binary
+*.bin binary
