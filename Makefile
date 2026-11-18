@@ -34,8 +34,7 @@ CHECK_APPS := $(TEMPLATES) sbrk_smoke
 
 all: $(TEMPLATES)
 
-NOTE_TEST := $(ZZAPP_SDK)/../tests/zzapp_check_test.py
-check: $(if $(wildcard $(NOTE_TEST)),check-tool,) check-map-test check-fp-codegen $(addprefix check-,$(CHECK_APPS)) check-mode-switch check-freestanding-guard
+check: check-tool check-map-test check-fp-codegen $(addprefix check-,$(CHECK_APPS)) check-mode-switch check-freestanding-guard
 	$(PYTHON) $(ZZAPP_SDK)/tools/zzapp-check --expect-note $(ZZAPP_SDK)/build/hello.elf 0 0
 	$(PYTHON) $(ZZAPP_SDK)/tools/zzapp-check --expect-note $(ZZAPP_SDK)/build/pixels.elf 1 0
 	$(PYTHON) $(ZZAPP_SDK)/tools/zzapp-check --expect-note $(ZZAPP_SDK)/build/tone.elf 2 0
@@ -43,7 +42,7 @@ check: $(if $(wildcard $(NOTE_TEST)),check-tool,) check-map-test check-fp-codege
 	$(PYTHON) $(ZZAPP_SDK)/tools/zzapp-check --expect-note $(ZZAPP_SDK)/build/freestanding.elf 0 0
 
 check-tool:
-	$(PYTHON) $(ZZAPP_SDK)/../tests/zzapp_check_test.py
+	$(PYTHON) $(ZZAPP_SDK)/tests/zzapp_check_test.py
 
 check-map-test:
 	$(PYTHON) $(ZZAPP_SDK)/tests/check_map_test.py
@@ -94,7 +93,7 @@ check-%:
 		ZZAPP_FREESTANDING=$($*_FREESTANDING) \
 		check
 
-# Path cited by the template notes: sdk/zzapp/build/<app>.elf
+# Path cited by the template notes: build/<app>.elf
 build/%.elf: %
 	@test -f $@
 
