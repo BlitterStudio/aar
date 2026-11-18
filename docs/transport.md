@@ -474,8 +474,12 @@ attribute removed must fail) before the runtime relies on it.
 heap with the normal write-back shareable mapping, which the Zorro master
 reaches coherently through the Zynq ACP. The ARM side orders data before the
 index with barriers and needs no cache maintenance. The 68k side maps them
-cache-inhibited. The proof so far covers app host-visible blocks; the control
-structures have a different writer pattern and need their own probe.
+cache-inhibited. A probe with this layout passed on an A4000 with a 68060 in
+November 2026: firmware code on both ARM cores wrote and read 64-entry rings
+of 64-byte entries and a control block in host-visible memory, idle and under
+load, with no stale index, torn entry or wrong word on either side, while the
+same firmware with the shared attribute removed from the host-visible mapping
+failed at once.
 
 ## Doorbell
 
