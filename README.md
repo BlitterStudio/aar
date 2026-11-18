@@ -67,7 +67,7 @@ With CMake, pass the toolchain file and call `zzapp_add_executable` from
 
 ```sh
 cmake -S cmake/example -B build/hello \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/zzapp-toolchain.cmake
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/zzapp-toolchain.cmake"
 cmake --build build/hello
 ```
 
