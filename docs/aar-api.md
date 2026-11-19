@@ -766,6 +766,19 @@ what was granted. `flags` is 0. `*write_frame` is advanced by the app and
 that wrap. The app writes ahead of `*read_frame` but never more than `frames`
 ahead. The pointers are at offset 16 on both profiles.
 
+The indices order the PCM. The app stores the samples first, then publishes
+`*write_frame` with a release store (`__atomic_store_n` with
+`__ATOMIC_RELEASE` on GCC and Clang). Before it computes the free space or
+reuses a slot, it reads `*read_frame` with an acquire load
+(`__atomic_load_n` with `__ATOMIC_ACQUIRE`), so it never writes a slot the
+runtime has not finished with. The runtime does the converse: it acquires
+`*write_frame` before it reads the samples, and releases `*read_frame` after it
+is done with them. `volatile` alone gives no such ordering between the sample
+stores and the index, on either side. The platform provides what makes this
+order hold, a mapping that is coherent between the CPU and the consumer or a
+backend that owns the ring itself. An app does not flush or discard cache lines
+on the ring and does not copy the PCM a second time.
+
 ### aar_audio_stats
 
 ```c
