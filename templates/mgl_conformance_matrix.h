@@ -2,6 +2,18 @@
  * One MiniGL texture-environment conformance matrix shared by the 68k and
  * AAR probes.  Values are RGBA8 and expected results use GL 1.1 rules.
  *
+ * Probe profile, not an AAR or GL minimum: the fixtures need at least 4 bits
+ * per texture component and at least 5 bits of fragment alpha (MiniGL uses
+ * 8).  GL 2.1 section 3.8.1 lets the GL choose the component resolutions of
+ * an unsized internal format, so the texels below are exactly representable
+ * in 4 bits.  Section 4.1.4 converts the alpha-test reference with the
+ * rounding of section 2.14.9 (nearest); 0.5 is 127.5 at 8 bits, a tie that
+ * rounds up or down, and both are valid.  No fragment alpha below lies near
+ * that tie (they are 255, 136, 119 and 63), so every width of 5 bits or more
+ * gives one outcome.  Section 4.3.2: a framebuffer without alpha reads back
+ * A as 1.0, which the 565 probe applies.
+ * https://registry.khronos.org/OpenGL/specs/gl/glspec21.pdf
+ *
  * SPDX-License-Identifier: MIT
  */
 #ifndef MGL_CONFORMANCE_MATRIX_H
@@ -67,13 +79,13 @@ static const mgl_probe_named_rgba mgl_probe_texels[] = {
     { "blue", { 0x00u, 0x00u, 0xffu, 0xffu } },
     { "white", { 0xffu, 0xffu, 0xffu, 0xffu } },
     { "black", { 0x00u, 0x00u, 0x00u, 0xffu } },
-    { "half-alpha", { 0xa0u, 0x70u, 0x40u, 0x80u } }
+    { "half-alpha", { 0xaau, 0x88u, 0x33u, 0x88u } }
 };
 static const mgl_probe_named_rgba mgl_probe_colours[] = {
     { "white", { 0xffu, 0xffu, 0xffu, 0xffu } },
     { "grey", { 0x80u, 0x80u, 0x80u, 0xffu } },
     { "red", { 0xffu, 0x00u, 0x00u, 0xffu } },
-    { "half-alpha", { 0xffu, 0xffu, 0xffu, 0x80u } }
+    { "half-alpha", { 0xffu, 0xffu, 0xffu, 0x77u } }
 };
 
 static uint8_t mgl_probe_mul(uint8_t a, uint8_t b)
