@@ -293,6 +293,11 @@ int aar_main(int argc, char **argv)
             expected = mgl_probe_expected(mgl_probe_envs[env], mgl_probe_formats[format],
                 mgl_probe_texels[texel].value, mgl_probe_colours[colour].value,
                 (int)alpha_test, (int)blend);
+            /* The target above is RGB565. GL 2.1 section 4.3.2: a framebuffer
+             * without alpha reads back A as 1.0. The fragment alpha was
+             * already used for the alpha test and the blend, and a discarded
+             * fragment leaves the cleared pixel, which also reads A as 1.0. */
+            expected.a = 255u;
             passed = mgl_probe_match(actual, expected, 8u);
             cases++;
             if (passed)
