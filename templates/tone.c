@@ -29,7 +29,8 @@ int aar_main(int argc, char **argv)
     }
     period = audio.rate / TONE_HZ;
     while (!aar_should_stop()) {
-        uint32_t read = *audio.read_frame;
+        /* Acquire the runtime's read index before reusing the slots it freed. */
+        uint32_t read = __atomic_load_n(audio.read_frame, __ATOMIC_ACQUIRE);
         uint32_t write = *audio.write_frame;
         uint32_t used = write - read;
         uint32_t frames;
@@ -54,7 +55,8 @@ int aar_main(int argc, char **argv)
             if (phase == period)
                 phase = 0u;
         }
-        *audio.write_frame = write;
+        /* Release: the PCM stores above are ordered before the new index. */
+        __atomic_store_n(audio.write_frame, write, __ATOMIC_RELEASE);
         aar_yield();
     }
     (void)aar_audio_close();

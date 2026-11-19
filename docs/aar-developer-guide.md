@@ -675,7 +675,11 @@ to the stall watchdog if you never enter the API.
 Audio is interleaved S16LE stereo at 22050 Hz, which every platform supports.
 A platform may also grant 44100 and 48000 Hz; read the granted rate from the
 `aar_audio` structure rather than assuming. Write ahead of `*read_frame` and
-never more than `frames` ahead. On the ZZ9000 today the grant is 22050 Hz with a
+never more than `frames` ahead. Store the samples first, then publish
+`*write_frame` with a release store; read `*read_frame` with an acquire load
+before you work out the free space (`__atomic_store_n` and `__atomic_load_n`
+on GCC and Clang). `volatile` alone does not order the samples against the
+index. See `templates/tone.c`. On the ZZ9000 today the grant is 22050 Hz with a
 ring of 8192 frames, and AHI does not resample: if AHI cannot open that stereo
 rate, the open fails.
 
