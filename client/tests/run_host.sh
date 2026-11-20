@@ -114,7 +114,7 @@ lib_tests() {
     "$CC" $LIB_CFLAGS "$@" $SHELL_SRC -o "$OUT/shell_test_$tag"
     run_tail 1 "$OUT/shell_test_$tag" "$OUT/good.elf"
     # The process handling of the leak probe, on a model of the calls it makes.
-    "$CC" $LIB_CFLAGS -Wno-unused-function "$@" client/tests/aarleak_test.c -o "$OUT/aarleak_test_$tag"
+    "$CC" $LIB_CFLAGS -Wno-unused-function -pthread "$@" client/tests/aarleak_test.c -o "$OUT/aarleak_test_$tag"
     run_tail 1 "$OUT/aarleak_test_$tag"
 }
 lib_tests plain -O2

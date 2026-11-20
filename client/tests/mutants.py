@@ -244,16 +244,91 @@ mutant("admission-skips-ctl", "admission", SHELL,
         "    if (!b->dispatcher_up)\n        rc = shell_dispatcher_start(b);"))
 mutant("expunge-ignores-reopen", "admission", SHELL,
        ("    return b->library.lib_OpenCnt == 0 && !b->disp_process", "    return !b->disp_process"))
-# ---- the leak probe waits for the processes that started -------------------------------------
-mutant("hold-waits-for-asked-ready", "hold", LEAK,
-       ("    while (child_ready < started)\n", "    while (child_ready < n)\n"))
-mutant("hold-waits-for-asked-exit", "hold", LEAK,
-       ("    while (child_exited < started)\n", "    while (child_exited < n)\n"))
-mutant("hold-reports-success", "hold", LEAK,
-       ("    return started == n;", "    return 1;"))
-mutant("children-report-success", "children", LEAK,
-       ("            printf(\"CreateNewProc failed after %lu children\\n\", (unsigned long)i);\n            return 0;",
-        "            printf(\"CreateNewProc failed after %lu children\\n\", (unsigned long)i);\n            return 1;"))
+# ---- the leak probe: every failure is recorded, every process joined -----------------------------
+mutant("leak-hold-waits-for-asked-ready", "table", LEAK,
+       ("wait_count(&child_ready, started,",
+        "wait_count(&child_ready, n,"))
+mutant("leak-hold-waits-for-asked-exit", "table", LEAK,
+       ("wait_count(&child_exited, started,",
+        "wait_count(&child_exited, n,"))
+mutant("leak-hold-no-release-after-failure", "table", LEAK,
+       ("    child_go = 1;\n    if (!wait_count(&child_exited",
+        "    if (ok)\n        child_go = 1;\n    if (!wait_count(&child_exited"))
+mutant("leak-hold-spawn-failure-not-recorded", "table", LEAK,
+       ("(unsigned long)n);\n            fails++;\n            ok = 0;\n            break;",
+        "(unsigned long)n);\n            break;"))
+mutant("leak-children-spawn-failure-not-recorded", "table", LEAK,
+       ("(unsigned long)i);\n            fails++;\n            ok = 0;\n            break;",
+        "(unsigned long)i);\n            break;"))
+mutant("leak-hold-reports-success", "table", LEAK,
+       ("    child_hold = 0;\n    return children_ok() && ok;",
+        "    child_hold = 0;\n    return 1;"))
+mutant("leak-children-report-success", "table", LEAK,
+       ("    return children_ok() && ok;\n}\n\n/*\n * All children",
+        "    return 1;\n}\n\n/*\n * All children"))
+mutant("leak-wait-never-times-out", "table", LEAK,
+       ("if (waited >= AARLEAK_WAIT_TICKS) {",
+        "if (0) {"))
+mutant("leak-exit-status-ignores-failures", "table", LEAK,
+       ("    return fails ? 10 : 0;",
+        "    return 0;"))
+mutant("leak-child-openlibrary-unchecked", "table", LEAK,
+       ("        if (!base)\n            child_fail(CF_OPENLIBRARY);\n        else if (AAROpen(&h, NULL, &reason) != AAR_OK) {",
+        "        if (AAROpen(&h, NULL, &reason) != AAR_OK) {"))
+mutant("leak-child-aaropen-unchecked", "table", LEAK,
+       ("            child_fail(CF_AAROPEN);\n",
+        ""))
+mutant("leak-child-signal-unchecked", "table", LEAK,
+       ("        } else if (child_hold && AARMessageSignal(h) == 0UL)\n            child_fail(CF_SIGNAL);",
+        "        } else if (child_hold)\n            (void)AARMessageSignal(h);"))
+mutant("leak-child-aarclose-unchecked", "table", LEAK,
+       ("    if (h && AARClose(h) != AAR_OK)\n        child_fail(CF_AARCLOSE);",
+        "    if (h)\n        (void)AARClose(h);"))
+mutant("leak-pair-aaropen-unchecked", "table", LEAK,
+       ("        fail(\"AAROpen\", (long)rc);\n        return 0;",
+        "        return 0;"))
+mutant("leak-pair-aarclose-unchecked", "table", LEAK,
+       ("        fail(\"AARClose\", (long)rc);\n        return 0;",
+        "        return 0;"))
+mutant("leak-createmsgport-unchecked", "table", LEAK,
+       ("            if (!port)\n                fail(\"CreateMsgPort\", 0);\n",
+        ""))
+mutant("leak-ext-unchecked", "table", LEAK,
+       ("        if (!ext)\n            fail(\"AARExt\", 0);\n",
+        ""))
+mutant("leak-list-open-unchecked", "table", LEAK,
+       ("                hs[i] = NULL;\n                fail(\"AAROpen\", (long)rc);",
+        "                hs[i] = NULL;"))
+mutant("leak-list-error-unchecked", "table", LEAK,
+       ("            if (lr < 0)\n                fail(\"the claim list\", (long)lr);\n",
+        ""))
+mutant("leak-list-short-unchecked", "table", LEAK,
+       ("        if (ext && (ULONG)steps < opened)\n            fail(\"the claim list is shorter than the handles held\", (long)steps);\n",
+        ""))
+mutant("leak-list-close-unchecked", "table", LEAK,
+       ("                if (rc != AAR_OK)\n                    fail(\"AARClose\", (long)rc);",
+        "                (void)rc;"))
+mutant("leak-probe-unchecked", "table", LEAK,
+       ("    if (rc != AAR_OK)\n        fail(\"AARProbeFile\", (long)rc);",
+        "    (void)rc;"))
+mutant("leak-dos-open-unchecked", "table", LEAK,
+       ("    if (!f) {\n        fail(\"Open\", 0);\n        return;",
+        "    if (!f) {\n        return;"))
+mutant("leak-dos-seek-end-unchecked", "table", LEAK,
+       ("    if (Seek(f, 0L, OFFSET_END) < 0L)\n        fail(\"Seek to the end\", 0);",
+        "    (void)Seek(f, 0L, OFFSET_END);"))
+mutant("leak-dos-seek-start-unchecked", "table", LEAK,
+       ("    if (Seek(f, 0L, OFFSET_BEGINNING) < 0L)\n        fail(\"Seek to the start\", 0);",
+        "    (void)Seek(f, 0L, OFFSET_BEGINNING);"))
+mutant("leak-dos-read-unchecked", "table", LEAK,
+       ("    if (Read(f, buf, sizeof(buf)) < 0L)\n        fail(\"Read\", 0);",
+        "    (void)Read(f, buf, sizeof(buf));"))
+mutant("leak-dos-close-unchecked", "table", LEAK,
+       ("    if (!Close(f))\n        fail(\"Close\", 0);",
+        "    Close(f);"))
+mutant("leak-file-left-open", "table", LEAK,
+       ("    if (!Close(f))\n        fail(\"Close\", 0);",
+        "    (void)f;"))
 # ---- start needs a load that completed ---------------------------------------------------------
 mutant("start-accepts-unfinished-load", "load_failure", CORE,
        ("(h->load_state != AAR_LOAD_LOADED || h->started))\n        rc = AAR_E_INVAL;",
@@ -385,7 +460,7 @@ def run_one(name, test, path, changes, tmp):
         programs.append(("core_test", sources, False))
         programs.append(("shell_test", ["client/src/aar_core.c", "client/src/refplat.c",
                                         "client/src/aar_probe.c", "client/tests/shell_test.c"], True))
-    flags = ["-std=c11", "-Wall", "-Wextra", "-pedantic", "-Wno-unused-function", "-O1", "-g", "-no-pie", "-fno-pie",
+    flags = ["-std=c11", "-Wall", "-Wextra", "-pedantic", "-Wno-unused-function", "-pthread", "-O1", "-g", "-no-pie", "-fno-pie",
              "-Iclient/tests", "-Iclient/tests/stubs", "-Iclient/include",
              "-I" + os.path.join(ROOT, "include")]
     good = os.path.join(tmp, "good.elf")

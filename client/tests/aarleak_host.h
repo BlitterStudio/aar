@@ -46,9 +46,20 @@ void CloseLibrary(struct Library *library);
 struct MsgPort *CreateMsgPort(void);
 void DeleteMsgPort(struct MsgPort *port);
 void Delay(ULONG ticks);
+void Forbid(void);
+void Permit(void);
 struct Process *CreateNewProcTags(ULONG tag, ...);
 
-/* A function address in a tag value, which is 32 bits on the Amiga. */
-#define AARLEAK_FN(f) ((ULONG)(uintptr_t)(f))
+/* A function address in a tag value is 32 bits on the Amiga and not on the host:
+ * the model hands out an identifier and finds the function again. A name is not
+ * used by the model. */
+ULONG aarleak_fn_id(void (*fn)(void));
+#define AARLEAK_FN(f) aarleak_fn_id((void (*)(void))(f))
+#define AARLEAK_STR(s) 0u
+
+/* An APTR is 32 bits on the Amiga and not on the host: the model hands out an
+ * identifier here as well. */
+const void *aarleak_ptr(APTR id);
+#define AARLEAK_PTR(p) aarleak_ptr(p)
 
 #endif /* AARLEAK_HOST_H */
