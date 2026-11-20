@@ -219,6 +219,21 @@ mutant("wake-without-waiter-check", "dispatcher", SHELL,
        ("    if (waiter)\n        X_SIGNAL(waiter, X_SINGLE);", "    X_SIGNAL(waiter, X_SINGLE);"))
 mutant("wake-after-waiter-left", "single_signal", SHELL,
        ("    shell_wait_done(&b->stop_task);\n", "    b->stop_task = NULL;\n"))
+# ---- a stale answer of the platform revokes the claim and stops its use ---------------------
+mutant("kick-stale-ignored", "stale_platform", CORE,
+       ("        (void)plat_rc(h, rc);\n    }\n}", "        (void)rc;\n    }\n}"))
+mutant("pump-ignores-revoke", "stale_platform", CORE,
+       ("        /* A call below may have revoked the claim (the stale rule). */\n        if (claim_live(h) != AAR_OK)\n            return AAR_E_STALE;\n", ""))
+mutant("take-log-ignores-revoke", "stale_platform", CORE,
+       ("            if (claim_live(h) != AAR_OK) /* its map found the claim gone */\n                return AAR_E_STALE;\n", ""))
+mutant("request-map-ignores-revoke", "stale_platform", CORE,
+       ("                if (claim_live(h) != AAR_OK) /* the claim is gone: nobody to refuse it to */\n                    return AAR_E_STALE;\n", ""))
+mutant("audio-map-ignores-revoke", "stale_platform", CORE,
+       ("        if (claim_live(h) != AAR_OK) { /* its map found the claim gone */\n            leave(h);\n            return AAR_E_STALE;\n        }\n", ""))
+mutant("poll-after-revoke", "stale_platform", CORE,
+       ("            if (claim_live(h) == AAR_OK && c->plat->ops->poll)", "            if (c->plat->ops->poll)"))
+mutant("stop-after-revoke", "stale_platform", CORE,
+       ("        rc = claim_live(h);\n        if (rc == AAR_OK)\n            rc = plat_rc(h, ops_of(h)->stop(plat_of(h), &h->claim));", "        rc = plat_rc(h, ops_of(h)->stop(plat_of(h), &h->claim));"))
 # ---- size and offset arithmetic ---------------------------------------------------------
 mutant("map-length-wraps", "size_arithmetic", CORE,
        ("    if (len > UINT32_MAX - off)\n        return 0;\n", ""))

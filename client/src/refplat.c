@@ -273,8 +273,10 @@ static int op_stop(struct aar_plat *p, struct aar_plat_claim *c)
     int slot = slot_of(c);
 
     (void)p;
-    if (slot < 0 || refplat.claims[slot].revoked)
+    if (slot < 0 || refplat.claims[slot].revoked) {
+        refplat.stale_calls++;
         return AAR_E_STALE;
+    }
     trace(REFPLAT_T_STOP, (uint32_t)slot);
     if (aar_get_be32(refplat.claims[slot].cb + AAR_CB_STATE) == AAR_STATE_RUNNING)
         put_state(&refplat.claims[slot], AAR_STATE_IDLE, AAR_END_FORCED);
@@ -288,6 +290,8 @@ static int op_map(struct aar_plat *p, uint32_t token, uint32_t bytes,
     refplat.maps++;
     if (token == refplat.fail_map_token && token != 0u)
         return AAR_E_NOMEM;
+    if (token == refplat.stale_map_token && token != 0u)
+        return AAR_E_STALE;
     if (token < REFPLAT_TOKEN_BASE || bytes == 0u ||
         token - REFPLAT_TOKEN_BASE > REFPLAT_ARENA_BYTES ||
         bytes > REFPLAT_ARENA_BYTES - (token - REFPLAT_TOKEN_BASE))
@@ -319,8 +323,10 @@ static int op_kick(struct aar_plat *p, struct aar_plat_claim *c, uint32_t bits)
     int slot = slot_of(c);
 
     (void)p;
-    if (slot < 0)
+    if (slot < 0 || refplat.claims[slot].revoked) {
+        refplat.stale_calls++;
         return AAR_E_STALE;
+    }
     if (refplat.kick_busy) {
         refplat.kick_busy--;
         return AAR_E_BUSY;

@@ -1917,6 +1917,157 @@ static void test_notify_answers(void)
     finish();
 }
 
+/*
+ * The rule: a platform call that answers AAR_E_STALE for a handle revokes it at
+ * once (the lease list, the maps, the queue views, the flag), and whatever
+ * called the platform stops using the claim's pointers. Each case lets a
+ * different call site meet the answer; the lease word of the claim must not be
+ * written afterwards (on hardware it may belong to another claim now).
+ */
+static uint32_t lease_word(AARHandle *h)
+{
+    return aar_get_be32(refplat_cb(slot_of(h)) + AAR_CB_LEASE_COUNTER);
+}
+
+/* Passes the vertical blanks of a minute with a live dispatcher. */
+static void run_lease(void)
+{
+    unsigned i;
+
+    for (i = 0; i < 60; i++) {
+        aar_core_dispatch(&core, NULL, NULL);
+        aar_core_vblank(&core);
+    }
+}
+
+static void expect_revoked(AARHandle *h)
+{
+    uint32_t frozen = lease_word(h);
+
+    CHECK(h->revoked == 1 && h->cb == NULL && h->renew == 0);
+    run_lease();
+    CHECK(lease_word(h) == frozen);
+    CHECK(aar_core_status(&core, h, &(AARStatusInfo){ .size = 16 }) == AAR_E_STALE);
+}
+
+static int sink_calls;
+
+static void sink_fn(APTR user, const void *data, ULONG len)
+{
+    (void)user;
+    (void)data;
+    (void)len;
+    sink_calls++;
+}
+
+static void test_stale_platform(void)
+{
+    AARHandle *h, *live;
+    aar_event ev;
+    AARServiceReq req;
+    AARMessage m;
+    uint32_t arg[6] = { 0 };
+    uint32_t tok;
+    uint32_t before;
+    unsigned long polls;
+    int slot, i;
+
+    setup("stale_platform");
+    live = open1(1);
+    before = lease_word(live);
+    run_lease();
+    CHECK(lease_word(live) != before); /* the loop does renew a live claim */
+    /* 1. kick, from a call of the owner (an event posted on a released claim). */
+    h = open1(1);
+    slot = slot_of(h);
+    refplat_revoke(slot);
+    memset(&ev, 0, sizeof(ev));
+    ev.type = AAR_EV_JOY;
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK); /* the event went; the bell was refused */
+    expect_revoked(h);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 2. kick, from the dispatcher (a bell that was busy, then the claim went). */
+    h = open1(1);
+    slot = slot_of(h);
+    refplat.kick_busy = 1;
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK && h->kick_pending != 0);
+    refplat_revoke(slot);
+    polls = refplat.polls;
+    dispatch_once();
+    CHECK(refplat.polls - polls == 1); /* the live claim only: the platform is not polled for the dead one */
+    expect_revoked(h);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 3. kick, at the start of a service call: it goes no further. */
+    h = open1(1);
+    slot = slot_of(h);
+    refplat.kick_busy = 1;
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK && h->kick_pending != 0);
+    refplat_revoke(slot);
+    memset(&req, 0, sizeof(req));
+    req.size = sizeof(req);
+    CHECK(aar_core_service_next(&core, h, &req) == AAR_E_STALE);
+    expect_revoked(h);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 4. kick, after a message sent and after a reply. */
+    h = open1(1);
+    refplat_revoke(slot_of(h));
+    memset(&m, 0, sizeof(m));
+    CHECK(aar_core_send_message(&core, h, &m) == AAR_OK);
+    expect_revoked(h);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 5. the stop of a handle whose event answered stale: no platform stop follows. */
+    h = open1(1);
+    refplat_revoke(slot_of(h));
+    refplat.stale_calls = 0;
+    CHECK(aar_core_stop(&core, h) == AAR_E_STALE);
+    CHECK(refplat.stale_calls == 1); /* the bell found it; the stop did not go on to ask again */
+    expect_revoked(h);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 6. map, for the buffer of a request: refused to the app? no: the claim is
+     * gone, nothing is posted and nothing is read from its queues. */
+    h = open1(1);
+    slot = slot_of(h);
+    tok = refplat_buf_token(slot, 0x4000);
+    refplat.stale_map_token = tok;
+    CHECK(refplat_app_request(slot, AAR_OP_FILE_READ, 0, 5, arg, tok, 0, 100) == AAR_OK);
+    memset(&req, 0, sizeof(req));
+    req.size = sizeof(req);
+    CHECK(aar_core_service_next(&core, h, &req) == AAR_E_STALE);
+    expect_revoked(h);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 7. map, for a log record. */
+    h = open1(1);
+    slot = slot_of(h);
+    h->log_sink = sink_fn;
+    refplat.stale_map_token = tok;
+    CHECK(refplat_app_log(slot, tok, 0, 8) == AAR_OK);
+    CHECK(aar_core_get_message(&core, h, &m) == AAR_E_STALE && sink_calls == 0);
+    expect_revoked(h);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 8. map, for the ring of an audio stream. */
+    h = open1(1);
+    slot = slot_of(h);
+    refplat.stale_map_token = 0;
+    tok = refplat_buf_token(slot, 0x2000);
+    CHECK(refplat_app_request(slot, AAR_OP_AUDIO_OPEN, 0, 9, arg, tok, 0, 0x1000) == AAR_OK);
+    memset(&req, 0, sizeof(req));
+    req.size = sizeof(req);
+    CHECK(aar_core_service_next(&core, h, &req) == AAR_OK);
+    for (i = 0; i < (int)AAR_CORE_OUTSTANDING; i++)
+        if (h->out[i].op == AAR_OP_AUDIO_OPEN)
+            h->out[i].buf_len = 0x4000; /* more than is mapped: the platform is asked */
+    refplat.stale_map_token = tok;
+    req.result = AAR_OK;
+    req.out[AAR_R_AUDIO_OPEN_FRAMES] = 64;
+    CHECK(aar_core_service_reply(&core, h, &req) == AAR_E_STALE);
+    expect_revoked(h);
+    CHECK(refplat_app_cq_used(slot) == 0); /* nothing was posted on the dead claim */
+    refplat.stale_map_token = 0;
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    CHECK(aar_core_close(&core, live) == AAR_OK);
+    finish();
+}
+
 int main(void)
 {
     test_open_close_many();
@@ -1938,6 +2089,7 @@ int main(void)
     test_notify();
     test_notify_answers();
     test_revoke();
+    test_stale_platform();
     test_alloc_balance();
     test_open_failures();
     test_size_arithmetic();

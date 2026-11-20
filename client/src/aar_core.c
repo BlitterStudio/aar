@@ -349,6 +349,16 @@ static void revoke(AARHandle *h)
     h->revoked = 1u;
 }
 
+/*
+ * The stale rule: a platform call that answers AAR_E_STALE for a handle
+ * revokes it at once (revoke above: the lease list, the maps, the queue views),
+ * and whatever made the call stops using the claim's pointers. Every call of
+ * the platform that takes the claim or maps its memory goes through plat_rc
+ * (map, load_begin, load_chunk, load_end, start, stop, kick); calls that return
+ * nothing (poll, cache_publish, cache_acquire) cannot report it, and token and
+ * ext take no claim. A call site that can revoke is followed by claim_live
+ * before anything else touches h->cb, h->sq, h->cq or a map.
+ */
 static int plat_rc(AARHandle *h, int rc)
 {
     if (rc == AAR_E_STALE)
@@ -985,15 +995,20 @@ int aar_core_start(aar_core *c, AARHandle *h, const char *const *argv, ULONG arg
 static void kick_send(AARHandle *h)
 {
     const struct aar_plat_ops *o = ops_of(h);
+    int rc;
 
     if (!h->kick_pending || !o->kick || claim_live(h) != AAR_OK)
         return;
-    if (o->kick(plat_of(h), &h->claim, h->kick_pending) == AAR_OK) {
+    rc = o->kick(plat_of(h), &h->claim, h->kick_pending);
+    if (rc == AAR_OK) {
         h->kick_pending = 0u;
         h->stats.kicks++;
+    } else {
+        /* BUSY: the previous bell is still on its way; the bits stay for the
+         * next pass. The kick is a hint, a lost one costs latency only. STALE
+         * revokes the claim. */
+        (void)plat_rc(h, rc);
     }
-    /* BUSY: the previous bell is still on its way; the bits stay for the next
-     * pass. The kick is a hint, a lost one costs latency only. */
 }
 
 static void kick(AARHandle *h, uint32_t bits)
@@ -1018,8 +1033,10 @@ static void note_event_drop(AARHandle *h)
 static int mouse_post(AARHandle *h)
 {
     const struct aar_plat_ops *o = ops_of(h);
-    int rc;
+    int rc = claim_live(h);
 
+    if (rc != AAR_OK)
+        return rc;
     if (!h->mouse_pending)
         return AAR_OK;
     rc = aar_queue_post_event(&h->cq, &h->mouse, o->barrier_acquire,
@@ -1079,6 +1096,9 @@ static int post_event(AARHandle *h, const aar_event *ev)
     }
     if (rc != AAR_OK)
         return rc;
+    rc = claim_live(h); /* the bell of the mouse event may have found the claim gone */
+    if (rc != AAR_OK)
+        return rc;
     rc = aar_queue_post_event(&h->cq, ev, o->barrier_acquire, o->barrier_release);
     if (rc == AAR_OK) {
         h->stats.events_posted++;
@@ -1114,7 +1134,10 @@ int aar_core_stop(aar_core *c, AARHandle *h)
         memset(&ev, 0, sizeof(ev));
         ev.type = AAR_EV_STOP;
         (void)post_event(h, &ev);
-        rc = plat_rc(h, ops_of(h)->stop(plat_of(h), &h->claim));
+        /* The event's bell may have found the claim gone: no stop then. */
+        rc = claim_live(h);
+        if (rc == AAR_OK)
+            rc = plat_rc(h, ops_of(h)->stop(plat_of(h), &h->claim));
     }
     leave(h);
     return rc;
@@ -1276,9 +1299,13 @@ static int sq_pump(AARHandle *h, AARServiceReq *req)
         const volatile uint8_t *slot;
         aar_request r;
         aar_outstanding *out;
-        int rc = aar_queue_peek(&h->sq, o->barrier_acquire, &slot);
+        int rc;
         uint16_t op;
 
+        /* A call below may have revoked the claim (the stale rule). */
+        if (claim_live(h) != AAR_OK)
+            return AAR_E_STALE;
+        rc = aar_queue_peek(&h->sq, o->barrier_acquire, &slot);
         if (rc <= 0)
             return rc;
         op = aar_get_be16(slot + AAR_ENTRY_OP);
@@ -1297,6 +1324,8 @@ static int sq_pump(AARHandle *h, AARServiceReq *req)
         aar_entry_get_request(slot, &r);
         if (op == AAR_OP_LOG) {
             take_log(h, &r);
+            if (claim_live(h) != AAR_OK) /* its map found the claim gone */
+                return AAR_E_STALE;
             sq_pop(h);
             continue;
         }
@@ -1326,6 +1355,9 @@ static int sq_pump(AARHandle *h, AARServiceReq *req)
             if (map_range(h, r.buf, r.buf_off, r.buf_len, &p, NULL) != AAR_OK) {
                 aar_completion comp;
 
+                if (claim_live(h) != AAR_OK) /* the claim is gone: nobody to refuse it to */
+                    return AAR_E_STALE;
+
                 /* The platform named memory it does not have: refuse it, so
                  * the app is not left waiting. With no room on the CQ leave
                  * the entry for the next pass. */
@@ -1337,8 +1369,8 @@ static int sq_pump(AARHandle *h, AARServiceReq *req)
                                               o->barrier_release) != AAR_OK)
                     return 0;
                 h->stats.bad_buf++;
-                kick_send(h);
                 sq_pop(h);
+                kick_send(h); /* last: it may revoke the claim */
                 continue;
             }
             req->ptr = APTR_OF(p);
@@ -1448,6 +1480,10 @@ int aar_core_service_reply(aar_core *c, AARHandle *h, const AARServiceReq *req)
         /* The ring is attached before the app is told it is open. A ring that
          * does not check out turns the completion into a refusal. */
         rc = audio_attach(h, out->buf, out->buf_len, local.out[AAR_R_AUDIO_OPEN_FRAMES]);
+        if (claim_live(h) != AAR_OK) { /* its map found the claim gone */
+            leave(h);
+            return AAR_E_STALE;
+        }
         if (rc != AAR_OK) {
             local.result = rc;
             memset(local.out, 0, sizeof(local.out));
@@ -1902,12 +1938,12 @@ void aar_core_dispatch(aar_core *c, aar_core_notify_fn notify, void *user)
         if (h->state != AAR_H_LIVE)
             continue;
         if (bg_take(c, h)) {
-            if (claim_live(h) == AAR_OK) {
+            if (claim_live(h) == AAR_OK)
                 kick_send(h);
+            if (claim_live(h) == AAR_OK) /* the bell may have found the claim gone */
                 (void)mouse_post(h);
-                if (c->plat->ops->poll)
-                    c->plat->ops->poll(c->plat, &h->claim);
-            }
+            if (claim_live(h) == AAR_OK && c->plat->ops->poll)
+                c->plat->ops->poll(c->plat, &h->claim);
             h->bg = 0u;
         }
         type = notify_scan(h, t, &tail, &carries_end);

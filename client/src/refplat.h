@@ -81,9 +81,11 @@ struct refplat_state {
     uint32_t chunk_max;           /* the most a chunk may carry (0: REFPLAT_CHUNK_MAX); more than that overruns the staging area, so a test that raises it expects the caller to cap */
     struct aar_plat_info info;    /* the constants; a test may change them */
     uint32_t fail_map_token;      /* a map of this token answers AAR_E_NOMEM (0: none) */
+    uint32_t stale_map_token;     /* a map of this token answers AAR_E_STALE (0: none) */
     /* observations */
     uint32_t attaches, detaches;
     uint32_t polls;
+    uint32_t stale_calls;         /* kicks and stops that reached a claim the platform had revoked */
     uint32_t maps;                /* calls of the map operation */
     uint32_t publishes, acquires; /* cache maintenance calls */
     uint32_t last_cache_len;
