@@ -4,12 +4,13 @@
 # build-m68k-amigaos.sh). Run it inside that image, from the aar checkout:
 #
 #   docker run --rm -v "$PWD:/src:ro" \
-#     amigadev/crosstools@sha256:c0e453fde28fd9c52461f4f9a926c4481548dcfcaca94b0740d8cce4561f2e1e \
+#     amigadev/crosstools@sha256:6d96ee62dfac1ca84d54b063b4cfbc82bc6bf0971d6f5200be848d8c2f5fceee \
 #     sh -c 'cp -r /src /w && cd /w && client/tests/m68k_check.sh'
 #
 # It compiles client/tests/m68k_compile_test.c with warnings as errors, then
 # checks the object: the 24 vector offsets of the .fd file all appear as calls
-# through the library base, and no symbol is left undefined.
+# through the library base, and no symbol is left undefined. It then compiles
+# the library sources (core, probe, shell, reference platform), see below.
 #
 # SPDX-License-Identifier: MIT
 set -eu
@@ -39,24 +40,44 @@ while [ "$lvo" -le 168 ]; do
 done
 [ "$missing" = 0 ]
 
-# The portable sources compile for the 68k with no warning, stay inside the
-# stack the library build allows, and need nothing from the C library but the
-# string functions (no 64-bit division or multiplication helpers).
-for src in client/src/aar_probe.c; do
-    "$CC" -std=gnu11 -noixemul -m68020 -Os -Wall -Wextra -Werror -pedantic \
-        -Wstack-usage=4000 -Iclient/include -Iinclude -c "$src" -o "$OUT/src.o"
-    bad=$("$NM" "$OUT/src.o" | awk '$1 == "U" { print $2 }' | \
-        grep -Ev '^_?(memcpy|memset|memcmp)$' || true)
+# The library sources compile for the 68k with no warning, no function uses
+# more than 1 KiB of stack (so none of the interrupt and dispatcher paths does),
+# and each leaves undefined only what it should: the core and the probe the
+# string functions (no 64-bit division or multiplication helpers), the
+# reference platform also the core's three extension functions, the shell
+# utility.library's base and the core, probe and platform entry points. The
+# shell is not built with -pedantic: the NDK's inline stubs convert function
+# pointers. The largest stack frames are printed (-fstack-usage).
+STR='memcpy|memset|memcmp|strlen'
+check_source() {
+    src=$1
+    allowed=$2
+    shift 2
+    "$CC" -std=gnu11 -noixemul -m68020 -Os -Wall -Wextra -Werror "$@" \
+        -Wstack-usage=1024 -fstack-usage -Iclient/include -Iinclude -c "$src" -o "$OUT/src.o"
+    # No pipelines: each program's status is checked (set -e), grep's only for
+    # an error (1 means nothing was left over, which is the good case).
+    "$NM" "$OUT/src.o" > "$OUT/src.nm"
+    awk '$1 == "U" { print $2 }' "$OUT/src.nm" > "$OUT/src.undef"
+    grep -Ev "$allowed" "$OUT/src.undef" > "$OUT/src.bad" || [ $? -eq 1 ]
+    bad=$(cat "$OUT/src.bad")
     if [ -n "$bad" ]; then
         echo "$src needs: $bad"
         exit 1
     fi
-    echo "$src: compiles for m68k, 0 warnings"
-done
+    sort -t'	' -k2 -n -r "$OUT/src.su" > "$OUT/src.sorted"
+    top=$(awk -F'	' 'NR == 1 { print $1 " " $2 " bytes" }' "$OUT/src.sorted")
+    echo "$src: compiles for m68k, 0 warnings, largest stack frame: $top"
+}
+check_source client/src/aar_probe.c "^_?($STR)\$" -pedantic
+check_source client/src/aar_core.c "^_?($STR)\$" -pedantic
+check_source client/src/refplat.c "^_?($STR|aar_core_ext_(stats|lease_pause|set_log_sink))\$" -pedantic
+check_source client/src/aar_shell.c "^_?($STR|UtilityBase|aar_plat_get|aar_core_[a-z_]+|aar_probe_[a-z_]+)\$"
 
 # The test defines AARBase itself; every call goes through it, so nothing
 # else may be undefined (no stub library, no helper function).
-undefined=$("$NM" "$OUT/t.o" | awk '$1 == "U" { print $2 }' | tr '\n' ' ')
+"$NM" "$OUT/t.o" > "$OUT/t.nm"
+undefined=$(awk '$1 == "U" { printf "%s ", $2 }' "$OUT/t.nm")
 if [ -n "$undefined" ]; then
     echo "undefined symbols: $undefined"
     exit 1

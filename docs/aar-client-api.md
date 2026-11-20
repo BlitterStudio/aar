@@ -145,6 +145,14 @@ Events coalesce. The type is `AAR_NOTIFY_MESSAGE` if a message is waiting, else
 `AAR_NOTIFY_REQUEST`. Take the event off the port, drain the messages, then
 serve the requests. Before `AARClose` drain the port and then the message ring.
 
+The end of the app is never lost behind an earlier event. If the app ends while
+an event is still on the port, the library posts nothing at that moment; as
+soon as the client has taken the old event, it posts one that carries the end
+status (its type is `AAR_NOTIFY_MESSAGE` while a message is still waiting,
+else `AAR_NOTIFY_COMPLETE` or `AAR_NOTIFY_FAULT`). Until then the owner is
+signalled at each vertical blank. Read `AARStatus` after every event: the
+status in an event is the one of the moment it was posted.
+
 Only handles that have been armed are watched: calling `AARMessageSignal` or
 giving a notify port arms one. A client that polls from its own timer (ZZRun
 does, every millisecond) never arms and costs the library nothing. On the
@@ -162,6 +170,13 @@ client, then the library releases it as for any dead owner. If the library's
 own dispatcher process dies or stalls for five seconds, the library stops
 renewing and the platform's lease expires, so a crashed library cannot hold an
 app for ever.
+
+The dispatcher process starts with the first call that needs the platform
+(`AARQuery`, `AAROpen`, `AARExt`), and the last `CloseLibrary` stops it and
+returns only after it has ended and its interrupt is gone. Neither needs a free
+signal bit of the calling task, so a task that has opened no handle can start
+and stop it. Expunging the library waits for the same, so a library that is
+flushed from memory leaves no process running in freed memory.
 
 ## Structures
 
@@ -383,7 +398,13 @@ take them.
 All calls return a `LONG`: `AAR_OK` (0) or a negative `AAR_E_*`, except
 `AARMessageSignal` and `AARExt`. Every call that takes a handle returns
 `AAR_E_OWNER` when the calling task does not own the handle, and `AAR_E_STALE`
-when the handle is closed or revoked. These are not repeated below.
+when the handle is closed or revoked. The owner is checked first, then whether
+the claim is still live, and only then the arguments and any file open. A
+revoked handle therefore returns `AAR_E_STALE`, not `AAR_E_INVAL` or
+`AAR_E_NOENT`, and `AARGetMessage` does not hand out a message that arrived
+before the revoke. `AARClose` is the exception: it still releases the claim
+and returns `AAR_OK` when the platform has already revoked it. These codes are
+not repeated below.
 
 ### AARQuery
 
@@ -483,7 +504,7 @@ seconds. A load that keeps making progress is not timed out.
 
 | Error | Cause |
 |---|---|
-| `AAR_E_BUSY` | an image is already loaded, or the app has started |
+| `AAR_E_BUSY` | a load was already tried on this handle (also one that failed or was cut short), or the app has started |
 | `AAR_E_NOENT` | the file cannot be opened |
 | `AAR_E_IO` | a read failed, or Ctrl-C |
 | `AAR_E_INVAL` | the file is empty or larger than `AARInfo.max_image_bytes`, or the platform's loader refuses the image |
@@ -498,6 +519,13 @@ LONG AARLoadMemory(AARHandle *handle, const void *data, ULONG length);
 
 The same for an image in memory.
 
+Only a load that completed can be started. A load that fails after it began (a
+failed chunk or end, a Ctrl-C, a read error) leaves the handle unloaded for good:
+`AARStart` returns `AAR_E_INVAL` and a new load returns `AAR_E_BUSY`. Close
+the handle and open another. A load the platform refused to begin (for example
+`AAR_E_NORESOURCE` with a `reason`) leaves the handle as it was, and a new
+load may be tried on it.
+
 ### AARStart
 
 ```c
@@ -507,7 +535,10 @@ LONG AARStart(AARHandle *handle, const char *const *argv, ULONG argc);
 Starts the loaded image with `argc` strings, at most `AARInfo.max_args`, each
 under `AARInfo.max_arg_bytes` bytes with its NUL. The first is the program
 name. `argv` may be NULL when `argc` is 0. Returns `AAR_E_INVAL` for a bad
-argument, or when no image is loaded or the app has started already.
+argument, or when no image is loaded (a load that failed or was cut short counts as
+none), or the app has started already. When the platform itself fails the start,
+the error is returned, the handle cannot be started again, and the next step is
+`AARClose`.
 
 ### AARStop
 
@@ -577,7 +608,7 @@ may belong to another app.
 
 | Error | Cause |
 |---|---|
-| `AAR_E_INVAL` | `bytes` is 0, a flag is set, or the range is outside the aperture |
+| `AAR_E_INVAL` | `bytes` is 0, a flag is set, the range is outside the aperture, or the range rounded up to 8 KiB does not fit in 32 bits (the same holds for the buffer of a service request, which the library refuses to the app) |
 | `AAR_E_NOMEM` | no memory for the map |
 | `AAR_E_NOSYS` | the platform cannot map (ZZ9000: no `mmu.library`) |
 | `AAR_E_STALE` | the handle's claim has been revoked |
@@ -638,7 +669,13 @@ releases the request's staging storage. Returns `AAR_E_BUSY` when the
 completion queue is full: keep the request and try again. A reply whose `op`
 and `id` match no outstanding request is `AAR_E_INVAL`. The library notes an
 `AAR_OP_AUDIO_OPEN` completion with `AAR_OK` to attach the audio ring for
-`AARAudioRead`, and `AAR_OP_AUDIO_CLOSE` to detach it.
+`AARAudioRead`, and `AAR_OP_AUDIO_CLOSE` to detach it. If the ring does not
+check out (a bad header, a frame count that is not a power of two or does not
+fit the ring), the app is not told it is open: the library posts a refusal
+completion (the error as `result`, `out` zero) instead of the client's, and
+`AARServiceReply` returns that error (`AAR_E_IO` or `AAR_E_INVAL`) so the
+client learns that the ring was refused. The request is answered either way and
+must not be replied to again.
 
 The library does not know which ops the client serves. A client that serves
 only some must answer the others with `AAR_E_NOSYS` itself. `aar_serve` does.
@@ -653,7 +690,9 @@ Pushes an input event to the app: a key, the mouse, a joystick, a stop request
 or a break. It takes the app's event structure from `aar/app.h`, not an
 `AAREvent`. Mouse motion is merged while the queue is full or an event is
 pending. Returns `AAR_E_BUSY` when a full queue drops the event; the library
-counts the drop in `AARStatusInfo.events_dropped`.
+counts the drop in `AARStatusInfo.events_dropped`. A merged mouse event that the
+queue had no room for is posted by the library's dispatcher as soon as there is
+room (within a vertical blank); the client does not have to call again.
 
 ### AARAudioRead
 
@@ -666,6 +705,10 @@ into `dst` as interleaved `WORD` samples in 68k byte order. `*got` is the
 number copied. Fewer than `frames` counts an underrun in the ring. Returns
 `AAR_E_INVAL` when no audio ring is open, and `AAR_E_IO` when the ring is
 corrupt.
+
+With `frames` 0 the call is a query: it returns `AAR_OK` with `*got` set to the
+number of frames that can be read now, consumes nothing and counts no
+underrun. `dst` may be NULL then. `got` is always required.
 
 ### AARSharedToken
 
@@ -684,8 +727,9 @@ APTR AARExt(ULONG platform_id, ULONG ext_id);
 ```
 
 Returns a platform extension table, or NULL when this platform does not have
-that `platform_id` or `ext_id`. A table is size-first and append-only. For the
-ZZ9000, see [ZZ9000 extension](#zz9000-extension).
+that `platform_id` or `ext_id`, or when the platform cannot be attached (no
+board, a `zz9k.library` that is too old). A table is size-first and
+append-only. For the ZZ9000, see [ZZ9000 extension](#zz9000-extension).
 
 ## Errors
 
