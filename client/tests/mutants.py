@@ -28,6 +28,7 @@ CC = os.environ.get("CC", "gcc")
 
 CORE = "client/src/aar_core.c"
 SHELL = "client/src/aar_shell.c"
+LEAK = "client/tests/amiga/aarleak.c"
 
 # (name, test, file, [(old, new, count)])  count None: exactly one occurrence
 M = []
@@ -240,6 +241,16 @@ mutant("admission-skips-ctl", "admission", SHELL,
         "    if (!b->dispatcher_up)\n        rc = shell_dispatcher_start(b);"))
 mutant("expunge-ignores-reopen", "admission", SHELL,
        ("    return b->library.lib_OpenCnt == 0 && !b->disp_process", "    return !b->disp_process"))
+# ---- the leak probe waits for the processes that started -------------------------------------
+mutant("hold-waits-for-asked-ready", "hold", LEAK,
+       ("    while (child_ready < started)\n", "    while (child_ready < n)\n"))
+mutant("hold-waits-for-asked-exit", "hold", LEAK,
+       ("    while (child_exited < started)\n", "    while (child_exited < n)\n"))
+mutant("hold-reports-success", "hold", LEAK,
+       ("    return started == n;", "    return 1;"))
+mutant("children-report-success", "children", LEAK,
+       ("            printf(\"CreateNewProc failed after %lu children\\n\", (unsigned long)i);\n            return 0;",
+        "            printf(\"CreateNewProc failed after %lu children\\n\", (unsigned long)i);\n            return 1;"))
 # ---- size and offset arithmetic ---------------------------------------------------------
 mutant("map-length-wraps", "size_arithmetic", CORE,
        ("    if (len > UINT32_MAX - off)\n        return 0;\n", ""))
@@ -335,6 +346,7 @@ def run_one(name, test, path, changes, tmp):
         fh.write(text)
 
     is_shell = path == SHELL
+    is_leak = path == LEAK
     sources = ["client/src/aar_core.c", "client/src/refplat.c"]
     if is_shell:
         sources += ["client/src/aar_probe.c", "client/tests/shell_test.c"]
@@ -343,13 +355,15 @@ def run_one(name, test, path, changes, tmp):
         sources += ["client/tests/core_test.c"]
     # A core mutant is run against both test programs; the named test fails in one of them.
     programs = []
-    if is_shell:
+    if is_leak:
+        programs.append(("aarleak_test", ["client/tests/aarleak_test.c"], False))
+    elif is_shell:
         programs.append(("shell_test", sources, True))
     else:
         programs.append(("core_test", sources, False))
         programs.append(("shell_test", ["client/src/aar_core.c", "client/src/refplat.c",
                                         "client/src/aar_probe.c", "client/tests/shell_test.c"], True))
-    flags = ["-std=c11", "-Wall", "-Wextra", "-pedantic", "-O1", "-g", "-no-pie", "-fno-pie",
+    flags = ["-std=c11", "-Wall", "-Wextra", "-pedantic", "-Wno-unused-function", "-O1", "-g", "-no-pie", "-fno-pie",
              "-Iclient/tests", "-Iclient/tests/stubs", "-Iclient/include",
              "-I" + os.path.join(ROOT, "include")]
     good = os.path.join(tmp, "good.elf")

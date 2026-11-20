@@ -11,7 +11,13 @@
  *   aarleak LIBRARY_PATH notify N         N times AAROpen with a notify port + AARClose
  *
  * Each mode does one warm-up pass, then prints AvailMem(MEMF_ANY) before and
- * after, and the bytes lost per pass.
+ * after, and the bytes lost per pass. A run in which a process could not be
+ * created is reported as failed (exit code 10); the processes that did start
+ * are released and joined first.
+ *
+ * The process handling is tested on the host (client/tests/aarleak_test.c),
+ * which compiles this file against a model of the calls it makes
+ * (AARLEAK_HOST).
  *
  * SPDX-License-Identifier: MIT
  */
@@ -19,8 +25,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef AARLEAK_HOST
+#include "../aarleak_host.h"
+#else
+#include <dos/dostags.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
+#define AARLEAK_FN(f) ((ULONG)(f))
+#endif
 
 #include <proto/aar.h>
 #include <libraries/aar_zz9000.h>
@@ -79,8 +91,6 @@ static void probe_once(const char *file)
     (void)AARProbeFile(file, &info);
 }
 
-#include <dos/dostags.h>
-
 static volatile int child_done;
 static volatile ULONG child_ready, child_exited;
 static volatile int child_go;
@@ -117,27 +127,36 @@ static void child_main(void)
     child_done = 1;
 }
 
-static void run_children(ULONG n)
+/* One child after the other, each joined before the next starts: a process that
+ * cannot be created ends the run with nothing left to join. 1 when all ran. */
+static int run_children(ULONG n)
 {
     ULONG i;
 
     for (i = 0; i < n; i++) {
         child_done = 0;
-        if (!CreateNewProcTags(NP_Entry, (ULONG)child_main, NP_Name, (ULONG)"aarleak child",
-                               NP_StackSize, 8192, TAG_DONE)) {
-            printf("CreateNewProc failed\n");
-            return;
+        if (!CreateNewProcTags(NP_Entry, AARLEAK_FN(child_main), NP_Name,
+                               AARLEAK_FN("aarleak child"), NP_StackSize, 8192, TAG_DONE)) {
+            printf("CreateNewProc failed after %lu children\n", (unsigned long)i);
+            return 0;
         }
         while (!child_done)
             Delay(1);
         Delay(3); /* the child's exit */
     }
+    return 1;
 }
 
-/* All children at once, each holding its handle until every one is open. */
-static void run_hold(ULONG n)
+/*
+ * All children at once, each holding its handle until every one is open. The
+ * waits are for the children that were started, not for the n that were asked
+ * for: a process that cannot be created stops the spawning, and the ones that
+ * did start are released and joined, so the probe neither hangs nor leaves
+ * them blocked. 1 when all n ran.
+ */
+static int run_hold(ULONG n)
 {
-    ULONG i;
+    ULONG i, started = 0;
 
     child_ready = child_exited = 0;
     child_go = 0;
@@ -149,31 +168,36 @@ static void run_hold(ULONG n)
          * the NIL: handles that CreateNewProc opens for the child, so each
          * child leaves two file handles behind. */
         if (child_toolflags)
-            p = CreateNewProcTags(NP_Entry, (ULONG)child_main, NP_Name, (ULONG)"aarleak child",
-                                  NP_StackSize, 16384, NP_CloseInput, FALSE,
-                                  NP_CloseOutput, FALSE, TAG_DONE);
+            p = CreateNewProcTags(NP_Entry, AARLEAK_FN(child_main), NP_Name,
+                                  AARLEAK_FN("aarleak child"), NP_StackSize, 16384,
+                                  NP_CloseInput, FALSE, NP_CloseOutput, FALSE, TAG_DONE);
         else
-            p = CreateNewProcTags(NP_Entry, (ULONG)child_main, NP_Name, (ULONG)"aarleak child",
-                                  NP_StackSize, 16384, TAG_DONE);
+            p = CreateNewProcTags(NP_Entry, AARLEAK_FN(child_main), NP_Name,
+                                  AARLEAK_FN("aarleak child"), NP_StackSize, 16384, TAG_DONE);
         if (!p) {
-            printf("CreateNewProc failed\n");
+            printf("CreateNewProc failed after %lu of %lu children\n", (unsigned long)started,
+                   (unsigned long)n);
             break;
         }
+        started++;
     }
-    while (child_ready < n)
+    while (child_ready < started)
         Delay(5);
     child_go = 1;
-    while (child_exited < n)
+    while (child_exited < started)
         Delay(5);
     Delay(25);
     child_hold = 0;
+    return started == n;
 }
+
+#ifndef AARLEAK_HOST
 
 int main(int argc, char **argv)
 {
     ULONG n, i, before, after;
     const char *mode;
-    int rc = 0;
+    int rc = 0, ok;
 
     if (argc < 4) {
         printf("usage: aarleak LIBRARY churn|tasks|notify N | probe|dos FILE N\n");
@@ -238,19 +262,35 @@ int main(int argc, char **argv)
         n = (ULONG)strtoul(argv[3], NULL, 0);
         child_use_library = mode[4] == '\0';
         child_toolflags = argc > 4 && strcmp(argv[4], "TOOLFLAGS") == 0;
-        run_hold(2);
-        before = avail();
-        run_hold(n);
-        after = avail();
-        report(mode, before, after, n);
+        if (!run_hold(2)) {
+            printf("FAILED: the warm-up pass could not start its children\n");
+            rc = 1;
+        } else {
+            before = avail();
+            ok = run_hold(n);
+            after = avail();
+            report(mode, before, after, n);
+            if (!ok) {
+                printf("FAILED: not every child started\n");
+                rc = 1;
+            }
+        }
     } else if (strcmp(mode, "tasks") == 0 || strcmp(mode, "bare") == 0) {
         n = (ULONG)strtoul(argv[3], NULL, 0);
         child_use_library = mode[0] == 't';
-        run_children(2);
-        before = avail();
-        run_children(n);
-        after = avail();
-        report(mode, before, after, n);
+        if (!run_children(2)) {
+            printf("FAILED: the warm-up pass could not start its children\n");
+            rc = 1;
+        } else {
+            before = avail();
+            ok = run_children(n);
+            after = avail();
+            report(mode, before, after, n);
+            if (!ok) {
+                printf("FAILED: not every child started\n");
+                rc = 1;
+            }
+        }
     } else if ((strcmp(mode, "probe") == 0 || strcmp(mode, "dos") == 0) && argc >= 5) {
         n = (ULONG)strtoul(argv[4], NULL, 0);
         if (mode[0] == 'p')
@@ -273,3 +313,4 @@ int main(int argc, char **argv)
     CloseLibrary(AARBase);
     return rc ? 10 : 0;
 }
+#endif /* !AARLEAK_HOST */
