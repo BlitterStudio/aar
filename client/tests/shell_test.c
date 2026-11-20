@@ -1014,6 +1014,80 @@ static void test_notify_terminal(void)
     finish();
 }
 
+/*
+ * Lifecycle states are not reused for two meanings. The records of a task that
+ * is gone are reclaimed whatever state they were left in: an opener record
+ * hidden because its task address was reused, one left "closing" by a closer
+ * that died, a handle left closing by one that died in AARClose.
+ */
+static unsigned openers_of(const void *id)
+{
+    const struct AAROpener *o;
+    unsigned n = 0;
+
+    for (o = base.openers; o; o = o->next)
+        n += o->stamp.id == id;
+    return n;
+}
+
+static void test_opener_states(void)
+{
+    AARHandle *a, *c;
+    AARStatusInfo st;
+    static char other_name[8];
+
+    setup("opener_states");
+    st.size = sizeof(st);
+    /* 1. A task is gone and another has its address; the new one opens. */
+    USE(1);
+    CHECK(lib_open() == AAR_OK);
+    a = open_h(NULL);
+    shell_pass(&base);
+    T(1)->name = other_name;
+    CHECK(lib_open() == AAR_OK);
+    CHECK(openers_of(T(1)) == 1); /* the old record is reclaimed, not hidden */
+    CHECK(refplat_live() == 1);
+    vblanks(50);
+    shell_pass(&base);
+    CHECK(refplat_live() == 0 && a->state == AAR_H_DEAD); /* its handle is reaped as a dead owner's */
+    CHECK(v_status(a, &st) == AAR_E_STALE);
+    /* The new task closes the library: nothing of the old task is left. */
+    base.library.lib_OpenCnt = 1;
+    (void)shell_close(&base);
+    CHECK(openers_of(T(1)) == 0);
+    CHECK(v_close(a) == AAR_E_STALE);
+    T(1)->listed = 0;
+    vblanks(50);
+    shell_pass(&base);
+    CHECK(hx_live_blocks == 0);
+    /* 2. A closer died after it marked its record closing: the record goes
+     * with its task. */
+    setup("opener_states");
+    USE(2);
+    CHECK(lib_open() == AAR_OK);
+    CHECK(openers_of(T(2)) == 1);
+    base.openers->closing = 1;
+    T(2)->listed = 0;
+    vblanks(50);
+    shell_pass(&base);
+    CHECK(openers_of(T(2)) == 0);
+    /* 3. A closer died inside AARClose: the handle is closing for good. It is
+     * taken like any other handle of a dead owner. */
+    USE(3);
+    CHECK(lib_open() == AAR_OK);
+    c = open_h(NULL);
+    CHECK(refplat_live() == 1);
+    c->state = AAR_H_CLOSING;
+    T(3)->listed = 0;
+    vblanks(50);
+    shell_pass(&base);
+    CHECK(refplat_live() == 0); /* released; the task is absent, so the tombstone went too */
+    CHECK(hx_live_blocks == 0 && base.openers == NULL);
+    base.library.lib_OpenCnt = 0;
+    shell_final_close(&base);
+    finish();
+}
+
 int main(int argc, char **argv)
 {
     uint32_t len = 0;
@@ -1036,6 +1110,7 @@ int main(int argc, char **argv)
     test_notify_terminal();
     test_dead_owner_no_signal();
     test_reap();
+    test_opener_states();
     test_rename();
     test_lease_gate();
     test_ext();

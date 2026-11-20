@@ -390,7 +390,9 @@ static void reap_openers(struct AARBase *b)
     prior = NULL;
     for (o = b->openers; o; o = next) {
         next = o->next;
-        if (!o->closing && shell_owner_state(b, &o->stamp) != AAR_OWNER_ALIVE) {
+        /* Whatever state it was left in (a closer that died has left it
+         * closing): the record of a task that is gone is nobody's. */
+        if (shell_owner_state(b, &o->stamp) != AAR_OWNER_ALIVE) {
             if (prior)
                 prior->next = next;
             else
@@ -447,20 +449,27 @@ static int shell_init(struct AARBase *b)
     return aar_core_init(&b->core, aar_plat_get(), &env);
 }
 
-/* OpenLibrary: a record for the calling task, or one more reference on it. A
- * record whose task address now belongs to another task is stale: its task is
- * gone, so it is left to the reap and the new task gets a record of its own. */
+/*
+ * OpenLibrary: a record for the calling task, or one more reference on it. A
+ * record whose task address now belongs to another task is obsolete: its task
+ * is gone, nobody will ever close it. It is unlinked and freed here, and the
+ * new task gets a record of its own (the handles of the old task are reaped as
+ * a dead owner's by the dispatcher; the old task's signal bit went with it).
+ */
 static int shell_open(struct AARBase *b)
 {
     aar_owner_stamp me;
-    struct AAROpener *o, *fresh = NULL;
+    struct AAROpener *o, *fresh = NULL, *obsolete = NULL, *prior = NULL;
 
     env_self(b, &me);
     X_SEM_OBTAIN(&b->lock);
-    o = opener_find(b, &me, NULL);
+    o = opener_find(b, &me, &prior);
     if (o && !stamp_equal(&o->stamp, &me)) {
-        /* Address reuse: hide the old record from this task. */
-        o->closing = 1u;
+        if (prior)
+            prior->next = o->next;
+        else
+            b->openers = o->next;
+        obsolete = o;
         o = NULL;
     }
     if (!o) {
@@ -483,6 +492,8 @@ static int shell_open(struct AARBase *b)
     X_SEM_RELEASE(&b->lock);
     if (fresh)
         X_FREE(fresh, sizeof(*fresh));
+    if (obsolete)
+        X_FREE(obsolete, sizeof(*obsolete));
     return AAR_OK;
 }
 

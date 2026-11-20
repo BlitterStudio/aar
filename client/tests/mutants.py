@@ -191,6 +191,14 @@ mutant("work-marked-before-delivery", "notify_answers", CORE,
        ("        if (answer == AAR_CORE_NOTIFIED || answer == AAR_CORE_NOTIFY_BUSY) {", "        if (1) {"))
 mutant("busy-port-counts-as-posted", "notify_terminal", SHELL,
        ("    if (queued)\n        return AAR_CORE_NOTIFY_BUSY;", "    if (queued)\n        return AAR_CORE_NOTIFIED;"))
+# ---- the records of a task that is gone are reclaimed whatever their state ----------------
+mutant("obsolete-opener-hidden", "opener_states", SHELL,
+       ("        if (prior)\n            prior->next = o->next;\n        else\n            b->openers = o->next;\n        obsolete = o;\n        o = NULL;",
+        "        o->closing = 1u;\n        o = NULL;"))
+mutant("reap-skips-closing-openers", "opener_states", SHELL,
+       ("        if (shell_owner_state(b, &o->stamp) != AAR_OWNER_ALIVE) {", "        if (!o->closing && shell_owner_state(b, &o->stamp) != AAR_OWNER_ALIVE) {"))
+mutant("reap-skips-closing-handles", "opener_states", CORE,
+       ("            if ((h->state == AAR_H_LIVE || h->state == AAR_H_CLOSING) &&", "            if ((h->state == AAR_H_LIVE) &&"))
 # ---- size and offset arithmetic ---------------------------------------------------------
 mutant("map-length-wraps", "size_arithmetic", CORE,
        ("    if (len > UINT32_MAX - off)\n        return 0;\n", ""))

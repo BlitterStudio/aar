@@ -1947,7 +1947,10 @@ uint32_t aar_core_reap(aar_core *c, aar_core_owner_fn owner_state, void *user)
 
         env_lock(c, 0);
         for (h = c->handles; h; h = h->next) {
-            if (h->state == AAR_H_LIVE && owner_state(user, &h->owner) != AAR_OWNER_ALIVE) {
+            /* A handle left closing by an owner that died in AARClose is taken
+             * like any other handle of a dead owner: teardown is idempotent. */
+            if ((h->state == AAR_H_LIVE || h->state == AAR_H_CLOSING) &&
+                owner_state(user, &h->owner) != AAR_OWNER_ALIVE) {
                 victim = h;
                 break;
             }
@@ -1955,7 +1958,7 @@ uint32_t aar_core_reap(aar_core *c, aar_core_owner_fn owner_state, void *user)
         env_unlock(c);
         if (!victim)
             break;
-        if (!take_for_close(c, victim))
+        if (victim->state == AAR_H_LIVE && !take_for_close(c, victim))
             continue;
         teardown(victim);
         victim->state = AAR_H_DEAD;
