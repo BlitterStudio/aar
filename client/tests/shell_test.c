@@ -950,6 +950,70 @@ static void test_revoked_codes(void)
     (void)msg;
 }
 
+/*
+ * The rule: a notification counts as done only when it has been delivered. The
+ * end of the app is announced by an event that carries the terminal status; if
+ * the port still holds an earlier event, nothing is posted, and the end stays
+ * pending until an event with the terminal status has gone onto the port.
+ */
+static void test_notify_terminal(void)
+{
+    AARHandle *h, *f;
+    AARMessage m;
+    uint8_t raw[AAR_MSG_BYTES] = { 7 };
+    struct Message *got;
+    unsigned long posts;
+    int s, sf;
+
+    setup("notify_terminal");
+    CHECK(lib_open() == AAR_OK);
+    h = open_h(&ports[0]);
+    s = refplat_slot(h->claim.handle);
+    CHECK(refplat_app_message(s, raw) == AAR_OK);
+    shell_pass(&base);
+    CHECK(ports[0].n == 1 && h->event.type == AAR_NOTIFY_MESSAGE);
+    CHECK(h->event.status.end_reason == AAR_END_NONE);
+    /* The app ends while that event is still on the port: nothing can be posted. */
+    refplat_app_set_state(s, AAR_STATE_IDLE, AAR_END_EXIT);
+    posts = ports[0].posts;
+    vblanks(1);
+    shell_pass(&base);
+    CHECK(ports[0].posts == posts && ports[0].n == 1);
+    CHECK(h->ended_notified == 0); /* not done: nothing carrying the end has been posted */
+    /* The client reads the message and takes the old event: the end follows. */
+    CHECK(v_get_message(h, &m) == AAR_OK);
+    got = hx_getmsg(&ports[0]);
+    CHECK(got == &h->event.message && ports[0].n == 0);
+    vblanks(1);
+    shell_pass(&base);
+    CHECK(ports[0].n == 1 && h->event.type == AAR_NOTIFY_COMPLETE);
+    CHECK(h->event.status.end_reason == AAR_END_EXIT && h->event.status.state == AAR_STATE_IDLE);
+    CHECK(h->ended_notified == 1);
+    (void)hx_getmsg(&ports[0]);
+    vblanks(10);
+    shell_pass(&base);
+    CHECK(ports[0].n == 0); /* once */
+    /* A fault end, the same way: an event of another kind is on the port. */
+    f = open_h(&ports[1]);
+    sf = refplat_slot(f->claim.handle);
+    CHECK(refplat_app_message(sf, raw) == AAR_OK);
+    shell_pass(&base);
+    CHECK(ports[1].n == 1 && f->event.type == AAR_NOTIFY_MESSAGE);
+    refplat_app_set_state(sf, AAR_STATE_FAULTED, AAR_END_USER_FAULT);
+    CHECK(v_get_message(f, &m) == AAR_OK);
+    shell_pass(&base);
+    CHECK(ports[1].n == 1 && f->ended_notified == 0);
+    (void)hx_getmsg(&ports[1]);
+    shell_pass(&base);
+    CHECK(ports[1].n == 1 && f->event.type == AAR_NOTIFY_FAULT);
+    CHECK(f->event.status.end_reason == AAR_END_USER_FAULT && f->ended_notified == 1);
+    (void)hx_getmsg(&ports[1]);
+    CHECK(v_close(h) == AAR_OK);
+    CHECK(v_close(f) == AAR_OK);
+    lib_close();
+    finish();
+}
+
 int main(int argc, char **argv)
 {
     uint32_t len = 0;
@@ -969,6 +1033,7 @@ int main(int argc, char **argv)
     test_load_file();
     test_probe();
     test_notify();
+    test_notify_terminal();
     test_dead_owner_no_signal();
     test_reap();
     test_rename();

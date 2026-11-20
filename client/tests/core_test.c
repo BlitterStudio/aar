@@ -22,6 +22,7 @@
 
 static unsigned long checks, failures;
 static const char *cur_test = "";
+static int notify_answer = AAR_CORE_NOTIFIED; /* what the notify callback answers */
 
 #define CHECK(cond)                                                              \
     do {                                                                         \
@@ -169,6 +170,7 @@ static void setup(const char *name)
     alloc_live_bytes = 0;
     fail_alloc = 0;
     cur = 0;
+    notify_answer = AAR_CORE_NOTIFIED;
     lock_depth = irq_depth = 0;
     rel_check_lease = 0;
     memset(&env, 0, sizeof(env));
@@ -1476,7 +1478,7 @@ static void test_reap(void)
 static struct { AARHandle *h; uint32_t type; } rec[16];
 static unsigned nrec;
 
-static void notify_cb(void *user, AARHandle *h, uint32_t type)
+static int notify_cb(void *user, AARHandle *h, uint32_t type)
 {
     (void)user;
     if (nrec < 16) {
@@ -1484,6 +1486,7 @@ static void notify_cb(void *user, AARHandle *h, uint32_t type)
         rec[nrec].type = type;
     }
     nrec++;
+    return notify_answer;
 }
 
 static void scan(void)
@@ -1821,6 +1824,99 @@ static void test_size_arithmetic(void)
     finish();
 }
 
+/*
+ * A notification counts as done only when L2 answers that it was delivered:
+ * the end of the app stays pending until then (a busy port is not delivery),
+ * and work is announced again at once when the owner could not be told, but
+ * only after a few ticks when it was told and the port was merely busy.
+ */
+static unsigned count_for(AARHandle *h)
+{
+    unsigned k, n = 0;
+
+    for (k = 0; k < nrec && k < 16; k++)
+        n += rec[k].h == h;
+    return n;
+}
+
+static void test_notify_answers(void)
+{
+    AARHandle *h, *w;
+    uint8_t raw[AAR_MSG_BYTES] = { 3 };
+    uint32_t arg[6] = { 0 };
+    int s;
+
+    setup("notify_answers");
+    h = open1(1);
+    CHECK(aar_core_message_signal(&core, h) == 1);
+    s = slot_of(h);
+    /* The end: pending through "not delivered" and "port busy", done on delivery. */
+    refplat_app_set_state(s, AAR_STATE_IDLE, AAR_END_EXIT);
+    notify_answer = 0;
+    scan();
+    CHECK(count_for(h) == 1 && rec[0].type == AAR_NOTIFY_COMPLETE && h->ended_notified == 0);
+    scan();
+    CHECK(count_for(h) == 1 && h->ended_notified == 0); /* at once, not after a few ticks */
+    notify_answer = AAR_CORE_NOTIFY_BUSY;
+    scan();
+    CHECK(count_for(h) == 1 && h->ended_notified == 0);
+    scan();
+    CHECK(count_for(h) == 1 && h->ended_notified == 0); /* the end does not wait for the resignal */
+    notify_answer = AAR_CORE_NOTIFIED;
+    scan();
+    CHECK(count_for(h) == 1 && h->ended_notified == 1);
+    scan();
+    CHECK(count_for(h) == 0); /* once */
+    /* The app starts again and ends again: announced again. */
+    refplat_app_set_state(s, AAR_STATE_RUNNING, AAR_END_NONE);
+    scan();
+    CHECK(h->ended_notified == 0);
+    refplat_app_set_state(s, AAR_STATE_FAULTED, AAR_END_USER_FAULT);
+    notify_answer = 0;
+    scan();
+    CHECK(count_for(h) == 1 && rec[0].type == AAR_NOTIFY_FAULT && h->ended_notified == 0);
+    notify_answer = AAR_CORE_NOTIFIED;
+    scan();
+    CHECK(count_for(h) == 1 && h->ended_notified == 1);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* A request waiting: not delivered, announced again on the next pass; told
+     * with a busy port, announced again after the resignal ticks. */
+    w = open1(1);
+    CHECK(aar_core_message_signal(&core, w) == 1);
+    s = slot_of(w);
+    CHECK(refplat_app_request(s, AAR_OP_CONSOLE_WRITE, 0, 1, arg, 0, 0, 0) == AAR_OK);
+    notify_answer = 0;
+    scan();
+    CHECK(count_for(w) == 1 && rec[0].type == AAR_NOTIFY_REQUEST);
+    scan();
+    CHECK(count_for(w) == 1);
+    notify_answer = AAR_CORE_NOTIFY_BUSY;
+    scan();
+    CHECK(count_for(w) == 1);
+    scan();
+    CHECK(count_for(w) == 0);
+    ticks(5);
+    scan();
+    CHECK(count_for(w) == 1);
+    /* A message that arrives when the last one was announced is announced as
+     * soon as the tail moves, not after the resignal ticks. */
+    CHECK(aar_core_close(&core, w) == AAR_OK);
+    w = open1(1);
+    CHECK(aar_core_message_signal(&core, w) == 1);
+    s = slot_of(w);
+    notify_answer = AAR_CORE_NOTIFIED;
+    CHECK(refplat_app_message(s, raw) == AAR_OK);
+    scan();
+    CHECK(count_for(w) == 1 && rec[0].type == AAR_NOTIFY_MESSAGE);
+    scan();
+    CHECK(count_for(w) == 0);
+    CHECK(refplat_app_message(s, raw) == AAR_OK);
+    scan();
+    CHECK(count_for(w) == 1);
+    CHECK(aar_core_close(&core, w) == AAR_OK);
+    finish();
+}
+
 int main(void)
 {
     test_open_close_many();
@@ -1840,6 +1936,7 @@ int main(void)
     test_close_order();
     test_reap();
     test_notify();
+    test_notify_answers();
     test_revoke();
     test_alloc_balance();
     test_open_failures();

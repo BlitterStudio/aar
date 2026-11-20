@@ -1830,12 +1830,13 @@ LONG aar_core_ext_set_log_sink(AARHandle *h, AARZZ9000LogSink sink, APTR user)
  * still pending is signalled again every few ticks, so a lost wake cannot
  * stick; an end is reported once.
  */
-static uint32_t notify_scan(AARHandle *h, uint32_t ticks)
+static uint32_t notify_scan(AARHandle *h, uint32_t ticks, uint32_t *tail_seen, int *carries_end)
 {
     volatile uint8_t *cb = h->cb;
     uint32_t head, tail, end_reason, used;
     int pending, inbox, ended, fire = 0, msg;
 
+    *carries_end = 0;
     if (!h->armed || !cb || h->revoked)
         return 0u;
     tail = aar_get_be32(cb + AAR_CB_SQ_TAIL);
@@ -1849,14 +1850,15 @@ static uint32_t notify_scan(AARHandle *h, uint32_t ticks)
     if (pending && (tail != h->last_tail ||
                     (uint32_t)(ticks - h->last_signal_tick) >= AAR_CORE_NOTIFY_RESIGNAL_TICKS))
         fire = 1;
-    h->last_tail = tail;
+    *tail_seen = tail;
+    if (!pending)
+        h->last_tail = tail; /* nothing to tell: just follow the queue */
     if (ended && !h->ended_notified) {
         fire = 1;
-        h->ended_notified = 1u;
+        *carries_end = 1;
     }
     if (!fire)
         return 0u;
-    h->last_signal_tick = ticks;
     used = tail - head;
     msg = inbox;
     if (!msg && used != 0u && used <= h->sq.depth && h->sq.ring)
@@ -1894,7 +1896,8 @@ void aar_core_dispatch(aar_core *c, aar_core_notify_fn notify, void *user)
     c->disp_alive = t;
     env_lock(c, 0);
     for (h = c->handles; h; h = h->next) {
-        uint32_t type;
+        uint32_t type, tail = 0u;
+        int carries_end, answer;
 
         if (h->state != AAR_H_LIVE)
             continue;
@@ -1907,9 +1910,19 @@ void aar_core_dispatch(aar_core *c, aar_core_notify_fn notify, void *user)
             }
             h->bg = 0u;
         }
-        type = notify_scan(h, t);
-        if (type && notify)
-            notify(user, h, type);
+        type = notify_scan(h, t, &tail, &carries_end);
+        if (!type)
+            continue;
+        answer = notify ? notify(user, h, type) : AAR_CORE_NOTIFIED;
+        if (answer == AAR_CORE_NOTIFIED || answer == AAR_CORE_NOTIFY_BUSY) {
+            /* Work is announced again after a few ticks, and a new entry
+             * after the tail moved. */
+            h->last_signal_tick = t;
+            h->last_tail = tail;
+        }
+        /* The end is announced only by an event that carries it. */
+        if (carries_end && answer == AAR_CORE_NOTIFIED)
+            h->ended_notified = 1u;
     }
     env_unlock(c);
 }

@@ -184,6 +184,13 @@ mutant("fault-reported-as-complete", "notify", CORE,
 mutant("stale-after-open", "revoked_codes", SHELL,
        ("    rc = aar_core_check(c, h);\n    if (rc != AAR_OK)\n        return rc;\n    if (!path)\n        return AAR_E_INVAL;\n    f = X_FILE_OPEN(path);\n    if (!f)\n        return AAR_E_NOENT;",
         "    if (!path)\n        return AAR_E_INVAL;\n    f = X_FILE_OPEN(path);\n    if (!f)\n        return AAR_E_NOENT;\n    rc = aar_core_check(c, h);\n    if (rc != AAR_OK)\n        return rc;"))
+# ---- a notification is done only when it was delivered -----------------------------------
+mutant("end-marked-before-delivery", "notify_answers", CORE,
+       ("        if (carries_end && answer == AAR_CORE_NOTIFIED)\n", "        if (carries_end)\n"))
+mutant("work-marked-before-delivery", "notify_answers", CORE,
+       ("        if (answer == AAR_CORE_NOTIFIED || answer == AAR_CORE_NOTIFY_BUSY) {", "        if (1) {"))
+mutant("busy-port-counts-as-posted", "notify_terminal", SHELL,
+       ("    if (queued)\n        return AAR_CORE_NOTIFY_BUSY;", "    if (queued)\n        return AAR_CORE_NOTIFIED;"))
 # ---- size and offset arithmetic ---------------------------------------------------------
 mutant("map-length-wraps", "size_arithmetic", CORE,
        ("    if (len > UINT32_MAX - off)\n        return 0;\n", ""))

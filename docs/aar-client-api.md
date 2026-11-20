@@ -145,6 +145,14 @@ Events coalesce. The type is `AAR_NOTIFY_MESSAGE` if a message is waiting, else
 `AAR_NOTIFY_REQUEST`. Take the event off the port, drain the messages, then
 serve the requests. Before `AARClose` drain the port and then the message ring.
 
+The end of the app is never lost behind an earlier event. If the app ends while
+an event is still on the port, the library posts nothing at that moment; as
+soon as the client has taken the old event, it posts one that carries the end
+status (its type is `AAR_NOTIFY_MESSAGE` while a message is still waiting,
+else `AAR_NOTIFY_COMPLETE` or `AAR_NOTIFY_FAULT`). Until then the owner is
+signalled at each vertical blank. Read `AARStatus` after every event: the
+status in an event is the one of the moment it was posted.
+
 Only handles that have been armed are watched: calling `AARMessageSignal` or
 giving a notify port arms one. A client that polls from its own timer (ZZRun
 does, every millisecond) never arms and costs the library nothing. On the

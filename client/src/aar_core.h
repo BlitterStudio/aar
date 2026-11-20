@@ -334,8 +334,23 @@ LONG aar_core_ext_set_log_sink(AARHandle *h, AARZZ9000LogSink sink, APTR user);
  */
 void aar_core_vblank(aar_core *c);
 
-/* What a dispatcher pass tells L2 to deliver. */
-typedef void (*aar_core_notify_fn)(void *user, AARHandle *h, uint32_t type);
+/*
+ * What a dispatcher pass tells L2 to deliver, and what L2 answers. The rule of
+ * every notification: it counts as done only when it has been delivered, so
+ * the core writes its done-markers (the end announced, the tail and the tick
+ * of the last signal) after the answer, never before.
+ *   AAR_CORE_NOTIFIED  the owner was signalled and its event is on the port (or
+ *                      it has no port)
+ *   AAR_CORE_NOTIFY_BUSY  the owner was signalled, but the port still holds an
+ *                      earlier event, so nothing new was posted: the work that
+ *                      is pending stays visible to the owner through that event
+ *                      (and is announced again after a few ticks), but the end
+ *                      of the app is not: its event has to carry the end
+ *   0                  not delivered (the owner is gone): try again
+ */
+#define AAR_CORE_NOTIFIED 1
+#define AAR_CORE_NOTIFY_BUSY 2
+typedef int (*aar_core_notify_fn)(void *user, AARHandle *h, uint32_t type);
 typedef int (*aar_core_owner_fn)(void *user, const aar_owner_stamp *owner);
 
 /*

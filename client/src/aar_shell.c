@@ -350,7 +350,7 @@ static struct AAROpener *opener_find(struct AARBase *b, const aar_owner_stamp *m
 /* Signals the owner and posts the event, unless the owner is gone. A task that
  * died but is not yet reaped must not be signalled, and its port must not be
  * written: both checks and the calls run with interrupts off. */
-static void shell_notify(void *user, AARHandle *h, uint32_t type)
+static int shell_notify(void *user, AARHandle *h, uint32_t type)
 {
     aar_owner_stamp now;
     int alive, queued = 0;
@@ -363,8 +363,12 @@ static void shell_notify(void *user, AARHandle *h, uint32_t type)
     if (alive && h->notify)
         queued = X_MSG_QUEUED(h->notify, &h->event.message);
     X_ENABLE();
-    if (!alive || !h->notify || queued)
-        return;
+    if (!alive)
+        return 0;
+    if (!h->notify)
+        return AAR_CORE_NOTIFIED; /* the signal is all there is to deliver */
+    if (queued)
+        return AAR_CORE_NOTIFY_BUSY;
     /* One event at a time: the next is posted after the client took this one. */
     aar_core_event_fill(h, type);
     X_MSG_INIT(&h->event.message, sizeof(h->event));
@@ -373,6 +377,7 @@ static void shell_notify(void *user, AARHandle *h, uint32_t type)
     if (alive)
         X_PUTMSG(h->notify, &h->event.message);
     X_ENABLE();
+    return alive ? AAR_CORE_NOTIFIED : 0;
 }
 
 /* Opener records of tasks that are gone: their handles are reaped by the core;
