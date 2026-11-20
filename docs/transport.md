@@ -18,7 +18,8 @@ its tests (`tests/transport_model_test.c`) are right and this page has a bug.
 ## What a platform supplies
 
 A platform provides the ARM runtime (loader, table, limits), the host-side
-transport, and `aar.library` on top of the transport. The transport is the
+transport, and `aar.library` on top of the transport. The library's own calls
+are in [aar-client-api.md](aar-client-api.md). The transport is the
 same on every platform. Per app there is one **control block** and one
 **request/completion queue pair** in shared memory, large payloads travel as
 **shared-buffer tokens**, and each direction has a **doorbell**. A platform
@@ -574,5 +575,14 @@ so that a port can reuse the shared library code above it:
 | `queue_post`, `queue_pop` | Produce and consume entries with the barriers above. |
 | `resolve` | Turns a token into a 68k pointer and sets the 68k cache mode. |
 | `cache_publish`, `cache_acquire` | 68k data cache maintenance, or a no-op. |
-| `lease_renew` | Called from the timer or interrupt context. |
+| `lease_renew` | One store into `AAR_CB_LEASE_COUNTER`, from the timer or interrupt context. The reference library core does it, so a platform supplies nothing. |
 | `doorbell_ring`, `doorbell_arm` | The doorbell, where the platform can raise an interrupt or a signal. |
+
+In the library's source the platform interface is `client/src/aar_plat.h`: a
+table of operations (attach, query, claim, release, the three load steps, start,
+stop, map and token, the doorbell, the extension table and the barriers) and a
+set of constants. The library core reads and writes the control block and the
+queues itself with the accessors of `transport.h`, so a platform does not hide
+them. The library renews the lease itself, from a vertical-blank interrupt, for
+every live handle. The handle's owner and the one signal bit per owner task are
+the library's business and not the platform's.

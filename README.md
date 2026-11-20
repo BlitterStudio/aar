@@ -32,6 +32,7 @@ pins the commit of this repository it builds against in `sdk/AAR_REF`.
 | Path | Content |
 | --- | --- |
 | `include/aar/` | `app.h` (the table, types and wrappers), `note.h` (`AAR_NOTE()`), `gl.h`, `transport.h`, `ext_zz9000.h` |
+| `client/` | `aar.library`, the Amiga client library: `include/` (the public headers and the generated call headers), `fd/aar_lib.fd`, `src/` (the platform interface and the image probe), `tools/fdgen.py`, `tests/` |
 | `libaar/` | `src/` (the `aar_*` and `gl*` wrappers, the libc glue, the freestanding `mem*` routines), and per profile `a32/` and `a64/` with `crt0.S` and `aar.ld` |
 | `mk/aar.mk` | Makefile include for building one app |
 | `cmake/` | `aar.cmake` (`aar_add_executable`), `aar-toolchain-a32.cmake`, `aar-toolchain-a64.cmake`, and an example project |
@@ -40,7 +41,7 @@ pins the commit of this repository it builds against in `sdk/AAR_REF`.
 | `tools/aar-check` | Checks a finished ELF against the load contract |
 | `templates/` | Example apps; `templates/README.md` describes each one |
 | `host-runner/` | An SDL2 runner for apps on a PC; see `host-runner/README.md` |
-| `tests/` | Tests for the checker, the headers and the transport model, the link map check, FP code generation and mode switching |
+| `tests/` | Tests for the checker, the headers and the transport model, the link map check, FP code generation and mode switching. The client library's tests are in `client/tests/` |
 | `docs/` | The API reference, the developer guide, the transport contract, the zzapp mapping, and the script that checks the reference covers every public symbol |
 | `Makefile` | Builds every template and runs the checks (`make check`) |
 
@@ -103,6 +104,8 @@ card.
 
 - [docs/aar-api.md](docs/aar-api.md): the API reference, every call, type and
   constant.
+- [docs/aar-client-api.md](docs/aar-client-api.md): the Amiga client library,
+  `aar.library`: every call, structure, tag and error, for launchers and tools.
 - [docs/aar-developer-guide.md](docs/aar-developer-guide.md): how an app is
   built, loaded and run, with the rules for shared buffers, messages and events.
 - [docs/transport.md](docs/transport.md): the transport contract for platform

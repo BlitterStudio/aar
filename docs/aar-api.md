@@ -9,7 +9,9 @@ The public contract of `include/aar/app.h`, `note.h`, `gl.h` and
 `ext_zz9000.h`. The transport headers for platform implementers are covered in
 [transport.md](transport.md). The mapping from the old `zzapp` names is in
 [zzapp-to-aar.md](zzapp-to-aar.md). How to build and run an app is in the
-[developer guide](aar-developer-guide.md).
+[developer guide](aar-developer-guide.md). The Amiga side, `aar.library`, which
+a launcher uses to load, start and serve an app, is in
+[aar-client-api.md](aar-client-api.md).
 
 `AAR_API_MAJOR` is 0 and `AAR_API_MINOR` is 5. API 0.5 is the first AAR
 version, so every symbol in this file has minimum minor 5. Before 1.0 any
