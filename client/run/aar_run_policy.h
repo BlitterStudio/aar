@@ -1,10 +1,16 @@
 /*
  * Decisions the reference launcher aar-run makes from its own state: the
- * arguments and tool types, the library options (tag list), the texts for a refused
- * claim, load or start, the checks of what AARQuery said, the exit code, and the
- * ZZ9000 list helpers (STATUS and RELEASE). No AmigaOS calls, so a host test can
- * exercise them without DOS or Exec. What the serving loop decides is in
- * aar_serve_core.h.
+ * arguments and tool types, the limits it takes from AARQuery, the check of the
+ * image against the platform before a claim is taken, the library options (tag
+ * list), the texts for a refused claim, load or start, the check of what
+ * AARQuery said, the exit code, and the helpers of STATUS and RELEASE. No
+ * AmigaOS calls, so a host test can exercise them without DOS or Exec. What the
+ * serving loop decides is in aar_serve_core.h.
+ *
+ * aar-run runs on any platform behind aar.library. What the platform takes is
+ * read from AARInfo (aar_run_limits_from_info), never assumed; the only ZZ9000
+ * words are the ones STATUS and RELEASE need and the note of
+ * aar_run_zz9000_lacks_z3.
  *
  * Copyright (C) 2024-2026, Dimitris Panokostas / BlitterStudio
  * SPDX-License-Identifier: MIT
@@ -18,23 +24,27 @@
 #include <string.h>
 
 #include <libraries/aar.h>
+#include <libraries/aar_serve.h>
 #include <libraries/aar_zz9000.h>
+
+#define AAR_RUN_VERSION "0.1"
 
 #define AAR_RUN_MIB_BYTES (1024u * 1024u)
 
-/* The most strings aar-run hands AARStart (argv[0] and 15 arguments) and the
- * most bytes of one string with its NUL. AARInfo says what the platform
- * takes; aar_run_args_fit() refuses a platform that takes less. */
-#define AAR_RUN_ARGV_MAX 16u
-#define AAR_RUN_ARGV_STR_MAX 128u
+/* The heartbeat of aar-run's loop, in microseconds. It keeps the latency the
+ * launcher always had; POLL=<us> changes it for a measurement. */
+#define AAR_RUN_DEFAULT_POLL_US 1000UL
 
-/* MAXMEM and HOSTMEM are decimal MiB, at least 1. */
-static inline int aar_run_parse_maxmem(const char *text, uint32_t *mib_out)
+/* The timer's microsecond field stays below one second. */
+#define AAR_RUN_POLL_US_LIMIT 1000000UL
+
+/* The decimal digits of text, nothing else, within 32 bits. */
+static inline int aar_run_parse_uint(const char *text, uint32_t *out)
 {
     uint32_t value = 0;
     const unsigned char *p = (const unsigned char *)text;
 
-    if (!p || !*p || !mib_out)
+    if (!p || !*p || !out)
         return 0;
     for (; *p; ++p) {
         uint32_t digit;
@@ -46,71 +56,211 @@ static inline int aar_run_parse_maxmem(const char *text, uint32_t *mib_out)
             return 0;
         value = value * 10u + digit;
     }
-    if (value == 0)
-        return 0;
-    *mib_out = value;
+    *out = value;
     return 1;
 }
 
-/* HOSTMEM is the shared (host-visible) memory limit in MiB. It goes to the
- * library as AAR_TAG_SHARED_MIB before the load; the platform checks it at
- * load begin. The tag takes 0..4095; a launch without HOSTMEM leaves it out
- * and keeps the platform default. */
-#define AAR_RUN_HOSTMEM_MAX_MIB 4095u
-
-static inline int aar_run_parse_hostmem(const char *text, uint32_t *mib_out)
+/* MAXMEM, HOSTMEM and WEIGHT are decimal numbers, at least 1. How large each
+ * may be is the platform's say (AARInfo), checked by aar_run_limits_check once
+ * AARQuery has answered. */
+static inline int aar_run_parse_positive(const char *text, uint32_t *out)
 {
     uint32_t value;
 
-    if (!aar_run_parse_maxmem(text, &value) || value > AAR_RUN_HOSTMEM_MAX_MIB ||
-        !mib_out)
+    if (!aar_run_parse_uint(text, &value) || value == 0 || !out)
         return 0;
-    *mib_out = value;
+    *out = value;
     return 1;
+}
+
+/* ---- Limits: what the platform takes -------------------------------------- */
+
+/* The bound AAR_TAG_SHARED_MIB has on every platform. */
+#define AAR_RUN_TAG_MIB_MAX 4095u
+
+/* The limits of the platform that matter to a launch, read from AARInfo. */
+struct aar_run_limits {
+    uint32_t max_args;        /* strings AARStart takes, argv[0] included; 0: no limit */
+    uint32_t max_arg_bytes;   /* bytes of one string, NUL included; 0: no limit */
+    uint32_t weight_max;      /* largest WEIGHT; 0: the platform does not weight */
+    uint32_t hostmem_max_mib; /* largest HOSTMEM, the rule of AAR_TAG_SHARED_MIB */
+    uint32_t max_image_bytes; /* largest image AARLoadFile takes */
+};
+
+static inline struct aar_run_limits aar_run_limits_from_info(const AARInfo *info)
+{
+    struct aar_run_limits lim;
+
+    lim.max_args = info->max_args;
+    lim.max_arg_bytes = info->max_arg_bytes;
+    lim.weight_max = info->weight_max;
+    lim.hostmem_max_mib = (info->shared_max_mib != 0u &&
+                           info->shared_max_mib < AAR_RUN_TAG_MIB_MAX)
+                              ? info->shared_max_mib : AAR_RUN_TAG_MIB_MAX;
+    lim.max_image_bytes = info->max_image_bytes;
+    return lim;
+}
+
+enum aar_run_limit_verdict {
+    AAR_RUN_LIMIT_OK = 0,
+    AAR_RUN_LIMIT_ARGS,       /* more arguments than AARStart takes */
+    AAR_RUN_LIMIT_ARG_BYTES,  /* an argument longer than the platform takes */
+    AAR_RUN_LIMIT_WEIGHT,     /* WEIGHT above weight_max */
+    AAR_RUN_LIMIT_NO_WEIGHT,  /* WEIGHT on a platform that does not weight */
+    AAR_RUN_LIMIT_HOSTMEM     /* HOSTMEM above the platform's largest */
+};
+
+/* The launch against the limits, before anything is claimed: app_argc
+ * arguments for the app (argv[0] comes on top of them), the longest of them in
+ * bytes without its NUL, and the WEIGHT and HOSTMEM given (0: not given). The
+ * library refuses the same values later; this says so with the launcher's own
+ * words and without a claim. */
+static inline enum aar_run_limit_verdict
+aar_run_limits_check(const struct aar_run_limits *lim, uint32_t app_argc,
+                     uint32_t longest_arg, uint32_t weight,
+                     uint32_t hostmem_mib)
+{
+    if (lim->max_args != 0u && app_argc + 1u > lim->max_args)
+        return AAR_RUN_LIMIT_ARGS;
+    if (lim->max_arg_bytes != 0u && longest_arg + 1u > lim->max_arg_bytes)
+        return AAR_RUN_LIMIT_ARG_BYTES;
+    if (weight != 0u && lim->weight_max == 0u)
+        return AAR_RUN_LIMIT_NO_WEIGHT;
+    if (weight > lim->weight_max)
+        return AAR_RUN_LIMIT_WEIGHT;
+    if (hostmem_mib > lim->hostmem_max_mib)
+        return AAR_RUN_LIMIT_HOSTMEM;
+    return AAR_RUN_LIMIT_OK;
+}
+
+static inline void aar_run_limit_line(char *buf, size_t size,
+                                      enum aar_run_limit_verdict v,
+                                      const struct aar_run_limits *lim)
+{
+    switch (v) {
+    case AAR_RUN_LIMIT_ARGS:
+        if (lim->max_args <= 1u)
+            snprintf(buf, size, "aar-run: this platform takes no arguments for "
+                     "the app.");
+        else
+            snprintf(buf, size, "aar-run: this platform takes at most %lu "
+                     "arguments for the app.", (unsigned long)(lim->max_args - 1u));
+        break;
+    case AAR_RUN_LIMIT_ARG_BYTES:
+        snprintf(buf, size, "aar-run: an argument is longer than %lu bytes, "
+                 "the most this platform takes.",
+                 (unsigned long)(lim->max_arg_bytes - 1u));
+        break;
+    case AAR_RUN_LIMIT_WEIGHT:
+        snprintf(buf, size, "aar-run: WEIGHT must be 1 to %lu on this platform.",
+                 (unsigned long)lim->weight_max);
+        break;
+    case AAR_RUN_LIMIT_NO_WEIGHT:
+        snprintf(buf, size, "aar-run: WEIGHT is not available: this platform "
+                 "does not weight apps.");
+        break;
+    case AAR_RUN_LIMIT_HOSTMEM:
+        snprintf(buf, size, "aar-run: HOSTMEM must be 1 to %lu MiB on this "
+                 "platform.", (unsigned long)lim->hostmem_max_mib);
+        break;
+    default:
+        if (size)
+            buf[0] = '\0';
+        break;
+    }
+}
+
+/* ---- Words of the command line that aar-run takes itself ------------------- */
+
+/* Result of looking at one command-line word for KEY=<value>. */
+#define AAR_RUN_ARG_OTHER 0  /* not this key: the caller keeps looking */
+#define AAR_RUN_ARG_TAKEN 1  /* KEY=<value>: stored, not for the app */
+#define AAR_RUN_ARG_BAD (-1) /* the key with a value that does not parse */
+
+static inline char aar_run_upper(char c)
+{
+    return (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+}
+
+/* The text after `key` (which includes its '=') when arg starts with it, else
+ * NULL. The key is matched without regard to case, like a ToolType name. */
+static inline const char *aar_run_key_value(const char *arg, const char *key)
+{
+    size_t i;
+
+    if (!arg)
+        return NULL;
+    for (i = 0; key[i]; i++)
+        if (aar_run_upper(arg[i]) != key[i])
+            return NULL;
+    return arg + i;
 }
 
 /* WEIGHT is the app's CPU share. It goes to the library as AAR_TAG_WEIGHT
  * before the load; the platform keeps it for the claim. The tag takes 1 up
- * to AARInfo.weight_max (256 on the ZZ9000); a launch without WEIGHT leaves
- * it out, which the card reads as weight 1. aar-run refuses a value above the
- * bound below before it claims anything. */
-#define AAR_RUN_WEIGHT_MAX 256u
-
-static inline int aar_run_parse_weight(const char *text, uint32_t *weight_out)
-{
-    uint32_t value;
-
-    if (!aar_run_parse_maxmem(text, &value) || value > AAR_RUN_WEIGHT_MAX ||
-        !weight_out)
-        return 0;
-    *weight_out = value;
-    return 1;
-}
-
-/* Result of looking at one command-line word for WEIGHT=<n>. */
-#define AAR_RUN_ARG_OTHER 0 /* not WEIGHT=: the caller keeps looking */
-#define AAR_RUN_ARG_TAKEN 1 /* WEIGHT=<n>: stored, not for the app */
-#define AAR_RUN_ARG_BAD (-1) /* WEIGHT= with a value outside 1..256 */
-
-/* The key is matched without regard to case, like a ToolType name. */
+ * to AARInfo.weight_max; a launch without WEIGHT leaves it out, which the
+ * platform reads as its default. aar-run refuses a value above the bound
+ * (aar_run_limits_check) before it claims anything. */
 static inline int aar_run_weight_arg(const char *arg, uint32_t *weight_out)
 {
-    static const char key[] = "WEIGHT=";
+    const char *value = aar_run_key_value(arg, "WEIGHT=");
+
+    if (!value)
+        return AAR_RUN_ARG_OTHER;
+    return aar_run_parse_positive(value, weight_out) ? AAR_RUN_ARG_TAKEN
+                                                     : AAR_RUN_ARG_BAD;
+}
+
+/* POLL=<us>: the heartbeat of the loop in microseconds, 0 for the library
+ * signal alone. A diagnostic argument (README.md, Diagnostics). */
+static inline int aar_run_poll_arg(const char *arg, uint32_t *us_out)
+{
+    const char *value = aar_run_key_value(arg, "POLL=");
+    uint32_t us;
+
+    if (!value)
+        return AAR_RUN_ARG_OTHER;
+    if (!aar_run_parse_uint(value, &us) || us >= AAR_RUN_POLL_US_LIMIT)
+        return AAR_RUN_ARG_BAD;
+    *us_out = us;
+    return AAR_RUN_ARG_TAKEN;
+}
+
+static inline int aar_run_streq_nocase(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++)
+        if (aar_run_upper(*a) != aar_run_upper(*b))
+            return 0;
+    return *a == *b;
+}
+
+/* DISPLAY=<BUFFERS|PAN3|PAN2|SINGLE>: the display strategy to start with
+ * (AAR_SERVE_DISPLAY_*). A diagnostic argument. */
+static inline int aar_run_display_arg(const char *arg, uint32_t *strategy_out)
+{
+    static const struct {
+        const char *name;
+        uint32_t strategy;
+    } names[] = {
+        {"BUFFERS", AAR_SERVE_DISPLAY_BUFFERS},
+        {"PAN3", AAR_SERVE_DISPLAY_PAN3},
+        {"PAN2", AAR_SERVE_DISPLAY_PAN2},
+        {"SINGLE", AAR_SERVE_DISPLAY_SINGLE},
+    };
+    const char *value = aar_run_key_value(arg, "DISPLAY=");
     size_t i;
 
-    if (!arg)
+    if (!value)
         return AAR_RUN_ARG_OTHER;
-    for (i = 0; i + 1 < sizeof(key); i++) {
-        char c = arg[i];
-
-        if (c >= 'a' && c <= 'z')
-            c = (char)(c - 'a' + 'A');
-        if (c != key[i])
-            return AAR_RUN_ARG_OTHER;
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (aar_run_streq_nocase(value, names[i].name)) {
+            *strategy_out = names[i].strategy;
+            return AAR_RUN_ARG_TAKEN;
+        }
     }
-    return aar_run_parse_weight(arg + i, weight_out) ? AAR_RUN_ARG_TAKEN
-                                                   : AAR_RUN_ARG_BAD;
+    return AAR_RUN_ARG_BAD;
 }
+
 
 /* What aar-run can serve, for AAR_TAG_CLIENT_CAPS: CLUT8 screens, pan-flip
  * acknowledgement by completion flag and platform-owned flips. The lease
@@ -255,14 +405,15 @@ static inline void aar_run_failure_line(char *buf, size_t size, const char *what
                  aar_run_error_name(rc));
 }
 
-/* AAROpen. With no platform, or without mmu.library, the library answers
- * AAR_E_NOSYS. */
+/* AAROpen. With no platform, or without a library the platform needs (the
+ * ZZ9000 build needs mmu.library), the library answers AAR_E_NOSYS. */
 static inline void aar_run_claim_failure_line(char *buf, size_t size, int rc,
                                               uint32_t reason)
 {
     if (rc == AAR_E_NOSYS)
-        snprintf(buf, size, "aar-run: claim failed: the ZZ9000 board, "
-                 "zz9k.library 36 or mmu.library 41 is missing");
+        snprintf(buf, size, "aar-run: claim failed: the platform cannot admit "
+                 "an app (a board or a library it needs, such as "
+                 "mmu.library, is missing)");
     else
         aar_run_failure_line(buf, size, "claim", rc, reason);
 }
@@ -304,59 +455,49 @@ static inline void aar_run_load_failure_line(char *buf, size_t size, int rc,
         aar_run_failure_line(buf, size, "load", rc, reason);
 }
 
-/* What AARQuery said about the platform, against what aar-run needs. */
+/* What AARQuery said about the platform, against what aar-run needs. Any
+ * platform is fine; what it takes is read as limits (aar_run_limits_from_info)
+ * and the image is checked against it by aar_run_probe_check. */
 enum aar_run_query_verdict {
     AAR_RUN_QUERY_OK = 0,
-    AAR_RUN_QUERY_NOT_ZZ9000, /* another platform */
-    AAR_RUN_QUERY_NO_Z3,      /* a ZZ9000 that is not a Zorro III board */
-    AAR_RUN_QUERY_API,        /* another API major than aar-run was built for */
-    AAR_RUN_QUERY_ARGS        /* takes fewer or shorter arguments than aar-run */
+    AAR_RUN_QUERY_API         /* another API major than aar-run was built for */
 };
-
-/* The strings of argv aar-run hands AARStart must fit what the platform
- * takes. */
-static inline int aar_run_args_fit(const AARInfo *info)
-{
-    return info->max_args >= AAR_RUN_ARGV_MAX &&
-           info->max_arg_bytes >= AAR_RUN_ARGV_STR_MAX;
-}
 
 static inline enum aar_run_query_verdict aar_run_query_check(const AARInfo *info)
 {
-    if (info->platform_id != AAR_PLATFORM_ZZ9000)
-        return AAR_RUN_QUERY_NOT_ZZ9000;
-    if (!(info->platform[AAR_ZZ9000_INFO_CAPS] & AAR_ZZ9000_CAP_Z3))
-        return AAR_RUN_QUERY_NO_Z3;
     if (info->api_major != AAR_API_MAJOR)
         return AAR_RUN_QUERY_API;
-    if (!aar_run_args_fit(info))
-        return AAR_RUN_QUERY_ARGS;
     return AAR_RUN_QUERY_OK;
 }
 
 static inline const char *aar_run_query_verdict_text(enum aar_run_query_verdict v)
 {
-    switch (v) {
-    case AAR_RUN_QUERY_OK:
+    if (v == AAR_RUN_QUERY_OK)
         return "";
-    case AAR_RUN_QUERY_ARGS:
-        return "aar-run: the platform takes fewer or shorter app arguments "
-               "than aar-run passes.";
-    default:
-        return "aar-run requires a Zorro III board and app-runtime firmware.";
-    }
+    return "aar-run: the platform's AAR API major differs from the one "
+           "aar-run was built for.";
 }
 
-/* AARQuery itself failed: there is no platform (no board, a zz9k.library
- * older than 36, or firmware without the app runtime). */
+/* The one ZZ9000 specific rule aar-run keeps: a ZZ9000 that is not a Zorro III
+ * board is named in a note (the library then refuses the claim itself). The
+ * platform words mean nothing on another platform. */
+static inline int aar_run_zz9000_lacks_z3(const AARInfo *info)
+{
+    return info->platform_id == AAR_PLATFORM_ZZ9000 &&
+           !(info->platform[AAR_ZZ9000_INFO_CAPS] & AAR_ZZ9000_CAP_Z3);
+}
+
+/* AARQuery itself failed: there is no platform behind the library (for the
+ * ZZ9000: no board, a zz9k.library older than 36, or firmware without the app
+ * runtime). */
 static inline void aar_run_query_failure_line(char *buf, size_t size, int rc)
 {
     if (rc == AAR_E_NOSYS)
-        snprintf(buf, size, "ZZ9000 board, zz9k.library 36 or the app-runtime "
-                 "firmware not found.");
+        snprintf(buf, size, "aar-run: no AAR platform found (the library has "
+                 "none to ask).");
     else
-        snprintf(buf, size, "aar-run: AARQuery failed (%s). Zorro III app "
-                 "firmware is required.", aar_run_error_name(rc));
+        snprintf(buf, size, "aar-run: AARQuery failed (%s).",
+                 aar_run_error_name(rc));
 }
 
 static inline const char *aar_run_slot_state_name(uint32_t state)
@@ -484,13 +625,6 @@ static inline int aar_run_app_exit_code(uint32_t end_reason, int32_t exit_code,
     return (int)exit_code;
 }
 
-/* argv accepts an empty NUL-terminated string; only oversized strings are
- * invalid. */
-static inline int aar_run_arg_length_allowed(uint32_t length)
-{
-    return length <= 127u;
-}
-
 /* Exit code after a failed ELF load: 5 (RETURN_WARN) when the user stopped
  * it with Ctrl-C, 20 for any other load failure. */
 static inline int aar_run_load_failure_exit(int ctrl_c_pending, int user_stop)
@@ -527,6 +661,189 @@ static inline int aar_run_release_allowed(uint32_t state, uint32_t end_reason)
     if (end_reason == AAR_END_QUARANTINED || end_reason == AAR_END_LEASE)
         return 1;
     return state == AAR_STATE_IDLE || state == AAR_STATE_FAULTED;
+}
+
+/* ---- The image against the platform, before a claim (D5) -------------------- */
+
+/* What AARProbeFile and the platform's AARInfo say about an image, before
+ * AAROpen: nothing is claimed for an image that cannot run. */
+enum aar_run_probe_verdict {
+    AAR_RUN_PROBE_OK = 0,
+    AAR_RUN_PROBE_NOENT,   /* the file cannot be opened */
+    AAR_RUN_PROBE_IO,      /* the file cannot be read */
+    AAR_RUN_PROBE_NOT_AAR, /* not an AAR image (the probe's AAR_E_INVAL) */
+    AAR_RUN_PROBE_FAILED,  /* any other answer of the probe */
+    AAR_RUN_PROBE_PROFILE, /* an image of a profile the platform does not run */
+    AAR_RUN_PROBE_API,     /* the image needs a newer API than the platform has */
+    AAR_RUN_PROBE_GROUP    /* the image requires a group the platform lacks */
+};
+
+/* probe_rc is what AARProbeFile returned and img what it filled. The probe
+ * judges the note against the API of the library; the platform may be older,
+ * so the image is compared with AARInfo here: profile first, then the API,
+ * then the groups the image requires (the optional ones are a hint). */
+static inline enum aar_run_probe_verdict
+aar_run_probe_check(int probe_rc, const AARImageInfo *img,
+                    const AARInfo *platform)
+{
+    if (probe_rc == AAR_E_NOENT)
+        return AAR_RUN_PROBE_NOENT;
+    if (probe_rc == AAR_E_IO)
+        return AAR_RUN_PROBE_IO;
+    if (probe_rc == AAR_E_INVAL)
+        return AAR_RUN_PROBE_NOT_AAR;
+    if (probe_rc != AAR_OK)
+        return AAR_RUN_PROBE_FAILED;
+    /* A profile is a number; the platform's mask has a bit for each. The
+     * range keeps the shift defined. */
+    if (img->profile < 1u || img->profile > 32u ||
+        !(platform->profiles & (1u << (img->profile - 1u))))
+        return AAR_RUN_PROBE_PROFILE;
+    if (img->api_major != platform->api_major ||
+        img->api_minor_required > platform->api_minor)
+        return AAR_RUN_PROBE_API;
+    if (img->groups_required & ~platform->groups)
+        return AAR_RUN_PROBE_GROUP;
+    return AAR_RUN_PROBE_OK;
+}
+
+/* A mask of AAR_GROUP_* as words: "display, input", "none" for 0. A bit that
+ * is not defined is written in hex. */
+static inline void aar_run_group_names(char *buf, size_t size, uint32_t mask)
+{
+    static const char *const names[] = {"display", "input", "audio", "gl",
+                                        "services"};
+    uint32_t known = 0;
+    size_t n = 0;
+    unsigned i;
+
+    if (!size)
+        return;
+    buf[0] = '\0';
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (mask & (1u << i)) {
+            snprintf(buf + n, size - n, "%s%s", n ? ", " : "", names[i]);
+            n = strlen(buf);
+            known |= 1u << i;
+        }
+    }
+    if (mask & ~known) {
+        snprintf(buf + n, size - n, "%s0x%lx", n ? ", " : "",
+                 (unsigned long)(mask & ~known));
+        n = strlen(buf);
+    }
+    if (!n)
+        snprintf(buf, size, "none");
+}
+
+static inline const char *aar_run_profile_name(uint32_t profile)
+{
+    return profile == AAR_PROFILE_A32 ? "A32" :
+           profile == AAR_PROFILE_A64 ? "A64" : "unknown";
+}
+
+/* The profiles of a platform's mask, for a refusal line. */
+static inline void aar_run_profiles_text(char *buf, size_t size, uint32_t mask)
+{
+    const int a32 = (mask & AAR_PROFILEF_A32) != 0;
+    const int a64 = (mask & AAR_PROFILEF_A64) != 0;
+
+    snprintf(buf, size, "%s", a32 && a64 ? "A32 and A64" : a32 ? "A32" :
+             a64 ? "A64" : "no");
+}
+
+/* The refusal of an image, with the cause. `path` is the name the user gave. */
+static inline void aar_run_probe_line(char *buf, size_t size,
+                                      enum aar_run_probe_verdict v,
+                                      const char *path, const AARImageInfo *img,
+                                      const AARInfo *platform)
+{
+    char list[48];
+
+    switch (v) {
+    case AAR_RUN_PROBE_NOENT:
+        snprintf(buf, size, "aar-run: cannot open %s", path);
+        break;
+    case AAR_RUN_PROBE_IO:
+        snprintf(buf, size, "aar-run: cannot read %s", path);
+        break;
+    case AAR_RUN_PROBE_NOT_AAR:
+        snprintf(buf, size, "aar-run: %s is not an AAR image (no valid AAR "
+                 "ELF note, or one built for another API than this library)",
+                 path);
+        break;
+    case AAR_RUN_PROBE_PROFILE:
+        aar_run_profiles_text(list, sizeof(list), platform->profiles);
+        if (img->profile == AAR_PROFILE_A32 || img->profile == AAR_PROFILE_A64)
+            snprintf(buf, size, "aar-run: %s is an %s app; this platform runs "
+                     "%s apps only.", path, aar_run_profile_name(img->profile),
+                     list);
+        else
+            snprintf(buf, size, "aar-run: %s declares unknown profile %lu; "
+                     "this platform runs %s apps.", path,
+                     (unsigned long)img->profile, list);
+        break;
+    case AAR_RUN_PROBE_API:
+        snprintf(buf, size, "aar-run: %s needs AAR API %lu.%lu, this platform "
+                 "has %lu.%lu.", path, (unsigned long)img->api_major,
+                 (unsigned long)img->api_minor_required,
+                 (unsigned long)platform->api_major,
+                 (unsigned long)platform->api_minor);
+        break;
+    case AAR_RUN_PROBE_GROUP:
+        aar_run_group_names(list, sizeof(list),
+                            img->groups_required & ~platform->groups);
+        snprintf(buf, size, "aar-run: %s needs service groups this platform "
+                 "lacks: %s.", path, list);
+        break;
+    case AAR_RUN_PROBE_FAILED:
+        snprintf(buf, size, "aar-run: cannot probe %s", path);
+        break;
+    default:
+        if (size)
+            buf[0] = '\0';
+        break;
+    }
+}
+
+/* The exit code of a refused image: 20, a launcher error like a refused load.
+ * A Ctrl-C that stopped the probe's own open or read is the user's: 5. */
+static inline int aar_run_probe_exit(enum aar_run_probe_verdict v,
+                                     int ctrl_c_pending, int user_stop)
+{
+    if (v == AAR_RUN_PROBE_NOENT || v == AAR_RUN_PROBE_IO ||
+        v == AAR_RUN_PROBE_FAILED)
+        return aar_run_load_failure_exit(ctrl_c_pending, user_stop);
+    return 20;
+}
+
+/* A name with a volume or assign colon may be a multi-directory assign: the
+ * library's own open tries one directory, and aar-run finds the file with its
+ * DOS packets (aar_serve_locate), which needs the serving loop and so a claim.
+ * Only that case waits to probe the full name; every other verdict, and a
+ * missing plain path, is final at once. */
+static inline int aar_run_probe_may_wait(enum aar_run_probe_verdict v,
+                                         const char *path)
+{
+    return v == AAR_RUN_PROBE_NOENT && path && strchr(path, ':') != NULL;
+}
+
+/* ---- STATUS and RELEASE through AARExt -------------------------------------- */
+
+/* AARExt returned this table, or NULL on a platform that has none. Both
+ * commands need both calls. */
+static inline int aar_run_admin_available(const aar_client_ext_zz9000 *ext)
+{
+    return AAR_CLIENT_EXT_ZZ9000_COVERS(ext, list) && ext->list != NULL &&
+           AAR_CLIENT_EXT_ZZ9000_COVERS(ext, release_handle) &&
+           ext->release_handle != NULL;
+}
+
+static inline void aar_run_admin_unsupported_line(char *buf, size_t size,
+                                                  const char *command)
+{
+    snprintf(buf, size, "aar-run: %s is not supported on this platform.",
+             command);
 }
 
 #endif /* AAR_RUN_POLICY_H */

@@ -1,15 +1,19 @@
 /*
- * aar-run: the reference launcher of the AAR standard (spec section 9.6). It opens a
- * claim on aar.library, gives it its options, loads and starts one app, serves
- * the app with aar_serve until it ends, and returns the app's exit code.
+ * aar-run: the reference launcher of the AAR standard (spec section 9.6). It
+ * opens a claim on aar.library, gives it its options, loads and starts one app,
+ * serves the app with aar_serve until it ends, and returns the app's exit code.
+ * It runs on any platform behind aar.library: what the platform takes comes
+ * from AARQuery, and the image is checked against it with AARProbeFile before a
+ * claim is taken.
  *
- *   aar-run <app.elf> [MAXMEM=<MiB>] [HOSTMEM=<MiB>] [WEIGHT=<1-256>] [AUDIO=AHI] [args]
+ *   aar-run <app.elf> [MAXMEM=<MiB>] [HOSTMEM=<MiB>] [WEIGHT=<n>] [AUDIO=AHI] [args]
  *   aar-run STATUS
  *   aar-run RELEASE <handle>
  *
  * This file is the arguments, the Workbench tool types, the library calls of the
  * launch sequence and the exit policy. The serving is client/serve (aar_serve.h);
- * STATUS and RELEASE are aar_run_zz9000.c, which this file includes.
+ * STATUS and RELEASE go through AARExt and are aar_run_zz9000.c, which this file
+ * includes; they say "not supported on this platform" where AARExt has no table.
  *
  * Copyright (C) 2024-2026, Dimitris Panokostas / BlitterStudio
  * SPDX-License-Identifier: MIT
@@ -47,7 +51,6 @@ struct Library *IconBase;
 
 extern struct WBStartup *_WBenchMsg;
 
-#define AAR_RUN_VERSION "0.1"
 static const char version[] __attribute__((used)) =
     "$VER: aar-run " AAR_RUN_VERSION " (20.11.2026)\r\n";
 
@@ -58,12 +61,15 @@ static const char version[] __attribute__((used)) =
 /* What the launch gathered from the arguments and the tool types. */
 static AARHandle *aar_handle;
 static AARInfo platform_info;
+static AARImageInfo image_note;
 static int claim_open;
 static aar_serve *g_serve;
 static char elf_full[512];
 static char elf_path[256];
-static char arg_store[AAR_RUN_ARGV_MAX][AAR_RUN_ARGV_STR_MAX];
+static char **app_args;
 static int app_argc;
+static int app_args_cap;
+static uint32_t longest_arg;
 static BPTR root_lock;
 static int abs_paths;
 static int joy_port0;
@@ -71,8 +77,11 @@ static int audio_ahi;
 static uint32_t maxmem_mib;
 static uint32_t hostmem_mib;
 static uint32_t weight_value;
+static uint32_t poll_us = AAR_RUN_DEFAULT_POLL_US;
+static uint32_t display_strategy = AAR_SERVE_DISPLAY_BUFFERS;
 static int launcher_output_active;
 static unsigned long dropped_logs;
+static unsigned long dropped_messages;
 
 static void cleanup(void);
 static int tool_is_ahi(const char *value);
@@ -129,9 +138,10 @@ static int user_stop_seen(void)
 
 static void usage(void)
 {
-    puts("aar-run <app.elf> [MAXMEM=<MiB>] [HOSTMEM=<MiB>] [WEIGHT=<1-256>] [AUDIO=AHI] [args]\n"
+    puts("aar-run <app.elf> [MAXMEM=<MiB>] [HOSTMEM=<MiB>] [WEIGHT=<n>] [AUDIO=AHI] [args]\n"
          "aar-run STATUS\n"
          "aar-run RELEASE <handle>\n"
+         "Diagnostics: POLL=<us> DISPLAY=<BUFFERS|PAN3|PAN2|SINGLE>\n"
          "Run Stack 32768 in this Shell first.\n"
          "Workbench ToolTypes: APP, ROOT, ABS, MODE, ARGS, JOYPORT0, AUDIO, MAXMEM, HOSTMEM, WEIGHT.\n"
          "ROOT defaults to the current directory, or the icon directory.");
@@ -147,14 +157,25 @@ static void say(const char *msg)
         puts(msg);
 }
 
+/* The requester shows msg as text, not as a format: a '%' in a file name is
+ * doubled so that it stays one. */
 static void requester(const char *msg)
 {
     if (_WBenchMsg && IntuitionBase) {
         struct EasyStruct es;
+        char text[400];
+        size_t i, j = 0;
+
+        for (i = 0; msg[i] && j + 2 < sizeof(text); i++) {
+            if (msg[i] == '%')
+                text[j++] = '%';
+            text[j++] = msg[i];
+        }
+        text[j] = '\0';
         memset(&es, 0, sizeof(es));
         es.es_StructSize = sizeof(es);
         es.es_Title = (UBYTE *)"aar-run";
-        es.es_TextFormat = (UBYTE *)msg;
+        es.es_TextFormat = (UBYTE *)text;
         es.es_GadgetFormat = (UBYTE *)"OK";
         EasyRequestArgs(NULL, &es, NULL, NULL);
     }
@@ -208,35 +229,56 @@ static int parse_mode(const char *text, ULONG *out)
     return 1;
 }
 
+/* The arguments for the app. How many and how long the platform takes is
+ * checked once AARQuery has said (aar_run_limits_check), not while they are
+ * collected. */
 static int add_arg(const char *text)
 {
     size_t n;
+    char *copy;
+
     if (!text)
         return 1;
     n = strlen(text);
-    if (!aar_run_arg_length_allowed((uint32_t)n) ||
-        app_argc >= (int)AAR_RUN_ARGV_MAX - 1) {
-        tell("Too many arguments, or an argument is longer than 127 bytes.");
+    if (app_argc == app_args_cap) {
+        int cap = app_args_cap ? app_args_cap * 2 : 16;
+        char **grown = (char **)realloc(app_args, (size_t)cap * sizeof(char *));
+
+        if (!grown) {
+            tell("aar-run: out of memory.");
+            return 0;
+        }
+        app_args = grown;
+        app_args_cap = cap;
+    }
+    copy = (char *)malloc(n + 1);
+    if (!copy) {
+        tell("aar-run: out of memory.");
         return 0;
     }
-    memcpy(arg_store[app_argc], text, n + 1);
-    app_argc++;
+    memcpy(copy, text, n + 1);
+    app_args[app_argc++] = copy;
+    if (n > longest_arg)
+        longest_arg = (uint32_t)n;
     return 1;
 }
 
 static int add_args_split(const char *text)
 {
-    char buf[256];
+    char *buf;
     char *p;
+    int ok = 1;
+
     if (!text || !text[0])
         return 1;
-    if (strlen(text) >= sizeof(buf)) {
-        tell("ARGS is longer than 255 bytes.");
+    buf = (char *)malloc(strlen(text) + 1);
+    if (!buf) {
+        tell("aar-run: out of memory.");
         return 0;
     }
     memcpy(buf, text, strlen(text) + 1);
     p = buf;
-    while (*p) {
+    while (ok && *p) {
         char *start;
         while (*p == ' ' || *p == '\t')
             p++;
@@ -247,10 +289,10 @@ static int add_args_split(const char *text)
             p++;
         if (*p)
             *p++ = 0;
-        if (!add_arg(start))
-            return 0;
+        ok = add_arg(start);
     }
-    return 1;
+    free(buf);
+    return ok;
 }
 
 #pragma GCC diagnostic push
@@ -288,13 +330,13 @@ static int read_tooltypes(struct DiskObject *icon, char *app_out, size_t app_n,
     if (tool_is_ahi(value))
         audio_ahi = 1;
     value = tool_value(icon, "MAXMEM");
-    if (value && !aar_run_parse_maxmem(value, maxmem))
+    if (value && !aar_run_parse_positive(value, maxmem))
         return 0;
     value = tool_value(icon, "HOSTMEM");
-    if (value && !aar_run_parse_hostmem(value, hostmem))
+    if (value && !aar_run_parse_positive(value, hostmem))
         return 0;
     value = tool_value(icon, "WEIGHT");
-    if (value && !aar_run_parse_weight(value, weight))
+    if (value && !aar_run_parse_positive(value, weight))
         return 0;
     value = tool_value(icon, "ARGS");
     return !value || add_args_split(value);
@@ -370,15 +412,21 @@ static int open_root(const char *root_text)
  * tokens follow it. */
 static int start_app(void)
 {
-    const char *argv_list[AAR_RUN_ARGV_MAX];
+    const char **argv_list;
     char line[160];
     int i;
     LONG rc;
 
+    argv_list = (const char **)malloc(((size_t)app_argc + 1u) * sizeof(char *));
+    if (!argv_list) {
+        puts("aar-run: out of memory.");
+        return 0;
+    }
     argv_list[0] = (const char *)FilePart((STRPTR)elf_path);
     for (i = 0; i < app_argc; i++)
-        argv_list[i + 1] = arg_store[i];
+        argv_list[i + 1] = app_args[i];
     rc = AARStart(aar_handle, argv_list, (ULONG)app_argc + 1u);
+    free(argv_list);
     if (rc != AAR_OK) {
         aar_run_failure_line(line, sizeof(line), "start", rc,
                              rc == AAR_E_NORESOURCE ? claim_reason() :
@@ -427,6 +475,7 @@ static int finish_run(LONG ended)
     res.size = sizeof(res);
     rc = aar_serve_result(g_serve, &res);
     dropped_logs = (unsigned long)res.dropped_logs;
+    dropped_messages = (unsigned long)res.dropped_messages;
     if (ended == AAR_SERVE_LOST) {
         snprintf(line, sizeof(line), "aar-run: claim lost (%s).",
                  aar_run_claim_loss_text(1, AAR_END_NONE));
@@ -470,6 +519,11 @@ static void cleanup(void)
         UnLock(root_lock);
         root_lock = 0;
     }
+    while (app_argc > 0)
+        free(app_args[--app_argc]);
+    free(app_args);
+    app_args = NULL;
+    app_args_cap = 0;
     /* The library returns the control block, the queues, every service buffer
      * and every map at the close, so nothing above may touch them afterwards. */
     if (claim_open) {
@@ -498,6 +552,8 @@ static void cleanup(void)
         if (dropped_logs)
             printf("aar-run: dropped %lu diagnostic log records.\n",
                    dropped_logs);
+        if (dropped_messages)
+            printf("aar-run: dropped %lu app messages.\n", dropped_messages);
     }
 }
 
@@ -538,6 +594,42 @@ static void load_failed(LONG rc)
     puts(line);
 }
 
+/* The image against the platform, before any claim (D5): AARProbeFile needs no
+ * handle. */
+static enum aar_run_probe_verdict probe_image(const char *path)
+{
+    LONG rc;
+
+    memset(&image_note, 0, sizeof(image_note));
+    image_note.size = sizeof(image_note);
+    rc = AARProbeFile(path, &image_note);
+    return aar_run_probe_check((int)rc, &image_note, &platform_info);
+}
+
+/* Say why the image cannot run, and return the exit code. */
+static int refuse_image(enum aar_run_probe_verdict v, const char *path)
+{
+    char line[320];
+
+    aar_run_probe_line(line, sizeof(line), v, path, &image_note, &platform_info);
+    tell(line);
+    return aar_run_probe_exit(v, ctrl_c_set(), user_stop_seen());
+}
+
+/* One command-line word of the options aar-run takes itself: the diagnostics
+ * and WEIGHT, matched without regard to case. AAR_RUN_ARG_OTHER: not one. */
+static int take_option(const char *arg)
+{
+    int r = aar_run_weight_arg(arg, &weight_value);
+
+    if (r != AAR_RUN_ARG_OTHER)
+        return r;
+    r = aar_run_poll_arg(arg, &poll_us);
+    if (r != AAR_RUN_ARG_OTHER)
+        return r;
+    return aar_run_display_arg(arg, &display_strategy);
+}
+
 #include "aar_run_zz9000.c"
 
 int main(int argc, char **argv)
@@ -550,6 +642,9 @@ int main(int argc, char **argv)
     ULONG reason = 0;
     LONG status;
     enum aar_run_query_verdict verdict;
+    enum aar_run_probe_verdict probe;
+    enum aar_run_limit_verdict limit_verdict;
+    struct aar_run_limits limits;
     int rc = 20;
     int show_status = 0;
     uint32_t release_handle = 0;
@@ -624,6 +719,8 @@ int main(int argc, char **argv)
             }
             memcpy(elf_path, argv[1], strlen(argv[1]) + 1);
             for (i = 2; i < argc; i++) {
+                int opt;
+
                 if (strncmp(argv[i], "AUDIO=", 6) == 0) {
                     if (!tool_is_ahi(argv[i] + 6)) {
                         tell("AUDIO must be AHI.");
@@ -633,19 +730,17 @@ int main(int argc, char **argv)
                     audio_ahi = 1;
                     continue;
                 }
-                {
-                    int w = aar_run_weight_arg(argv[i], &weight_value);
-
-                    if (w == AAR_RUN_ARG_BAD) {
-                        usage();
-                        cleanup();
-                        return 10;
-                    }
-                    if (w == AAR_RUN_ARG_TAKEN)
-                        continue;
+                opt = take_option(argv[i]);
+                if (opt == AAR_RUN_ARG_BAD) {
+                    printf("aar-run: bad value in %s\n", argv[i]);
+                    usage();
+                    cleanup();
+                    return 10;
                 }
+                if (opt == AAR_RUN_ARG_TAKEN)
+                    continue;
                 if (strncmp(argv[i], "HOSTMEM=", 8) == 0) {
-                    if (!aar_run_parse_hostmem(argv[i] + 8, &hostmem_mib)) {
+                    if (!aar_run_parse_positive(argv[i] + 8, &hostmem_mib)) {
                         usage();
                         cleanup();
                         return 10;
@@ -653,7 +748,7 @@ int main(int argc, char **argv)
                     continue;
                 }
                 if (strncmp(argv[i], "MAXMEM=", 7) == 0) {
-                    if (!aar_run_parse_maxmem(argv[i] + 7, &maxmem_mib)) {
+                    if (!aar_run_parse_positive(argv[i] + 7, &maxmem_mib)) {
                         usage();
                         cleanup();
                         return 10;
@@ -673,8 +768,8 @@ int main(int argc, char **argv)
     }
     AARBase = OpenLibrary((CONST_STRPTR)AAR_LIB_NAME, AAR_LIB_VERSION);
     if (!AARBase) {
-        tell("aar.library not found. Install Libs:aar.library from the "
-             "ZZ9000 package.");
+        tell("aar.library not found. Install Libs:aar.library for this "
+             "platform.");
         cleanup();
         return 20;
     }
@@ -697,6 +792,7 @@ int main(int argc, char **argv)
                (unsigned long)platform_info.api_minor);
         zz9000_print_caps(&platform_info);
         putchar('\n');
+        zz9000_print_note(&platform_info);
     }
     verdict = aar_run_query_check(&platform_info);
     if (verdict != AAR_RUN_QUERY_OK) {
@@ -704,18 +800,40 @@ int main(int argc, char **argv)
         cleanup();
         return 20;
     }
-    if (!zz9000_init()) {
-        tell("aar.library has no ZZ9000 client extension.");
-        cleanup();
-        return 20;
-    }
-    if (show_status) {
-        rc = zz9000_print_status();
+    if (show_status || release_handle) {
+        if (!zz9000_init()) {
+            char line[80];
+
+            aar_run_admin_unsupported_line(line, sizeof(line),
+                                           show_status ? "STATUS" : "RELEASE");
+            tell(line);
+            cleanup();
+            return 20;
+        }
+        rc = show_status ? zz9000_print_status()
+                         : zz9000_release_claim(release_handle);
         cleanup();
         return rc;
     }
-    if (release_handle) {
-        rc = zz9000_release_claim(release_handle);
+    /* What the platform takes decides what a launch may ask for; nothing is
+     * claimed for a launch it would refuse. */
+    limits = aar_run_limits_from_info(&platform_info);
+    limit_verdict = aar_run_limits_check(&limits, (uint32_t)app_argc,
+                                         longest_arg, weight_value,
+                                         hostmem_mib);
+    if (limit_verdict != AAR_RUN_LIMIT_OK) {
+        char line[160];
+
+        aar_run_limit_line(line, sizeof(line), limit_verdict, &limits);
+        tell(line);
+        cleanup();
+        return 10;
+    }
+    /* The image next, still without a claim. A name that may be a
+     * multi-directory assign is probed after the locate below. */
+    probe = probe_image(elf_path);
+    if (probe != AAR_RUN_PROBE_OK && !aar_run_probe_may_wait(probe, elf_path)) {
+        rc = refuse_image(probe, elf_path);
         cleanup();
         return rc;
     }
@@ -738,6 +856,10 @@ int main(int argc, char **argv)
     cfg.console_spec = _WBenchMsg ? (CONST_STRPTR)AAR_RUN_WB_CONSOLE : NULL;
     cfg.audio_route = audio_ahi ? AAR_AUDIO_ROUTE_AHI : AAR_AUDIO_ROUTE_PLATFORM;
     cfg.joy_ports = joy_port0 ? 3UL : 2UL;
+    cfg.poll_us = poll_us;
+    if (!poll_us)
+        cfg.flags |= AAR_SERVEF_USE_SIGNAL;
+    cfg.display_strategy = display_strategy;
     status = aar_serve_create(aar_handle, &cfg, &g_serve);
     if (status != AAR_OK) {
         char line[160];
@@ -781,6 +903,16 @@ int main(int argc, char **argv)
             printf("aar-run: cannot resolve the path of %s\n", elf_path);
             cleanup();
             return 20;
+        }
+    }
+    /* The probe that had to wait for the locate. The claim is closed again
+     * for an image that cannot run. */
+    if (probe != AAR_RUN_PROBE_OK) {
+        probe = probe_image(elf_full);
+        if (probe != AAR_RUN_PROBE_OK) {
+            rc = refuse_image(probe, elf_full);
+            cleanup();
+            return rc;
         }
     }
     if (claim_gone()) {
