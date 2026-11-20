@@ -11,11 +11,8 @@
  */
 
 /* Tokens are board offsets: AARSharedToken turns the address of a P96 bitmap
- * into the token the card understands and refuses an address outside the
- * card's shared aperture. aar_serve also checks the framebuffer window the card
- * accepts for a scanout, so a bitmap outside it is refused here. */
-#define AAR_SERVE_TOKEN_MIN 0x00010000UL
-#define AAR_SERVE_TOKEN_END 0x06010000UL
+ * into the token the platform understands and refuses an address outside the
+ * platform's shared aperture. */
 
 static int bitmap_token(struct aar_serve *s, struct BitMap *bm, ULONG *token,
                         ULONG *pitch)
@@ -37,8 +34,9 @@ static int bitmap_token(struct aar_serve *s, struct BitMap *bm, ULONG *token,
         claim_note(s, X_AAR_SHARED_TOKEN(s->handle, mem, bytes * rows, token)) !=
             AAR_OK)
         return 0;
-    if (*token < AAR_SERVE_TOKEN_MIN || *token >= AAR_SERVE_TOKEN_END)
-        return 0;
+    /* The platform validates the spans of the front, back and spare buffers
+     * (it answers AAR_E_INVAL for a bad one), as the library does for an
+     * address outside the shared aperture. */
     *pitch = bytes;
     return 1;
 }

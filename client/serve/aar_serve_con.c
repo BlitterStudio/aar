@@ -48,6 +48,7 @@ static void console_reap_packets(struct aar_serve *s);
 static int console_write_start(struct aar_serve *s, BPTR fh,
                                const uint8_t *data, uint32_t bytes);
 static void console_write_fh(BPTR fh, const char *msg);
+static void console_user_note(struct aar_serve *s, const char *msg);
 
 static void console_output_error(struct aar_serve *s)
 {
@@ -55,9 +56,10 @@ static void console_output_error(struct aar_serve *s)
 
     want_stop(s, AAR_SERVE_WHY_CONSOLE);
     if (!s->console_output_failed) {
+        /* Not into the destination that just failed: nobody would see it. */
         snprintf(note, sizeof(note), "%s: cannot write app console output.\n",
                  s->title);
-        console_write_fh(console_output(s), note);
+        console_user_note(s, note);
     }
     s->console_output_failed = 1;
 }
@@ -115,7 +117,7 @@ static void console_user_note(struct aar_serve *s, const char *msg)
 {
     BPTR fh;
 
-    if (s->con.handle) {
+    if (s->con.handle && s->con.owned) {
         console_write_fh(s->con.handle, msg);
         return;
     }
@@ -133,9 +135,17 @@ static int console_write_start(struct aar_serve *s, BPTR fh,
 {
     struct FileHandle *handle = (struct FileHandle *)BADDR(fh);
 
-    if (!handle || !handle->fh_Type || !data || bytes == 0 ||
-        bytes > AAR_SERVE_CONSOLE_WRITE_BYTES)
+    if (!handle || !data || bytes == 0 || bytes > AAR_SERVE_CONSOLE_WRITE_BYTES)
         return 0;
+    if (!handle->fh_Type) {
+        /* NIL: has no handler port, so there is no packet to send: Write()
+         * takes the bytes and cannot block. */
+        s->con.wsync_result = X_WRITE(fh, (APTR)data, (LONG)bytes);
+        s->con.winteractive = 0;
+        s->con.wsync = 1;
+        s->con.wpending = 1;
+        return 1;
+    }
     if (!s->con.port)
         s->con.port = X_CREATE_PORT();
     if (!s->con.wpacket)
@@ -161,11 +171,10 @@ static int console_write_start(struct aar_serve *s, BPTR fh,
     return 1;
 }
 
-static void console_write_complete(struct aar_serve *s)
+static void console_write_complete(struct aar_serve *s, LONG written)
 {
     s->con.wpending = 0;
-    aar_serve_console_write_done(&s->core.console,
-                                 (int32_t)s->con.wpacket->sp_Pkt.dp_Res1);
+    aar_serve_console_write_done(&s->core.console, (int32_t)written);
 }
 
 static void console_read_complete(struct aar_serve *s)
@@ -180,6 +189,13 @@ static void console_reap_packets(struct aar_serve *s)
 {
     struct Message *msg;
 
+    /* The result of a Write() the last pass made on a handle with no handler
+     * port. It is delivered here, not from inside console_write_start: the
+     * console pump that called it has not finished yet. */
+    while (s->con.wsync) {
+        s->con.wsync = 0;
+        console_write_complete(s, s->con.wsync_result);
+    }
     if (!s->con.port)
         return;
     while ((msg = X_GET_MSG(s->con.port)) != NULL) {
@@ -187,7 +203,7 @@ static void console_reap_packets(struct aar_serve *s)
             console_read_complete(s);
         else if (s->con.wpending && s->con.wpacket &&
                  msg == &s->con.wpacket->sp_Msg)
-            console_write_complete(s);
+            console_write_complete(s, s->con.wpacket->sp_Pkt.dp_Res1);
     }
 }
 
@@ -220,13 +236,14 @@ static void console_read_finish(struct aar_serve *s)
             }
             input_noted = 1;
         }
-        if (s->con.wpending && !s->con.winteractive && !output_noted) {
+        if (s->con.wpending && !s->con.wsync && !s->con.winteractive &&
+            !output_noted) {
             snprintf(note, sizeof(note),
                      "%s: waiting for pending output to finish.\n", s->title);
             console_user_note(s, note);
             output_noted = 1;
         }
-        if (s->con.port)
+        if (s->con.port && !s->con.wsync)
             X_WAIT_PORT(s->con.port);
     }
     if (s->con.wbuffer)
@@ -243,6 +260,7 @@ static void console_read_finish(struct aar_serve *s)
     s->con.wpacket = NULL;
     s->con.wpending = 0;
     s->con.winteractive = 0;
+    s->con.wsync = 0;
     s->con.buffer = NULL;
     s->con.packet = NULL;
     s->con.port = NULL;

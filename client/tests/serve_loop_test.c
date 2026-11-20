@@ -1268,6 +1268,132 @@ static void test_the_workbench_console_opens_at_the_first_use(void)
     finish(); /* destroy closes the console it opened */
 }
 
+/* ---- Tests: the fixes of the move ------------------------------------------------------------------------------- */
+
+static int sync_has(const char *text)
+{
+    hx_sync_out[hx_sync_len < sizeof(hx_sync_out) ? hx_sync_len : sizeof(hx_sync_out) - 1] = 0;
+    return strstr(hx_sync_out, text) != NULL;
+}
+
+/*
+ * Output to >NIL: (a handle with no handler port) used to fail the whole output
+ * path: the first console byte stopped the app and the run returned 20, and the
+ * stop cancelled the app's parked file calls (swquake's failed seeks). NIL: takes
+ * everything through a plain Write(), which cannot block; nothing fails.
+ */
+static void test_nil_output_is_written_synchronously_and_the_app_is_not_stopped(void)
+{
+    struct comp c;
+    struct aar_serve_result res;
+    unsigned i;
+
+    setup("nil_output");
+    data_dir();
+    hx_output_bptr = MKBADDR(&hx_nil_fh_store);
+    hx_input_bptr = MKBADDR(&hx_nil_fh_store);
+    make_serve();
+    put_str(0x100, "hello");
+    CHECK(call(AAR_OP_CONSOLE_WRITE, 1, 0, 0, 0, 0, 0x100, 5, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_CONSOLE_COUNT] == 5);
+    /* A file seek in between, as the app does while it prints. */
+    put_str(0x100, "hello.txt");
+    CHECK(call(AAR_OP_FILE_OPEN, 2, 3, AAR_FILE_READ, 0, 0, 0x100, 10, &c));
+    CHECK(c.result == AAR_OK);
+    CHECK(call(AAR_OP_FILE_SEEK, 3, 3, 0, 4, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_FILE_POS_LO] == 4);
+    for (i = 0; i < 3000; i++)
+        buf(0x1000)[i] = 'x';
+    CHECK(call(AAR_OP_CONSOLE_WRITE, 4, 0, 0, 0, 0, 0x1000, 3000, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_CONSOLE_COUNT] == 3000);
+    CHECK(call(AAR_OP_FILE_CLOSE, 5, 3, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK);
+    /* The input is NIL: too: end of input. */
+    CHECK(call(AAR_OP_CONSOLE_READ, 6, 0, 0, 0, 0, 0x200, 64, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_CONSOLE_COUNT] == 0);
+    CHECK(hx_sync_bytes == 3005);   /* all of it through Write() */
+    CHECK(hx_packets_by[6] == 0);   /* no console write packet */
+    app_exits_in(3000);
+    CHECK(aar_serve_run(S) == AAR_SERVE_ENDED);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    CHECK(aar_serve_result(S, &res) == AAR_OK);
+    CHECK(res.flags == 0 && res.exit_code == 0);
+    finish();
+}
+
+/* A destination that really fails still stops the app, and the note about it
+ * goes to the user's console, not into the destination that failed. */
+static void test_the_output_error_note_goes_to_the_user_console(void)
+{
+    struct comp c;
+    struct aar_serve_result res;
+
+    setup("output_error_note");
+    hx_output_bptr = MKBADDR(&hx_pipe_fh_store);
+    hx_pipe_ok_bytes = 3;
+    make_serve();
+    put_str(0x100, "hello");
+    CHECK(call(AAR_OP_CONSOLE_WRITE, 1, 0, 0, 0, 0, 0x100, 5, &c));
+    CHECK(c.result == AAR_E_IO);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    (void)aar_serve_result(S, &res);
+    CHECK((res.flags & AAR_SERVE_R_CONSOLE_FAILED) && (res.flags & AAR_SERVE_R_STOP_ASKED));
+    CHECK(sync_has("cannot write app console output"));
+    hx_pipe_out[hx_pipe_len < sizeof(hx_pipe_out) ? hx_pipe_len : sizeof(hx_pipe_out) - 1] = 0;
+    CHECK(strstr(hx_pipe_out, "cannot write") == NULL);
+    finish();
+}
+
+/*
+ * The library turns an AUDIO_OPEN completion whose ring does not check out into
+ * a refusal. AHI was opened for it: it is closed again and the loop's audio
+ * state is cleared, so a later open starts clean.
+ */
+static void test_a_refused_audio_ring_closes_ahi(void)
+{
+    struct comp c;
+
+    setup("refused_ring");
+    cfg.audio_route = AAR_AUDIO_ROUTE_AHI;
+    make_serve();
+    make_ring(0x4000, 64, 0);
+    put_le(buf(0x4000) + AAR_AUDIO_RING_FORMAT, 7); /* not S16LE */
+    CHECK(open_audio(&c, 0x4000, 64));
+    CHECK(c.result == AAR_E_IO);
+    CHECK(hx_ahi_open_count == 0);
+    ticks(5);
+    CHECK(hx_ahi_writes == 0);
+    /* A good ring opens afterwards. */
+    make_ring(0x8000, 64, 40);
+    CHECK(open_audio(&c, 0x8000, 64));
+    CHECK(c.result == AAR_OK && hx_ahi_open_count == 1);
+    ticks(6);
+    CHECK(hx_ahi_writes == 1);
+    CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK && hx_ahi_open_count == 0);
+    finish();
+}
+
+/* The platform validates the framebuffer spans; the client no longer has a
+ * window of its own for the tokens (a platform whose tokens lie elsewhere). */
+static void test_a_bitmap_token_outside_the_old_window_is_accepted(void)
+{
+    struct comp c;
+    uint32_t front;
+
+    setup("token_window");
+    hx_token_add = 0x08000000UL; /* beyond 0x06010000 */
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(c.result == AAR_OK);
+    front = c.out[AAR_R_DISPLAY_OPEN_FRONT];
+    CHECK(front >= 0x08000000UL);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -1310,6 +1436,10 @@ static const struct {
     T(test_hooks_replace_the_defaults),
     T(test_the_configuration_is_checked),
     T(test_the_workbench_console_opens_at_the_first_use),
+    T(test_nil_output_is_written_synchronously_and_the_app_is_not_stopped),
+    T(test_the_output_error_note_goes_to_the_user_console),
+    T(test_a_refused_audio_ring_closes_ahi),
+    T(test_a_bitmap_token_outside_the_old_window_is_accepted),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

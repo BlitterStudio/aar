@@ -235,6 +235,8 @@ struct aar_serve {
         UBYTE *wbuffer;
         int wpending;
         int winteractive;
+        int wsync;                      /* a Write() on a handle with no handler port finished; */
+        LONG wsync_result;              /* ... with this result, delivered by the next pass */
         BPTR in;                        /* cfg.console_in, or 0 */
         BPTR handle;                    /* cfg.console_out, or the console aar_serve opened */
         int owned;                      /* handle is aar_serve's to close */

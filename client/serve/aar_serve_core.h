@@ -840,6 +840,9 @@ void aar_serve_audio_open_request(struct aar_serve_audio *a, const struct aar_se
 void aar_serve_audio_close_request(struct aar_serve_audio *a,
                                    const struct aar_serve_req *req,
                                    struct aar_serve_done *done);
+/* The library refused the ring of an AUDIO_OPEN that this core completed with
+ * AAR_OK: the audio is closed again (nothing is attached to the ring). */
+void aar_serve_audio_refused(struct aar_serve_audio *a);
 /* The frames one AHI buffer takes from the ring: what is available, at most
  * 1/50 s of audio and the buffer size. */
 uint32_t aar_serve_audio_chunk_frames(uint32_t available_frames, uint32_t rate,

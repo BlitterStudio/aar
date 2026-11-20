@@ -1495,6 +1495,14 @@ void aar_serve_audio_close_request(struct aar_serve_audio *a,
     done->result = AAR_OK;
 }
 
+void aar_serve_audio_refused(struct aar_serve_audio *a)
+{
+    if (a->open) {
+        a->ops.close(a->ops.ctx);
+        a->open = 0;
+    }
+}
+
 uint32_t aar_serve_audio_chunk_frames(uint32_t available_frames, uint32_t rate,
                                       uint32_t channels, uint32_t buffer_bytes)
 {

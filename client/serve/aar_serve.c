@@ -195,6 +195,7 @@ static int post_reply(struct aar_serve *s, const struct aar_serve_req *q,
 {
     AARServiceReq r;
     unsigned i;
+    int rc;
 
     memset(&r, 0, sizeof(r));
     r.size = sizeof(r);
@@ -204,7 +205,15 @@ static int post_reply(struct aar_serve *s, const struct aar_serve_req *q,
     r.reply_flags = d->flags;
     for (i = 0; i < AAR_ENTRY_OUTS; i++)
         r.out[i] = d->out[i];
-    return (int)claim_note(s, X_AAR_SERVICE_REPLY(s->handle, &r));
+    rc = (int)claim_note(s, X_AAR_SERVICE_REPLY(s->handle, &r));
+    if (q->op == AAR_OP_AUDIO_OPEN && d->result == AAR_OK && rc != AAR_OK &&
+        rc != AAR_E_BUSY) {
+        /* The library turned the completion into a refusal (the ring does not
+         * check out): the app is told the open failed, so AHI must not stay
+         * open on a ring nobody attached. */
+        aar_serve_audio_refused(&s->core.audio);
+    }
+    return rc;
 }
 
 /* Completions that found the CQ full wait here until the app has drained it. */

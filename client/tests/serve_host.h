@@ -221,6 +221,7 @@ struct hxMessage {
 #define HX_K_PLAIN 0
 #define HX_K_VOLUME 1
 #define HX_K_CONSOLE 2
+#define HX_K_PIPE 3
 
 struct MsgPort {
     struct Message *q[HX_PORT_Q];
@@ -864,6 +865,7 @@ static struct hx_open hx_opens[HX_OPEN_FILES];
 static struct MsgPort hx_vol_port = {{0}, 0, 20, HX_K_VOLUME, 0, 0};
 static struct MsgPort hx_vol2_port = {{0}, 0, 21, HX_K_VOLUME, 0, 0};
 static struct MsgPort hx_con_port = {{0}, 0, 22, HX_K_CONSOLE, 0, 0};
+static struct MsgPort hx_pipe_port = {{0}, 0, 23, HX_K_PIPE, 0, 0};
 
 HX_UNUSED static unsigned long hx_packets;              /* packets sent to a handler */
 HX_UNUSED static unsigned long hx_packets_by[8];        /* 0 locate 1 free 2 examine 3 open 4 end 5 read 6 write 7 other */
@@ -878,6 +880,10 @@ HX_UNUSED static uint32_t hx_con_out_len;
 HX_UNUSED static char hx_nil_out[16];                    /* writes that reached Write() of a NIL: handle */
 HX_UNUSED static uint32_t hx_sync_bytes;                 /* bytes written through Write() */
 HX_UNUSED static char hx_sync_out[16384];
+HX_UNUSED static char hx_pipe_out[16384];                /* what the pipe handler took */
+HX_UNUSED static uint32_t hx_pipe_len;
+HX_UNUSED static uint32_t hx_pipe_ok_bytes = 1u << 30;   /* writes beyond this many bytes fail */
+HX_UNUSED static struct FileHandle hx_pipe_fh_store;
 HX_UNUSED static uint32_t hx_sync_len;
 HX_UNUSED static char hx_in_data[1024];                  /* what the console handler gives to reads */
 HX_UNUSED static uint32_t hx_in_len, hx_in_pos;
@@ -1254,6 +1260,37 @@ static void hx_con_run(void *arg)
     }
 }
 
+/* A pipe: writes are taken until hx_pipe_ok_bytes, then they fail (a closed
+ * pipe, a full volume); a read finds the end of input. */
+static void hx_pipe_run(void *arg)
+{
+    struct StandardPacket *pkt = arg;
+    struct DosPacket *d = &pkt->sp_Pkt;
+
+    if (!hx_block_live(pkt))
+        HX_FAIL("the pipe handler replies to a packet that was freed");
+    if (d->dp_Type == ACTION_WRITE) {
+        const char *src = (const char *)(uintptr_t)(uint32_t)d->dp_Arg2;
+        uint32_t n = (uint32_t)d->dp_Arg3;
+
+        if (!hx_mem_live(src))
+            HX_FAIL("a pipe write from memory that is not allocated");
+        if (hx_pipe_len + n > hx_pipe_ok_bytes) {
+            hx_vol_reply(pkt, -1, ERROR_DISK_FULL);
+            return;
+        }
+        if (hx_pipe_len + n > sizeof(hx_pipe_out))
+            n = (uint32_t)(sizeof(hx_pipe_out) - hx_pipe_len);
+        memcpy(hx_pipe_out + hx_pipe_len, src, n);
+        hx_pipe_len += n;
+        hx_vol_reply(pkt, (LONG)n, 0);
+    } else if (d->dp_Type == ACTION_READ) {
+        hx_vol_reply(pkt, 0, 0);
+    } else {
+        hx_vol_reply(pkt, 0, ERROR_ACTION_NOT_KNOWN);
+    }
+}
+
 static void hx_dos_packet(struct MsgPort *port, struct StandardPacket *pkt)
 {
     int k;
@@ -1283,6 +1320,8 @@ static void hx_dos_packet(struct MsgPort *port, struct StandardPacket *pkt)
         if (hx_vol_never)
             return;
         hx_sched(hx_vol_delay_us, hx_vol_run, pkt);
+    } else if (port->kind == HX_K_PIPE) {
+        hx_sched(hx_con_delay_us, hx_pipe_run, pkt);
     } else {
         if (pkt->sp_Pkt.dp_Type == ACTION_READ) {
             hx_con_reads++;
@@ -1469,6 +1508,13 @@ HX_UNUSED static LONG hx_write(BPTR b, const void *buf, LONG len)
         HX_FAIL("Write on no handle");
     hx_sync_bytes += (uint32_t)len;
     if (fh->fh_Type == NULL) {
+        return len;
+    }
+    if (fh->fh_Type == &hx_pipe_port) {
+        if (hx_pipe_len + (uint32_t)len <= sizeof(hx_pipe_out)) {
+            memcpy(hx_pipe_out + hx_pipe_len, buf, (size_t)len);
+            hx_pipe_len += (uint32_t)len;
+        }
         return len;
     }
     if (hx_sync_len + (uint32_t)len <= sizeof(hx_sync_out)) {
@@ -1924,6 +1970,13 @@ HX_UNUSED static void hx_reset(void)
     memset(&hx_con_port, 0, sizeof(hx_con_port));
     hx_con_port.mp_SigBit = 22;
     hx_con_port.kind = HX_K_CONSOLE;
+    memset(&hx_pipe_port, 0, sizeof(hx_pipe_port));
+    hx_pipe_port.mp_SigBit = 23;
+    hx_pipe_port.kind = HX_K_PIPE;
+    memset(&hx_pipe_fh_store, 0, sizeof(hx_pipe_fh_store));
+    hx_pipe_fh_store.fh_Type = &hx_pipe_port;
+    hx_pipe_len = 0;
+    hx_pipe_ok_bytes = 1u << 30;
     hx_nodes[1].used = 1;
     hx_nodes[1].is_dir = 1;
     hx_nodes[1].parent = 0;
