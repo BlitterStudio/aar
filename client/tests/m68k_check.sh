@@ -4,7 +4,7 @@
 # build-m68k-amigaos.sh). Run it inside that image, from the aar checkout:
 #
 #   docker run --rm -v "$PWD:/src:ro" \
-#     amigadev/crosstools@sha256:6d96ee62dfac1ca84d54b063b4cfbc82bc6bf0971d6f5200be848d8c2f5fceee \
+#     amigadev/crosstools@sha256:98c6671ce9bfec0355e9336e02cbef2a39bad8c5ddd71c43720acacdb697b9a0 \
 #     sh -c 'cp -r /src /w && cd /w && client/tests/m68k_check.sh'
 #
 # It compiles client/tests/m68k_compile_test.c with warnings as errors, then
