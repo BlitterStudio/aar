@@ -2080,6 +2080,7 @@ HX_UNUSED static void hx_reset(void)
 #define X_AAR_MESSAGE_SIGNAL(h) aar_core_message_signal(hx_aar, (h))
 #define X_AAR_SET_LOG_SINK(h, sink, user) hx_aar_set_log_sink((h), (sink), (user))
 #define X_AAR_QUERY(info) aar_core_query(hx_aar, (info))
+#define X_AAR_GET_MESSAGE(h, m) aar_core_get_message(hx_aar, (h), (m))
 
 #define X_GET_SYS_TIME(s, tv)                                                                  \
     do {                                                                                       \

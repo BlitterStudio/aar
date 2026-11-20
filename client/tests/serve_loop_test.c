@@ -1426,6 +1426,110 @@ static void test_the_stop_grace_is_the_platforms(void)
     CHECK(t >= 5000 + AAR_SERVE_GRACE_MS * 1000ULL && t < 5000 + AAR_SERVE_GRACE_MS * 1000ULL + 50000);
 }
 
+/* ---- Tests: the app's messages ------------------------------------------------------------------------------------ */
+
+/* The app sends n messages (the first byte counts them); the test posts them as
+ * the SQ has room, with the loop running. */
+static unsigned send_messages(unsigned n)
+{
+    unsigned sent = 0;
+    int guard = 0;
+    uint8_t raw[AAR_MSG_BYTES];
+
+    while (sent < n && guard++ < 2000) {
+        while (sent < n) {
+            memset(raw, 0, sizeof(raw));
+            raw[0] = (uint8_t)sent;
+            raw[1] = (uint8_t)(sent >> 8);
+            if (refplat_app_message(SLOT, raw) != AAR_OK)
+                break;
+            sent++;
+        }
+        tick();
+    }
+    return sent;
+}
+
+/*
+ * The library holds 64 unread messages. With nobody taking them, a message at the
+ * head of the SQ that the full inbox cannot take blocks every request behind it:
+ * an app that sends more than 64 messages hung. The loop takes the messages and
+ * drops them (a launcher has no use for them), and counts them.
+ */
+static void test_app_messages_are_drained_and_counted_by_default(void)
+{
+    struct comp c;
+    struct aar_serve_result res;
+
+    setup("messages_drained");
+    make_serve();
+    CHECK(send_messages(150) == 150);
+    put_str(0x100, "ok");
+    CHECK(call(AAR_OP_CONSOLE_WRITE, 1, 0, 0, 0, 0, 0x100, 2, &c));
+    CHECK(c.result == AAR_OK);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    CHECK(aar_serve_result(S, &res) == AAR_OK);
+    CHECK(res.dropped_messages == 150);
+    finish();
+}
+
+static unsigned hook_messages, hook_first_bytes[8];
+static void hook_message(ULONG user, const AARMessage *msg)
+{
+    (void)user;
+    if (hook_messages < 8)
+        hook_first_bytes[hook_messages] = msg->bytes[0];
+    hook_messages++;
+}
+
+static void test_the_message_hook_gets_the_messages(void)
+{
+    aar_serve_hooks hooks;
+    struct aar_serve_result res;
+
+    setup("message_hook");
+    memset(&hooks, 0, sizeof(hooks));
+    hooks.size = sizeof(hooks);
+    hooks.message = hook_message;
+    cfg.hooks = &hooks;
+    hook_messages = 0;
+    make_serve();
+    CHECK(send_messages(10) == 10);
+    ticks(3);
+    CHECK(hook_messages == 10);
+    CHECK(hook_first_bytes[0] == 0 && hook_first_bytes[1] == 1 && hook_first_bytes[7] == 7);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    CHECK(aar_serve_result(S, &res) == AAR_OK);
+    CHECK(res.dropped_messages == 0); /* the hook took them */
+    finish();
+}
+
+/* A program that calls AARGetMessage itself keeps its messages. */
+static void test_keep_messages_leaves_them_for_the_program(void)
+{
+    AARMessage m;
+    struct aar_serve_result res;
+    unsigned got = 0;
+
+    setup("keep_messages");
+    cfg.flags |= AAR_SERVEF_KEEP_MESSAGES;
+    make_serve();
+    CHECK(send_messages(10) == 10);
+    ticks(3);
+    while (aar_core_get_message(&core, H, &m) == AAR_OK) {
+        CHECK(m.bytes[0] == got);
+        got++;
+    }
+    CHECK(got == 10);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    CHECK(aar_serve_result(S, &res) == AAR_OK);
+    CHECK(res.dropped_messages == 0);
+    finish();
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -1473,6 +1577,9 @@ static const struct {
     T(test_a_refused_audio_ring_closes_ahi),
     T(test_a_bitmap_token_outside_the_old_window_is_accepted),
     T(test_the_stop_grace_is_the_platforms),
+    T(test_app_messages_are_drained_and_counted_by_default),
+    T(test_the_message_hook_gets_the_messages),
+    T(test_keep_messages_leaves_them_for_the_program),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

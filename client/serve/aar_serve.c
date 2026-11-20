@@ -269,6 +269,31 @@ static int group_served(const struct aar_serve *s, uint16_t op)
     return group == 0 || s->cfg.groups == 0 || (s->cfg.groups & group) != 0;
 }
 
+/*
+ * The app's messages. The library keeps 64 unread ones, and a message that the
+ * full inbox cannot take blocks every request behind it in the SQ, so a client
+ * that does not read them hangs the app. Unless the program reads them itself
+ * (AAR_SERVEF_KEEP_MESSAGES), they are taken here: given to the hook, or
+ * dropped and counted.
+ */
+static void service_messages(struct aar_serve *s)
+{
+    AARMessage m;
+    unsigned n;
+
+    if (s->cfg.flags & AAR_SERVEF_KEEP_MESSAGES)
+        return;
+    for (n = 0; n < 64u; n++) { /* the library's inbox */
+        memset(&m, 0, sizeof(m));
+        if (claim_note(s, X_AAR_GET_MESSAGE(s->handle, &m)) != AAR_OK)
+            break;
+        if (AAR_SERVE_HOOK(s, message))
+            s->cfg.hooks->message(s->cfg.user, &m);
+        else
+            s->dropped_messages++;
+    }
+}
+
 static void service_requests(struct aar_serve *s)
 {
     unsigned served = 0;
@@ -586,6 +611,7 @@ LONG aar_serve_step(aar_serve *s, ULONG signals)
     aar_serve_events_flush(&s->events);
     /* The library flushes a pending coalesced mouse event itself. */
     service_requests(s);
+    service_messages(s);
     service_console(s);
     service_display(s);
     service_ahi_audio(s);
@@ -683,7 +709,7 @@ LONG aar_serve_result(aar_serve *s, struct aar_serve_result *out)
                  (s->audio_open_failed ? AAR_SERVE_R_AUDIO_FAILED : 0UL) |
                  (s->queue_corrupt ? AAR_SERVE_R_QUEUE_CORRUPT : 0UL);
     out->dropped_logs = s->core.console.launcher_dropped;
-    out->dropped_messages = 0;
+    out->dropped_messages = s->dropped_messages;
     if (!claim_live(s))
         return rc;
     memset(&st, 0, sizeof(st));
