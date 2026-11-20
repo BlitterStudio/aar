@@ -97,7 +97,12 @@ if [ "${FAKE_FAIL:-}" = nm-undefined ]; then
 fi
 exit 0
 EOF
-chmod +x "$OUT/fakecc" "$OUT/fakepy" "$OUT/fakecc68" "$OUT/fakeobjdump" "$OUT/fakenm"
+# ar: an archive (ar rcs LIB OBJECTS...) is an empty file.
+cat > "$OUT/fakear" <<'EOF'
+#!/bin/sh
+: > "$2"
+EOF
+chmod +x "$OUT/fakecc" "$OUT/fakepy" "$OUT/fakecc68" "$OUT/fakeobjdump" "$OUT/fakenm" "$OUT/fakear"
 
 # expect_stop NAME MARKER COMMAND...: the command must exit non-zero and its
 # output must contain MARKER (so that it stopped for the reason the case sets
@@ -136,7 +141,7 @@ host() {
         sh client/tests/run_host.sh nom32
 }
 m68k() {
-    CC="$OUT/fakecc68" OBJDUMP="$OUT/fakeobjdump" NM="$OUT/fakenm" \
+    CC="$OUT/fakecc68" OBJDUMP="$OUT/fakeobjdump" NM="$OUT/fakenm" AR="$OUT/fakear" \
         sh client/tests/m68k_check.sh
 }
 

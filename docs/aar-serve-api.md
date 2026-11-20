@@ -120,23 +120,23 @@ size and the defaults.
 
 `LONG aar_serve_create(AARHandle *h, const aar_serve_config *cfg, aar_serve **out)`:
 validates the configuration (`AAR_E_INVAL`), checks the handle (`AAR_E_OWNER`,
-`AAR_E_STALE`), allocates about 20 KiB, duplicates the root, opens
-`timer.device` (`AAR_E_NOSYS` when there is none) and `Picasso96API.library`,
-installs the log sink with `AARSetLogSink` and arms the heartbeat. On an error
-`*out` is NULL and nothing is left behind (`AAR_E_NOMEM` for memory).
+`AAR_E_STALE`), allocates about 20 KiB, reads `AARInfo.stop_grace_ms`,
+duplicates the root, opens `timer.device` (`AAR_E_NOSYS` when there is none) and
+`Picasso96API.library`, installs the log sink with `AARSetLogSink` and arms the
+heartbeat. `AAR_E_NOSYS` also for the AHI route with a `poll_us` of 0 or above
+20000. On an error `*out` is NULL and nothing is left behind (`AAR_E_NOMEM` for
+memory).
 
 ### aar_serve_run
 
 `LONG aar_serve_run(aar_serve *s)`: waits on `aar_serve_sigmask` and steps until
 the app has ended. Returns `AAR_SERVE_ENDED` or `AAR_SERVE_LOST`.
 
-### aar_serve_sigmask
-
 `ULONG aar_serve_sigmask(const aar_serve *s)`: every signal the loop waits on
-now: the break signals of `break_mask`, the timer, the console packet port and
-the input window when they exist, and the library signal with
-`AAR_SERVEF_USE_SIGNAL`. It changes while the app runs: ask again before each
-`Wait`.
+now: the break signals of `break_mask`, the timer, the console packet port, the
+input window, the SafeMessage port of a flip and the AHI port when they exist,
+and the library signal with `AAR_SERVEF_USE_SIGNAL`. It changes while the app
+runs: ask again before each `Wait`.
 
 ### aar_serve_step
 
@@ -194,14 +194,13 @@ the final status and returns `AAR_OK`, otherwise the library's error
 `AAR_SERVE_R_QUEUE_CORRUPT`. The process exit code and the fault report are the
 launcher's to derive from it.
 
-### aar_serve_destroy
-
 `void aar_serve_destroy(aar_serve *s)`: stops the app if it still runs, removes
 the log sink, closes AHI, closes the display (waits for the SafeMessages of the
 flips and restores the public screen), finishes the console reads and writes and
-the launcher text, closes every file and list, unlocks the root, closes
-`timer.device` and the libraries it opened and frees the state. The handle stays
-open: close it afterwards.
+the launcher text, answers every request a handler still holds with `AAR_E_IO`,
+closes every file and list, unlocks the root, closes `timer.device` and the
+libraries it opened and frees the state. The handle stays open: close it
+afterwards.
 
 ## An embedding program
 
@@ -220,15 +219,39 @@ aar_serve_result(s, &res); aar_serve_destroy(s); AARClose(h);
 Signals that are not in the mask are never cleared by the loop, so the
 program's own window signals are not lost.
 
-## Not done yet
+## Notes
 
-What the move from the first launcher did not change yet (each is a later change):
-a console handle without a handler port (`>NIL:`) fails the console; app
-messages are not drained (`AAR_SERVEF_KEEP_MESSAGES` is the behaviour and the
-`message` hook and `dropped_messages` are not used); a refused audio ring does
-not close AHI; the stop grace is the fixed 500 ms, not `AARInfo.stop_grace_ms`;
-a completion queue that stays full can lose a completion; the loop waits for the
-console, the input window and the timer but not for the flip and AHI ports (the
-heartbeat services them); the client-side framebuffer window check is still
-made; requests still held at `aar_serve_destroy` are not answered with
-`AAR_E_IO`.
+- **Console to NIL:**, or to any handle with no handler port, is written with a
+  plain `Write()`, which cannot block; the result is delivered on the next pass.
+  A destination that really fails stops the app and the note about it goes to
+  the user's console (`CONSOLE:`), not into the destination that failed.
+- **Messages.** The library keeps 64 unread app messages, and a message the full
+  inbox cannot take blocks every request behind it. Unless
+  `AAR_SERVEF_KEEP_MESSAGES` is set the loop takes them every pass: the
+  `message` hook gets each one, or it is dropped and counted in
+  `aar_serve_result.dropped_messages`.
+- **The stop grace** is `AARInfo.stop_grace_ms` (read by `aar_serve_create`);
+  500 ms only when the platform reports none.
+- **Framebuffer tokens** are checked by the library and the platform. The loop
+  has no window of its own for them.
+- **A refused audio ring** (the library turns an `AUDIO_OPEN` completion whose
+  ring does not check out into an error) closes AHI again.
+- **Held requests** at `aar_serve_destroy` (a console read that never started, a
+  console write, a flip waiting for its SafeMessage) are answered with
+  `AAR_E_IO`, once. A completion that cannot be posted because the completion
+  queue is full stays unanswered: the app has gone away with the claim.
+- **The heartbeat.** The AHI route needs one of at most 20 ms (the feeder moves a
+  fiftieth of a second per pass); `aar_serve_create` answers `AAR_E_NOSYS` for
+  other values with it. Without AHI, `poll_us` 0 is allowed: the program is woken
+  by the flip and AHI ports, the console, the input window and, with
+  `AAR_SERVEF_USE_SIGNAL`, by the library.
+
+## The example and the library
+
+`client/examples/aar-embed.c` is the embedding program above as a complete
+Workbench/Shell tool: its own window with a close gadget that stops the app, the
+app's last message in the window title, a 20 ms heartbeat, the library signal,
+no input window, messages kept for `AARGetMessage`. `client/tests/m68k_check.sh`
+compiles it and links it against `libaarserve.a`, the loop as an archive
+(`aar_serve.o` and `aar_serve_core.o`) that the SDK package can ship with the
+header.

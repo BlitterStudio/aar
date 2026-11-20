@@ -104,6 +104,21 @@ stack=1024
 test -e "$OUT/aar-run"
 echo "aar-run: links for m68k with -lamiga -noixemul, 0 warnings, $(wc -c < "$OUT/aar-run") bytes"
 
+# libaarserve.a, the loop as the firmware SDK package ships it (the source of the
+# MIT code is the aar tag; the archive and the header go into the package's
+# Developer directory), and the embedding example linked against it.
+AR="${AR:-m68k-amigaos-ar}"
+"$CC" -std=gnu11 -noixemul -m68030 -O2 -Wall -Wextra -Werror -Iclient/include -Iinclude \
+    -c client/serve/aar_serve.c -o "$OUT/aar_serve.o"
+"$CC" -std=gnu11 -noixemul -m68030 -O2 -Wall -Wextra -Werror -Iclient/include -Iinclude \
+    -c client/serve/aar_serve_core.c -o "$OUT/aar_serve_core.o"
+"$AR" rcs "$OUT/libaarserve.a" "$OUT/aar_serve.o" "$OUT/aar_serve_core.o"
+check_source client/examples/aar-embed.c "."
+"$CC" -std=gnu11 -noixemul -m68030 -O2 -Wall -Wextra -Werror -Iclient/include -Iinclude \
+    client/examples/aar-embed.c -L"$OUT" -laarserve -lamiga -o "$OUT/aar-embed"
+test -e "$OUT/aar-embed"
+echo "libaarserve.a builds and client/examples/aar-embed.c links against it, 0 warnings"
+
 # The test defines AARBase itself; every call goes through it, so nothing
 # else may be undefined (no stub library, no helper function).
 "$NM" "$OUT/t.o" > "$OUT/t.nm"
