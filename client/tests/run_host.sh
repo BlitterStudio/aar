@@ -48,7 +48,8 @@ if command -v "${CXX:-g++}" >/dev/null 2>&1; then
             -Iclient/tests/stubs -Iclient/include -Iinclude -x c++ -fsyntax-only -
     done
     echo '#include "client/src/aar_plat.h"
-#include "client/src/aar_probe.h"' | "${CXX:-g++}" -std=c++11 -Wall -Wextra -Werror \
+#include "client/src/aar_probe.h"
+#include "client/src/aar_core.h"' | "${CXX:-g++}" -std=c++11 -Wall -Wextra -Werror \
         -Iclient/tests/stubs -Iclient/include -Iinclude -I. -x c++ -fsyntax-only -
 else
     echo "run_host.sh: no C++ compiler here, skipped the C++ header check"
@@ -69,4 +70,35 @@ if echo 'int main(void){return 0;}' | "$CC" -fsanitize=address,undefined -x c - 
     "$PYTHON" client/tests/probe_corpus.py "$OUT/probe_test_san"
 else
     echo "run_host.sh: no sanitizers here, skipped the sanitizer run of the probe"
+fi
+
+# The library core (client/src/aar_core.c) against the reference platform, and
+# the AmigaOS shell (client/src/aar_shell.c) on a fake system: plain, -m32 and
+# with the sanitizers. Pointers into the reference arena travel through 32-bit
+# APTR fields, so these programs are linked without PIE.
+LIB_CFLAGS="$CFLAGS -Iclient/tests -no-pie -fno-pie"
+CORE_SRC="client/tests/core_test.c client/src/aar_core.c client/src/refplat.c"
+SHELL_SRC="client/tests/shell_test.c client/src/aar_core.c client/src/refplat.c client/src/aar_probe.c"
+"$PYTHON" client/tests/make_images.py "$OUT/good.elf"
+lib_tests() {
+    tag=$1
+    shift
+    "$CC" $LIB_CFLAGS "$@" $CORE_SRC -o "$OUT/core_test_$tag"
+    "$OUT/core_test_$tag" | tail -1
+    "$CC" $LIB_CFLAGS "$@" $SHELL_SRC -o "$OUT/shell_test_$tag"
+    "$OUT/shell_test_$tag" "$OUT/good.elf" | tail -1
+}
+lib_tests plain -O2
+if [ "${1:-}" != nom32 ] && echo 'int main(void){return 0;}' | "$CC" -m32 -x c - -o "$OUT/probe32" 2>/dev/null; then
+    lib_tests m32 -O2 -m32
+fi
+if echo 'int main(void){return 0;}' | "$CC" -fsanitize=address,undefined -x c - -o "$OUT/probe_san_check" 2>/dev/null; then
+    lib_tests san -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all
+else
+    echo "run_host.sh: no sanitizers here, skipped the sanitizer run of the library tests"
+fi
+
+# The tests fail on deliberately broken code (a check removed, two steps swapped).
+if [ "${AAR_SKIP_MUTANTS:-0}" != 1 ]; then
+    "$PYTHON" client/tests/mutants.py | tail -3
 fi

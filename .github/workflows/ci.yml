@@ -111,9 +111,11 @@ jobs:
 
   # aar.library, the Amiga client library: the generated call headers are
   # current, the structure layouts match the 68k rules, the image probe agrees
-  # with tools/aar-check on a corpus and its mutations (also under the address
-  # and undefined-behaviour sanitizers), and the client API document names every
-  # public symbol. 64-bit and -m32.
+  # with tools/aar-check on a corpus and its mutations, the library core runs
+  # against a reference platform and the AmigaOS shell on a fake system (both
+  # also under the address and undefined-behaviour sanitizers), those tests fail
+  # on deliberately broken code (client/tests/mutants.py), and the client API
+  # document names every public symbol. 64-bit and -m32.
   client-host:
     name: client library host tests
     runs-on: ubuntu-latest
@@ -125,12 +127,13 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             gcc gcc-multilib g++ python3
-      - name: Generator check, layouts, probe, API document
+      - name: Generator check, layouts, probe, core, shell, mutants, API document
         run: sh client/tests/run_host.sh
 
-  # The client headers and the portable sources with the cross compiler that
-  # builds zz9k.library (the image the firmware SDK pins by digest), compile
-  # only: no warning, every vector called through the library base.
+  # The client headers and the library sources (core, probe, shell, reference
+  # platform) with the cross compiler that builds zz9k.library (the image the
+  # firmware SDK pins by digest), compile only: no warning, no function above
+  # 1 KiB of stack, every vector called through the library base.
   client-m68k:
     name: client headers for AmigaOS m68k
     runs-on: ubuntu-latest
@@ -140,7 +143,7 @@ jobs:
       - name: Compile with m68k-amigaos-gcc
         run: |
           docker run --rm -v "$PWD":/src:ro \
-            amigadev/crosstools@sha256:c0e453fde28fd9c52461f4f9a926c4481548dcfcaca94b0740d8cce4561f2e1e \
+            amigadev/crosstools@sha256:6d96ee62dfac1ca84d54b063b4cfbc82bc6bf0971d6f5200be848d8c2f5fceee \
             sh -c 'cp -r /src /w && cd /w && sh client/tests/m68k_check.sh'
 
   docs:

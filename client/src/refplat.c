@@ -371,7 +371,7 @@ static LONG ext_list(ULONG cursor, AARZZ9000List *out)
         out->size = sizeof(*out);
         out->handle = rc->handle;
         out->state = aar_get_be32(rc->cb + AAR_CB_STATE);
-        out->index = i + 1u;
+        out->index = i;
         out->end_reason = aar_get_be32(rc->cb + AAR_CB_END_REASON);
         memcpy(out->name, "refplat", 8);
         return 1;
@@ -481,6 +481,8 @@ static void sq_view(int slot, aar_queue *q)
 {
     volatile uint8_t *cb = refplat.claims[slot].cb;
 
+    memset(q, 0, sizeof(*q));
+
     (void)aar_cb_queue_bind(q, (volatile void *)cb, (volatile void *)(cb + 0x1000u),
                             AAR_QUEUE_SQ);
 }
@@ -488,6 +490,8 @@ static void sq_view(int slot, aar_queue *q)
 static void cq_view(int slot, aar_queue *q)
 {
     volatile uint8_t *cb = refplat.claims[slot].cb;
+
+    memset(q, 0, sizeof(*q));
 
     (void)aar_cb_queue_bind(q, (volatile void *)cb, (volatile void *)(cb + 0x2000u),
                             AAR_QUEUE_CQ);

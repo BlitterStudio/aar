@@ -180,7 +180,7 @@ static void setup(const char *name)
     refplat.on_release = on_release;
     CHECK(aar_core_init(&core, aar_plat_get(), &env) == AAR_OK);
     CHECK(aar_core_attach(&core) == AAR_OK);
-    CHECK((uintptr_t)refplat_ptr(REFPLAT_TOKEN_BASE) >> 32 == 0); /* link with -no-pie */
+    CHECK(((uint64_t)(uintptr_t)refplat_ptr(REFPLAT_TOKEN_BASE) >> 32) == 0); /* link with -no-pie */
 }
 
 static void finish(void)
@@ -990,8 +990,8 @@ static void test_logs_and_stats(void)
         stats.size = 8;
         CHECK(ext->stats(h, &stats) == AAR_OK && stats.size == 8);
         list.size = sizeof(list);
-        CHECK(ext->list(0, &list) == 1 && list.handle == h->claim.handle && list.index == 1);
-        CHECK(ext->list(list.index, &list) == 0);
+        CHECK(ext->list(0, &list) == 1 && list.handle == h->claim.handle && list.index == 0);
+        CHECK(ext->list(list.index + 1u, &list) == 0);
         /* An administrative release is the card's: the handle's next call is stale. */
         CHECK(ext->release_handle(h->claim.handle) == AAR_OK);
         CHECK(ext->release_handle(h->claim.handle) == AAR_E_STALE);

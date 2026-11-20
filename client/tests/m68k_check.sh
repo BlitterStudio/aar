@@ -48,7 +48,7 @@ done
 # utility.library's base and the core, probe and platform entry points. The
 # shell is not built with -pedantic: the NDK's inline stubs convert function
 # pointers. The largest stack frames are printed (-fstack-usage).
-STR='memcpy|memset|memcmp'
+STR='memcpy|memset|memcmp|strlen'
 check_source() {
     src=$1
     allowed=$2

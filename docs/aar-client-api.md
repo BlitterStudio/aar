@@ -638,7 +638,13 @@ releases the request's staging storage. Returns `AAR_E_BUSY` when the
 completion queue is full: keep the request and try again. A reply whose `op`
 and `id` match no outstanding request is `AAR_E_INVAL`. The library notes an
 `AAR_OP_AUDIO_OPEN` completion with `AAR_OK` to attach the audio ring for
-`AARAudioRead`, and `AAR_OP_AUDIO_CLOSE` to detach it.
+`AARAudioRead`, and `AAR_OP_AUDIO_CLOSE` to detach it. If the ring does not
+check out (a bad header, a frame count that is not a power of two or does not
+fit the ring), the app is not told it is open: the library posts a refusal
+completion (the error as `result`, `out` zero) instead of the client's, and
+`AARServiceReply` returns that error (`AAR_E_IO` or `AAR_E_INVAL`) so the
+client learns that the ring was refused. The request is answered either way and
+must not be replied to again.
 
 The library does not know which ops the client serves. A client that serves
 only some must answer the others with `AAR_E_NOSYS` itself. `aar_serve` does.
@@ -653,7 +659,9 @@ Pushes an input event to the app: a key, the mouse, a joystick, a stop request
 or a break. It takes the app's event structure from `aar/app.h`, not an
 `AAREvent`. Mouse motion is merged while the queue is full or an event is
 pending. Returns `AAR_E_BUSY` when a full queue drops the event; the library
-counts the drop in `AARStatusInfo.events_dropped`.
+counts the drop in `AARStatusInfo.events_dropped`. A merged mouse event that the
+queue had no room for is posted by the library's dispatcher as soon as there is
+room (within a vertical blank); the client does not have to call again.
 
 ### AARAudioRead
 
@@ -666,6 +674,10 @@ into `dst` as interleaved `WORD` samples in 68k byte order. `*got` is the
 number copied. Fewer than `frames` counts an underrun in the ring. Returns
 `AAR_E_INVAL` when no audio ring is open, and `AAR_E_IO` when the ring is
 corrupt.
+
+With `frames` 0 the call is a query: it returns `AAR_OK` with `*got` set to the
+number of frames that can be read now, consumes nothing and counts no
+underrun. `dst` may be NULL then. `got` is always required.
 
 ### AARSharedToken
 
@@ -684,8 +696,9 @@ APTR AARExt(ULONG platform_id, ULONG ext_id);
 ```
 
 Returns a platform extension table, or NULL when this platform does not have
-that `platform_id` or `ext_id`. A table is size-first and append-only. For the
-ZZ9000, see [ZZ9000 extension](#zz9000-extension).
+that `platform_id` or `ext_id`, or when the platform cannot be attached (no
+board, a `zz9k.library` that is too old). A table is size-first and
+append-only. For the ZZ9000, see [ZZ9000 extension](#zz9000-extension).
 
 ## Errors
 

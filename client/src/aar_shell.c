@@ -858,6 +858,8 @@ static void aar_dispatcher_proc(void)
     bit = AllocSignal(-1);
     if (bit < 0) {
         b->disp_status = AAR_E_NOMEM;
+        Forbid(); /* held until this process has ended */
+        b->disp_process = NULL;
         Signal(b->handshake_task, b->handshake_mask);
         return;
     }
@@ -866,6 +868,7 @@ static void aar_dispatcher_proc(void)
     if (rc != AAR_OK) {
         FreeSignal(bit);
         b->disp_status = rc;
+        Forbid();
         b->disp_process = NULL;
         Signal(b->handshake_task, b->handshake_mask);
         return;
@@ -918,11 +921,16 @@ static int aar_x_dispatcher_start(struct AARBase *b)
     b->handshake_task = FindTask(0);
     b->handshake_mask = 1UL << bit;
     b->disp_status = AAR_E_BUSY;
+    /* Under Forbid, so the new process cannot finish (and clear disp_process)
+     * before this task has recorded it. */
+    Forbid();
     process = CreateNewProcTags(NP_Entry, (ULONG)aar_dispatcher_proc,
                                 NP_Name, (ULONG)"aar.library dispatcher",
+                                NP_StackSize, 8192,
                                 NP_Priority, AAR_DISPATCH_PRIORITY, TAG_DONE);
     if (process)
         b->disp_process = process;
+    Permit();
     ReleaseSemaphore(&b->lock);
     if (!process) {
         FreeSignal(bit);
