@@ -1,6 +1,7 @@
 /*
  * Host tests of the decisions the launcher aar-run makes: arguments and tool types,
- * the library options, the texts for a refused claim, load or start, the checks of
+ * the limits it takes from AARQuery, the probe of the image before a claim, the
+ * library options, the texts for a refused claim, load or start, the check of
  * what AARQuery said, the exit code, and the ZZ9000 list helpers.
  *
  * Copyright (C) 2024-2026, Dimitris Panokostas / BlitterStudio
@@ -31,59 +32,201 @@ static void test_corrupt_queue_exits_20(void)
                                 1) == 20);
 }
 
-static void test_empty_argument_is_allowed(void)
-{
-    assert(aar_run_arg_length_allowed(0u));
-    assert(aar_run_arg_length_allowed(127u));
-    assert(!aar_run_arg_length_allowed(128u));
-}
+/* ---- Limits: what the platform says, not what aar-run assumes ----------------- */
 
-static void test_maxmem_requires_positive_decimal_mib(void)
+static void test_positive_mib_parse(void)
 {
     uint32_t mib = 0;
 
-    assert(aar_run_parse_maxmem("64", &mib) && mib == 64u);
-    assert(aar_run_parse_maxmem("4294967295", &mib) && mib == UINT32_MAX);
-    assert(!aar_run_parse_maxmem("0", &mib));
-    assert(!aar_run_parse_maxmem("", &mib));
-    assert(!aar_run_parse_maxmem("64MiB", &mib));
-    assert(!aar_run_parse_maxmem("4294967296", &mib));
-}
-
-static void test_hostmem_requires_positive_decimal_mib(void)
-{
-    uint32_t mib = 7u;
-
-    assert(aar_run_parse_hostmem("8", &mib) && mib == 8u);
-    assert(aar_run_parse_hostmem("62", &mib) && mib == 62u);
-    assert(aar_run_parse_hostmem("4095", &mib) && mib == 4095u);
+    /* MAXMEM, HOSTMEM and WEIGHT share one syntax: a positive decimal. The
+     * bound each of them has is the platform's, checked after AARQuery. */
+    assert(aar_run_parse_positive("64", &mib) && mib == 64u);
+    assert(aar_run_parse_positive("4096", &mib) && mib == 4096u);
+    assert(aar_run_parse_positive("4294967295", &mib) && mib == UINT32_MAX);
     mib = 7u;
-    assert(!aar_run_parse_hostmem("4096", &mib) && mib == 7u);
-    assert(!aar_run_parse_hostmem("4294967296", &mib));
-    assert(!aar_run_parse_hostmem("0", &mib));
-    assert(!aar_run_parse_hostmem("", &mib));
-    assert(!aar_run_parse_hostmem("-1", &mib));
-    assert(!aar_run_parse_hostmem("8MiB", &mib));
-    assert(!aar_run_parse_hostmem(" 8", &mib));
-    assert(!aar_run_parse_hostmem(NULL, &mib));
-    assert(!aar_run_parse_hostmem("8", NULL));
+    assert(!aar_run_parse_positive("0", &mib) && mib == 7u);
+    assert(!aar_run_parse_positive("", &mib));
+    assert(!aar_run_parse_positive("64MiB", &mib));
+    assert(!aar_run_parse_positive("4294967296", &mib));
+    assert(!aar_run_parse_positive("-1", &mib));
+    assert(!aar_run_parse_positive(" 8", &mib));
+    assert(!aar_run_parse_positive("+8", &mib));
+    assert(!aar_run_parse_positive(NULL, &mib));
+    assert(!aar_run_parse_positive("8", NULL));
+    assert(mib == 7u);
 }
 
-static AARInfo zz9000_info(void)
+/* A platform that is not the ZZ9000: no Zorro III word, a smaller argument
+ * budget than the ZZ9000's, one profile. aar-run has to run on it. */
+static AARInfo platform_info(void)
 {
     AARInfo info;
 
     memset(&info, 0, sizeof(info));
     info.size = sizeof(info);
     info.api_major = AAR_API_MAJOR;
-    info.platform_id = AAR_PLATFORM_ZZ9000;
-    info.platform[AAR_ZZ9000_INFO_CAPS] = AAR_ZZ9000_CAP_Z3;
+    info.api_minor = AAR_API_MINOR;
+    info.platform_id = AAR_PLATFORM_ZZ9000 + 1u;
+    info.profiles = AAR_PROFILEF_A32;
+    info.groups = AAR_GROUPS_DEFINED;
     info.max_args = 16u;
     info.max_arg_bytes = 128u;
     info.max_image_bytes = 16u * AAR_RUN_MIB_BYTES;
+    info.stop_grace_ms = 500u;
+    info.shared_default_mib = 16u;
+    info.shared_max_mib = 4095u;
     info.weight_max = 256u;
     return info;
 }
+
+static AARInfo zz9000_info(void)
+{
+    AARInfo info = platform_info();
+
+    info.platform_id = AAR_PLATFORM_ZZ9000;
+    info.profiles = AAR_PROFILEF_A32 | AAR_PROFILEF_A64;
+    info.platform[AAR_ZZ9000_INFO_CAPS] = AAR_ZZ9000_CAP_Z3;
+    return info;
+}
+
+static void test_limits_are_read_from_aarinfo(void)
+{
+    AARInfo info = platform_info();
+    struct aar_run_limits lim = aar_run_limits_from_info(&info);
+
+    assert(lim.max_args == 16u && lim.max_arg_bytes == 128u);
+    assert(lim.weight_max == 256u && lim.hostmem_max_mib == 4095u);
+    assert(lim.max_image_bytes == 16u * AAR_RUN_MIB_BYTES);
+
+    info.max_args = 6u;
+    info.max_arg_bytes = 40u;
+    info.weight_max = 8u;
+    info.shared_max_mib = 64u;
+    info.max_image_bytes = 3u * AAR_RUN_MIB_BYTES;
+    lim = aar_run_limits_from_info(&info);
+    assert(lim.max_args == 6u && lim.max_arg_bytes == 40u);
+    assert(lim.weight_max == 8u && lim.hostmem_max_mib == 64u);
+    assert(lim.max_image_bytes == 3u * AAR_RUN_MIB_BYTES);
+
+    /* The library's own rule for AAR_TAG_SHARED_MIB: the platform's largest,
+     * or 4095 when it reports none or more. */
+    info.shared_max_mib = 0u;
+    assert(aar_run_limits_from_info(&info).hostmem_max_mib == 4095u);
+    info.shared_max_mib = 9000u;
+    assert(aar_run_limits_from_info(&info).hostmem_max_mib == 4095u);
+
+    /* 0 is "no limit" for the argument budget and "no weighting" for WEIGHT. */
+    info.max_args = 0u;
+    info.max_arg_bytes = 0u;
+    info.weight_max = 0u;
+    lim = aar_run_limits_from_info(&info);
+    assert(lim.max_args == 0u && lim.max_arg_bytes == 0u && lim.weight_max == 0u);
+}
+
+static void test_argument_budget_comes_from_the_platform(void)
+{
+    AARInfo info = platform_info();
+    struct aar_run_limits lim = aar_run_limits_from_info(&info);
+
+    /* argv[0] is one of the max_args strings, so the app gets one fewer. */
+    assert(aar_run_limits_check(&lim, 15u, 127u, 0u, 0u) == AAR_RUN_LIMIT_OK);
+    assert(aar_run_limits_check(&lim, 16u, 1u, 0u, 0u) == AAR_RUN_LIMIT_ARGS);
+    /* max_arg_bytes counts the NUL. */
+    assert(aar_run_limits_check(&lim, 1u, 127u, 0u, 0u) == AAR_RUN_LIMIT_OK);
+    assert(aar_run_limits_check(&lim, 1u, 128u, 0u, 0u) == AAR_RUN_LIMIT_ARG_BYTES);
+    assert(aar_run_limits_check(&lim, 0u, 0u, 0u, 0u) == AAR_RUN_LIMIT_OK);
+
+    /* A platform with a smaller budget: aar-run does not pass 16 strings of
+     * 127 bytes to it. */
+    info.max_args = 4u;
+    info.max_arg_bytes = 32u;
+    lim = aar_run_limits_from_info(&info);
+    assert(aar_run_limits_check(&lim, 3u, 31u, 0u, 0u) == AAR_RUN_LIMIT_OK);
+    assert(aar_run_limits_check(&lim, 4u, 1u, 0u, 0u) == AAR_RUN_LIMIT_ARGS);
+    assert(aar_run_limits_check(&lim, 1u, 32u, 0u, 0u) == AAR_RUN_LIMIT_ARG_BYTES);
+
+    /* A platform with a larger one takes more than the ZZ9000 does. */
+    info.max_args = 64u;
+    info.max_arg_bytes = 1024u;
+    lim = aar_run_limits_from_info(&info);
+    assert(aar_run_limits_check(&lim, 63u, 1023u, 0u, 0u) == AAR_RUN_LIMIT_OK);
+    assert(aar_run_limits_check(&lim, 64u, 1u, 0u, 0u) == AAR_RUN_LIMIT_ARGS);
+
+    /* 0: the platform has no limit. */
+    info.max_args = 0u;
+    info.max_arg_bytes = 0u;
+    lim = aar_run_limits_from_info(&info);
+    assert(aar_run_limits_check(&lim, 5000u, 100000u, 0u, 0u) == AAR_RUN_LIMIT_OK);
+}
+
+static void test_weight_bound_comes_from_the_platform(void)
+{
+    AARInfo info = platform_info();
+    struct aar_run_limits lim = aar_run_limits_from_info(&info);
+
+    assert(aar_run_limits_check(&lim, 0u, 0u, 0u, 0u) == AAR_RUN_LIMIT_OK);
+    assert(aar_run_limits_check(&lim, 0u, 0u, 1u, 0u) == AAR_RUN_LIMIT_OK);
+    assert(aar_run_limits_check(&lim, 0u, 0u, 256u, 0u) == AAR_RUN_LIMIT_OK);
+    assert(aar_run_limits_check(&lim, 0u, 0u, 257u, 0u) == AAR_RUN_LIMIT_WEIGHT);
+
+    info.weight_max = 8u;
+    lim = aar_run_limits_from_info(&info);
+    assert(aar_run_limits_check(&lim, 0u, 0u, 8u, 0u) == AAR_RUN_LIMIT_OK);
+    assert(aar_run_limits_check(&lim, 0u, 0u, 9u, 0u) == AAR_RUN_LIMIT_WEIGHT);
+
+    /* No weighting: the library would answer AAR_E_NOSYS to the tag. A launch
+     * that sets no weight is fine. */
+    info.weight_max = 0u;
+    lim = aar_run_limits_from_info(&info);
+    assert(aar_run_limits_check(&lim, 0u, 0u, 1u, 0u) == AAR_RUN_LIMIT_NO_WEIGHT);
+    assert(aar_run_limits_check(&lim, 0u, 0u, 0u, 0u) == AAR_RUN_LIMIT_OK);
+}
+
+static void test_hostmem_bound_comes_from_the_platform(void)
+{
+    AARInfo info = platform_info();
+    struct aar_run_limits lim = aar_run_limits_from_info(&info);
+
+    assert(aar_run_limits_check(&lim, 0u, 0u, 0u, 4095u) == AAR_RUN_LIMIT_OK);
+    assert(aar_run_limits_check(&lim, 0u, 0u, 0u, 4096u) == AAR_RUN_LIMIT_HOSTMEM);
+
+    info.shared_max_mib = 64u;
+    lim = aar_run_limits_from_info(&info);
+    assert(aar_run_limits_check(&lim, 0u, 0u, 0u, 64u) == AAR_RUN_LIMIT_OK);
+    assert(aar_run_limits_check(&lim, 0u, 0u, 0u, 65u) == AAR_RUN_LIMIT_HOSTMEM);
+    /* Unset leaves the platform default alone. */
+    assert(aar_run_limits_check(&lim, 0u, 0u, 0u, 0u) == AAR_RUN_LIMIT_OK);
+}
+
+static void test_limit_lines_name_the_platform_value(void)
+{
+    AARInfo info = platform_info();
+    struct aar_run_limits lim;
+    char line[200];
+
+    info.max_args = 6u;
+    info.max_arg_bytes = 40u;
+    info.weight_max = 8u;
+    info.shared_max_mib = 64u;
+    lim = aar_run_limits_from_info(&info);
+
+    aar_run_limit_line(line, sizeof(line), AAR_RUN_LIMIT_ARGS, &lim);
+    assert(strstr(line, "at most 5 arguments"));
+    aar_run_limit_line(line, sizeof(line), AAR_RUN_LIMIT_ARG_BYTES, &lim);
+    assert(strstr(line, "longer than 39 bytes"));
+    aar_run_limit_line(line, sizeof(line), AAR_RUN_LIMIT_WEIGHT, &lim);
+    assert(strstr(line, "WEIGHT") && strstr(line, "1 to 8"));
+    aar_run_limit_line(line, sizeof(line), AAR_RUN_LIMIT_NO_WEIGHT, &lim);
+    assert(strstr(line, "WEIGHT") && strstr(line, "does not weight"));
+    aar_run_limit_line(line, sizeof(line), AAR_RUN_LIMIT_HOSTMEM, &lim);
+    assert(strstr(line, "HOSTMEM") && strstr(line, "1 to 64"));
+    /* A platform with a 1 string budget takes no app arguments at all. */
+    info.max_args = 1u;
+    lim = aar_run_limits_from_info(&info);
+    aar_run_limit_line(line, sizeof(line), AAR_RUN_LIMIT_ARGS, &lim);
+    assert(strstr(line, "takes no arguments"));
+}
+
 
 /* A fake of the library's AARSetTagList: it follows the rules of
  * docs/aar-client-api.md (the whole list is checked before anything is
@@ -104,7 +247,7 @@ struct fake_library {
 static void fake_library_init(struct fake_library *lib)
 {
     memset(lib, 0, sizeof(*lib));
-    lib->info = zz9000_info();
+    lib->info = platform_info();
     lib->lease_extended = 1;
     lib->audio_route = AAR_AUDIO_ROUTE_PLATFORM;
 }
@@ -126,11 +269,17 @@ static LONG fake_set_tag_list(struct fake_library *lib,
                 return AAR_E_INVAL;
             next.private_mib = t->ti_Data;
             break;
-        case AAR_TAG_SHARED_MIB:
-            if (t->ti_Data > 4095u)
+        case AAR_TAG_SHARED_MIB: {
+            /* The library's rule: the platform's largest, or 4095. */
+            ULONG limit = lib->info.shared_max_mib != 0u &&
+                                  lib->info.shared_max_mib < 4095u ?
+                              lib->info.shared_max_mib : 4095u;
+
+            if (t->ti_Data > limit)
                 return AAR_E_INVAL;
             next.shared_mib = t->ti_Data;
             break;
+        }
         case AAR_TAG_WEIGHT:
             if (lib->info.weight_max == 0u)
                 return AAR_E_NOSYS;
@@ -160,31 +309,6 @@ static LONG fake_set_tag_list(struct fake_library *lib,
     return AAR_OK;
 }
 
-static void test_weight_is_one_to_the_platform_bound(void)
-{
-    uint32_t w = 7u;
-
-    assert(AAR_RUN_WEIGHT_MAX == 256u);
-    assert(aar_run_parse_weight("1", &w) && w == 1u);
-    assert(aar_run_parse_weight("100", &w) && w == 100u);
-    assert(aar_run_parse_weight("256", &w) && w == 256u);
-    assert(aar_run_parse_weight("0256", &w) && w == 256u);
-    w = 7u;
-    assert(!aar_run_parse_weight("0", &w) && w == 7u);
-    assert(!aar_run_parse_weight("257", &w) && w == 7u);
-    assert(!aar_run_parse_weight("4294967296", &w));
-    assert(!aar_run_parse_weight("-1", &w));
-    assert(!aar_run_parse_weight("", &w));
-    assert(!aar_run_parse_weight("abc", &w));
-    assert(!aar_run_parse_weight("8x", &w));
-    assert(!aar_run_parse_weight("8 ", &w));
-    assert(!aar_run_parse_weight(" 8", &w));
-    assert(!aar_run_parse_weight("+8", &w));
-    assert(!aar_run_parse_weight(NULL, &w));
-    assert(!aar_run_parse_weight("8", NULL));
-    assert(w == 7u);
-}
-
 static void test_weight_argument_forms(void)
 {
     uint32_t w = 0u;
@@ -193,9 +317,11 @@ static void test_weight_argument_forms(void)
     assert(aar_run_weight_arg("WEIGHT=256", &w) == AAR_RUN_ARG_TAKEN && w == 256u);
     assert(aar_run_weight_arg("weight=3", &w) == AAR_RUN_ARG_TAKEN && w == 3u);
     assert(aar_run_weight_arg("Weight=17", &w) == AAR_RUN_ARG_TAKEN && w == 17u);
+    /* The bound is the platform's: the word is taken here and refused after
+     * AARQuery by aar_run_limits_check. */
+    assert(aar_run_weight_arg("WEIGHT=257", &w) == AAR_RUN_ARG_TAKEN && w == 257u);
     w = 5u;
     assert(aar_run_weight_arg("WEIGHT=0", &w) == AAR_RUN_ARG_BAD);
-    assert(aar_run_weight_arg("WEIGHT=257", &w) == AAR_RUN_ARG_BAD);
     assert(aar_run_weight_arg("WEIGHT=-1", &w) == AAR_RUN_ARG_BAD);
     assert(aar_run_weight_arg("WEIGHT=", &w) == AAR_RUN_ARG_BAD);
     assert(aar_run_weight_arg("WEIGHT=high", &w) == AAR_RUN_ARG_BAD);
@@ -267,7 +393,7 @@ static void test_weight_is_stripped_from_the_app_arguments(void)
 
     /* A bad value ends the scan before anything is claimed. */
     {
-        char *bad[] = {"+x", "WEIGHT=257", "y"};
+        char *bad[] = {"+x", "WEIGHT=0", "y"};
 
         assert(scan_weight(3, bad, &w, kept, &nkept) == -1);
     }
@@ -327,7 +453,7 @@ static void test_tag_list_carries_only_the_set_limits(void)
     assert(tag_value(tags, AAR_TAG_WEIGHT, &found) == 1u && found);
 
     /* Only the ones that are set. */
-    n = aar_run_build_tags(tags, 0u, 0u, AAR_RUN_WEIGHT_MAX, 0);
+    n = aar_run_build_tags(tags, 0u, 0u, 256u, 0);
     assert(n == 3u);
     assert(tag_value(tags, AAR_TAG_WEIGHT, &found) == 256u && found);
     tag_value(tags, AAR_TAG_PRIVATE_MIB, &found);
@@ -376,10 +502,10 @@ static void test_tag_list_follows_the_library_rules(void)
     assert(lib.audio_route == AAR_AUDIO_ROUTE_PLATFORM);
     assert(lib.private_mib == 0u && lib.shared_mib == 0u && lib.weight == 0u);
 
-    /* The largest values aar-run accepts on the command line are accepted. */
+    /* The largest values this platform grants are accepted. */
     fake_library_init(&lib);
-    (void)aar_run_build_tags(tags, 4095u, AAR_RUN_HOSTMEM_MAX_MIB,
-                             AAR_RUN_WEIGHT_MAX, 0);
+    (void)aar_run_build_tags(tags, 4095u, lib.info.shared_max_mib,
+                             lib.info.weight_max, 0);
     assert(fake_set_tag_list(&lib, tags) == AAR_OK);
     assert(lib.shared_mib == 4095u && lib.weight == 256u);
 }
@@ -394,7 +520,7 @@ static void test_tag_list_is_refused_the_way_the_library_would(void)
     /* A value past the platform bound: the library refuses the whole
      * list and changes nothing. */
     fake_library_init(&lib);
-    (void)aar_run_build_tags(tags, 64u, 0u, AAR_RUN_WEIGHT_MAX + 1u, 0);
+    (void)aar_run_build_tags(tags, 64u, 0u, lib.info.weight_max + 1u, 0);
     rc = fake_set_tag_list(&lib, tags);
     assert(rc == AAR_E_INVAL);
     assert(lib.private_mib == 0u && lib.weight == 0u && lib.client_caps == 0u);
@@ -554,10 +680,12 @@ static void test_open_failure_lines(void)
     aar_run_claim_failure_line(line, sizeof(line), AAR_E_NOMEM,
                                AAR_REASON_TABLES);
     assert(strcmp(line, "aar-run: claim failed (no memory)") == 0);
-    /* No platform, or no mmu.library: both come back as NOSYS. */
+    /* No platform, or no mmu.library: both come back as NOSYS. The line names
+     * no board, because aar-run runs on any platform. */
     aar_run_claim_failure_line(line, sizeof(line), AAR_E_NOSYS,
                                AAR_REASON_NONE);
-    assert(strstr(line, "claim failed") && strstr(line, "mmu.library 41"));
+    assert(strstr(line, "claim failed") && strstr(line, "cannot admit"));
+    assert(!strstr(line, "ZZ9000") && !strstr(line, "zz9k"));
     aar_run_claim_failure_line(line, sizeof(line), AAR_E_IO, AAR_REASON_NONE);
     assert(strcmp(line, "aar-run: claim failed (io error)") == 0);
 }
@@ -634,42 +762,47 @@ static void test_start_and_generic_failure_lines(void)
 
 static void test_query_verdicts(void)
 {
-    AARInfo info = zz9000_info();
+    AARInfo info = platform_info();
 
     assert(aar_run_query_check(&info) == AAR_RUN_QUERY_OK);
     assert(aar_run_query_verdict_text(AAR_RUN_QUERY_OK)[0] == '\0');
-    /* Not a Zorro III board. */
+    /* No platform is required: not the ZZ9000, not another by number, and
+     * not one that reports no Zorro III word. aar-run runs on any. */
+    info.platform_id = AAR_PLATFORM_NONE;
+    assert(aar_run_query_check(&info) == AAR_RUN_QUERY_OK);
+    info.platform_id = 99u;
+    assert(aar_run_query_check(&info) == AAR_RUN_QUERY_OK);
+    info = zz9000_info();
+    assert(aar_run_query_check(&info) == AAR_RUN_QUERY_OK);
     info.platform[AAR_ZZ9000_INFO_CAPS] = AAR_ZZ9000_CAP_DISPLAY;
-    assert(aar_run_query_check(&info) == AAR_RUN_QUERY_NO_Z3);
-    assert(strstr(aar_run_query_verdict_text(AAR_RUN_QUERY_NO_Z3), "Zorro III"));
-    /* Another platform's words do not mean ZZ9000 caps. */
-    info = zz9000_info();
-    info.platform_id = AAR_PLATFORM_ZZ9000 + 1u;
-    assert(aar_run_query_check(&info) == AAR_RUN_QUERY_NOT_ZZ9000);
+    assert(aar_run_query_check(&info) == AAR_RUN_QUERY_OK);
     /* The API major aar-run was built for. */
-    info = zz9000_info();
+    info = platform_info();
     info.api_major = AAR_API_MAJOR + 1u;
     assert(aar_run_query_check(&info) == AAR_RUN_QUERY_API);
-    assert(strstr(aar_run_query_verdict_text(AAR_RUN_QUERY_API),
-                  "app-runtime firmware"));
-    /* aar-run passes up to 16 strings of 127 bytes: the platform must take
-     * them (this replaces the old ZZAPP_ARGV_* constants). */
-    info = zz9000_info();
-    info.max_args = AAR_RUN_ARGV_MAX - 1u;
-    assert(aar_run_query_check(&info) == AAR_RUN_QUERY_ARGS);
-    assert(!aar_run_args_fit(&info));
-    assert(strstr(aar_run_query_verdict_text(AAR_RUN_QUERY_ARGS), "arguments"));
-    info = zz9000_info();
-    info.max_arg_bytes = AAR_RUN_ARGV_STR_MAX - 1u;
-    assert(aar_run_query_check(&info) == AAR_RUN_QUERY_ARGS);
-    info = zz9000_info();
-    info.max_args = 32u;
-    info.max_arg_bytes = 256u;
+    assert(strstr(aar_run_query_verdict_text(AAR_RUN_QUERY_API), "API major"));
+    assert(!strstr(aar_run_query_verdict_text(AAR_RUN_QUERY_API), "Zorro"));
+    /* What the platform takes is not a question of the query check: the
+     * limits are read from AARInfo and checked against the launch. */
+    info = platform_info();
+    info.max_args = 1u;
+    info.max_arg_bytes = 8u;
     assert(aar_run_query_check(&info) == AAR_RUN_QUERY_OK);
-    /* The longest string aar_run_arg_length_allowed() lets through, plus its
-     * NUL, is what max_arg_bytes counts. */
-    assert(aar_run_arg_length_allowed(AAR_RUN_ARGV_STR_MAX - 1u));
-    assert(!aar_run_arg_length_allowed(AAR_RUN_ARGV_STR_MAX));
+}
+
+static void test_zz9000_note_is_for_the_zz9000_only(void)
+{
+    AARInfo info = zz9000_info();
+
+    /* The one ZZ9000 specific rule aar-run keeps: a board that is not a
+     * Zorro III board gets a note, and runs on. */
+    assert(!aar_run_zz9000_lacks_z3(&info));
+    info.platform[AAR_ZZ9000_INFO_CAPS] = AAR_ZZ9000_CAP_DISPLAY;
+    assert(aar_run_zz9000_lacks_z3(&info));
+    /* Another platform's words do not mean ZZ9000 caps. */
+    info = platform_info();
+    info.platform[AAR_ZZ9000_INFO_CAPS] = 0u;
+    assert(!aar_run_zz9000_lacks_z3(&info));
 }
 
 static void test_query_failure_lines(void)
@@ -677,9 +810,318 @@ static void test_query_failure_lines(void)
     char line[256];
 
     aar_run_query_failure_line(line, sizeof(line), AAR_E_NOSYS);
-    assert(strstr(line, "zz9k.library 36") && strstr(line, "not found"));
+    assert(strstr(line, "no AAR platform"));
+    assert(!strstr(line, "ZZ9000") && !strstr(line, "zz9k"));
     aar_run_query_failure_line(line, sizeof(line), AAR_E_IO);
     assert(strstr(line, "AARQuery failed (io error)"));
+    assert(!strstr(line, "Zorro"));
+}
+
+/* ---- The probe before the claim (D5) ----------------------------------------- */
+
+static AARImageInfo image_info(void)
+{
+    AARImageInfo img;
+
+    memset(&img, 0, sizeof(img));
+    img.size = sizeof(img);
+    img.profile = AAR_PROFILE_A32;
+    img.api_major = AAR_API_MAJOR;
+    img.api_minor_required = AAR_API_MINOR;
+    img.groups_required = AAR_GROUP_DISPLAY | AAR_GROUP_INPUT;
+    img.groups_optional = AAR_GROUP_AUDIO;
+    img.note_version = 1u;
+    img.image_bytes = 4096u;
+    return img;
+}
+
+static void test_probe_accepts_an_image_the_platform_runs(void)
+{
+    AARInfo info = platform_info();
+    AARImageInfo img = image_info();
+
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_OK);
+    /* Optional groups are a hint: the platform may lack them. */
+    info.groups = AAR_GROUP_DISPLAY | AAR_GROUP_INPUT;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_OK);
+    /* An app that wants less than the platform has. */
+    img.api_minor_required = 0u;
+    img.groups_required = 0u;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_OK);
+    /* A platform with both profiles runs either. */
+    info.profiles = AAR_PROFILEF_A32 | AAR_PROFILEF_A64;
+    img.profile = AAR_PROFILE_A64;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_OK);
+}
+
+static void test_probe_refuses_each_cause(void)
+{
+    AARInfo info = platform_info();
+    AARImageInfo img = image_info();
+
+    /* The probe's own answers: the file, then the note. */
+    assert(aar_run_probe_check(AAR_E_NOENT, &img, &info) == AAR_RUN_PROBE_NOENT);
+    assert(aar_run_probe_check(AAR_E_IO, &img, &info) == AAR_RUN_PROBE_IO);
+    assert(aar_run_probe_check(AAR_E_INVAL, &img, &info) == AAR_RUN_PROBE_NOT_AAR);
+    assert(aar_run_probe_check(AAR_E_NOMEM, &img, &info) == AAR_RUN_PROBE_FAILED);
+
+    /* The wrong profile: an A64 image on a platform that runs A32. */
+    img.profile = AAR_PROFILE_A64;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_PROFILE);
+    /* ... and an A32 image on a platform that runs A64 only. */
+    info.profiles = AAR_PROFILEF_A64;
+    img.profile = AAR_PROFILE_A32;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_PROFILE);
+    /* A profile the platform has no bit for, and one outside the mask. */
+    info = platform_info();
+    img.profile = 9u;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_PROFILE);
+    img.profile = 0u;
+    info.profiles = 0xFFFFFFFFu;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_PROFILE);
+    img.profile = 33u;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_PROFILE);
+    /* A profile the launcher does not know but the platform runs is the
+     * platform's to judge: it is not refused here. */
+    img.profile = 9u;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_OK);
+
+    /* A group the app requires and the platform lacks. */
+    img = image_info();
+    img.groups_required = AAR_GROUP_DISPLAY | AAR_GROUP_GL;
+    info.groups = AAR_GROUP_DISPLAY | AAR_GROUP_INPUT;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_GROUP);
+    info.groups = 0u;
+    img.groups_required = AAR_GROUP_SERVICES;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_GROUP);
+
+    /* An app that needs a newer API than the platform has: a newer minor, or
+     * another major. The library's probe refuses a note newer than the
+     * library, so this is a library that is newer than its platform. */
+    info = platform_info();
+    img = image_info();
+    info.api_minor = AAR_API_MINOR - 1u;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_API);
+    info = platform_info();
+    img.api_major = AAR_API_MAJOR + 1u;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_API);
+
+    /* One image with several faults is refused for the first: the profile, as
+     * the more basic, then the API, then the groups. */
+    img = image_info();
+    img.profile = AAR_PROFILE_A64;
+    img.api_minor_required = AAR_API_MINOR + 1u;
+    img.groups_required = AAR_GROUP_GL;
+    info.groups = 0u;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_PROFILE);
+    img.profile = AAR_PROFILE_A32;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_API);
+    img.api_minor_required = 0u;
+    assert(aar_run_probe_check(AAR_OK, &img, &info) == AAR_RUN_PROBE_GROUP);
+}
+
+static void test_probe_lines_name_the_cause(void)
+{
+    AARInfo info = platform_info();
+    AARImageInfo img = image_info();
+    char line[300];
+
+    aar_run_probe_line(line, sizeof(line), AAR_RUN_PROBE_NOENT, "RAM:a.elf", &img, &info);
+    assert(strstr(line, "cannot open RAM:a.elf"));
+    aar_run_probe_line(line, sizeof(line), AAR_RUN_PROBE_IO, "RAM:a.elf", &img, &info);
+    assert(strstr(line, "cannot read RAM:a.elf"));
+    aar_run_probe_line(line, sizeof(line), AAR_RUN_PROBE_NOT_AAR, "RAM:a.elf", &img,
+                       &info);
+    assert(strstr(line, "RAM:a.elf is not an AAR image"));
+    aar_run_probe_line(line, sizeof(line), AAR_RUN_PROBE_FAILED, "RAM:a.elf", &img,
+                       &info);
+    assert(strstr(line, "cannot probe RAM:a.elf"));
+
+    img.profile = AAR_PROFILE_A64;
+    aar_run_probe_line(line, sizeof(line), AAR_RUN_PROBE_PROFILE, "RAM:a.elf", &img,
+                       &info);
+    assert(strstr(line, "A64 app") && strstr(line, "runs A32 apps only"));
+    info.profiles = AAR_PROFILEF_A32 | AAR_PROFILEF_A64;
+    img.profile = 9u;
+    aar_run_probe_line(line, sizeof(line), AAR_RUN_PROBE_PROFILE, "RAM:a.elf", &img,
+                       &info);
+    assert(strstr(line, "unknown profile 9") && strstr(line, "A32 and A64"));
+
+    info = platform_info();
+    info.api_minor = 3u;
+    img = image_info();
+    img.api_minor_required = 5u;
+    aar_run_probe_line(line, sizeof(line), AAR_RUN_PROBE_API, "RAM:a.elf", &img, &info);
+    assert(strstr(line, "needs AAR API 0.5") && strstr(line, "has 0.3"));
+
+    img = image_info();
+    img.groups_required = AAR_GROUP_DISPLAY | AAR_GROUP_GL | AAR_GROUP_SERVICES;
+    info = platform_info();
+    info.groups = AAR_GROUP_DISPLAY | AAR_GROUP_INPUT;
+    aar_run_probe_line(line, sizeof(line), AAR_RUN_PROBE_GROUP, "RAM:a.elf", &img, &info);
+    assert(strstr(line, "lacks: gl, services"));
+    assert(!strstr(line, "display"));
+
+    /* A name that fills the line is cut, never overrun. */
+    {
+        char tiny[24];
+        volatile size_t room = sizeof(tiny);
+
+        aar_run_probe_line(tiny, room, AAR_RUN_PROBE_NOT_AAR,
+                           "RAM:a-rather-long-name.elf", &img, &info);
+        assert(strlen(tiny) == sizeof(tiny) - 1u);
+    }
+}
+
+static void test_group_names(void)
+{
+    char text[64];
+
+    aar_run_group_names(text, sizeof(text), AAR_GROUP_DISPLAY);
+    assert(strcmp(text, "display") == 0);
+    aar_run_group_names(text, sizeof(text), AAR_GROUPS_DEFINED);
+    assert(strcmp(text, "display, input, audio, gl, services") == 0);
+    aar_run_group_names(text, sizeof(text), AAR_GROUP_INPUT | 0x100u);
+    assert(strcmp(text, "input, 0x100") == 0);
+    aar_run_group_names(text, sizeof(text), 0u);
+    assert(strcmp(text, "none") == 0);
+}
+
+static void test_probe_refusal_exit_codes(void)
+{
+    /* A refusal is a launcher error: 20, like a refused load. A Ctrl-C that
+     * stopped the probe's open or read is the user's: 5. */
+    assert(aar_run_probe_exit(AAR_RUN_PROBE_NOENT, 0, 0) == 20);
+    assert(aar_run_probe_exit(AAR_RUN_PROBE_IO, 0, 0) == 20);
+    assert(aar_run_probe_exit(AAR_RUN_PROBE_NOT_AAR, 0, 0) == 20);
+    assert(aar_run_probe_exit(AAR_RUN_PROBE_PROFILE, 0, 0) == 20);
+    assert(aar_run_probe_exit(AAR_RUN_PROBE_API, 0, 0) == 20);
+    assert(aar_run_probe_exit(AAR_RUN_PROBE_GROUP, 0, 0) == 20);
+    assert(aar_run_probe_exit(AAR_RUN_PROBE_FAILED, 0, 0) == 20);
+    assert(aar_run_probe_exit(AAR_RUN_PROBE_IO, 1, 0) == 5);
+    assert(aar_run_probe_exit(AAR_RUN_PROBE_NOENT, 0, 1) == 5);
+    /* A decided refusal stays 20 whatever else is pending. */
+    assert(aar_run_probe_exit(AAR_RUN_PROBE_PROFILE, 1, 1) == 20);
+    assert(aar_run_probe_exit(AAR_RUN_PROBE_NOT_AAR, 1, 0) == 20);
+}
+
+static void test_probe_may_wait_for_the_locate(void)
+{
+    /* A name with a volume or assign colon may be a multi-directory assign:
+     * the library's own open tries one directory, and aar-run finds the file
+     * with its DOS packets once it has a serving loop. Only that case waits;
+     * every other verdict, and a missing plain path, is final at once. */
+    assert(aar_run_probe_may_wait(AAR_RUN_PROBE_NOENT, "SYS:a.elf"));
+    assert(aar_run_probe_may_wait(AAR_RUN_PROBE_NOENT, "Games:q/a.elf"));
+    assert(!aar_run_probe_may_wait(AAR_RUN_PROBE_NOENT, "a.elf"));
+    assert(!aar_run_probe_may_wait(AAR_RUN_PROBE_NOENT, "dir/a.elf"));
+    assert(!aar_run_probe_may_wait(AAR_RUN_PROBE_NOT_AAR, "SYS:a.elf"));
+    assert(!aar_run_probe_may_wait(AAR_RUN_PROBE_PROFILE, "SYS:a.elf"));
+    assert(!aar_run_probe_may_wait(AAR_RUN_PROBE_OK, "SYS:a.elf"));
+    assert(!aar_run_probe_may_wait(AAR_RUN_PROBE_NOENT, NULL));
+}
+
+/* ---- STATUS and RELEASE through AARExt ---------------------------------------- */
+
+static LONG fake_list(ULONG cursor, AARZZ9000List *info)
+{
+    (void)cursor;
+    (void)info;
+    return 0;
+}
+
+static LONG fake_release(ULONG handle)
+{
+    (void)handle;
+    return AAR_OK;
+}
+
+static void test_admin_commands_need_the_extension(void)
+{
+    aar_client_ext_zz9000 ext;
+    char line[160];
+
+    /* AARExt returns NULL on a platform without the table: not supported. */
+    assert(!aar_run_admin_available(NULL));
+    aar_run_admin_unsupported_line(line, sizeof(line), "STATUS");
+    assert(strcmp(line, "aar-run: STATUS is not supported on this platform.") == 0);
+    aar_run_admin_unsupported_line(line, sizeof(line), "RELEASE");
+    assert(strcmp(line, "aar-run: RELEASE is not supported on this platform.") == 0);
+
+    /* A table that does not reach both calls is not enough either. */
+    memset(&ext, 0, sizeof(ext));
+    ext.size = offsetof(aar_client_ext_zz9000, release_handle);
+    ext.list = fake_list;
+    ext.release_handle = fake_release;
+    assert(!aar_run_admin_available(&ext));
+    /* Both calls covered by the size but one not set: still not usable. */
+    ext.size = sizeof(ext);
+    ext.release_handle = NULL;
+    assert(!aar_run_admin_available(&ext));
+    ext.release_handle = fake_release;
+    assert(aar_run_admin_available(&ext));
+    ext.list = NULL;
+    assert(!aar_run_admin_available(&ext));
+}
+
+/* ---- The launcher's own constants and diagnostics (D6, D7, D13, D14) ---------- */
+
+static void test_launcher_constants(void)
+{
+    assert(strcmp(AAR_RUN_VERSION, "0.1") == 0);
+    assert(AAR_SERVE_MIN_STACK == 16384UL);
+    assert(AAR_RUN_DEFAULT_POLL_US == 1000UL);
+    assert(AAR_RUN_DEFAULT_POLL_US == AAR_SERVE_DEFAULT_POLL_US);
+}
+
+static void test_poll_argument(void)
+{
+    uint32_t us = 1000u;
+
+    assert(aar_run_poll_arg("POLL=20000", &us) == AAR_RUN_ARG_TAKEN && us == 20000u);
+    assert(aar_run_poll_arg("poll=250", &us) == AAR_RUN_ARG_TAKEN && us == 250u);
+    /* 0 is the library signal alone. */
+    assert(aar_run_poll_arg("POLL=0", &us) == AAR_RUN_ARG_TAKEN && us == 0u);
+    assert(aar_run_poll_arg("POLL=999999", &us) == AAR_RUN_ARG_TAKEN && us == 999999u);
+    us = 77u;
+    /* The timer's microsecond field is below one second. */
+    assert(aar_run_poll_arg("POLL=1000000", &us) == AAR_RUN_ARG_BAD);
+    assert(aar_run_poll_arg("POLL=-1", &us) == AAR_RUN_ARG_BAD);
+    assert(aar_run_poll_arg("POLL=", &us) == AAR_RUN_ARG_BAD);
+    assert(aar_run_poll_arg("POLL=fast", &us) == AAR_RUN_ARG_BAD);
+    assert(aar_run_poll_arg("POLL=10ms", &us) == AAR_RUN_ARG_BAD);
+    assert(us == 77u);
+    assert(aar_run_poll_arg("POLL", &us) == AAR_RUN_ARG_OTHER);
+    assert(aar_run_poll_arg("POLLING=5", &us) == AAR_RUN_ARG_OTHER);
+    assert(aar_run_poll_arg("WEIGHT=2", &us) == AAR_RUN_ARG_OTHER);
+    assert(aar_run_poll_arg("", &us) == AAR_RUN_ARG_OTHER);
+    assert(aar_run_poll_arg(NULL, &us) == AAR_RUN_ARG_OTHER);
+    assert(us == 77u);
+}
+
+static void test_display_argument(void)
+{
+    uint32_t strategy = 9u;
+
+    assert(aar_run_display_arg("DISPLAY=BUFFERS", &strategy) == AAR_RUN_ARG_TAKEN &&
+           strategy == AAR_SERVE_DISPLAY_BUFFERS);
+    assert(aar_run_display_arg("DISPLAY=PAN3", &strategy) == AAR_RUN_ARG_TAKEN &&
+           strategy == AAR_SERVE_DISPLAY_PAN3);
+    assert(aar_run_display_arg("display=pan2", &strategy) == AAR_RUN_ARG_TAKEN &&
+           strategy == AAR_SERVE_DISPLAY_PAN2);
+    assert(aar_run_display_arg("Display=Single", &strategy) == AAR_RUN_ARG_TAKEN &&
+           strategy == AAR_SERVE_DISPLAY_SINGLE);
+    strategy = 9u;
+    assert(aar_run_display_arg("DISPLAY=PAN4", &strategy) == AAR_RUN_ARG_BAD);
+    assert(aar_run_display_arg("DISPLAY=", &strategy) == AAR_RUN_ARG_BAD);
+    assert(aar_run_display_arg("DISPLAY=BUFFERS2", &strategy) == AAR_RUN_ARG_BAD);
+    assert(aar_run_display_arg("DISPLAY=1", &strategy) == AAR_RUN_ARG_BAD);
+    assert(strategy == 9u);
+    assert(aar_run_display_arg("DISPLAY", &strategy) == AAR_RUN_ARG_OTHER);
+    assert(aar_run_display_arg("DISPLAYS=PAN2", &strategy) == AAR_RUN_ARG_OTHER);
+    assert(aar_run_display_arg("POLL=5", &strategy) == AAR_RUN_ARG_OTHER);
+    assert(aar_run_display_arg(NULL, &strategy) == AAR_RUN_ARG_OTHER);
+    assert(strategy == 9u);
 }
 
 static void test_error_names(void)
@@ -725,10 +1167,15 @@ int main(void)
 {
     test_ahi_open_failure_exits_20();
     test_corrupt_queue_exits_20();
-    test_empty_argument_is_allowed();
-    test_maxmem_requires_positive_decimal_mib();
-    test_hostmem_requires_positive_decimal_mib();
-    test_weight_is_one_to_the_platform_bound();
+    test_positive_mib_parse();
+    test_limits_are_read_from_aarinfo();
+    test_argument_budget_comes_from_the_platform();
+    test_weight_bound_comes_from_the_platform();
+    test_hostmem_bound_comes_from_the_platform();
+    test_limit_lines_name_the_platform_value();
+    test_launcher_constants();
+    test_poll_argument();
+    test_display_argument();
     test_weight_argument_forms();
     test_weight_is_stripped_from_the_app_arguments();
     test_tag_list_carries_only_the_set_limits();
@@ -746,7 +1193,15 @@ int main(void)
     test_load_failure_lines();
     test_start_and_generic_failure_lines();
     test_query_verdicts();
+    test_zz9000_note_is_for_the_zz9000_only();
     test_query_failure_lines();
+    test_probe_accepts_an_image_the_platform_runs();
+    test_probe_refuses_each_cause();
+    test_probe_lines_name_the_cause();
+    test_group_names();
+    test_probe_refusal_exit_codes();
+    test_probe_may_wait_for_the_locate();
+    test_admin_commands_need_the_extension();
     test_error_names();
     test_status_keyword_is_case_insensitive();
     test_claim_loss_does_not_look_like_a_clean_exit();

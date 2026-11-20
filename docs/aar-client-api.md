@@ -154,8 +154,8 @@ signalled at each vertical blank. Read `AARStatus` after every event: the
 status in an event is the one of the moment it was posted.
 
 Only handles that have been armed are watched: calling `AARMessageSignal` or
-giving a notify port arms one. A client that polls from its own timer (ZZRun
-does, every millisecond) never arms and costs the library nothing. On the
+giving a notify port arms one. A client that polls from its own timer (aar-run
+does, every millisecond by default) never arms and costs the library nothing. On the
 ZZ9000 the library looks at armed handles at each vertical blank, so a wake-up
 takes up to 20 ms on a PAL machine. A client that needs a faster response polls
 `AARServiceNext` itself.

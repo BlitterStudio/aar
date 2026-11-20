@@ -1,56 +1,84 @@
 # aar-run
 
-`aar-run` loads a trusted ARM app into the ZZ9000 app runtime. It needs a
-Zorro III board, firmware with the AAR queue transport (app ABI 0.5), and
-Picasso96 when the app asks for a display. It calls the app runtime through
-`aar.library` (`LIBS:aar.library`, installed with aar-run), which needs
-`zz9k.library` revision 36 or later (only to reach the board's mailbox) and
-`mmu.library` 41 or later, because the card's shared buffers must be mapped
-cache-inhibited. Without the library it prints `aar.library not found.` and
-returns 20; without the board or the firmware it prints `aar-run requires a
-Zorro III board and app-runtime firmware.` (or that `zz9k.library` or the
-firmware was not found) and returns 20.
+`aar-run` is the reference launcher of the AAR standard (spec section 9.6). It
+loads one trusted app through `aar.library` and serves it until it ends: files,
+console, display, audio and input. It is a Shell command and a Workbench tool,
+and it runs on any platform that has an `aar.library`. Nothing in it belongs to
+one board; the ZZ9000 is the first platform behind the library, and what is
+specific to it is in [Platform notes](#platform-notes).
 
-The launcher is a Shell command and a Workbench tool. Every instance claims its
-own app, so many apps can run at once; the card's shared memory is the limit.
-When the card cannot admit another one, a launch reports `claim refused:` with
-the reason (not enough card memory, no translation tables left, not enough
-shared memory for the queues) and returns 20.
+aar-run is MIT licensed and is built from this repository (`client/run` and
+`client/serve`). It was called ZZRun while it lived with the ZZ9000 drivers.
+The rename is complete and no old name is kept: the program, its icon, the
+`PROGDIR:aar-run` icon lookup, the `CON:` window title, the Picasso96 screen
+title and the requester titles all say `aar-run`, and there is no `ZZRun`
+alias or tool type.
+
+It needs `aar.library` (`LIBS:aar.library`, installed with aar-run), AmigaOS 3
+graphics and Intuition 39 or later, `timer.device`, Picasso96 when the app asks
+for a display and `ahi.device` for `AUDIO=AHI`. Without the library it prints
+`aar.library not found.` and returns 20; with a library that has no platform
+behind it, it prints `no AAR platform found` (or that `AARQuery` failed) and
+returns 20.
+
+Every instance claims its own app, so many apps can run at once; the platform's
+resources are the limit. When the platform cannot admit another one, a launch
+reports `claim refused:` with the reason (not enough memory, no translation
+tables left, not enough shared memory for the queues) and returns 20.
 
 ## Starting an app
 
 Run `Stack 32768` in the launching Shell first. aar-run requires at least a
-16 KiB process stack.
+16 KiB process stack and prints `Run Stack 32768 in this Shell before aar-run.`
+(returning 10) when it has less.
 
 ```text
-aar-run <app.elf> [MAXMEM=<MiB>] [HOSTMEM=<MiB>] [WEIGHT=<1-256>] [AUDIO=AHI] [args]
+aar-run <app.elf> [MAXMEM=<MiB>] [HOSTMEM=<MiB>] [WEIGHT=<n>] [AUDIO=AHI] [args]
 ```
 
 Give the ELF first. The app's `argv[0]` is the ELF's file name and the
-remaining Shell tokens follow it, as C programs expect (up to 15 arguments).
-`AUDIO=AHI`, `MAXMEM=<MiB>`, `HOSTMEM=<MiB>`, and `WEIGHT=<n>` are recognized
-anywhere after the ELF, so they cannot be passed to the app as arguments with
-those exact forms.
+remaining Shell tokens follow it, as C programs expect. `AUDIO=AHI`,
+`MAXMEM=<MiB>`, `HOSTMEM=<MiB>`, `WEIGHT=<n>` and the two diagnostic words
+`POLL=<us>` and `DISPLAY=<...>` are recognized anywhere after the ELF, so they
+cannot be passed to the app as arguments with those exact forms. `WEIGHT`,
+`POLL` and `DISPLAY` are matched without regard to case.
 
 ```text
 Stack 32768
 aar-run RAM:swquake.elf +timedemo demo1
 ```
 
-`MAXMEM=<MiB>` caps the card memory committed by this app. The value must be a
-positive decimal MiB count. For example:
+### What the platform takes
+
+aar-run does not assume what a platform takes. It reads the limits from
+`AARQuery` (`AARInfo`) and checks the launch against them before it claims
+anything. A launch the platform would refuse prints the limit and returns 10:
+
+| Setting | Limit from `AARInfo` | Line when exceeded |
+| --- | --- | --- |
+| app arguments | `max_args`, which counts `argv[0]` (0: no limit) | `this platform takes at most <n> arguments for the app.` |
+| one argument | `max_arg_bytes`, which counts the NUL (0: no limit) | `an argument is longer than <n> bytes, the most this platform takes.` |
+| `WEIGHT` | `weight_max` (0: the platform does not weight) | `WEIGHT must be 1 to <n> on this platform.` or `WEIGHT is not available: this platform does not weight apps.` |
+| `HOSTMEM` | `shared_max_mib`, never above 4095, the rule of `AAR_TAG_SHARED_MIB` | `HOSTMEM must be 1 to <n> MiB on this platform.` |
+| the ELF | `max_image_bytes` | reported by the load (`larger than the <n> MiB image limit`) |
+
+`MAXMEM`, `HOSTMEM` and `WEIGHT` must be positive decimal numbers; anything
+else prints the usage and returns 10. The library refuses an out of range tag
+value in any case, so these checks only change where the message appears and
+that no claim is taken first.
+
+`MAXMEM=<MiB>` caps the private memory committed by this app.
 
 ```text
 aar-run RAM:swquake.elf MAXMEM=256 +timedemo demo1
 ```
 
-`HOSTMEM=<MiB>` sets how much shared (host-visible) card memory this app may
-allocate: the memory the Amiga can address through the board, including the
-buffers the runtime allocates for the app's console, files and audio. The value
-must be a positive decimal MiB count up to 4095; anything else prints the
-usage and returns 10. Without it the app gets the firmware default of 16 MiB.
-The limit is a cap, not a reservation. Both limits go to the library before the
-load; the card checks them at load and refuses what it cannot grant. aar-run then
+`HOSTMEM=<MiB>` sets how much shared (host-visible) memory this app may
+allocate: the memory the Amiga can address through the platform, including the
+buffers the runtime allocates for the app's console, files and audio. Without
+it the app gets the platform default (`shared_default_mib`). The limit is a
+cap, not a reservation. Both limits go to the library before the load; the
+platform checks them at load and refuses what it cannot grant. aar-run then
 prints `load refused:` with the reason (a platform limit means `HOSTMEM` or
 `MAXMEM` is too large) and returns 20.
 
@@ -58,15 +86,13 @@ prints `load refused:` with the reason (a platform limit means `HOSTMEM` or
 aar-run RAM:swquake.elf HOSTMEM=32
 ```
 
-`WEIGHT=<n>` sets the app's share of the ARM CPU when several apps run at
-once. The card gives the CPU to the runnable app that has used the least time
-in proportion to its weight, so an app with `WEIGHT=2` gets about twice the run
+`WEIGHT=<n>` sets the app's share of the CPU when several apps run at once.
+The platform gives the CPU to the runnable app that has used the least time in
+proportion to its weight, so an app with `WEIGHT=2` gets about twice the run
 time of an app with `WEIGHT=1` while both want to run. An app that is blocked
-or sleeping does not save up credit. The value is a decimal number from 1 to
-256; anything else prints the usage and returns 10 before aar-run claims
-anything. The key is matched without regard to case (`weight=2` works). Without
-it the app gets weight 1. The weight is given to the library with the memory
-limits and lasts until the claim ends.
+or sleeping does not save up credit. Without it the app gets the platform's
+default weight. The weight is given to the library with the memory limits and
+lasts until the claim ends.
 
 ```text
 aar-run RAM:swquake.elf WEIGHT=4
@@ -82,14 +108,39 @@ multi-directory assign, aar-run tries each directory after an
 `ERROR_OBJECT_NOT_FOUND` result. aar-run hands the library the full path of the
 file it found.
 
-On normal app exit, aar-run returns the app exit code. It returns 20 after an
-app fault, a watchdog, lease loss or any other end the platform imposed, an
-unavailable runtime, a revoked claim, display failure, a console that cannot be
-opened or written, an AHI route that cannot be opened, or another launcher
-error. It returns 10 for invalid launcher arguments. Ctrl-C while aar-run opens
-or loads the ELF stops the load and returns 5, including when a DOS packet
-wait such as a file read or closing the ELF consumed the break. Other load
-failures return 20.
+### Checks before a claim
+
+aar-run reads the image's AAR note with `AARProbeFile` and compares it with the
+platform before `AAROpen`, so an image that cannot run takes no claim. The line
+names the cause and the exit code is 20:
+
+| Cause | Line |
+| --- | --- |
+| the file cannot be opened or read | `cannot open <file>`, `cannot read <file>` |
+| not an AAR image | `<file> is not an AAR image (no valid AAR ELF note, or one built for another API than this library)` |
+| wrong profile, for example an A64 image on an A32 platform | `<file> is an A64 app; this platform runs A32 apps only.` |
+| API too new for the platform | `<file> needs AAR API 0.5, this platform has 0.3.` |
+| a required service group the platform lacks | `<file> needs service groups this platform lacks: gl.` |
+
+The profile is checked first, then the API, then the groups the image requires;
+the groups it lists as optional are only a hint and never refuse an image. The
+library's probe cannot tell a note newer than the library from a damaged one,
+which is why the not-an-AAR-image line names both; a platform older than its
+library is the API line. A file name with a volume or assign colon may be a
+multi-directory assign, which the library's own open does not search: if the
+first probe finds nothing there, aar-run finds the file the way it does for the
+load and probes the full name then. That needs the serving loop and so a claim,
+which aar-run opens and closes again when it refuses the image. Every other
+refusal, and a missing plain path, happens before any claim.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| the app's | on normal app exit, aar-run returns the app exit code (0 to 255) |
+| 5 | Ctrl-C while aar-run opens, probes or loads the ELF, including when a DOS packet wait such as a file read or closing the ELF consumed the break |
+| 10 | invalid launcher arguments, a stack below 16 KiB, a missing `APP` tool type, or a launch the platform's limits refuse |
+| 20 | an app fault, a watchdog, lease loss or any other end the platform imposed; an unavailable runtime or no `aar.library`; a refused claim, image or load; a revoked claim; a display failure; a console that cannot be opened or written; an AHI route that cannot be opened; `STATUS` or `RELEASE` where the platform does not support them; any other launcher error |
 
 Lease expiry prints `aar-run: claim lost (lease expired).` and quarantine prints
 `aar-run: claim lost (quarantined).` rather than a normal app exit. If a call
@@ -103,18 +154,23 @@ why the claim was revoked.
 aar-run STATUS
 ```
 
-`STATUS` is case-insensitive. It prints one line for each claim the card
+`STATUS` is case-insensitive. It prints one line for each claim the platform
 holds: its handle, state, app name, committed MiB, CPU seconds, block reason
 and end reason. The block reason is `none`, `file`, `console`, `event`,
 `sleep`, `vsync`, or `audio`. `event` means the app is waiting for a message.
 
+`STATUS` and `RELEASE` go through `AARExt`, the library's platform extension
+table. Where `AARExt` returns no table (a platform that does not offer the
+claim list) they print `aar-run: STATUS is not supported on this platform.`
+(or `RELEASE`) and return 20. Launching an app never needs the extension.
+
 A crashed aar-run does not leave a claim behind: `aar.library` notices that the
 task is gone within about a second, stops the app and releases the claim. A
-claim the library could not release (its own helper stopped, or the card
-revoked it) keeps its control block and buffers on the card until it is
-released, because the old launcher may still write through its mapping.
-`STATUS` shows it as ended, with end reason `lease loss` or `quarantined`.
-When nothing owns it any more, release it by its handle:
+claim the library could not release (its own helper stopped, or the platform
+revoked it) keeps its control block and buffers until it is released, because
+the old launcher may still write through its mapping. `STATUS` shows it as
+ended, with end reason `lease loss` or `quarantined`. When nothing owns it any
+more, release it by its handle:
 
 ```text
 aar-run RELEASE <handle>
@@ -122,11 +178,18 @@ aar-run RELEASE <handle>
 
 The handle is the hexadecimal number `STATUS` prints, written as `$` or `0x`
 followed by the digits, or in decimal. `RELEASE` ends a claim that is finished
-(an app that ended or faulted, or a claim the card revoked) and refuses one
-whose app is running, loading or being claimed. A card reset also clears every
-claim.
+(an app that ended or faulted, or a claim the platform revoked) and refuses one
+whose app is running, loading or being claimed. A platform reset also clears
+every claim.
 
 ## Workbench ToolTypes
+
+A Workbench start reads the ToolTypes of the aar-run icon (`PROGDIR:aar-run`,
+or the icon of the tool a project icon names). Dragging an ELF project onto the
+icon, or giving a project icon whose default tool is `aar-run`, takes
+precedence over `APP`. A Workbench start has no Shell: the ELF comes from the
+project icon or `APP`, and without either aar-run requests `Set the APP
+tooltype, or start aar-run from a project icon.` and returns 10.
 
 | ToolType | Meaning |
 | --- | --- |
@@ -136,73 +199,113 @@ claim.
 | `MODE` | Optional Picasso96 DisplayID, in decimal, `$` hexadecimal, or `0x` hexadecimal. The app still chooses width, height, and RGB format. |
 | `ARGS` | Optional space-separated arguments. Quoting is not parsed. |
 | `JOYPORT0` | Enabled by the same values as `ABS`. Enables joystick port 0 as well as port 1. |
-| `AUDIO=AHI` | Route app PCM to AHI. The default remains the card audio fabric. |
+| `AUDIO=AHI` | Route app PCM to AHI. The default remains the platform's own audio path. |
 | `MAXMEM=<MiB>` | Positive decimal MiB cap on the app's private memory (`AAR_TAG_PRIVATE_MIB`). |
-| `HOSTMEM=<MiB>` | Positive decimal MiB (1 to 4095) shared memory limit (`AAR_TAG_SHARED_MIB`). |
-| `WEIGHT=<n>` | Decimal CPU share weight from 1 to 256 (`AAR_TAG_WEIGHT`). |
+| `HOSTMEM=<MiB>` | Positive decimal MiB shared memory limit (`AAR_TAG_SHARED_MIB`), up to the platform's `shared_max_mib` and 4095. |
+| `WEIGHT=<n>` | Decimal CPU share weight from 1 to the platform's `weight_max` (`AAR_TAG_WEIGHT`). |
 
-Dragging an ELF project onto the aar-run icon takes precedence over `APP`.
+The same limits and refusals apply as in a Shell launch. The diagnostic words
+below are not ToolTypes. A Workbench start opens no console unless the app
+uses one: see [Console and audio routes](#console-and-audio-routes).
 
-## How aar-run talks to the card
+## Diagnostics
 
-aar-run calls `aar.library`, the resident AAR client library for this board
-(`LIBS:aar.library`, installed with aar-run). The library implements the AAR
-transport contract (`aar/transport.h`): it owns the claim, the control block
-and queue pair, the mailbox, the cache-inhibited maps and the lease. aar-run
-links none of that. Every claim has its own control block and queue pair, and
-the card names each buffer it wants aar-run to use in the request that needs it.
+Two words of the command line exist so that the loop and the display paths can
+be measured and forced. They are recognized after the ELF, in any case, and are
+not passed to the app. A bad value prints the usage and returns 10.
 
-1. aar-run opens `aar.library` (version 0) and calls `AARQuery`. The library
-   reaches the board through `zz9k.library` and needs `mmu.library` only when a
-   claim is opened. aar-run checks that the platform is a ZZ9000 with a Zorro III
-   board and the API major it was built for, and that it takes the 16 argument
-   strings of 127 bytes aar-run passes. Without a platform (no board, an old
-   `zz9k.library`, firmware without the app runtime) the query fails and aar-run
-   stops before claiming. A `aar-run STATUS` or `RELEASE` needs only the query
-   and the library's ZZ9000 client extension.
-2. `AAROpen` admits an app. The library returns a handle that belongs to this
+| Word | Effect |
+| --- | --- |
+| `POLL=<us>` | The heartbeat of the loop, in microseconds. The default is 1000 (one wake-up per millisecond, the latency the launcher has always had). `POLL=20000` suits a program that is happy with a vertical-blank wake-up; `POLL=0` turns the timer off and waits on the library's signal alone (the library wakes the loop within about one vertical blank). The value is below 1000000. A slower heartbeat costs latency for DOS and audio work, not correctness. |
+| `DISPLAY=<BUFFERS\|PAN3\|PAN2\|SINGLE>` | The display strategy aar-run starts with, and the fallbacks after it. `BUFFERS` (the default) uses screen buffers, then a three page tall screen, a two page one and one buffer. `PAN3` starts at the three page tall screen, `PAN2` at the two page one, and `SINGLE` uses one buffer the platform copies each frame. A strategy the screen cannot open falls back to the next one, as in the default order. |
+
+```text
+aar-run RAM:swquake.elf POLL=20000 DISPLAY=PAN2
+```
+
+## Platform notes
+
+**Any platform.** aar-run needs the library to implement the API major it was
+built for (`AAR_API_MAJOR`) and reads everything else from `AARInfo`:
+the limits above, `max_image_bytes`, `stop_grace_ms` (the grace the loop gives
+an app after a stop, read by `aar_serve`), the supported `profiles` and
+`groups`. A launch the platform cannot run is refused before it claims anything.
+
+**ZZ9000.** The first platform behind `aar.library`. It needs a Zorro III board
+with firmware that has the AAR queue transport (app ABI 0.5), `zz9k.library`
+revision 36 or later (only to reach the board's mailbox) and `mmu.library` 41
+or later, because the board's shared buffers must be mapped cache-inhibited.
+The platform takes 16 strings of 127 bytes (so 15 app arguments), a `WEIGHT`
+from 1 to 256, a `HOSTMEM` up to 4095 MiB and a 16 MiB shared default. aar-run
+prints `caps <hex>` after the `runtime api` line, from the platform words of
+`AARInfo`, and a note when the board is not a Zorro III board (the library then
+decides at the claim). `STATUS` and `RELEASE` are available through the
+library's ZZ9000 extension (`libraries/aar_zz9000.h`). Without the board or the
+firmware the library has no platform and aar-run says so and returns 20. The
+firmware SDK package ships `C/aar-run`, its icon and `Docs/aar-run.guide`.
+
+## How aar-run talks to the platform
+
+aar-run calls `aar.library`, the resident AAR client library of the platform
+(`LIBS:aar.library`). The library implements the AAR transport contract
+(`aar/transport.h`): it owns the claim, the control block and queue pair, the
+doorbell, the cache-inhibited maps and the lease. aar-run links none of that.
+Every claim has its own control block and queue pair, and the platform names
+each buffer it wants aar-run to use in the request that needs it.
+
+1. aar-run opens `aar.library` (version 0) and calls `AARQuery`. Without a
+   platform behind the library the query fails and aar-run stops before
+   claiming. It checks that the platform implements the API major it was built
+   for, reads the limits it needs from `AARInfo` and checks the launch against
+   them. A `aar-run STATUS` or `RELEASE` needs only the query and `AARExt`.
+2. `AARProbeFile` reads the image's note, and aar-run compares it with the
+   platform (profile, API, required groups). A refusal prints its cause and
+   takes no claim.
+3. `AAROpen` admits an app. The library returns a handle that belongs to this
    task; a refusal says why (`claim refused:` plus the reason).
-3. `AARSetTagList` carries `MAXMEM`, `HOSTMEM` and `WEIGHT` (only those the
-   launch set), what aar-run can serve (CLUT8 screens, pan acknowledgement,
-   card-owned flips), the longer lease, and the AHI audio route. The library
-   checks the list as a whole and refuses what it cannot grant.
-4. aar-run finds the ELF itself, from the current directory or through every
-   `GetDeviceProc` candidate of an assign, locks it and turns the lock into a
-   full path with `NameFromLock`. `AARLoadFile` opens and reads that path in
-   chunks and has the card validate and relocate the image. A stalled device
-   holds up the load (the lease does not depend on it), and Ctrl-C is honoured
-   between 64 KiB chunks. A refusal prints `load refused:` with the reason, as
-   the library reports it in the status (a platform limit means `HOSTMEM` or
-   `MAXMEM` is too large). An empty or oversized image is refused by the
-   library against the platform's image limit.
-5. `AARStart` takes the argument strings. They travel in the load buffer;
-   strings are capped at 127 bytes plus NUL.
-6. The main loop wakes every millisecond. Each pass it forwards input,
-   serves the requests the app has posted (`AARServiceNext` and
-   `AARServiceReply`), completes the ones that were waiting for DOS, the
-   display or AHI, and reads the app's state and end reason with a small
-   `AARStatus`. aar-run does not renew the lease: the library does that from a
-   vertical-blank interrupt, so a requester or a long DOS wait in aar-run does
-   not cost the app its claim. A completion is followed by a doorbell the
-   library sends, but the queue indices stay authoritative: a lost doorbell
-   costs latency, never data.
-7. Ctrl-C from the Shell or an app-display raw key requests a stop: aar-run
+4. `aar_serve_create` builds the serving state for the handle: the timer, the
+   ROOT lock and the log sink. `AARSetTagList` carries `MAXMEM`, `HOSTMEM` and
+   `WEIGHT` (only those the launch set), what aar-run can serve (CLUT8 screens,
+   pan acknowledgement, platform-owned flips), the longer lease, and the AHI
+   audio route. The library checks the list as a whole and refuses what it
+   cannot grant.
+5. aar-run finds the ELF itself, from the current directory or through every
+   `GetDeviceProc` candidate of an assign (`aar_serve_locate`), locks it and
+   turns the lock into a full path with `NameFromLock`. `AARLoadFile` opens and
+   reads that path in chunks and has the platform validate and relocate the
+   image. A stalled device holds up the load (the lease does not depend on it),
+   and Ctrl-C is honoured between 64 KiB chunks. A refusal prints `load
+   refused:` with the reason, as the library reports it in the status (a
+   platform limit means `HOSTMEM` or `MAXMEM` is too large). An empty or
+   oversized image is refused by the library against the platform's image
+   limit.
+6. `AARStart` takes the argument strings. They travel in the load buffer.
+7. `aar_serve_run` is the main loop. It wakes every millisecond (`POLL`) and
+   each pass forwards input, serves the requests the app has posted
+   (`AARServiceNext` and `AARServiceReply`), completes the ones that were
+   waiting for DOS, the display or AHI, and reads the app's state and end
+   reason with a small `AARStatus`. aar-run does not renew the lease: the
+   library does that, so a requester or a long DOS wait in aar-run does not
+   cost the app its claim. A completion is followed by a doorbell the library
+   sends, but the queue indices stay authoritative: a lost doorbell costs
+   latency, never data.
+8. Ctrl-C from the Shell or an app-display raw key requests a stop: aar-run
    posts one stop event (retried until the queue has room for it) and calls
    `AARStop`, which writes the control block's stop request, posts the stop
-   event and sends the platform's stop. Ctrl-D, Ctrl-E, and
-   Ctrl-F on the app display remain normal raw-key events and additionally
-   post a break event with codes 4, 5, and 6. The app display has one
-   borderless input window, not a close gadget; its raw keys are forwarded to
-   the app, including Ctrl-C and the app's own quit controls. aar-run remains
-   alive for the 500 ms grace period so the card can publish the final state.
-   Ctrl-C ends aar-run after that grace, plus a second 500 ms, even if console
-   output is still queued. It closes the custom screen and returns the public
-   screen even after a fault.
-8. When the app ends, aar-run reads the exit code, end reason and fault record
+   event and sends the platform's stop. Ctrl-D, Ctrl-E, and Ctrl-F on the app
+   display remain normal raw-key events and additionally post a break event
+   with codes 4, 5, and 6. The app display has one borderless input window, not
+   a close gadget; its raw keys are forwarded to the app, including Ctrl-C and
+   the app's own quit controls. aar-run remains alive for the platform's stop
+   grace period (`AARInfo.stop_grace_ms`) so the platform can publish the final
+   state. Ctrl-C ends aar-run after that grace, plus a second one, even if
+   console output is still queued. It closes the custom screen and returns the
+   public screen even after a fault.
+9. When the app ends, aar-run reads the exit code, end reason and fault record
    with `AARStatus`, prints them, and closes the claim with `AARClose`. The
-   close returns the control block, the queues and every buffer to the card.
-   If the card revokes the claim first (lease lost), every call answers `claim
-   revoked`, aar-run stops serving and returns 20.
+   close returns the control block, the queues and every buffer to the
+   platform. If the platform revokes the claim first (lease lost), every call
+   answers `claim revoked`, aar-run stops serving and returns 20.
 
 All words in the control block and in queue entries are big-endian. The
 `aar/` headers are the layout authority; `libraries/aar.h` and
@@ -226,22 +329,25 @@ keeps its order behind the motion that came before it. An event that finds the
 queue full is dropped and counted in the control block's events-dropped word,
 except the stop event, which aar-run retries until it is delivered.
 
-The card posts the app's log records on the submission queue. aar-run stages them
+The platform posts the app's log records on the submission queue. aar-run stages them
 and its own runtime status through the same asynchronous writer as app console
 output. If a stalled destination fills the bounded staging queue, aar-run drops
 diagnostic log records but reserves space for launcher status and errors; after
 pending writes finish during cleanup it reports the number of dropped records.
 aar-run does not write to stderr while the app is running.
 
-aar-run has no app-message consumer. The library holds unread app messages
-without dropping them. Once its inbox fills, a message stays at the
-submission queue head and requests behind it wait too. Apps exchanging custom
-messages need a client that takes them, such as the SDK echo and ringtest tools.
+aar-run takes the app's messages itself: the serving loop drains them with
+`AARGetMessage`, drops them and counts them, so an app that sends more than the
+library's inbox holds cannot hang itself behind an unread message. After the
+run aar-run prints `dropped <n> app messages.` when it dropped any. Apps that
+exchange custom messages need a client that takes them: the SDK echo and
+ringtest tools, or a program of its own that creates `aar_serve` with
+`AAR_SERVEF_KEEP_MESSAGES` (`docs/aar-serve-api.md`).
 
 ### Console and audio routes
 
 The app's console output arrives as `CONSOLE_WRITE` requests naming bytes in a
-console buffer the card allocated; a request completes when the DOS write has
+console buffer the platform allocated; a request completes when the DOS write has
 finished, with the number of bytes written. A Shell launch writes those bytes
 through `Output()` and takes app stdin from `Input()`. A `CONSOLE_READ` request
 is the app's demand for input; aar-run starts one DOS read for it and completes it
@@ -264,10 +370,10 @@ no console by default; only when the app first uses console I/O, aar-run opens a
 closable `CON:` window. If opening that requested console fails, or if writing
 app output fails, aar-run stops the app and returns 20.
 
-The default audio route is the card fabric and needs nothing from aar-run. Set
+The default audio route is the platform's own audio path and needs nothing from aar-run. Set
 `AUDIO=AHI` in the app icon or pass `AUDIO=AHI` after the ELF in a Shell
 command to request the AHI route; it is passed to the library as the audio
-route tag before the load. On that route the card allocates the audio ring and
+route tag before the load. On that route the platform allocates the audio ring and
 names it in an `AUDIO_OPEN` request; aar-run opens AHI at the requested rate
 (stereo), and the library attaches the ring when aar-run completes the request
 and detaches it at `AUDIO_CLOSE`. aar-run reads the PCM with `AARAudioRead`,
@@ -279,31 +385,40 @@ are readable (`AARAudioRead` with no buffer), which counts nothing, so an
 underrun in the ring header is counted only when AHI finished a buffer and
 found the ring empty.
 
-Known limitation: running an app with stdout redirected to `NIL:` (`>NIL:`)
-made swquake's file seeks fail on the card with every aar-run build tested,
-while `>file` works. This is under investigation.
+Output to `NIL:` works. A console handle with no handler port, which is what
+`NIL:` is, cannot take the asynchronous DOS packet the loop uses for other
+destinations. aar-run writes such a handle with the synchronous `Write()`
+(dos.library answers it by itself and it cannot block) and completes the app's
+request on the next pass of the loop, so `aar-run app.elf >NIL:` runs the app
+to its end, discards its text and returns its exit code. Input from `NIL:`
+ends at once, which is the end of input the app sees. aar-run's own notes (the
+output-failure note and the finish prompts) go to the user's console, never
+only into the redirected output. A write that really fails, such as a full
+volume or a closed pipe, still stops the app and returns 20.
 
-When the app opens its display, the card posts `DISPLAY_OPEN` with the width,
+When the app opens its display, the platform posts `DISPLAY_OPEN` with the width,
 height and format. RGB565 is the first path; CLUT8 is supported and aar-run loads
 the palette the app posts (`DISPLAY_PALETTE`); BGRA8888 is accepted when P96
 returns that format. aar-run opens the P96 screen and completes the request with
-the bitmap's actual pitch and the tokens of its memory, which are board offsets.
+the bitmap's actual pitch and the tokens of its memory (the platform's own
+addresses, opaque to aar-run).
 With two displayable P96 bitmaps (`AllocScreenBuffer`), each flip request
 changes screen buffer and completes when P96 has finished with the old one. If
 P96 refuses screen buffers, aar-run first opens a bitmap three times the
 requested height and pans between its pages. If that fails, it retries with a
-double-height bitmap. A pan completes with the submitted flag: the card
+double-height bitmap. A pan completes with the submitted flag: the platform
 acknowledges the flip after its own next vertical blank has latched the new
 address, which keeps the old front unavailable until scanout has stopped reading
-it. Only if both panning layouts fail does it use one bitmap, which the card
-copies each frame into. When the app asks for latest-frame flips, the card owns
-every flip and aar-run sees none: it does not pan or change buffers.
+it. Only if both panning layouts fail does it use one bitmap, which the platform
+copies each frame into. When the app asks for latest-frame flips, the platform owns
+every flip and aar-run sees none: it does not pan or change buffers. The
+`DISPLAY=` diagnostic word chooses where this walk starts.
 
 ### Files and ROOT
 
 File requests (`FILE_OPEN`, `FILE_READ`, `FILE_WRITE`, `FILE_SEEK`,
 `FILE_STAT`, `FILE_CLOSE`, `LIST_OPEN`, `LIST_NEXT`, `LIST_CLOSE`) carry paths
-and data in buffers the card names. The app has up to 16 open files and 16 open
+and data in buffers the platform names. The app has up to 16 open files and 16 open
 directory lists. A short read is end of file. Raw AmigaDOS Examine packets
 return length-prefixed BCPL names; aar-run converts them to NUL-terminated
 names in the request buffer before posting the list completion. The end of a

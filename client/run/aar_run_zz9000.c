@@ -2,8 +2,10 @@
  * aar-run: the ZZ9000 specifics of the launcher. STATUS lists the claims on the
  * card and RELEASE ends a claim that is no longer running; both go through the
  * ZZ9000 client extension of aar.library (libraries/aar_zz9000.h, an MIT header),
- * which exists only in the ZZ9000 build of the library. The rest of aar-run is
- * platform neutral.
+ * which AARExt returns only in the ZZ9000 build of the library. Where AARExt
+ * returns NULL (another platform), aar_run.c prints "not supported on this
+ * platform" and these functions are not called. The rest of aar-run is platform
+ * neutral and never asks for the extension.
  *
  * This file is included by aar_run.c and is not compiled alone.
  *
@@ -13,20 +15,31 @@
 
 static const aar_client_ext_zz9000 *zz_ext;
 
-/* The extension table of the ZZ9000 build, or 0 when this library has none (or
- * not the calls aar-run needs). */
+/* Looks the extension table up through AARExt. 0 when this library has none
+ * (AARExt returns NULL on another platform) or not the calls aar-run needs. */
 static int zz9000_init(void)
 {
     zz_ext = (const aar_client_ext_zz9000 *)AARExt(AAR_PLATFORM_ZZ9000,
                                                    AAR_EXT_ZZ9000_CLIENT);
-    return AAR_CLIENT_EXT_ZZ9000_COVERS(zz_ext, list) &&
-           AAR_CLIENT_EXT_ZZ9000_COVERS(zz_ext, release_handle);
+    return aar_run_admin_available(zz_ext);
 }
 
-/* What the board reports about itself, after the "runtime api" line. */
+/* What a ZZ9000 reports about itself, after the "runtime api" line. The
+ * platform words mean nothing on another platform. */
 static void zz9000_print_caps(const AARInfo *info)
 {
-    printf(" caps %08lx", (unsigned long)info->platform[AAR_ZZ9000_INFO_CAPS]);
+    if (info->platform_id == AAR_PLATFORM_ZZ9000)
+        printf(" caps %08lx",
+               (unsigned long)info->platform[AAR_ZZ9000_INFO_CAPS]);
+}
+
+/* A ZZ9000 that is not a Zorro III board is named, and the launch goes on: the
+ * library says no at AAROpen if it cannot serve it. */
+static void zz9000_print_note(const AARInfo *info)
+{
+    if (aar_run_zz9000_lacks_z3(info))
+        puts("aar-run: note: this ZZ9000 is not a Zorro III board; the app "
+             "runtime may refuse a claim.");
 }
 
 static int zz9000_print_status(void)

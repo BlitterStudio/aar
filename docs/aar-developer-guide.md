@@ -320,7 +320,7 @@ does not spin on `aar_event_poll`.
 The app does not see the disk. Every file call goes through the client, which
 serves it with dos.library and its own AmigaDOS rights. Paths are AmigaDOS
 paths, at most 255 bytes plus a NUL. The client chooses the root. The
-recommended default, which ZZRun follows: relative paths resolve under the
+recommended default, which aar-run follows: relative paths resolve under the
 Shell's current directory, the icon's directory, or an explicit root; a path
 that would leave the root through `..` or a leading `/` is refused with
 `AAR_E_ACCES`; a path with a volume or assign prefix (a `:`) is refused unless
@@ -351,14 +351,14 @@ end of input. `isatty` returns 0.
 `aar_log` is a different channel: a lossy diagnostic record of at most 1024
 bytes, separate from stdout, for the platform's debug output and for the client.
 Use `aar_log` for traces and stdout for the user. **ZZ9000:** 32 records per
-second go to ZZRun and 8 lines per second to the card's UART as `[app] ...`.
+second go to aar-run and 8 lines per second to the card's UART as `[app] ...`.
 
 The client decides what the console is: the Shell's `Output()` and `Input()`, or
 a window it opens on the first console call for a Workbench launch. On AmigaOS
 3.2, Ctrl-\ does not end keyboard input, not even for `Type *`. Stop a
 keyboard-fed app with Ctrl-C, and deliver end of input by redirecting a file
-(`ZZRun app.elf <file`). If the app is blocked in a keyboard read when it stops,
-the console cannot cancel the line read it has open, and ZZRun prints
+(`aar-run app.elf <file`). If the app is blocked in a keyboard read when it stops,
+the console cannot cancel the line read it has open, and aar-run prints
 `press Return to finish.`.
 
 ## Building
@@ -540,25 +540,33 @@ in the firmware repository. The `zz9k.library` client calls are in
 This repository does not include firmware headers; do not include any firmware
 header in an app.
 
-The launcher is still ZZRun until the client library slices of the cutover land.
-`aar.library` ([client API](aar-client-api.md)) and `aar-run` will replace it,
-and the options below will keep their meaning. ZZRun is a Shell command and a Workbench tool. It needs
-`zz9k.library` and, for a display, Picasso96. Zorro III only.
+The launcher is `aar-run`, the reference launcher of the standard (`client/run`,
+MIT). It is built on `aar.library` ([client API](aar-client-api.md)) and the
+serving loop `aar_serve` ([serve API](aar-serve-api.md)), is a Shell command and
+a Workbench tool, and runs on any platform that has an `aar.library`. Its
+[manual](../client/run/README.md) has the arguments, ToolTypes, exit codes and
+platform notes; this section is what an app author needs. It was called ZZRun
+before the rename and no old name is kept. On the ZZ9000 it needs a Zorro III
+board, `zz9k.library` and, for a display, Picasso96.
 
 Shell:
 
 ```text
 Stack 32768
-ZZRun RAM:app.elf [MAXMEM=<MiB>] [HOSTMEM=<MiB>] [AUDIO=AHI] [args]
+aar-run RAM:app.elf [MAXMEM=<MiB>] [HOSTMEM=<MiB>] [WEIGHT=<n>] [AUDIO=AHI] [args]
 ```
 
-`argv[0]` is the ELF file name. Further tokens are the app's arguments, at most
-15 of them. `AUDIO=AHI` before those arguments selects AHI; the default route
-is the card audio fabric. `MAXMEM` caps the app's private memory and `HOSTMEM`
-sets its shared-buffer limit (16 MiB by default).
+`argv[0]` is the ELF file name. Further tokens are the app's arguments, as many
+as the platform takes (`AARInfo.max_args` counts `argv[0]`; the ZZ9000 takes 15
+arguments). aar-run refuses a launch the platform's limits do not allow, and an
+image its profile, API or service groups the platform cannot run, before it
+claims anything. `AUDIO=AHI` selects AHI; the default route is the platform's own
+audio path (the card audio fabric on the ZZ9000). `MAXMEM` caps the app's
+private memory and `HOSTMEM` sets its shared-buffer limit (the platform
+default by default, 16 MiB on the ZZ9000).
 
-Workbench: the project icon's default tool is ZZRun (`DEFAULT_TOOL=ZZRun`).
-Dragging an ELF onto the ZZRun icon overrides ToolType `APP`.
+Workbench: the project icon's default tool is aar-run (`DEFAULT_TOOL=aar-run`).
+Dragging an ELF onto the aar-run icon overrides ToolType `APP`.
 
 | ToolType | Effect |
 |---|---|
@@ -567,28 +575,30 @@ Dragging an ELF onto the ZZRun icon overrides ToolType `APP`.
 | `ABS=1` | Allow paths that contain `:`. The root check does not apply to those |
 | `MODE` | Optional Picasso96 DisplayID, decimal, `$` hex, or `0x` hex. The app still chooses width, height, and format |
 | `ARGS` | Space-separated arguments. Quoting is not parsed |
-| `AUDIO=AHI` | PCM to AHI instead of the card fabric |
+| `AUDIO=AHI` | PCM to AHI instead of the platform's own audio path |
 | `MAXMEM` | Private memory cap in MiB |
-| `HOSTMEM` | Shared-buffer limit in MiB, 1 to 4095; the card grants at most 62 MiB |
+| `HOSTMEM` | Shared-buffer limit in MiB, 1 to the platform's `shared_max_mib` (4095 at most); **ZZ9000:** the card grants at most 62 MiB |
+| `WEIGHT` | CPU share weight, 1 to the platform's `weight_max` |
 | `JOYPORT0=1` | Also read joystick port 0. Port 1 is read while the display window is active |
 
-A display open makes ZZRun open the Picasso96 screen and bind the bitmap's real
+A display open makes aar-run open the Picasso96 screen and bind the bitmap's real
 pitch and address. RGB565 is the first path. CLUT8 is supported. BGRA8888 is
-accepted when P96 returns that format. If the mode cannot be opened, ZZRun asks
-the app to stop and `aar_display_open` returns `AAR_E_IO`. ZZRun's `STATUS` CPU
+accepted when P96 returns that format. If the mode cannot be opened, aar-run asks
+the app to stop and `aar_display_open` returns `AAR_E_IO`. aar-run's `STATUS` CPU
 time is user execution plus SVC execution and excludes idle and recovery
-intervals.
+intervals. `STATUS` and `RELEASE` need the platform's extension table and print
+`not supported on this platform` where there is none.
 
 ### The client library
 
-`zz9k.library` exposes the same runtime without ZZRun: `ZZ9KAppOpen`,
+`zz9k.library` exposes the same runtime without aar-run: `ZZ9KAppOpen`,
 `ZZ9KAppLoadFile`, `ZZ9KAppLoadMemory`, `ZZ9KAppStart`, `ZZ9KAppStop`,
 `ZZ9KAppStatus`, `ZZ9KAppSendMessage`, `ZZ9KAppGetMessage`,
 `ZZ9KAppMessageSignal`, `ZZ9KAppClose` and `ZZ9KAppSetLimits`. A handle belongs
 to the task that opened it; do not use or close it from another task. A task
 that dies holding a handle loses it within about a second. `ZZ9KAppStart`
 passes `argv` unchanged, so put the program name in `argv[0]` if the app
-expects the ZZRun convention. `notify_port` receives at most one outstanding
+expects the aar-run convention. `notify_port` receives at most one outstanding
 event (message, completion or fault). Before closing a handle, drain the notify
 port and read messages until none is queued. The firmware docs linked above are
 the reference for these calls until `aar.library` replaces them. The
@@ -634,7 +644,7 @@ are not the card's, so check performance and limits on hardware.
 
 On a fault the client can read the fault class, the raw syndrome, the processor
 state, `pc`, `sp`, `lr`, the fault address, the exit code and the load base.
-ZZRun prints them and returns 20.
+aar-run prints them and returns 20.
 
 Resolve `pc` and `lr` against the app ELF, not the firmware ELF. They are
 virtual addresses in the app's window. Subtract the load base that the status

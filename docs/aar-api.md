@@ -971,7 +971,7 @@ void aar_exit(int code);
 Does not return, including when the slot is missing. Publishes `code` as the
 app's exit status. By convention the AmigaDOS return codes 0, 5, 10 and 20 are
 used; the client reads the code through its status call and a launcher returns
-it to the Shell. **ZZ9000:** ZZRun returns the exit code on a normal stop and 20
+it to the Shell. **ZZ9000:** aar-run returns the exit code on a normal stop and 20
 on a fault. Gate: `AAR_API_COVERS(api, exit)`. Minimum minor: 5.
 
 ### aar_yield
@@ -1284,7 +1284,7 @@ Missing slot: `AAR_E_NOSYS`. Minimum minor: 5.
 ### Path policy
 
 Paths are AmigaDOS paths, at most `AAR_PATH_MAX` bytes plus the NUL. The client
-decides the root and the policy. The recommended default, the one ZZRun uses:
+decides the root and the policy. The recommended default, the one aar-run uses:
 
 - A relative path resolves under a root chosen by the client: the Shell's
   current directory, the icon's directory, or the client's explicit root.
@@ -1518,7 +1518,7 @@ Minimum minor: 5.
 
 ### AAR_EV_JOY
 
-`4u`. Joystick: axes in `dx` and `dy` (-1, 0, 1), fire in bit 0 of `buttons`. Input group. **ZZ9000:** ZZRun reads port 1 while its display window is active, and port 0 as well when the `JOYPORT0` tool type is set. It reads `JOYxDAT` and the CIA-A fire bits and does not drive the port pins.
+`4u`. Joystick: axes in `dx` and `dy` (-1, 0, 1), fire in bit 0 of `buttons`. Input group. **ZZ9000:** aar-run reads port 1 while its display window is active, and port 0 as well when the `JOYPORT0` tool type is set. It reads `JOYxDAT` and the CIA-A fire bits and does not drive the port pins.
 
 ### AAR_EV_STOP
 
@@ -1656,7 +1656,7 @@ The call parks until the bind succeeds or stop (`AAR_E_IO`). On success `*out`
 holds the id, pitch, layout, caps and the mappings. `AAR_DISPLAY_LATEST` is a
 request: without `AAR_DISPCAP_LATEST` in the granted caps, the open fell back to
 plain `AAR_DISPLAY_VSYNC`. Gate: `AAR_API_COVERS(api, display_open)`. Missing
-slot: `AAR_E_NOSYS`. Minimum minor: 5. **ZZ9000:** the client is ZZRun or an
+slot: `AAR_E_NOSYS`. Minimum minor: 5. **ZZ9000:** the client is aar-run or an
 app using `zz9k.library`; it opens a Picasso96 screen. If it cannot open the
 mode, the call returns `AAR_E_IO` and the client asks the app to stop.
 
@@ -1849,7 +1849,7 @@ client. Parks while the platform attaches the stream; stop cancels the wait with
 `AAR_E_IO`. Gate: `AAR_API_COVERS(api, audio_open)`. Missing slot:
 `AAR_E_NOSYS`. Minimum minor: 5. **ZZ9000:** two streams exist across all apps.
 The current runtime grants only 22050 Hz stereo with 8192 frames, and the ring is
-non-cacheable. With the `AUDIO=AHI` ZZRun option the PCM goes to AHI, which
+non-cacheable. With the `AUDIO=AHI` aar-run option the PCM goes to AHI, which
 must grant that exact stereo rate, and the converter does not resample.
 
 ### aar_audio_close
