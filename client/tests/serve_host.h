@@ -1567,6 +1567,7 @@ HX_UNUSED static struct Library hx_p96_lib;
 HX_UNUSED static int hx_p96_present = 1;             /* Picasso96API.library opens */
 HX_UNUSED static int hx_p96_no_mode;                 /* no mode for the request */
 HX_UNUSED static ULONG hx_p96_max_height = 100000;   /* a screen taller than this does not open */
+HX_UNUSED static ULONG hx_p96_clamp_height;          /* a taller screen opens, but only this tall (0: as asked) */
 HX_UNUSED static int hx_p96_fail_buffers;            /* AllocScreenBuffer fails */
 HX_UNUSED static int hx_p96_buffer_pitch_differs;    /* the second buffer has another pitch */
 HX_UNUSED static ULONG hx_last_mode_asked, hx_last_mode_used;
@@ -1668,6 +1669,8 @@ HX_UNUSED static struct Screen *hx_p96_open_screen(ULONG first, ...)
     hx_last_mode_asked = mode;
     if (h > hx_p96_max_height)
         return NULL;
+    if (hx_p96_clamp_height && h > hx_p96_clamp_height)
+        h = hx_p96_clamp_height;
     s = hx_alloc(sizeof(*s), 1);
     if (!s)
         return NULL;
@@ -1995,6 +1998,7 @@ HX_UNUSED static void hx_reset(void)
     hx_p96_present = 1;
     hx_p96_no_mode = 0;
     hx_p96_max_height = 100000;
+    hx_p96_clamp_height = 0;
     hx_p96_fail_buffers = hx_p96_buffer_pitch_differs = 0;
     hx_last_mode_asked = hx_last_mode_used = 0;
     hx_screens = hx_buffers_live = hx_windows = 0;

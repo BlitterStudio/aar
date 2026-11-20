@@ -132,6 +132,8 @@ memory).
 `LONG aar_serve_run(aar_serve *s)`: waits on `aar_serve_sigmask` and steps until
 the app has ended. Returns `AAR_SERVE_ENDED` or `AAR_SERVE_LOST`.
 
+### aar_serve_sigmask
+
 `ULONG aar_serve_sigmask(const aar_serve *s)`: every signal the loop waits on
 now: the break signals of `break_mask`, the timer, the console packet port, the
 input window, the SafeMessage port of a flip and the AHI port when they exist,
@@ -193,6 +195,8 @@ the final status and returns `AAR_OK`, otherwise the library's error
 `AAR_SERVE_R_CONSOLE_FAILED`, `AAR_SERVE_R_AUDIO_FAILED` and
 `AAR_SERVE_R_QUEUE_CORRUPT`. The process exit code and the fault report are the
 launcher's to derive from it.
+
+### aar_serve_destroy
 
 `void aar_serve_destroy(aar_serve *s)`: stops the app if it still runs, removes
 the log sink, closes AHI, closes the display (waits for the SafeMessages of the

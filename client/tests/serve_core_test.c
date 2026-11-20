@@ -63,6 +63,9 @@ struct fake {
     int live;            /* the request is still wanted */
     int broken;          /* a Ctrl-C is pending */
     int break_after_open; /* set `broken` once an open succeeded */
+    int lose_after_open;  /* the request is lost the moment an open succeeded */
+    int write_zero;       /* a write that stores nothing and reports no error */
+    int set_size_lost;    /* SetFileSize loses its packet */
     int set_size_unsupported;
     int close_undelivered;
     int fail_transport_lock; /* lock_rel of this leaf name loses its packet */
@@ -370,6 +373,8 @@ static uintptr_t f_target_open(void *ctx, enum aar_serve_mode mode,
     } else if (mode == AAR_SERVE_MODE_NEW) {
         fk.nodes[n].size = 0;
     }
+    if (fk.lose_after_open)
+        fk.live = 0;
     if (fk.break_after_open)
         fk.broken = 1;
     return (uintptr_t)fh_new(n);
@@ -394,6 +399,10 @@ static int32_t f_fh_set_size0(void *ctx, uintptr_t fh, int *transport_ok,
     *transport_ok = 1;
     *io = 0;
     fk.set_sizes++;
+    if (fk.set_size_lost) {
+        *transport_ok = 0;
+        return 0;
+    }
     if (fk.set_size_unsupported) {
         *io = AAR_SERVE_IOERR_ACTION_NOT_KNOWN;
         return -1;
@@ -431,6 +440,8 @@ static int32_t f_fh_write(void *ctx, uintptr_t fh, const uint8_t *src,
     (void)ctx;
     *transport_ok = 1;
     *io = 0;
+    if (fk.write_zero)
+        return 0;
     fk.writes++;
     if (h->pos + bytes > FILE_CAP) {
         *io = AAR_SERVE_IOERR_DISK_FULL;
@@ -1070,6 +1081,63 @@ static void test_a_lost_request_does_not_create_or_truncate(void)
     fixture_free();
 }
 
+/* Guards that a second guard or DOS itself would usually answer the same way:
+ * each is observed by what the handler did not ask of DOS. */
+static void test_each_guard_of_the_file_handlers_has_its_own_check(void)
+{
+    uint8_t b[32];
+    uint32_t count = 0;
+
+    /* an open of a request that is gone is not sent at all */
+    fixture(0);
+    fk.live = 0;
+    assert(do_open(3, R, "top.txt") == AAR_E_IO);
+    assert(fk.opens[AAR_SERVE_MODE_OLD] == 0);
+    fk.live = 1;
+
+    /* the request is lost while the open is out: the handle is closed, the
+     * descriptor stays free */
+    fk.lose_after_open = 1;
+    assert(do_open(3, R, "top.txt") == AAR_E_IO);
+    assert(fk.live_fhs == 0);
+    fk.lose_after_open = 0;
+    fk.live = 1;
+    assert(do_close(3) == AAR_E_BADF);
+
+    /* a write of a request that is gone does not reach the file */
+    assert(do_open(3, W, "top.txt") == AAR_OK);
+    fk.live = 0;
+    assert(do_write(3, (const uint8_t *)"xyz", 3u, &count) == AAR_E_IO);
+    assert(fk.writes == 0 && fk.nodes[child_of(N_ROOT, "top.txt")].size == 3u);
+    fk.live = 1;
+    /* a write that stores nothing is a full volume */
+    fk.write_zero = 1;
+    assert(do_write(3, (const uint8_t *)"xyz", 3u, &count) == AAR_E_NOSPC);
+    fk.write_zero = 0;
+    assert(do_close(3) == AAR_OK);
+
+    /* a short read ends the transfer: one packet, not one more to see zero */
+    assert(do_open(3, R, "dir/hello.txt") == AAR_OK);
+    fk.reads = 0;
+    assert(do_read(3, 20u, b, sizeof(b), &count) == AAR_OK && count == 11u);
+    assert(fk.reads == 1);
+    assert(do_close(3) == AAR_OK);
+
+    /* a SetFileSize that lost its packet is an I/O error, not a truncation */
+    fk.set_size_lost = 1;
+    assert(do_open(3, W | T, "top.txt") == AAR_E_IO);
+    assert(fk.live_fhs == 0);
+    fk.set_size_lost = 0;
+    fixture_free();
+
+    /* an update of a file that is not there is refused before the open, with
+     * an absolute name too */
+    fixture(1);
+    assert(do_open(3, W, "Vol:nothing") == AAR_E_NOENT);
+    assert(fk.opens[AAR_SERVE_MODE_READWRITE] == 0);
+    fixture_free();
+}
+
 static void test_the_descriptor_table(void)
 {
     uint32_t fd;
@@ -1615,6 +1683,9 @@ static void test_console_read_waits_for_demand_and_returns_what_was_read(void)
     r.buf_len = 3u;
     assert(aar_serve_core_request(&serve, &r, &d) == AAR_SERVE_REQ_DEFERRED);
     assert(fc.read_starts == 2 && fc.read_max == 3u);
+    /* a longer line than the room never overruns it */
+    aar_serve_console_read_done(&serve.console, 6, line);
+    assert(sunk_n == 2 && sunk[1].done.out[AAR_R_CONSOLE_COUNT] == 3u);
 }
 
 static void test_console_read_end_of_input_is_sticky(void)
@@ -2000,6 +2071,8 @@ static void test_palette_becomes_a_loadrgb32_table(void)
     assert(serve_one(&r, &d) == AAR_E_INVAL);
     r = palette_req(256u, 1u, words, 4u);
     assert(serve_one(&r, &d) == AAR_E_INVAL);
+    r = palette_req(300u, 1u, words, 4u); /* 256 - first wraps */
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
     r = palette_req(0u, 0u, words, 4u);
     assert(serve_one(&r, &d) == AAR_E_INVAL);
     /* fewer bytes than colours */
@@ -2258,6 +2331,7 @@ int main(void)
     test_root_confinement();
     test_transport_failures_are_io_errors_not_dos_results();
     test_a_lost_request_does_not_create_or_truncate();
+    test_each_guard_of_the_file_handlers_has_its_own_check();
     test_the_descriptor_table();
     test_list_walks_the_directory();
     test_unknown_ops_are_not_implemented();

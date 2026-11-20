@@ -71,6 +71,17 @@ static void test_ctrl_c_ends_even_if_output_remains(void)
     assert(aar_serve_run_should_exit(&due) == 1);
     assert(aar_serve_run_should_exit(&running) == 1);
     assert(aar_serve_run_should_exit(&not_yet) == 0);
+    /* a program that was asked to stop, but not by Ctrl-C, is waited for while
+     * its output is still going out */
+    {
+        struct aar_serve_exit_in out_pending =
+            exit_in(AAR_STATE_RUNNING, 0u, 1000u, 1, 0, 1, 0);
+        struct aar_serve_exit_in drained =
+            exit_in(AAR_STATE_RUNNING, 0u, 1000u, 1, 0, 0, 0);
+
+        assert(aar_serve_run_should_exit(&out_pending) == 0);
+        assert(aar_serve_run_should_exit(&drained) == 1);
+    }
 }
 
 static void test_clean_exit_still_drains(void)
@@ -189,6 +200,8 @@ static void test_screen_buffer_safe_messages_are_all_reaped(void)
     assert(pending == 1u);
     pending = aar_serve_screen_safe_completed(pending);
     assert(pending == 0u);
+    pending = aar_serve_screen_safe_completed(pending);
+    assert(pending == 0u); /* nothing pending stays nothing */
 }
 
 static void test_launcher_output_reserves_status_room(void)

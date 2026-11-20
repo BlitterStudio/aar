@@ -431,6 +431,8 @@ static void test_revoke_with_a_console_read_pending_leaves_the_buffer_alone(void
     hx_sched(3000, revoke_notice_cb, NULL);
     CHECK(ticks(40) == AAR_SERVE_LOST);
     hx_run_for(20000);
+    aar_serve_destroy(S); /* the read's packet is reaped here: its bytes go nowhere */
+    S = NULL;
     for (i = 0; i < 64; i++)
         if (buf(0x200)[i] != 0xEE) {
             if (!changed)
@@ -663,6 +665,46 @@ static void test_a_full_completion_queue_loses_no_completion(void)
     finish();
 }
 
+/* A request the app is waiting on (a console read) completes while the CQ is
+ * full: its completion waits for the app to take the others. */
+static void test_a_completion_of_a_held_request_waits_for_a_full_cq(void)
+{
+    struct comp c;
+    unsigned sent = 0, got = 0, got_read = 0, guard;
+
+    setup("full_cq_held");
+    data_dir();
+    make_serve();
+    memcpy(hx_in_data, "late\n", 5);
+    hx_in_len = 5;
+    hx_con_delay_us = 1000000;
+    put_str(0x100, "hello.txt");
+    CHECK(post(AAR_OP_CONSOLE_READ, 99, 0, 0, 0, 0, 0x200, 64) == AAR_OK);
+    for (guard = 0; guard < 200; guard++) {
+        while (sent < 120 && post(AAR_OP_FILE_STAT, 100 + sent, 0, 0, 0, 0, 0x100, 10) == AAR_OK)
+            sent++;
+        ticks(2);
+    }
+    CHECK(refplat_app_cq_used(SLOT) >= AAR_QUEUE_DEPTH_DEFAULT - 1);
+    hx_run_for(1500000);
+    ticks(10); /* the read is done; its completion has no room */
+    for (guard = 0; guard < 4000 && (got < sent || !got_read); guard++) {
+        while (next_comp(&c)) {
+            if (c.id == 99) {
+                CHECK(c.result == AAR_OK && c.out[AAR_R_CONSOLE_COUNT] == 5);
+                got_read++;
+            } else {
+                CHECK(c.result == AAR_OK && c.id >= 100);
+                got++;
+            }
+        }
+        tick();
+    }
+    CHECK(got == sent && got_read == 1);
+    CHECK(!con_has("completion queue full"));
+    finish();
+}
+
 /* ---- Tests: the display -------------------------------------------------------------------------------- */
 
 #define DW 64u
@@ -723,6 +765,23 @@ static void test_display_falls_back_to_a_panned_tall_screen(void)
     CHECK(hx_cur_screen && hx_cur_screen->Height == (WORD)(DH * 3));
     CHECK(call(AAR_OP_DISPLAY_FLIP, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     CHECK(c.result == AAR_OK && (c.flags & AAR_CFLAG_FLIP_SUBMITTED) && hx_pans == 1);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
+/* A screen that opens shorter than three pages cannot be panned: it is closed
+ * and the two page screen is tried. */
+static void test_a_tall_screen_that_opens_too_short_is_not_used(void)
+{
+    struct comp c;
+
+    setup("display_pan3_short");
+    hx_p96_fail_buffers = 1;
+    hx_p96_clamp_height = DH * 2;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_DISPLAY_OPEN_SPARE] == 0 && c.out[AAR_R_DISPLAY_OPEN_BACK] != 0);
+    CHECK(hx_screens == 1 && hx_cur_screen->Height == (WORD)(DH * 2));
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     finish();
 }
@@ -854,6 +913,14 @@ static void test_mouse_buttons_and_close_gadget(void)
     ticks(3);
     (void)next_comp(&c);
     CHECK(events_of(AAR_EV_MOUSE) >= 2);
+    {
+        unsigned i, both = 0;
+
+        for (i = 0; i < nev; i++)
+            if (evs[i].type == AAR_EV_MOUSE && evs[i].buttons == 3)
+                both++;
+        CHECK(both >= 1); /* the left and the right button are down */
+    }
     CHECK(refplat_app_cq_used(SLOT) == 0);
     hx_window_post(IDCMP_CLOSEWINDOW, 0, 0, 0, 0);
     ticks(3);
@@ -954,7 +1021,7 @@ static void test_ahi_audio_open_feed_underrun_close(void)
     /* The buffer ends (20 ms), nothing is left and AHI is idle: one underrun. */
     hx_run_for(30000);
     ticks(40);
-    CHECK(get_le(ring + AAR_AUDIO_RING_UNDERRUNS) >= 1);
+    CHECK(get_le(ring + AAR_AUDIO_RING_UNDERRUNS) == 1);
     CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
     CHECK(c.result == AAR_OK && hx_ahi_open_count == 0);
     finish();
@@ -1180,6 +1247,17 @@ static void hook_stop_wanted(ULONG user, ULONG why)
     hook_stop_why = why;
 }
 
+static unsigned hook_log_calls;
+static ULONG hook_log_len;
+
+static void hook_log(ULONG user, const void *data, ULONG len)
+{
+    (void)user;
+    (void)data;
+    hook_log_calls++;
+    hook_log_len = len;
+}
+
 static void test_hooks_replace_the_defaults(void)
 {
     aar_serve_hooks hooks;
@@ -1191,9 +1269,11 @@ static void test_hooks_replace_the_defaults(void)
     hooks.size = sizeof(hooks);
     hooks.status = hook_status;
     hooks.stop_wanted = hook_stop_wanted;
+    hooks.log = hook_log;
     cfg.hooks = &hooks;
     cfg.user = 7;
     hook_status_calls = hook_stop_calls = 0;
+    hook_log_calls = 0;
     make_serve();
     aar_serve_status(S, "from the program");
     CHECK(hook_status_calls == 1 && strcmp(hook_status_text, "from the program") == 0);
@@ -1207,11 +1287,51 @@ static void test_hooks_replace_the_defaults(void)
     res.size = sizeof(res);
     (void)aar_serve_result(S, &res);
     CHECK(!(res.flags & AAR_SERVE_R_STOP_ASKED));
+    put_str(0x300, "abcd");
+    CHECK(refplat_app_log(SLOT, refplat_buf_token(SLOT, 0), 0x300, 4) == AAR_OK);
+    ticks(3);
+    (void)next_comp(&c);
+    CHECK(hook_log_calls == 1 && hook_log_len == 4 && hx_con_out_len == 0);
     /* The program stops it itself. */
     aar_serve_stop(S);
     aar_serve_stop(S);
     (void)aar_serve_result(S, &res);
     CHECK(res.flags & AAR_SERVE_R_STOP_ASKED);
+    finish();
+}
+
+/* A hook table is size-first: an older caller's table has no later hooks, and
+ * whatever follows it in memory is not read as one. */
+static void test_a_hook_table_from_an_older_header_has_only_the_hooks_it_has(void)
+{
+    aar_serve_hooks hooks;
+    struct comp c;
+    struct aar_serve_result res;
+
+    setup("hooks_size");
+    memset(&hooks, 0, sizeof(hooks));
+    hooks.size = (ULONG)offsetof(aar_serve_hooks, log);
+    hooks.status = hook_status;
+    hooks.log = hook_log;
+    hooks.stop_wanted = hook_stop_wanted;
+    cfg.hooks = &hooks;
+    hook_status_calls = hook_stop_calls = hook_log_calls = 0;
+    make_serve();
+    aar_serve_status(S, "x");
+    CHECK(hook_status_calls == 1);
+    hx_sig |= SIGBREAKF_CTRL_C;
+    ticks(2);
+    (void)next_comp(&c);
+    CHECK(hook_stop_calls == 0);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    (void)aar_serve_result(S, &res);
+    CHECK(res.flags & AAR_SERVE_R_STOP_ASKED);
+    put_str(0x300, "abcd");
+    CHECK(refplat_app_log(SLOT, refplat_buf_token(SLOT, 0), 0x300, 4) == AAR_OK);
+    ticks(3);
+    (void)next_comp(&c);
+    CHECK(hook_log_calls == 0);
     finish();
 }
 
@@ -1570,6 +1690,29 @@ static void test_destroy_answers_every_held_request_once(void)
     CHECK(n_read == 1 && r_read == AAR_E_IO);
     CHECK(n_flip == 1 && r_flip == AAR_E_IO);
     CHECK(n_other == 0);
+    CHECK(aar_get_be32(refplat_cb(SLOT) + AAR_CB_STOP_REQUEST) != 0); /* a running app is stopped */
+    finish();
+}
+
+/* The screen buffer that flipped last still owns its SafeMessage when the loop
+ * is destroyed: it is waited for before the buffer is freed. */
+static void test_destroy_waits_for_the_flip_that_is_out(void)
+{
+    struct comp c;
+
+    setup("destroy_flip_out");
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(call(AAR_OP_DISPLAY_FLIP, 71, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK);
+    CHECK(post(AAR_OP_DISPLAY_FLIP, 72, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0) == AAR_OK);
+    ticks(1);
+    CHECK(hx_changes == 2 && hx_safe_msgs == 1); /* the second flip's SafeMessage is still to come */
+    aar_serve_destroy(S);
+    S = NULL;
+    while (next_comp(&c))
+        ;
+    CHECK(hx_buffers_live == 0 && hx_screens == 0);
     finish();
 }
 
@@ -1637,6 +1780,82 @@ static void test_ahi_needs_a_heartbeat_of_at_most_a_fiftieth_of_a_second(void)
     finish();
 }
 
+/* ---- Tests: the rest of the guards ---------------------------------------------------------------------------------- */
+
+static void test_no_input_window_when_the_program_has_its_own(void)
+{
+    struct comp c;
+
+    setup("no_input_window");
+    cfg.flags |= AAR_SERVEF_NO_INPUT_WINDOW;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(c.result == AAR_OK && hx_screens == 1 && hx_windows == 0);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK && hx_screens == 0);
+    finish();
+}
+
+/* Two screen buffers need one pitch: a second buffer with another pitch is not
+ * used, the screen is panned instead. */
+static void test_buffers_with_another_pitch_fall_back_to_panning(void)
+{
+    struct comp c;
+
+    setup("buffer_pitch");
+    hx_p96_buffer_pitch_differs = 1;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(c.result == AAR_OK && hx_buffers_live == 0);
+    CHECK(hx_cur_screen && hx_cur_screen->Height == (WORD)(DH * 3));
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
+/* The app's last flip showed the back buffer: closing puts the front one back,
+ * then the public screen. */
+static void test_close_shows_the_front_buffer_again(void)
+{
+    struct comp c;
+
+    setup("close_restores");
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(call(AAR_OP_DISPLAY_FLIP, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK && hx_changes == 1);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK && hx_changes == 2 && hx_safe_msgs == 2);
+    finish();
+}
+
+/* The sink is removed at destroy: the handle outlives the loop, and its user
+ * pointer is the loop's memory. */
+static void test_the_log_sink_is_gone_after_destroy(void)
+{
+    struct comp c;
+
+    setup("log_sink_removed");
+    make_serve();
+    put_str(0x300, "before");
+    CHECK(refplat_app_log(SLOT, refplat_buf_token(SLOT, 0), 0x300, 6) == AAR_OK);
+    ticks(3);
+    (void)next_comp(&c);
+    CHECK(H->stats.logs == 1 && H->stats.logs_unclaimed == 0);
+    aar_serve_destroy(S);
+    S = NULL;
+    put_str(0x300, "after");
+    CHECK(refplat_app_log(SLOT, refplat_buf_token(SLOT, 0), 0x300, 5) == AAR_OK);
+    {
+        AARServiceReq r;
+
+        memset(&r, 0, sizeof(r));
+        r.size = sizeof(r);
+        (void)aar_core_service_next(&core, H, &r);
+    }
+    CHECK(H->stats.logs == 1 && H->stats.logs_unclaimed == 1);
+    finish();
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -1691,6 +1910,14 @@ static const struct {
     T(test_the_signal_mask_includes_the_flip_and_ahi_ports),
     T(test_a_flip_completes_with_no_heartbeat),
     T(test_ahi_needs_a_heartbeat_of_at_most_a_fiftieth_of_a_second),
+    T(test_no_input_window_when_the_program_has_its_own),
+    T(test_buffers_with_another_pitch_fall_back_to_panning),
+    T(test_close_shows_the_front_buffer_again),
+    T(test_the_log_sink_is_gone_after_destroy),
+    T(test_a_hook_table_from_an_older_header_has_only_the_hooks_it_has),
+    T(test_destroy_waits_for_the_flip_that_is_out),
+    T(test_a_tall_screen_that_opens_too_short_is_not_used),
+    T(test_a_completion_of_a_held_request_waits_for_a_full_cq),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

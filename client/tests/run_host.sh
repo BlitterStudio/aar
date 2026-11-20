@@ -121,7 +121,7 @@ lib_tests() {
     "$CC" $LIB_CFLAGS -Wno-unused-function -pthread "$@" client/tests/aarleak_test.c -o "$OUT/aarleak_test_$tag"
     run_tail 1 "$OUT/aarleak_test_$tag"
     # The serving loop's OS-free core (client/serve) and the launcher's policy
-    # (client/run), moved from ZZRun: the request handlers against a fake
+    # (client/run): the request handlers against a fake
     # volume, console, display and audio, and the decisions of the loop and of
     # the launcher. No library, no reference platform.
     "$CC" $SERVE_CFLAGS "$@" client/tests/serve_core_test.c client/serve/aar_serve_core.c -o "$OUT/serve_core_test_$tag"
