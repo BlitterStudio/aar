@@ -560,16 +560,12 @@ static void shell_disp_end(struct AARBase *b)
     shell_wake(b->stop_task); /* none when a break from outside ended the process */
 }
 
-/* Starts the process and waits until it runs, or has failed. */
+/* Starts the process and waits until it runs, or has failed. The caller holds
+ * `ctl`. */
 static int shell_dispatcher_start(struct AARBase *b)
 {
     int rc;
 
-    X_SEM_OBTAIN(&b->ctl);
-    if (b->dispatcher_up) {
-        X_SEM_RELEASE(&b->ctl);
-        return AAR_OK;
-    }
     b->start_done = 0;
     b->disp_stop = 0;
     shell_wait_arm(&b->start_task);
@@ -580,15 +576,14 @@ static int shell_dispatcher_start(struct AARBase *b)
         rc = b->start_status;
     }
     shell_wait_done(&b->start_task);
-    X_SEM_RELEASE(&b->ctl);
     return rc;
 }
 
 /* Stops the process and returns only when it has ended and, with it, the
- * interrupt: no wait for a signal bit that might not be there. */
-static void shell_dispatcher_stop(struct AARBase *b)
+ * interrupt: no wait for a signal bit that might not be there. The caller holds
+ * `ctl`. */
+static void shell_dispatcher_stop_locked(struct AARBase *b)
 {
-    X_SEM_OBTAIN(&b->ctl);
     if (b->disp_process) {
         shell_wait_arm(&b->stop_task);
         b->disp_stop = 1;
@@ -598,20 +593,31 @@ static void shell_dispatcher_stop(struct AARBase *b)
             (void)X_WAIT(X_SINGLE);
         shell_wait_done(&b->stop_task);
     }
-    X_SEM_RELEASE(&b->ctl);
 }
+
 
 /* ---- Library level: open, close, init ---------------------------------------------------------- */
 
+/*
+ * Admission: every call that needs the platform (AARQuery, AAROpen, AARExt)
+ * passes here, and passes through `ctl`, which the final close and expunge hold
+ * for their whole transition (the stop and the shutdown of the handles). A call
+ * that comes in while the last closer waits for the dispatcher to stop waits
+ * until it is over and then finds the dispatcher gone, and starts one of its
+ * own: the handle it creates is never part of the previous owner's shutdown.
+ * (The dispatcher_up of a dispatcher that is being stopped must not be taken
+ * for a running one.)
+ */
 static int ensure_dispatcher(struct AARBase *b)
 {
     int rc = AAR_OK;
 
-    if (!b->dispatcher_up) {
+    X_SEM_OBTAIN(&b->ctl);
+    if (!b->dispatcher_up)
         rc = shell_dispatcher_start(b);
-        if (rc != AAR_OK)
-            return rc;
-    }
+    X_SEM_RELEASE(&b->ctl);
+    if (rc != AAR_OK)
+        return rc;
     return b->core.attach_rc;
 }
 
@@ -726,11 +732,23 @@ static int shell_close(struct AARBase *b)
     return 0;
 }
 
-/* The final CloseLibrary: stop the dispatcher, then close what is left. */
+/*
+ * The final CloseLibrary: stop the dispatcher, then close what is left, with
+ * `ctl` held for all of it. The stop waits, and a task that opens the library
+ * meanwhile (OpenLibrary does not wait) must not have its handles closed with
+ * the old owner's: the count is tested again once `ctl` is held and after the
+ * stop, and a library that has been opened again is left alone (its opener
+ * restarts the dispatcher).
+ */
 static void shell_final_close(struct AARBase *b)
 {
-    shell_dispatcher_stop(b);
-    aar_core_shutdown(&b->core);
+    X_SEM_OBTAIN(&b->ctl);
+    if (b->library.lib_OpenCnt == 0) {
+        shell_dispatcher_stop_locked(b);
+        if (b->library.lib_OpenCnt == 0)
+            aar_core_shutdown(&b->core);
+    }
+    X_SEM_RELEASE(&b->ctl);
 }
 
 /*
@@ -743,7 +761,9 @@ static void shell_final_close(struct AARBase *b)
 static int shell_expunge_ready(struct AARBase *b)
 {
     shell_final_close(b);
-    return !b->disp_process && !b->dispatcher_up && !b->vblank_installed;
+    /* A task may have opened the library while the dispatcher was stopped. */
+    return b->library.lib_OpenCnt == 0 && !b->disp_process && !b->dispatcher_up &&
+           !b->vblank_installed;
 }
 
 /* ---- The calls ---------------------------------------------------------------------------------- */

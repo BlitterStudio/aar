@@ -16,6 +16,7 @@
 #ifndef SHELL_HOST_H
 #define SHELL_HOST_H
 
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,8 +89,23 @@ void (*hx_bg)(void);             /* what the other processes do while the curren
 
 #define HX_UNUSED __attribute__((unused))
 
+/*
+ * A task that finds a semaphore held would sleep until it is released. The fake
+ * cannot suspend a task that runs inline, so the test that drives another task
+ * (hx_block_env) gets that task abandoned at the obtain, by longjmp, as the
+ * proof that it blocked; it re-runs the call when the semaphore is free (the
+ * call must have done nothing before its first obtain). Without hx_block_env a
+ * contended obtain is a deadlock of the one-thread fake, and aborts.
+ */
+jmp_buf *hx_block_env;
+unsigned long hx_blocked;
+
 HX_UNUSED static void hx_sem_obtain(struct hx_sem *s, int shared)
 {
+    if ((s->excl || (!shared && s->shared)) && hx_block_env) {
+        hx_blocked++;
+        longjmp(*hx_block_env, 1);
+    }
     if (hx_cur->signals & SIGF_SINGLE) {
         hx_stale_obtains++;
         hx_cur->signals &= ~SIGF_SINGLE;
@@ -427,11 +443,19 @@ HX_UNUSED static void hx_signal(const void *task, uint32_t mask)
  * still nothing is pending the task would sleep for ever: the test aborts
  * instead of hanging.
  */
+void (*hx_on_wait)(void); /* other tasks run while the current task waits: once */
+
 HX_UNUSED static uint32_t hx_wait(uint32_t mask)
 {
     uint32_t got;
 
     hx_waits++;
+    if (hx_on_wait) {
+        void (*other)(void) = hx_on_wait;
+
+        hx_on_wait = NULL;
+        other();
+    }
     if (hx_spurious > 0) {
         hx_spurious--;
         hx_cur->signals |= mask; /* a stale or early signal */

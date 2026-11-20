@@ -20,6 +20,15 @@
 
 static char names[HX_TASKS][8];
 
+/* The dispatcher stopped on its own (the library does it only inside the final
+ * close and expunge, which hold ctl for more than the stop). */
+static void shell_dispatcher_stop(struct AARBase *b)
+{
+    X_SEM_OBTAIN(&b->ctl);
+    shell_dispatcher_stop_locked(b);
+    X_SEM_RELEASE(&b->ctl);
+}
+
 static unsigned long checks, failures;
 static const char *cur_test = "";
 
@@ -1343,6 +1352,119 @@ static void test_single_signal(void)
     finish();
 }
 
+/*
+ * Admission is serialised with the final close and with expunge. A task that
+ * opens the library, or calls AARQuery or AAROpen, while the last closer waits
+ * for the dispatcher to stop must wait until that transition is over, then
+ * starts a dispatcher of its own: its handle is never part of the previous
+ * owner's shutdown, and the base is never freed under it. The other task runs
+ * from inside the closer's wait (hx_on_wait) and is abandoned where it blocks
+ * (hx_block_env).
+ */
+static jmp_buf other_env;
+static AARHandle *other_h;
+static int other_rc, other_blocked;
+static int other_call; /* 0: AAROpen, 1: AARQuery */
+
+static void other_task(void)
+{
+    struct hx_task *self = hx_cur;
+    ULONG reason = 0;
+    AARInfo info;
+
+    USE(1);
+    CHECK(lib_open() == AAR_OK); /* OpenLibrary does not wait for the transition */
+    info.size = sizeof(info);
+    if (setjmp(other_env) == 0) {
+        hx_block_env = &other_env;
+        other_rc = other_call == 0 ? v_open(&other_h, NULL, &reason) : v_query(&info);
+        other_blocked = 0;
+    } else {
+        other_blocked = 1;
+    }
+    hx_block_env = NULL;
+    hx_cur = self;
+}
+
+static void other_retry(void)
+{
+    ULONG reason = 0;
+    AARInfo info;
+
+    USE(1);
+    info.size = sizeof(info);
+    other_rc = other_call == 0 ? v_open(&other_h, NULL, &reason) : v_query(&info);
+}
+
+static void test_admission(void)
+{
+    AARInfo info;
+    AARStatusInfo st;
+    unsigned long starts;
+
+    setup("admission");
+    info.size = sizeof(info);
+    st.size = sizeof(st);
+    /* 1. AAROpen while the last closer waits for the dispatcher. */
+    other_call = 0;
+    other_h = NULL;
+    CHECK(lib_open() == AAR_OK);
+    CHECK(v_query(&info) == AAR_OK);
+    hx_on_wait = other_task;
+    lib_close(); /* the last close: the other task runs while it waits */
+    CHECK(other_blocked == 1); /* it waits for the transition */
+    CHECK(base.library.lib_OpenCnt == 1); /* its OpenLibrary count survives */
+    other_retry();
+    CHECK(other_rc == AAR_OK && other_h != NULL);
+    CHECK(base.dispatcher_up == 1 && v_status(other_h, &st) == AAR_OK); /* not part of the old shutdown */
+    CHECK(refplat_live() == 1);
+    lib_close();
+    CHECK(base.dispatcher_up == 0 && refplat_live() == 0);
+    /* 2. AARQuery in the same place. */
+    other_call = 1;
+    CHECK(lib_open() == AAR_OK);
+    CHECK(v_query(&info) == AAR_OK);
+    hx_on_wait = other_task;
+    lib_close();
+    CHECK(other_blocked == 1 && base.library.lib_OpenCnt == 1);
+    other_retry();
+    CHECK(other_rc == AAR_OK && base.dispatcher_up == 1);
+    lib_close();
+    CHECK(base.dispatcher_up == 0);
+    /* 3. Expunge, with an open that comes in while it stops the dispatcher: the
+     * base stays. */
+    other_call = 0;
+    other_h = NULL;
+    CHECK(lib_open() == AAR_OK);
+    CHECK(v_query(&info) == AAR_OK);
+    base.library.lib_OpenCnt = 0;
+    (void)shell_close(&base);
+    hx_on_wait = other_task;
+    CHECK(shell_expunge_ready(&base) == 0); /* someone opened it meanwhile */
+    CHECK(base.library.lib_OpenCnt == 1 && other_blocked == 1);
+    other_retry();
+    CHECK(other_rc == AAR_OK && v_status(other_h, &st) == AAR_OK);
+    lib_close();
+    USE(0);
+    CHECK(shell_expunge_ready(&base) == 1);
+    /* 4. A call that comes in while another task starts the dispatcher waits
+     * for it, and finds it running: one dispatcher. */
+    other_call = 1;
+    starts = hx_dispatcher_starts;
+    CHECK(lib_open() == AAR_OK);
+    hx_on_wait = other_task;
+    CHECK(v_query(&info) == AAR_OK); /* starts the dispatcher; the other task meets it */
+    CHECK(other_blocked == 1);
+    other_retry();
+    CHECK(other_rc == AAR_OK && hx_dispatcher_starts == starts + 1);
+    USE(1);
+    lib_close();
+    USE(0);
+    lib_close();
+    CHECK(base.dispatcher_up == 0);
+    finish();
+}
+
 int main(int argc, char **argv)
 {
     uint32_t len = 0;
@@ -1357,6 +1479,7 @@ int main(int argc, char **argv)
     test_lifecycle();
     test_dispatcher();
     test_single_signal();
+    test_admission();
     test_last_close();
     test_owner_stale();
     test_attach_failure();

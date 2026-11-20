@@ -234,6 +234,12 @@ mutant("poll-after-revoke", "stale_platform", CORE,
        ("            if (claim_live(h) == AAR_OK && c->plat->ops->poll)", "            if (c->plat->ops->poll)"))
 mutant("stop-after-revoke", "stale_platform", CORE,
        ("        rc = claim_live(h);\n        if (rc == AAR_OK)\n            rc = plat_rc(h, ops_of(h)->stop(plat_of(h), &h->claim));", "        rc = plat_rc(h, ops_of(h)->stop(plat_of(h), &h->claim));"))
+# ---- admission is serialised with the final close and expunge ----------------------------
+mutant("admission-skips-ctl", "admission", SHELL,
+       ("    X_SEM_OBTAIN(&b->ctl);\n    if (!b->dispatcher_up)\n        rc = shell_dispatcher_start(b);\n    X_SEM_RELEASE(&b->ctl);",
+        "    if (!b->dispatcher_up)\n        rc = shell_dispatcher_start(b);"))
+mutant("expunge-ignores-reopen", "admission", SHELL,
+       ("    return b->library.lib_OpenCnt == 0 && !b->disp_process", "    return !b->disp_process"))
 # ---- size and offset arithmetic ---------------------------------------------------------
 mutant("map-length-wraps", "size_arithmetic", CORE,
        ("    if (len > UINT32_MAX - off)\n        return 0;\n", ""))
