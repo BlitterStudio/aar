@@ -146,6 +146,32 @@ mutant("reply-flags-lost", "service", CORE,
        ("    comp.flags = (uint16_t)local.reply_flags;", "    comp.flags = 0u;"))
 mutant("logs-not-delivered", "logs_and_stats", CORE,
        ("    h->log_sink(h->log_user, (const void *)(uintptr_t)p, n);", "    (void)p;"))
+mutant("null-sink-called", "logs_and_stats", CORE,
+       ("    if (!h->log_sink || n == 0u) {", "    if (n == 0u) {"))
+# ---- core: AARSetLogSink -------------------------------------------------------------------
+SINK_SET = "    h->log_sink = sink;\n    h->log_user = user;\n    leave(h);"
+mutant("log-sink-no-handle-check", "owner_stale", CORE,
+       ("AARLogSink sink, APTR user)\n{\n    int rc = require_live(c, h);\n",
+        "AARLogSink sink, APTR user)\n{\n    int rc = AAR_OK;\n"))
+mutant("log-sink-set-before-check", "log_sink", CORE,
+       ("    int rc = require_live(c, h);\n\n    if (rc != AAR_OK)\n        return rc;\n    h->log_sink = sink;",
+        "    int rc;\n\n    h->log_sink = sink;\n    h->log_user = user;\n    rc = require_live(c, h);\n    if (rc != AAR_OK)\n        return rc;\n    h->log_sink = sink;"))
+mutant("log-sink-remove-ignored", "log_sink", CORE,
+       (SINK_SET, "    if (sink) {\n        h->log_sink = sink;\n        h->log_user = user;\n    }\n    leave(h);"))
+mutant("log-sink-user-not-stored", "log_sink", CORE,
+       (SINK_SET, "    h->log_sink = sink;\n    leave(h);"))
+mutant("log-sink-kept-after-teardown", "log_sink", CORE,
+       ("    h->log_sink = NULL; /* nothing reaches the caller's sink or its user again */\n", ""))
+mutant("log-user-kept-after-teardown", "log_sink", CORE,
+       ("    h->log_user = 0;\n", ""))
+mutant("log-sink-latched", "log_sink", CORE,
+       ("    h->log_sink(h->log_user, (const void *)(uintptr_t)p, n);",
+        "    {\n        static AARLogSink latched;\n\n        if (!latched)\n            latched = h->log_sink;\n        latched(h->log_user, (const void *)(uintptr_t)p, n);\n    }"))
+mutant("log-record-delivered-twice", "log_sink", CORE,
+       ("    h->log_sink(h->log_user, (const void *)(uintptr_t)p, n);",
+        "    h->log_sink(h->log_user, (const void *)(uintptr_t)p, n);\n    h->log_sink(h->log_user, (const void *)(uintptr_t)p, n);"))
+mutant("log-sink-nested-call-drops-busy", "log_sink", CORE,
+       ("    if (h->busy)\n        h->busy--;", "    h->busy = 0u;"))
 # ---- core: audio ---------------------------------------------------------------------------
 mutant("audio-query-returns-zero", "audio", CORE,
        ("        *got = avail;\n        leave(h);\n        return AAR_OK;", "        *got = 0u;\n        leave(h);\n        return AAR_OK;"))
@@ -190,6 +216,9 @@ mutant("end-marked-before-delivery", "notify_answers", CORE,
        ("        if (carries_end && answer == AAR_CORE_NOTIFIED)\n", "        if (carries_end)\n"))
 mutant("work-marked-before-delivery", "notify_answers", CORE,
        ("        if (answer == AAR_CORE_NOTIFIED || answer == AAR_CORE_NOTIFY_BUSY) {", "        if (1) {"))
+mutant("log-sink-vector-does-nothing", "log_sink", SHELL,
+       ("    return aar_core_set_log_sink(&g_base->core, h, sink, user);",
+        "    (void)h;\n    (void)sink;\n    (void)user;\n    return AAR_OK;"))
 mutant("busy-port-counts-as-posted", "notify_terminal", SHELL,
        ("    if (queued)\n        return AAR_CORE_NOTIFY_BUSY;", "    if (queued)\n        return AAR_CORE_NOTIFIED;"))
 # ---- the records of a task that is gone are reclaimed whatever their state ----------------

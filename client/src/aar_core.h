@@ -165,7 +165,7 @@ struct AARHandle {
     volatile uint32_t pause_until;/* lease_pause: no renewal while ticks < this (0: none) */
 
     /* ---- owner against dispatcher handshake ---- */
-    volatile uint8_t busy;        /* the owner is inside a call */
+    volatile uint8_t busy;        /* the owner is inside a call (a count: the log sink may call back) */
     volatile uint8_t bg;          /* the dispatcher is inside housekeeping */
 
     /* ---- the claim ---- */
@@ -188,7 +188,7 @@ struct AARHandle {
     uint8_t inbox[AAR_CORE_INBOX][AAR_MSG_BYTES];
     volatile uint32_t inbox_head, inbox_tail;
     uint8_t sq_blocked;
-    void (*log_sink)(APTR user, const void *data, ULONG len);
+    AARLogSink log_sink;          /* AARSetLogSink; NULL: records are swallowed */
     APTR log_user;
 
     /* ---- requests handed out ---- */
@@ -326,6 +326,16 @@ int aar_core_service_reply(aar_core *c, AARHandle *h, const AARServiceReq *req);
 int aar_core_post_event(aar_core *c, AARHandle *h, const aar_event *event);
 int aar_core_audio_read(aar_core *c, AARHandle *h, void *dst, ULONG frames, ULONG *got);
 
+/*
+ * AARSetLogSink: the sink that gets the app's log records, NULL to remove it.
+ * Owner and stale rules as every handle call. The sink is called from inside
+ * aar_core_service_next and aar_core_get_message, in the owner's task; it may
+ * call this function and aar_core_post_event. A record that arrives with no
+ * sink is counted in the stats and dropped. Closing the handle (or reaping it)
+ * forgets the sink and its `user`: nothing reaches them afterwards.
+ */
+int aar_core_set_log_sink(aar_core *c, AARHandle *h, AARLogSink sink, APTR user);
+
 /* AARExt: the platform's table for `ext_id` when `platform_id` is the
  * platform's, else NULL. */
 const void *aar_core_ext(aar_core *c, ULONG platform_id, ULONG ext_id);
@@ -340,7 +350,6 @@ const void *aar_core_ext(aar_core *c, ULONG platform_id, ULONG ext_id);
  */
 LONG aar_core_ext_stats(AARHandle *h, AARZZ9000Stats *out);
 LONG aar_core_ext_lease_pause(AARHandle *h, ULONG ms);
-LONG aar_core_ext_set_log_sink(AARHandle *h, AARZZ9000LogSink sink, APTR user);
 
 /* ---- Interrupt, dispatcher ---------------------------------------------------------------- */
 

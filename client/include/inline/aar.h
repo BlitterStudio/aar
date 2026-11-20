@@ -363,6 +363,21 @@ static __inline APTR __AARExtInline(ULONG platform_id, ULONG ext_id)
 }
 #define AARExt(platform_id, ext_id) __AARExtInline((platform_id), (ext_id))
 
+static __inline LONG __AARSetLogSinkInline(AARHandle *handle, AARLogSink sink, APTR user)
+{
+  register LONG aar_d0 __asm("d0");
+  register struct Library *aar_a6 __asm("a6") = AARBase;
+  register AARHandle *aar_a0 __asm("a0") = handle;
+  register AARLogSink aar_a1 __asm("a1") = sink;
+  register APTR aar_a2 __asm("a2") = user;
+  __asm volatile("jsr -174(a6)"
+                 : "=r"(aar_d0), "+r"(aar_a0), "+r"(aar_a1)
+                 : "r"(aar_a6), "r"(aar_a2)
+                 : "cc", "memory", "d1");
+  return aar_d0;
+}
+#define AARSetLogSink(handle, sink, user) __AARSetLogSinkInline((handle), (sink), (user))
+
 #ifdef __cplusplus
 }
 #endif

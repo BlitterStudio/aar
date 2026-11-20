@@ -44,6 +44,7 @@ LONG AARPostEvent(AARHandle *handle, const aar_event *event);
 LONG AARAudioRead(AARHandle *handle, void *dst, ULONG frames, ULONG *got);
 LONG AARSharedToken(AARHandle *handle, const void *ptr, ULONG bytes, ULONG *token);
 APTR AARExt(ULONG platform_id, ULONG ext_id);
+LONG AARSetLogSink(AARHandle *handle, AARLogSink sink, APTR user);
 
 #ifdef __cplusplus
 }

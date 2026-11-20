@@ -1038,6 +1038,11 @@ static APTR v_ext(ULONG platform_id, ULONG ext_id)
     return (APTR)(uintptr_t)aar_core_ext(&g_base->core, platform_id, ext_id);
 }
 
+static LONG v_set_log_sink(AARHandle *h, AARLogSink sink, APTR user)
+{
+    return aar_core_set_log_sink(&g_base->core, h, sink, user);
+}
+
 /* ====================================================================== */
 /* Amiga glue: the library skeleton, the interrupt, the dispatcher process */
 /* ====================================================================== */
@@ -1284,6 +1289,12 @@ static APTR f_ext(REG(d0, ULONG platform_id), REG(d1, ULONG ext_id))
     return v_ext(platform_id, ext_id);
 }
 
+static LONG f_set_log_sink(REG(a0, AARHandle *handle), REG(a1, AARLogSink sink),
+                           REG(a2, APTR user))
+{
+    return v_set_log_sink(handle, sink, user);
+}
+
 /* -6 to -24 are Open, Close, Expunge and the reserved slot, then -30 on in the
  * order of the .fd file. */
 static const APTR aar_lib_vectors[] = {
@@ -1315,6 +1326,7 @@ static const APTR aar_lib_vectors[] = {
     AAR_VEC(f_audio_read),
     AAR_VEC(f_shared_token),
     AAR_VEC(f_ext),
+    AAR_VEC(f_set_log_sink),
     (APTR)-1
 };
 

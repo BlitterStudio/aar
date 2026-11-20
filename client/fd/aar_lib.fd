@@ -61,4 +61,6 @@ AARAudioRead(handle,dst,frames,got)(a0/a1/d0/a2)
 AARSharedToken(handle,ptr,bytes,token)(a0/a1/d0/a2)
 * C: APTR AARExt(ULONG platform_id, ULONG ext_id)
 AARExt(platform_id,ext_id)(d0/d1)
+* C: LONG AARSetLogSink(AARHandle *handle, AARLogSink sink, APTR user)
+AARSetLogSink(handle,sink,user)(a0/a1/a2)
 ##end

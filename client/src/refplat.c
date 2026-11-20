@@ -408,8 +408,7 @@ static const aar_client_ext_zz9000 ext_table = {
     ext_list,
     ext_release_handle,
     aar_core_ext_stats,
-    aar_core_ext_lease_pause,
-    aar_core_ext_set_log_sink
+    aar_core_ext_lease_pause
 };
 
 static const void *op_ext(struct aar_plat *p, uint32_t ext_id)

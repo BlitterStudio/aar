@@ -230,6 +230,25 @@ typedef struct AARServiceReq {
  * arrives. (The ZZ9000 value; other platforms ignore the flag.) */
 #define AAR_CFLAG_FLIP_SUBMITTED (1u << 0)
 
+/* ---- The log sink --------------------------------------------------------- */
+
+/* What AARSetLogSink installs: the function that receives the app's log
+ * records (AAR_OP_LOG). `data` holds one record of `len` bytes, at most
+ * AAR_LOG_MAX, and is valid for the call only. `user` is the pointer given to
+ * AARSetLogSink. The library calls the sink in the owner task, from inside
+ * AARServiceNext or AARGetMessage, so it must return quickly. It may call
+ * AARSetLogSink (to replace or remove itself) and AARPostEvent; it must not
+ * call AARServiceNext, AARGetMessage or AARClose.
+ *
+ * The sink is a plain C function: the library calls it with the C calling
+ * convention of the compiler that built the library (arguments on the stack
+ * with GCC for m68k-amigaos), not through registers like the library's own
+ * vectors. A program built with a compiler that passes C arguments in
+ * registers by default (SAS/C, or GCC with -mregparm) must declare the sink
+ * with the stack convention (__stdargs in SAS/C), as for the functions of
+ * the platform extension tables. */
+typedef void (*AARLogSink)(APTR user, const void *data, ULONG len);
+
 /* ---- Tags of AARSetTagList ------------------------------------------------ */
 
 /* 256 ids from AAR_TAG_BASE. A platform's own tags start at
