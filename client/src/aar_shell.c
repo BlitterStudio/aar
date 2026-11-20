@@ -824,18 +824,15 @@ static LONG v_set_tag_list(AARHandle *h, const struct TagItem *tags)
     const struct TagItem *list = tags;
     int rc;
 
+    /* A bad handle is reported before a bad tag. */
     rc = aar_core_check(&g_base->core, h);
     if (rc != AAR_OK)
         return rc;
     aar_core_tags_init(&t);
     while (list && (item = X_NEXT_TAG(&list)) != NULL) {
         rc = aar_core_tags_add(&g_base->core, &t, item->ti_Tag, item->ti_Data);
-        if (rc != AAR_OK) {
-            /* A bad handle is reported before a bad tag. */
-            int hrc = aar_core_check(&g_base->core, h);
-
-            return hrc != AAR_OK ? hrc : rc;
-        }
+        if (rc != AAR_OK)
+            return rc;
     }
     return aar_core_set_tags(&g_base->core, h, &t);
 }

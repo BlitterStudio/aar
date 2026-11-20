@@ -178,7 +178,7 @@ mutant("signal-does-not-arm", "notify", CORE,
 mutant("signal-every-scan", "notify", CORE,
        ("(uint32_t)(ticks - h->last_signal_tick) >= AAR_CORE_NOTIFY_RESIGNAL_TICKS", "1"))
 mutant("end-reported-every-scan", "notify", CORE,
-       ("        h->ended_notified = 1u;\n", ""))
+       ("        if (carries_end && answer == AAR_CORE_NOTIFIED)\n            h->ended_notified = 1u;\n", ""))
 mutant("fault-reported-as-complete", "notify", CORE,
        ("end_reason == AAR_END_STUCK_CALL || end_reason == AAR_END_LEASE) ?", "end_reason == AAR_END_STUCK_CALL) ?"))
 mutant("stale-after-open", "revoked_codes", SHELL,
@@ -238,20 +238,20 @@ mutant("signal-bit-per-handle", "lifecycle", SHELL,
 mutant("last-close-keeps-handles", "last_close", SHELL,
        ("    (void)aar_core_close_owner(&b->core);\n    sigbit = o->sigbit;", "    sigbit = o->sigbit;"))
 mutant("dispatcher-never-stopped", "lifecycle", SHELL,
-       ("    X_DISPATCHER_STOP(b);\n    aar_core_shutdown(&b->core);", "    aar_core_shutdown(&b->core);"))
+       ("    shell_dispatcher_stop(b);\n    aar_core_shutdown(&b->core);", "    aar_core_shutdown(&b->core);"))
 mutant("signal-bit-leaked", "lifecycle", SHELL,
        ("    if (sigbit >= 0)\n        X_FREE_SIGNAL(sigbit);", ""))
 mutant("reap-every-tick", "reap", SHELL,
        ("#define AAR_REAP_PERIOD_TICKS 50u", "#define AAR_REAP_PERIOD_TICKS 1u"))
 mutant("dead-openers-kept", "reap", SHELL,
-       ("if (!o->closing && shell_owner_state(b, &o->stamp) != AAR_OWNER_ALIVE) {", "if (0) {"))
+       ("        if (shell_owner_state(b, &o->stamp) != AAR_OWNER_ALIVE) {", "        if (0) {"))
 mutant("signals-dead-owner", "dead_owner_no_signal", SHELL,
        ("    alive = X_TASK_LOOKUP_LOCKED(h->owner.id, &now) && stamp_equal(&h->owner, &now);\n    if (alive && h->signal_mask",
         "    alive = 1;\n    if (alive && h->signal_mask"))
 mutant("event-left-on-port", "notify", SHELL,
        ("        X_MSG_REMOVE(&h->event.message);", "        (void)0;"))
 mutant("event-posted-twice", "notify", SHELL,
-       ("    if (!alive || !h->notify || queued)\n        return;", "    if (!alive || !h->notify)\n        return;"))
+       ("    if (queued)\n        return AAR_CORE_NOTIFY_BUSY;\n", ""))
 mutant("no-pass", "lease_gate", SHELL,
        ("    aar_core_dispatch(&b->core, shell_notify, b);\n", ""))
 mutant("isr-does-nothing", "lease_gate", SHELL,
@@ -264,13 +264,13 @@ mutant("file-left-open", "load_file", SHELL,
        ("    X_FILE_CLOSE(f);\n    if (rc == AAR_OK)\n        rc = aar_core_load_end(c, h);",
         "    if (rc == AAR_OK)\n        rc = aar_core_load_end(c, h);"))
 mutant("file-before-owner", "load_file", SHELL,
-       ("    rc = aar_core_check(c, h);\n    if (rc != AAR_OK)\n        return rc;\n    f = X_FILE_OPEN(path);",
-        "    f = X_FILE_OPEN(path);"))
+       ("    rc = aar_core_check(c, h);\n    if (rc != AAR_OK)\n        return rc;\n    if (!path)\n        return AAR_E_INVAL;\n    f = X_FILE_OPEN(path);",
+        "    if (!path)\n        return AAR_E_INVAL;\n    f = X_FILE_OPEN(path);"))
 mutant("tags-applied-as-walked", "tag_list", SHELL,
-       ("            /* A bad handle is reported before a bad tag. */",
-        "            (void)aar_core_set_tags(&g_base->core, h, &t);\n            /* A bad handle is reported before a bad tag. */"))
+       ("        rc = aar_core_tags_add(&g_base->core, &t, item->ti_Tag, item->ti_Data);\n        if (rc != AAR_OK)\n            return rc;",
+        "        rc = aar_core_tags_add(&g_base->core, &t, item->ti_Tag, item->ti_Data);\n        if (rc != AAR_OK) {\n            (void)aar_core_set_tags(&g_base->core, h, &t);\n            return rc;\n        }"))
 mutant("bad-tag-before-bad-handle", "owner_stale", SHELL,
-       ("            return hrc != AAR_OK ? hrc : rc;", "            return rc;"))
+       ("    rc = aar_core_check(&g_base->core, h);\n    if (rc != AAR_OK)\n        return rc;\n    aar_core_tags_init(&t);", "    aar_core_tags_init(&t);"))
 mutant("probe-file-left-open", "probe", SHELL,
        ("    rc = aar_probe_source(file_read, &r, (uint32_t)size, info, NULL);\n    X_FILE_CLOSE(r.file);",
         "    rc = aar_probe_source(file_read, &r, (uint32_t)size, info, NULL);"))
