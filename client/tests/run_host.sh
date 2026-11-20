@@ -24,6 +24,9 @@ CFLAGS="-std=c11 -Wall -Wextra -Werror -pedantic -Iclient/tests/stubs -Iclient/i
 "$PYTHON" client/tools/fdgen.py --check
 "$PYTHON" client/tests/fdgen_test.py
 
+# The client API document names every public symbol.
+"$PYTHON" client/tools/check_client_doc.py --self-test
+
 run() {
     name=$1
     shift
@@ -36,6 +39,19 @@ if [ "${1:-}" != nom32 ] && echo 'int main(void){return 0;}' | "$CC" -m32 -x c -
     run header32 -m32
 else
     echo "run_host.sh: no -m32 support here, skipped the 32-bit run"
+fi
+
+# C++ sees the same headers.
+if command -v "${CXX:-g++}" >/dev/null 2>&1; then
+    for h in libraries/aar.h libraries/aar_zz9000.h proto/aar.h; do
+        echo "#include <$h>" | "${CXX:-g++}" -std=c++11 -Wall -Wextra -Werror \
+            -Iclient/tests/stubs -Iclient/include -Iinclude -x c++ -fsyntax-only -
+    done
+    echo '#include "client/src/aar_plat.h"
+#include "client/src/aar_probe.h"' | "${CXX:-g++}" -std=c++11 -Wall -Wextra -Werror \
+        -Iclient/tests/stubs -Iclient/include -Iinclude -I. -x c++ -fsyntax-only -
+else
+    echo "run_host.sh: no C++ compiler here, skipped the C++ header check"
 fi
 
 # The image probe against tools/aar-check: the corpus of tests/aar_check_test.py

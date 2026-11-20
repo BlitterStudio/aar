@@ -541,8 +541,8 @@ This repository does not include firmware headers; do not include any firmware
 header in an app.
 
 The launcher is still ZZRun until the client library slices of the cutover land.
-`aar.library` and `aar-run` will replace it, and the options below will keep
-their meaning. ZZRun is a Shell command and a Workbench tool. It needs
+`aar.library` ([client API](aar-client-api.md)) and `aar-run` will replace it,
+and the options below will keep their meaning. ZZRun is a Shell command and a Workbench tool. It needs
 `zz9k.library` and, for a display, Picasso96. Zorro III only.
 
 Shell:
@@ -591,7 +591,9 @@ passes `argv` unchanged, so put the program name in `argv[0]` if the app
 expects the ZZRun convention. `notify_port` receives at most one outstanding
 event (message, completion or fault). Before closing a handle, drain the notify
 port and read messages until none is queued. The firmware docs linked above are
-the reference for these calls until `aar.library` replaces them.
+the reference for these calls until `aar.library` replaces them. The
+replacement calls are in [aar-client-api.md](aar-client-api.md). There a task has
+one signal bit shared by all its handles, not one per handle.
 
 `zz9k-app-ringtest` and `templates/ringflood.c` are the message ring
 conformance test. The app starts quiet and answers pings; on request it floods

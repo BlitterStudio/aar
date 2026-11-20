@@ -109,6 +109,40 @@ jobs:
             exit 1
           fi
 
+  # aar.library, the Amiga client library: the generated call headers are
+  # current, the structure layouts match the 68k rules, the image probe agrees
+  # with tools/aar-check on a corpus and its mutations (also under the address
+  # and undefined-behaviour sanitizers), and the client API document names every
+  # public symbol. 64-bit and -m32.
+  client-host:
+    name: client library host tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install a multilib compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            gcc gcc-multilib g++ python3
+      - name: Generator check, layouts, probe, API document
+        run: client/tests/run_host.sh
+
+  # The client headers and the portable sources with the cross compiler that
+  # builds zz9k.library (the image the firmware SDK pins by digest), compile
+  # only: no warning, every vector called through the library base.
+  client-m68k:
+    name: client headers for AmigaOS m68k
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Compile with m68k-amigaos-gcc
+        run: |
+          docker run --rm -v "$PWD":/src:ro \
+            amigadev/crosstools@sha256:c0e453fde28fd9c52461f4f9a926c4481548dcfcaca94b0740d8cce4561f2e1e \
+            sh -c 'cp -r /src /w && cd /w && sh client/tests/m68k_check.sh'
+
   docs:
     name: AAR API docs
     runs-on: ubuntu-latest
@@ -146,7 +180,7 @@ jobs:
   publish:
     name: Publish the SDK image
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-    needs: [lint, sdk-image, abi-host, docs, host]
+    needs: [lint, sdk-image, abi-host, client-host, client-m68k, docs, host]
     runs-on: ubuntu-latest
     permissions:
       contents: read
