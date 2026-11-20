@@ -123,9 +123,9 @@ mutant("kick-not-coalesced", "kick", CORE,
 mutant("sq-space-not-rung", "kick", CORE,
        ("        h->kick_pending |= AAR_PLAT_KICK_SQ;", "        h->kick_pending |= 0u;"))
 mutant("dispatcher-no-kick-retry", "kick", CORE,
-       ("                kick_send(h);\n                (void)mouse_post(h);", "                (void)mouse_post(h);"))
+       ("            if (claim_live(h) == AAR_OK)\n                kick_send(h);\n", ""))
 mutant("dispatcher-no-mouse-flush", "events", CORE,
-       ("                kick_send(h);\n                (void)mouse_post(h);", "                kick_send(h);"))
+       ("                (void)mouse_post(h);\n", ""))
 mutant("dispatcher-ignores-busy-owner", "kick", CORE,
        ("if (h->state == AAR_H_LIVE && !h->busy) {", "if (h->state == AAR_H_LIVE) {"))
 # ---- core: service requests ----------------------------------------------------------------
@@ -211,7 +211,7 @@ mutant("end-signals-no-stopper", "dispatcher", SHELL,
 mutant("end-without-forbid", "lifecycle", SHELL,
        ("    X_FORBID();\n    b->disp_process = NULL;\n    shell_wake(b->stop_task);", "    b->disp_process = NULL;\n    shell_wake(b->stop_task);"))
 mutant("expunge-ignores-interrupt", "dispatcher", SHELL,
-       ("    return !b->disp_process && !b->dispatcher_up && !b->vblank_installed;", "    return 1;"))
+       ("    return b->library.lib_OpenCnt == 0 && !b->disp_process && !b->dispatcher_up &&\n           !b->vblank_installed;", "    return b->library.lib_OpenCnt == 0;"))
 mutant("expunge-does-not-stop", "dispatcher", SHELL,
        ("static int shell_expunge_ready(struct AARBase *b)\n{\n    shell_final_close(b);\n", "static int shell_expunge_ready(struct AARBase *b)\n{\n"))
 mutant("wait-not-withdrawn", "single_signal", SHELL,
@@ -276,7 +276,7 @@ mutant("signal-bit-per-handle", "lifecycle", SHELL,
 mutant("last-close-keeps-handles", "last_close", SHELL,
        ("    (void)aar_core_close_owner(&b->core);\n    sigbit = o->sigbit;", "    sigbit = o->sigbit;"))
 mutant("dispatcher-never-stopped", "lifecycle", SHELL,
-       ("    shell_dispatcher_stop(b);\n    aar_core_shutdown(&b->core);", "    aar_core_shutdown(&b->core);"))
+       ("        shell_dispatcher_stop_locked(b);\n        if (b->library.lib_OpenCnt == 0)", "        if (b->library.lib_OpenCnt == 0)"))
 mutant("signal-bit-leaked", "lifecycle", SHELL,
        ("    if (sigbit >= 0)\n        X_FREE_SIGNAL(sigbit);", ""))
 mutant("reap-every-tick", "reap", SHELL,
