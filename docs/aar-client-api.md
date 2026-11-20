@@ -740,7 +740,7 @@ the C calling convention.
 | `set_log_sink` | `LONG set_log_sink(AARHandle *handle, AARZZ9000LogSink sink, APTR user)`: sends the app's log records to `sink`; NULL discards them |
 
 `AARZZ9000List` is 64 bytes: `size`, `handle`, `state`, `committed`, `index`
-(pass `index` as the next cursor), `cpu_ms`, `service_ms`, `block_reason`,
+(pass `index + 1` as the next cursor), `cpu_ms`, `service_ms`, `block_reason`,
 `end_reason`, `flags` (`AAR_ZZ9000_LISTF_OVERLOAD`) and `name`, up to 20
 characters. `AARZZ9000Stats` is 68 bytes: `size`, `requests`, `replies`,
 `reply_busy`, `bad_buf`, `bad_entries`, `msgs_taken`, `sq_blocked`,
