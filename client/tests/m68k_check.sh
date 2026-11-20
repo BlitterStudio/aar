@@ -55,13 +55,18 @@ check_source() {
     shift 2
     "$CC" -std=gnu11 -noixemul -m68020 -Os -Wall -Wextra -Werror "$@" \
         -Wstack-usage=1024 -fstack-usage -Iclient/include -Iinclude -c "$src" -o "$OUT/src.o"
-    bad=$("$NM" "$OUT/src.o" | awk '$1 == "U" { print $2 }' | \
-        grep -Ev "$allowed" || true)
+    # No pipelines: each program's status is checked (set -e), grep's only for
+    # an error (1 means nothing was left over, which is the good case).
+    "$NM" "$OUT/src.o" > "$OUT/src.nm"
+    awk '$1 == "U" { print $2 }' "$OUT/src.nm" > "$OUT/src.undef"
+    grep -Ev "$allowed" "$OUT/src.undef" > "$OUT/src.bad" || [ $? -eq 1 ]
+    bad=$(cat "$OUT/src.bad")
     if [ -n "$bad" ]; then
         echo "$src needs: $bad"
         exit 1
     fi
-    top=$(sort -t'	' -k2 -n -r "$OUT/src.su" | head -1 | awk -F'	' '{ print $1 " " $2 " bytes" }')
+    sort -t'	' -k2 -n -r "$OUT/src.su" > "$OUT/src.sorted"
+    top=$(awk -F'	' 'NR == 1 { print $1 " " $2 " bytes" }' "$OUT/src.sorted")
     echo "$src: compiles for m68k, 0 warnings, largest stack frame: $top"
 }
 check_source client/src/aar_probe.c "^_?($STR)\$" -pedantic
@@ -71,7 +76,8 @@ check_source client/src/aar_shell.c "^_?($STR|UtilityBase|aar_plat_get|aar_core_
 
 # The test defines AARBase itself; every call goes through it, so nothing
 # else may be undefined (no stub library, no helper function).
-undefined=$("$NM" "$OUT/t.o" | awk '$1 == "U" { print $2 }' | tr '\n' ' ')
+"$NM" "$OUT/t.o" > "$OUT/t.nm"
+undefined=$(awk '$1 == "U" { printf "%s ", $2 }' "$OUT/t.nm")
 if [ -n "$undefined" ]; then
     echo "undefined symbols: $undefined"
     exit 1

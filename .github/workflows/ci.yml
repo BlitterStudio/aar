@@ -115,7 +115,8 @@ jobs:
   # against a reference platform and the AmigaOS shell on a fake system (both
   # also under the address and undefined-behaviour sanitizers), those tests fail
   # on deliberately broken code (client/tests/mutants.py), and the client API
-  # document names every public symbol. 64-bit and -m32.
+  # document names every public symbol. 64-bit and -m32. The scripts that run
+  # these tests are themselves tested to stop on a failing program.
   client-host:
     name: client library host tests
     runs-on: ubuntu-latest
@@ -129,6 +130,8 @@ jobs:
             gcc gcc-multilib g++ python3
       - name: Generator check, layouts, probe, core, shell, mutants, API document
         run: sh client/tests/run_host.sh
+      - name: The test scripts stop when a program they run fails
+        run: sh client/tests/scripts_test.sh
 
   # The client headers and the library sources (core, probe, shell, reference
   # platform) with the cross compiler that builds zz9k.library (the image the
