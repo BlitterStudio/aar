@@ -205,10 +205,10 @@ mutant("stop-wait-not-retested", "dispatcher", SHELL,
 mutant("start-wait-not-retested", "dispatcher", SHELL,
        ("        while (!b->start_done)\n", "        if (!b->start_done)\n"))
 mutant("end-signals-no-stopper", "dispatcher", SHELL,
-       ("    if (b->stop_task) /* none when a break from outside ended the process */\n        X_SIGNAL(b->stop_task, X_SINGLE);",
+       ("    shell_wake(b->stop_task); /* none when a break from outside ended the process */",
         "    X_SIGNAL(b->stop_task, X_SINGLE);"))
 mutant("end-without-forbid", "lifecycle", SHELL,
-       ("    X_FORBID();\n    b->disp_process = NULL;\n    if (b->stop_task)", "    b->disp_process = NULL;\n    if (b->stop_task)"))
+       ("    X_FORBID();\n    b->disp_process = NULL;\n    shell_wake(b->stop_task);", "    b->disp_process = NULL;\n    shell_wake(b->stop_task);"))
 mutant("expunge-ignores-interrupt", "dispatcher", SHELL,
        ("    return !b->disp_process && !b->dispatcher_up && !b->vblank_installed;", "    return 1;"))
 mutant("expunge-does-not-stop", "dispatcher", SHELL,
