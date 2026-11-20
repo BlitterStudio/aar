@@ -866,6 +866,90 @@ static void test_alloc_balance(void)
     finish();
 }
 
+/*
+ * A handle the platform has revoked (administrative release, lease lapse) is
+ * still in the registry until AARClose. Every call answers AAR_E_STALE before
+ * it looks at arguments, opens a file or asks the platform. AARClose is the
+ * exception: it finishes the release and returns AAR_OK. Another task still
+ * gets AAR_E_OWNER, which is checked first.
+ */
+static void test_revoked_codes(void)
+{
+    AARHandle *h;
+    AARStatusInfo st;
+    AARMessage msg;
+    AARServiceReq req;
+    AARImageInfo image;
+    struct AARSharedMap map;
+    aar_event ev;
+    struct TagItem tags[2];
+    const char *argv[1] = { "x" };
+    const aar_client_ext_zz9000 *ext;
+    ULONG got = 0, token = 0;
+    char buf[8];
+    static uint8_t bytes[8];
+    int slot;
+
+    setup("revoked_codes");
+    CHECK(lib_open() == AAR_OK);
+    h = open_h(&ports[0]);
+    slot = refplat_slot(h->claim.handle);
+    ext = (const aar_client_ext_zz9000 *)(uintptr_t)v_ext(AAR_PLATFORM_ZZ9000,
+                                                         AAR_EXT_ZZ9000_CLIENT);
+    CHECK(ext != NULL);
+    refplat_revoke(slot);
+    /* The first call that reaches the platform learns the claim is gone. */
+    CHECK(v_stop(h) == AAR_E_STALE);
+    memset(&st, 0, sizeof(st));
+    memset(&req, 0, sizeof(req));
+    memset(&map, 0, sizeof(map));
+    memset(&image, 0, sizeof(image));
+    memset(&ev, 0, sizeof(ev));
+    st.size = sizeof(st);
+    req.size = sizeof(req);
+    map.size = sizeof(map);
+    image.size = sizeof(image);
+    tags[0] = (struct TagItem){ AAR_TAG_WEIGHT, 9999 }; /* a bad tag must not win */
+    tags[1] = (struct TagItem){ TAG_DONE, 0 };
+    CHECK(v_set_tag_list(h, tags) == AAR_E_STALE);
+    CHECK(v_load_file(h, "no-such-file") == AAR_E_STALE); /* not AAR_E_NOENT */
+    CHECK(v_load_memory(h, NULL, 0) == AAR_E_STALE);      /* not AAR_E_INVAL */
+    CHECK(v_start(h, NULL, 1) == AAR_E_STALE);
+    CHECK(v_status(h, NULL) == AAR_E_STALE);
+    CHECK(v_send_message(h, NULL) == AAR_E_STALE);
+    CHECK(v_get_message(h, NULL) == AAR_E_STALE);
+    CHECK(v_shared_map(h, 0, 0, 1, NULL) == AAR_E_STALE);
+    CHECK(v_shared_unmap(h, NULL) == AAR_E_STALE);
+    CHECK(v_shared_publish(h, NULL, 0, 0) == AAR_E_STALE);
+    CHECK(v_shared_acquire(h, NULL, 0, 0) == AAR_E_STALE);
+    CHECK(v_service_next(h, NULL) == AAR_E_STALE);
+    CHECK(v_service_reply(h, NULL) == AAR_E_STALE);
+    CHECK(v_post_event(h, NULL) == AAR_E_STALE);
+    CHECK(v_audio_read(h, NULL, 1, NULL) == AAR_E_STALE); /* not AAR_E_INVAL */
+    CHECK(v_shared_token(h, NULL, 0, NULL) == AAR_E_STALE);
+    CHECK(v_probe_file("no-such", &image) == AAR_E_NOENT); /* no handle: unchanged */
+    CHECK(v_probe_memory(bytes, 8, &image) == AAR_E_INVAL);
+    CHECK(ext->stats(h, &(AARZZ9000Stats){ .size = sizeof(AARZZ9000Stats) }) == AAR_E_STALE);
+    CHECK(ext->lease_pause(h, 0) == AAR_E_STALE);
+    CHECK(ext->set_log_sink(h, NULL, 0) == AAR_E_STALE);
+    /* Owner is checked before stale. */
+    USE(1);
+    CHECK(v_load_file(h, "no-such-file") == AAR_E_OWNER);
+    CHECK(v_audio_read(h, buf, 1, &got) == AAR_E_OWNER);
+    CHECK(v_shared_token(h, buf, 4, &token) == AAR_E_OWNER);
+    CHECK(ext->stats(h, &(AARZZ9000Stats){ .size = sizeof(AARZZ9000Stats) }) == AAR_E_OWNER);
+    USE(0);
+    /* Close finishes the release. */
+    CHECK(v_close(h) == AAR_OK);
+    CHECK(v_status(h, &st) == AAR_E_STALE);
+    CHECK(v_load_file(h, "no-such-file") == AAR_E_STALE);
+    lib_close();
+    finish();
+    (void)argv;
+    (void)req;
+    (void)msg;
+}
+
 int main(int argc, char **argv)
 {
     uint32_t len = 0;
@@ -890,6 +974,7 @@ int main(int argc, char **argv)
     test_rename();
     test_lease_gate();
     test_ext();
+    test_revoked_codes();
     test_alloc_balance();
     printf("shell_test: %lu checks, %lu failures\n", checks, failures);
     free(img);

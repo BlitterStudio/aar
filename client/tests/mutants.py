@@ -181,6 +181,9 @@ mutant("end-reported-every-scan", "notify", CORE,
        ("        h->ended_notified = 1u;\n", ""))
 mutant("fault-reported-as-complete", "notify", CORE,
        ("end_reason == AAR_END_STUCK_CALL || end_reason == AAR_END_LEASE) ?", "end_reason == AAR_END_STUCK_CALL) ?"))
+mutant("stale-after-open", "revoked_codes", SHELL,
+       ("    rc = aar_core_check(c, h);\n    if (rc != AAR_OK)\n        return rc;\n    if (!path)\n        return AAR_E_INVAL;\n    f = X_FILE_OPEN(path);\n    if (!f)\n        return AAR_E_NOENT;",
+        "    if (!path)\n        return AAR_E_INVAL;\n    f = X_FILE_OPEN(path);\n    if (!f)\n        return AAR_E_NOENT;\n    rc = aar_core_check(c, h);\n    if (rc != AAR_OK)\n        return rc;"))
 # ---- allocator balance (the card's AvailMem check) -------------------------------------
 mutant("handle-memory-not-released", "alloc_balance", CORE,
        ("    c->env.release(c->env.user, h, bytes);\n}", "    (void)bytes;\n}"))

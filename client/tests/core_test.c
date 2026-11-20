@@ -1633,10 +1633,10 @@ static void test_revoke(void)
     CHECK(aar_get_be32(refplat_cb(slot) + AAR_CB_LEASE_COUNTER) == frozen); /* no store into a revoked claim */
     CHECK(aar_core_status(&core, h, &st) == AAR_E_STALE);
     CHECK(aar_core_load_begin(&core, h, 10, NULL, NULL) == AAR_E_STALE);
-    /* What the app sent before stays readable. */
-    CHECK(aar_core_get_message(&core, h, &m) == AAR_OK && m.bytes[0] == 11);
-    CHECK(aar_core_get_message(&core, h, &m) == AAR_OK && m.bytes[0] == 12);
+    /* A revoked claim answers AAR_E_STALE before anything else, including a
+     * message that was already in the inbox. */
     CHECK(aar_core_get_message(&core, h, &m) == AAR_E_STALE);
+    CHECK(aar_core_get_message(&core, h, NULL) == AAR_E_STALE);
     CHECK(aar_core_close(&core, h) == AAR_OK); /* the release is still owed to the platform */
     CHECK(refplat_live() == 0);
     finish();
@@ -1688,6 +1688,16 @@ static void test_alloc_balance(void)
     memset(ostate, 0, sizeof(ostate));
     base = alloc_live_bytes;
     map.size = sizeof(map);
+    /* open, load, start, close: the library's own bytes come back. Platform
+     * maps of a running app are not Amiga allocations (see the card note). */
+    for (i = 0; i < 200; i++) {
+        h = NULL;
+        CHECK(aar_core_open(&core, 1, NULL, NULL, &h, &reason) == AAR_OK);
+        CHECK(aar_core_load_memory(&core, h, image, sizeof(image)) == AAR_OK);
+        CHECK(aar_core_start(&core, h, argv, 1) == AAR_OK);
+        CHECK(aar_core_close(&core, h) == AAR_OK);
+    }
+    CHECK(alloc_live_bytes == base && pool_live == 0 && refplat_live() == 0);
     for (i = 0; i < 500; i++) {
         h = NULL;
         CHECK(aar_core_open(&core, 1, i % 5 == 4 ? &port : NULL, NULL, &h, &reason) == AAR_OK);

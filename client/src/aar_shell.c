@@ -649,6 +649,9 @@ static LONG v_set_tag_list(AARHandle *h, const struct TagItem *tags)
     const struct TagItem *list = tags;
     int rc;
 
+    rc = aar_core_check(&g_base->core, h);
+    if (rc != AAR_OK)
+        return rc;
     aar_core_tags_init(&t);
     while (list && (item = X_NEXT_TAG(&list)) != NULL) {
         rc = aar_core_tags_add(&g_base->core, &t, item->ti_Tag, item->ti_Data);
@@ -673,12 +676,13 @@ static LONG v_load_file(AARHandle *h, const char *path)
     LONG size;
     int rc;
 
-    if (!path)
-        return AAR_E_INVAL;
-    /* A handle that is not the caller's is reported before a missing file. */
+    /* The handle is judged before the path: a revoked claim is AAR_E_STALE,
+     * not a missing file, and a missing path is not reported for a stale handle. */
     rc = aar_core_check(c, h);
     if (rc != AAR_OK)
         return rc;
+    if (!path)
+        return AAR_E_INVAL;
     f = X_FILE_OPEN(path);
     if (!f)
         return AAR_E_NOENT;

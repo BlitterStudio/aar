@@ -276,6 +276,22 @@ static void leave(AARHandle *h)
     h->busy = 0u;
 }
 
+/* Owner and registry first (enter), then a revoked or detached claim. A call
+ * uses this before it looks at arguments or does any other work, so a stale
+ * handle is never reported as a bad argument or a missing file. AARClose uses
+ * enter alone: it still has to release the claim. */
+static int require_live(aar_core *c, AARHandle *h)
+{
+    int rc = enter(c, h);
+
+    if (rc != AAR_OK)
+        return rc;
+    rc = claim_live(h);
+    if (rc != AAR_OK)
+        leave(h);
+    return rc;
+}
+
 /* ---- Revocation and release ------------------------------------------------------------ */
 
 /* Drops every pointer of the claim. The inbox stays readable. */
@@ -445,7 +461,7 @@ void aar_core_detach(aar_core *c)
 
 int aar_core_check(aar_core *c, AARHandle *h)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc == AAR_OK)
         leave(h);
@@ -759,7 +775,7 @@ static int set_tags_locked(AARHandle *h, const struct aar_core_tags *t)
 
 int aar_core_set_tags(aar_core *c, AARHandle *h, const struct aar_core_tags *t)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -810,7 +826,7 @@ static int load_begin(AARHandle *h, uint32_t image_bytes, volatile uint8_t **sta
 int aar_core_load_begin(aar_core *c, AARHandle *h, uint32_t image_bytes,
                         volatile uint8_t **staging, uint32_t *chunk_max)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -835,7 +851,7 @@ static int load_chunk(AARHandle *h, uint32_t file_off, uint32_t len)
 
 int aar_core_load_chunk(aar_core *c, AARHandle *h, uint32_t file_off, uint32_t len)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -861,7 +877,7 @@ static int load_end(AARHandle *h)
 
 int aar_core_load_end(aar_core *c, AARHandle *h)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -875,7 +891,7 @@ int aar_core_load_memory(aar_core *c, AARHandle *h, const void *data, ULONG leng
     const uint8_t *src = (const uint8_t *)data;
     volatile uint8_t *staging = NULL;
     uint32_t chunk_max = 0u, off = 0u, n;
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -900,7 +916,7 @@ int aar_core_start(aar_core *c, AARHandle *h, const char *const *argv, ULONG arg
 {
     const struct aar_plat_info *pi = c->plat->info;
     uint32_t i, n;
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1046,7 +1062,7 @@ static int post_event(AARHandle *h, const aar_event *ev)
 
 int aar_core_post_event(aar_core *c, AARHandle *h, const aar_event *event)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1058,7 +1074,7 @@ int aar_core_post_event(aar_core *c, AARHandle *h, const aar_event *event)
 int aar_core_stop(aar_core *c, AARHandle *h)
 {
     aar_event ev;
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1154,7 +1170,7 @@ static void status_read(AARHandle *h, AARStatusInfo *st, uint32_t size)
 
 int aar_core_status(aar_core *c, AARHandle *h, AARStatusInfo *status)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1311,7 +1327,7 @@ int aar_core_service_next(aar_core *c, AARHandle *h, AARServiceReq *req)
 {
     AARServiceReq local;
     uint32_t n;
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1371,7 +1387,7 @@ int aar_core_service_reply(aar_core *c, AARHandle *h, const AARServiceReq *req)
     aar_completion comp;
     aar_outstanding *out = NULL;
     uint32_t i, n;
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1441,7 +1457,7 @@ int aar_core_service_reply(aar_core *c, AARHandle *h, const AARServiceReq *req)
 
 int aar_core_send_message(aar_core *c, AARHandle *h, const AARMessage *message)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1466,7 +1482,7 @@ int aar_core_send_message(aar_core *c, AARHandle *h, const AARMessage *message)
 
 int aar_core_get_message(aar_core *c, AARHandle *h, AARMessage *message)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1512,7 +1528,7 @@ int aar_core_shared_map(aar_core *c, AARHandle *h, ULONG haddr, ULONG bytes,
     struct AARSharedMap local;
     volatile uint8_t *p;
     uint32_t mapf = 0u, n;
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1558,7 +1574,7 @@ static int map_check(const AARHandle *h, const struct AARSharedMap *m, uint32_t 
 
 int aar_core_shared_unmap(aar_core *c, AARHandle *h, struct AARSharedMap *map)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1609,7 +1625,7 @@ static int shared_cache(AARHandle *h, struct AARSharedMap *map, ULONG offset, UL
 int aar_core_shared_publish(aar_core *c, AARHandle *h, struct AARSharedMap *map,
                             ULONG offset, ULONG length)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1621,7 +1637,7 @@ int aar_core_shared_publish(aar_core *c, AARHandle *h, struct AARSharedMap *map,
 int aar_core_shared_acquire(aar_core *c, AARHandle *h, struct AARSharedMap *map,
                             ULONG offset, ULONG length)
 {
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1634,7 +1650,7 @@ int aar_core_shared_token(aar_core *c, AARHandle *h, const void *ptr, ULONG byte
                           ULONG *token)
 {
     uint32_t t = 0u;
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1659,7 +1675,7 @@ int aar_core_audio_read(aar_core *c, AARHandle *h, void *dst, ULONG frames, ULON
     volatile uint8_t *ring;
     int16_t *out = (int16_t *)dst;
     uint32_t write, read, avail, n, f, ch, at;
-    int rc = enter(c, h);
+    int rc = require_live(c, h);
 
     if (rc != AAR_OK)
         return rc;
@@ -1720,7 +1736,7 @@ LONG aar_core_ext_stats(AARHandle *h, AARZZ9000Stats *out)
 
     if (!c)
         return AAR_E_NOSYS;
-    rc = enter(c, h);
+    rc = require_live(c, h);
     if (rc != AAR_OK)
         return rc;
     if (!out || out->size < 4u) {
@@ -1747,7 +1763,7 @@ LONG aar_core_ext_lease_pause(AARHandle *h, ULONG ms)
 
     if (!c)
         return AAR_E_NOSYS;
-    rc = enter(c, h);
+    rc = require_live(c, h);
     if (rc != AAR_OK)
         return rc;
     if (ms == 0u) {
@@ -1767,7 +1783,7 @@ LONG aar_core_ext_set_log_sink(AARHandle *h, AARZZ9000LogSink sink, APTR user)
 
     if (!c)
         return AAR_E_NOSYS;
-    rc = enter(c, h);
+    rc = require_live(c, h);
     if (rc != AAR_OK)
         return rc;
     h->log_sink = sink;

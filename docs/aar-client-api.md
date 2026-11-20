@@ -383,7 +383,13 @@ take them.
 All calls return a `LONG`: `AAR_OK` (0) or a negative `AAR_E_*`, except
 `AARMessageSignal` and `AARExt`. Every call that takes a handle returns
 `AAR_E_OWNER` when the calling task does not own the handle, and `AAR_E_STALE`
-when the handle is closed or revoked. These are not repeated below.
+when the handle is closed or revoked. The owner is checked first, then whether
+the claim is still live, and only then the arguments and any file open. A
+revoked handle therefore returns `AAR_E_STALE`, not `AAR_E_INVAL` or
+`AAR_E_NOENT`, and `AARGetMessage` does not hand out a message that arrived
+before the revoke. `AARClose` is the exception: it still releases the claim
+and returns `AAR_OK` when the platform has already revoked it. These codes are
+not repeated below.
 
 ### AARQuery
 
