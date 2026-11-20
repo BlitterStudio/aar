@@ -1,0 +1,64 @@
+* aar.library: the Amiga client library of the AAR standard
+*
+* The vector list. Offsets step by 6 from -30; Open, Close, Expunge and
+* Reserved are -6 to -24. The library version is AAR_LIB_VERSION
+* (libraries/aar.h). client/tools/fdgen.py generates clib/aar_protos.h,
+* pragmas/aar_pragmas.h, inline/aar.h and proto/aar.h from this file, and
+* checks that the committed copies are current. Every entry is preceded by a
+* "* C:" line with its C prototype; the generator checks it against the
+* names and registers below.
+*
+* SPDX-License-Identifier: MIT
+*
+##base _AARBase
+##bias 30
+##public
+* C: LONG AARQuery(AARInfo *info)
+AARQuery(info)(a0)
+* C: LONG AAROpen(AARHandle **handlep, struct MsgPort *port, ULONG *reason)
+AAROpen(handlep,port,reason)(a0/a1/a2)
+* C: LONG AARClose(AARHandle *handle)
+AARClose(handle)(a0)
+* C: LONG AARProbeFile(const char *path, AARImageInfo *info)
+AARProbeFile(path,info)(a0/a1)
+* C: LONG AARProbeMemory(const void *data, ULONG length, AARImageInfo *info)
+AARProbeMemory(data,length,info)(a0/d0/a1)
+* C: LONG AARSetTagList(AARHandle *handle, const struct TagItem *tags)
+AARSetTagList(handle,tags)(a0/a1)
+* C: LONG AARLoadFile(AARHandle *handle, const char *path)
+AARLoadFile(handle,path)(a0/a1)
+* C: LONG AARLoadMemory(AARHandle *handle, const void *data, ULONG length)
+AARLoadMemory(handle,data,length)(a0/a1/d0)
+* C: LONG AARStart(AARHandle *handle, const char *const *argv, ULONG argc)
+AARStart(handle,argv,argc)(a0/a1/d0)
+* C: LONG AARStop(AARHandle *handle)
+AARStop(handle)(a0)
+* C: LONG AARStatus(AARHandle *handle, AARStatusInfo *status)
+AARStatus(handle,status)(a0/a1)
+* C: LONG AARSendMessage(AARHandle *handle, const AARMessage *message)
+AARSendMessage(handle,message)(a0/a1)
+* C: LONG AARGetMessage(AARHandle *handle, AARMessage *message)
+AARGetMessage(handle,message)(a0/a1)
+* C: ULONG AARMessageSignal(AARHandle *handle)
+AARMessageSignal(handle)(a0)
+* C: LONG AARSharedMap(AARHandle *handle, ULONG haddr, ULONG bytes, ULONG flags, struct AARSharedMap *map)
+AARSharedMap(handle,haddr,bytes,flags,map)(a0/d0/d1/d2/a1)
+* C: LONG AARSharedUnmap(AARHandle *handle, struct AARSharedMap *map)
+AARSharedUnmap(handle,map)(a0/a1)
+* C: LONG AARSharedPublish(AARHandle *handle, struct AARSharedMap *map, ULONG offset, ULONG length)
+AARSharedPublish(handle,map,offset,length)(a0/a1/d0/d1)
+* C: LONG AARSharedAcquire(AARHandle *handle, struct AARSharedMap *map, ULONG offset, ULONG length)
+AARSharedAcquire(handle,map,offset,length)(a0/a1/d0/d1)
+* C: LONG AARServiceNext(AARHandle *handle, AARServiceReq *req)
+AARServiceNext(handle,req)(a0/a1)
+* C: LONG AARServiceReply(AARHandle *handle, const AARServiceReq *req)
+AARServiceReply(handle,req)(a0/a1)
+* C: LONG AARPostEvent(AARHandle *handle, const aar_event *event)
+AARPostEvent(handle,event)(a0/a1)
+* C: LONG AARAudioRead(AARHandle *handle, void *dst, ULONG frames, ULONG *got)
+AARAudioRead(handle,dst,frames,got)(a0/a1/d0/a2)
+* C: LONG AARSharedToken(AARHandle *handle, const void *ptr, ULONG bytes, ULONG *token)
+AARSharedToken(handle,ptr,bytes,token)(a0/a1/d0/a2)
+* C: APTR AARExt(ULONG platform_id, ULONG ext_id)
+AARExt(platform_id,ext_id)(d0/d1)
+##end
