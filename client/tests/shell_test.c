@@ -18,6 +18,8 @@
 #include "../src/aar_shell.c"
 #include "../src/refplat.h"
 
+static char names[HX_TASKS][8];
+
 static unsigned long checks, failures;
 static const char *cur_test = "";
 
@@ -30,29 +32,88 @@ static const char *cur_test = "";
         }                                                                        \
     } while (0)
 
-/* The host's dispatcher process: the attach and detach of the platform. */
-static int hx_dispatcher_start(struct AARBase *b)
-{
-    int rc;
+/*
+ * The host's dispatcher process: a coroutine of its own task. Its first half
+ * (shell_disp_begin) runs when the task that started it waits; its last half
+ * (shell_disp_end) when the task that stopped it waits, and only if the stop
+ * was requested. A process must end under Forbid, which it keeps: the fake
+ * aborts when it does not, and clears the Forbid when the process is gone.
+ */
+static struct AARBase *hx_disp_base;
+static int hx_fail_spawn;          /* the next spawn fails */
+static uint32_t hx_disp_sigs;      /* signal bits the dispatcher's task has allocated already */
+static unsigned long hx_vblank_installs, hx_vblank_removes;
+static int hx_vblank_stuck;        /* the interrupt cannot be removed */
 
-    hx_dispatcher_starts++;
-    rc = aar_core_attach(&b->core);
-    if (rc == AAR_OK)
-        b->dispatcher_up = 1;
-    return rc;
+static void hx_process_gone(void)
+{
+    if (hx_forbid <= 0)
+        HX_FAIL("the dispatcher process ended without holding Forbid");
+    hx_forbid = 0;
+    hx_tasks[HX_DISP].listed = 0;
 }
 
-static void hx_dispatcher_stop(struct AARBase *b)
+static void hx_disp_end(void)
 {
-    if (!b->dispatcher_up)
+    struct hx_task *caller = hx_cur;
+
+    if (!hx_disp_base->disp_stop) {
+        hx_bg = hx_disp_end; /* it keeps running until it is told to stop */
         return;
+    }
+    hx_cur = &hx_tasks[HX_DISP];
     hx_dispatcher_stops++;
-    b->dispatcher_up = 0;
-    aar_core_detach(&b->core);
+    shell_disp_end(hx_disp_base);
+    hx_process_gone();
+    hx_cur = caller;
+}
+
+static void hx_disp_begin(void)
+{
+    struct hx_task *caller = hx_cur;
+
+    hx_cur = &hx_tasks[HX_DISP];
+    if (shell_disp_begin(hx_disp_base) == AAR_OK)
+        hx_bg = hx_disp_end;
+    else
+        hx_process_gone();
+    hx_cur = caller;
+}
+
+static int hx_spawn(struct AARBase *b)
+{
+    hx_dispatcher_starts++;
+    if (hx_fail_spawn) {
+        hx_fail_spawn--;
+        return AAR_E_NOMEM;
+    }
+    hx_disp_base = b;
+    memset(&hx_tasks[HX_DISP], 0, sizeof(hx_tasks[HX_DISP]));
+    hx_tasks[HX_DISP].used = 1;
+    hx_tasks[HX_DISP].listed = 1;
+    hx_tasks[HX_DISP].name = &names[HX_DISP];
+    hx_tasks[HX_DISP].kind = 1;
+    hx_tasks[HX_DISP].sig_alloc = hx_disp_sigs;
+    b->disp_process = &hx_tasks[HX_DISP];
+    hx_bg = hx_disp_begin;
+    return AAR_OK;
+}
+
+static void hx_vblank_install(struct AARBase *b)
+{
+    b->vblank_installed = 1;
+    hx_vblank_installs++;
+}
+
+static void hx_vblank_remove(struct AARBase *b)
+{
+    if (!b->vblank_installed || hx_vblank_stuck)
+        return;
+    b->vblank_installed = 0;
+    hx_vblank_removes++;
 }
 
 static struct AARBase base;
-static char names[HX_TASKS][8];
 static struct MsgPort ports[3];
 static const uint8_t *good_image;
 static uint32_t good_len;
@@ -101,6 +162,14 @@ static void setup(const char *name)
     hx_fail_alloc = 0;
     hx_disabled = 0;
     hx_dispatcher_starts = hx_dispatcher_stops = 0;
+    hx_forbid = 0;
+    hx_waits = 0;
+    hx_spurious = 0;
+    hx_bg = NULL;
+    hx_fail_spawn = 0;
+    hx_disp_sigs = 0;
+    hx_vblank_installs = hx_vblank_removes = 0;
+    hx_vblank_stuck = 0;
     hx_delays = 0;
     memset(hx_ports, 0, sizeof(hx_ports));
     memset(ports, 0, sizeof(ports));
@@ -135,7 +204,9 @@ static void lib_close(void)
 static void finish(void)
 {
     CHECK(base.lock.excl == 0 && base.lock.shared == 0);
+    CHECK(base.ctl.excl == 0 && base.ctl.shared == 0);
     CHECK(hx_disabled == 0);
+    CHECK(hx_forbid == 0);
     CHECK(refplat_live() == 0);
     CHECK(hx_live_blocks == 0);
     CHECK(base.openers == NULL);
@@ -637,7 +708,8 @@ static void test_dead_owner_no_signal(void)
     CHECK(refplat_live() == 0 && hx_live_blocks == 0);
     CHECK(base.openers == NULL); /* its record was freed by the reap */
     base.library.lib_OpenCnt = 0;
-    hx_dispatcher_stop(&base);
+    USE(0); /* the task that stops it is alive */
+    shell_dispatcher_stop(&base);
     finish();
 }
 
@@ -1084,7 +1156,103 @@ static void test_opener_states(void)
     CHECK(refplat_live() == 0); /* released; the task is absent, so the tombstone went too */
     CHECK(hx_live_blocks == 0 && base.openers == NULL);
     base.library.lib_OpenCnt = 0;
+    USE(0); /* the closer of the library is alive */
     shell_final_close(&base);
+    finish();
+}
+
+/*
+ * The dispatcher process must be gone, with its interrupt, whenever the library
+ * is closed for the last time or expunged, whatever the closing task has left:
+ * the stop does not need a signal bit of its own (SIGF_SINGLE), and the start
+ * does not either. A wake without a reason, or a break from outside, changes
+ * nothing.
+ */
+static void test_dispatcher(void)
+{
+    AARInfo info;
+    AARHandle *h;
+    unsigned long attaches, installs;
+
+    setup("dispatcher");
+    info.size = sizeof(info);
+    /* 1. The last closer started the dispatcher through AARQuery: it has
+     * opened no handle and has no free signal bit. */
+    CHECK(lib_open() == AAR_OK);
+    CHECK(v_query(&info) == AAR_OK);
+    CHECK(base.dispatcher_up == 1 && base.disp_process != NULL && base.vblank_installed == 1);
+    CHECK(base.disp_bit >= 0 && hx_tasks[HX_DISP].sig_alloc == (1u << base.disp_bit));
+    CHECK(hx_cur->sig_alloc == 0); /* neither start nor stop took a bit of the caller */
+    hx_cur->sig_alloc = 0xFFFFFFFFu;
+    lib_close();
+    CHECK(base.disp_process == NULL && base.dispatcher_up == 0 && base.vblank_installed == 0);
+    CHECK(refplat.detaches == 1); /* the dispatcher let go of the platform before it ended */
+    CHECK(hx_tasks[HX_DISP].sig_alloc == 0 && hx_tasks[HX_DISP].listed == 0);
+    CHECK(hx_forbid == 0 && hx_dispatcher_stops == 1);
+    CHECK(hx_cur->sig_alloc == 0xFFFFFFFFu); /* its bits are untouched */
+    hx_cur->sig_alloc = 0;
+    /* Stopping what is not running waits for nothing. */
+    {
+        unsigned long waits = hx_waits;
+
+        shell_dispatcher_stop(&base);
+        CHECK(hx_waits == waits);
+    }
+    /* 2. A wake without a reason does not end either wait early. */
+    hx_spurious = 2;
+    CHECK(lib_open() == AAR_OK);
+    CHECK(v_query(&info) == AAR_OK && base.dispatcher_up == 1);
+    hx_spurious = 1;
+    lib_close();
+    CHECK(base.disp_process == NULL && base.dispatcher_up == 0 && base.vblank_installed == 0);
+    CHECK(hx_spurious == 0 && hx_dispatcher_stops == 2);
+    /* 3. A handle held to the end: the final close stops the dispatcher first,
+     * then closes what is left. */
+    CHECK(lib_open() == AAR_OK);
+    h = open_h(NULL);
+    CHECK(h != NULL && base.dispatcher_up == 1);
+    CHECK(hx_cur->sig_alloc != 0);
+    base.library.lib_OpenCnt = 0;
+    shell_final_close(&base);
+    CHECK(base.disp_process == NULL && refplat_live() == 0);
+    (void)shell_close(&base);
+    CHECK(hx_cur->sig_alloc == 0); /* the task's own bit went at its close */
+    /* 4. The dispatcher cannot start: no process, or no signal bit for it. */
+    attaches = refplat.attaches;
+    installs = hx_vblank_installs;
+    hx_fail_spawn = 1;
+    CHECK(lib_open() == AAR_OK);
+    CHECK(v_query(&info) == AAR_E_NOMEM && base.disp_process == NULL && base.dispatcher_up == 0);
+    hx_disp_sigs = 0xFFFFFFFFu;
+    CHECK(v_query(&info) == AAR_E_NOMEM);
+    CHECK(base.disp_process == NULL && base.dispatcher_up == 0 && hx_forbid == 0);
+    CHECK(refplat.attaches == attaches && base.vblank_installed == 0 && hx_vblank_installs == installs);
+    hx_disp_sigs = 0;
+    CHECK(v_query(&info) == AAR_OK && base.dispatcher_up == 1);
+    /* 5. A break from outside ends the process with nobody waiting for it:
+     * nothing is signalled, and the next call starts it again. */
+    {
+        struct hx_task *self = hx_cur;
+
+        hx_bg = NULL;
+        hx_cur = &hx_tasks[HX_DISP];
+        shell_disp_end(&base);
+        hx_process_gone();
+        hx_cur = self;
+    }
+    CHECK(base.disp_process == NULL && base.dispatcher_up == 0 && base.vblank_installed == 0);
+    CHECK(v_query(&info) == AAR_OK && base.dispatcher_up == 1 && hx_vblank_installs == installs + 2);
+    /* 6. Expunge: a dispatcher that is running when the base is about to be
+     * freed is stopped first; an interrupt that cannot be removed stops the
+     * expunge. */
+    base.library.lib_OpenCnt = 0;
+    (void)shell_close(&base);
+    hx_vblank_stuck = 1;
+    CHECK(shell_expunge_ready(&base) == 0);
+    CHECK(base.disp_process == NULL && base.vblank_installed == 1); /* the process is gone, the interrupt is not */
+    hx_vblank_stuck = 0;
+    base.vblank_installed = 0;
+    CHECK(shell_expunge_ready(&base) == 1);
     finish();
 }
 
@@ -1100,6 +1268,7 @@ int main(int argc, char **argv)
     good_image = img;
     good_len = len;
     test_lifecycle();
+    test_dispatcher();
     test_last_close();
     test_owner_stale();
     test_attach_failure();

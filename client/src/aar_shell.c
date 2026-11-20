@@ -89,14 +89,22 @@ extern struct Library *UtilityBase;
 #define X_TASK_LOOKUP(task, st) aar_x_task_lookup((task), (st), 1)
 #define X_TASK_LOOKUP_LOCKED(task, st) aar_x_task_lookup((task), (st), 0)
 #define X_STAMP(task, st) aar_x_stamp((struct Task *)(task), (st))
-#define X_DISPATCHER_START(base) aar_x_dispatcher_start(base)
-#define X_DISPATCHER_STOP(base) aar_x_dispatcher_stop(base)
 #define X_OPEN_SYSTEM() aar_x_open_system()
 #define X_CLOSE_SYSTEM() aar_x_close_system()
+/* The dispatcher process: its start and stop are handshakes (see shell_dispatcher_*). */
+#define X_FORBID() Forbid()
+#define X_WAIT(mask) Wait(mask)
+#define X_SINGLE SIGF_SINGLE
+#define X_BREAK SIGBREAKF_CTRL_C
+#define X_SINGLE_CLEAR() ((void)SetSignal(0, SIGF_SINGLE))
+#define X_SPAWN(base) aar_x_spawn(base)
+#define X_VBLANK_INSTALL(base) aar_vblank_install(base)
+#define X_VBLANK_REMOVE(base) aar_vblank_remove(base)
 
 struct AARBase;
-static int aar_x_dispatcher_start(struct AARBase *base);
-static void aar_x_dispatcher_stop(struct AARBase *base);
+static int aar_x_spawn(struct AARBase *base);
+static void aar_vblank_install(struct AARBase *base);
+static void aar_vblank_remove(struct AARBase *base);
 
 static void aar_x_stamp(struct Task *task, aar_owner_stamp *st)
 {
@@ -201,17 +209,26 @@ struct AARBase {
     struct AAROpener *openers;
     uint32_t reap_last;          /* `ticks` at the last dead-owner pass */
     uint8_t dispatcher_up;       /* the dispatcher has attached the platform and runs */
+    /*
+     * The dispatcher process and its interrupt (see "The dispatcher process"
+     * below). `ctl` serialises start and stop, and is held across their waits.
+     * disp_process is set from the moment the process is created until its last
+     * statement: while it is set, the library's code and this structure are in
+     * use and must not be freed.
+     */
+    X_SEMTYPE ctl;
+    void *disp_process;
+    void *disp_task;             /* the process's task, while it runs its loop */
+    uint32_t disp_mask;          /* its wake signal (the interrupt sets it) */
+    int disp_bit;                /* the signal bit of that mask, -1 when none */
+    uint8_t disp_stop;           /* the stop was requested */
+    void *start_task;            /* who waits for the start, if anyone */
+    void *stop_task;             /* who waits for the stop, if anyone */
+    uint8_t start_done;
+    int start_status;
+    uint8_t vblank_installed;
 #ifndef AAR_SHELL_HOST
-    /* The dispatcher process and its interrupt: see the Amiga glue. */
-    struct Process *disp_process;
-    struct Task *disp_task;
-    ULONG disp_mask;
-    struct Task *handshake_task; /* who waits for the dispatcher to start or stop */
-    ULONG handshake_mask;
-    int disp_status;
-    UBYTE disp_stop;
     struct Interrupt vblank;
-    UBYTE vblank_installed;
 #endif
 };
 
@@ -425,6 +442,133 @@ static void shell_vblank(struct AARBase *b)
     aar_core_vblank(&b->core);
 }
 
+/* ---- The dispatcher process --------------------------------------------------------------- */
+
+/*
+ * The dispatcher is a process of its own: it holds the platform attached (the
+ * one open of zz9k.library), installs the vertical-blank server and runs a pass
+ * for each blank. Its code and the library base are in use for as long as the
+ * process exists, so the library may be expunged only after the process has
+ * ended, and the process ends only through its last statement below.
+ *
+ * Start and stop are handshakes between the caller and the process. Neither
+ * needs a signal bit of its own, because a task can be out of free bits (a
+ * client that started the dispatcher through AARQuery has opened no handle and
+ * has none, and its last CloseLibrary must still stop it): both use SIGF_SINGLE,
+ * the signal Exec keeps for exactly this, a one-shot wait that library code
+ * makes. On AmigaOS 3.x it is bit 4 of every task, never handed out by
+ * AllocSignal. The discipline of its documentation is followed: the waiter
+ * clears it before the request goes out, waits only for it, and re-tests the
+ * condition it waits for after every wake, so a stale or early signal costs one
+ * more Wait and a lost one cannot happen (Signal on a task that has not yet
+ * reached Wait leaves the bit set, and Wait returns at once).
+ *
+ * The end of the process is under Forbid(), which it never releases: the task
+ * that waits for the stop cannot run before the process has been removed, so
+ * when the stopper sees disp_process clear, no instruction of the library
+ * remains to be executed by the dispatcher, and the segment may be unloaded.
+ * (A Wait() inside CloseLibrary breaks the Forbid() Exec holds around it and
+ * restores it.)
+ */
+
+/* The first half of the process: its wake bit, the platform, the interrupt.
+ * Answers to the starter. On failure the process has ended (Forbid is held and
+ * it must return at once). */
+static int shell_disp_begin(struct AARBase *b)
+{
+    int rc;
+
+    b->disp_bit = X_ALLOC_SIGNAL();
+    if (b->disp_bit < 0) {
+        rc = AAR_E_NOMEM;
+    } else {
+        rc = aar_core_attach(&b->core);
+        if (rc != AAR_OK) {
+            X_FREE_SIGNAL(b->disp_bit);
+            b->disp_bit = -1;
+        }
+    }
+    if (rc == AAR_OK) {
+        b->disp_task = X_SELF();
+        b->disp_mask = 1u << b->disp_bit;
+        b->reap_last = b->core.ticks;
+        /* The gate of the lease interrupt looks at the stamp of the last pass. */
+        b->core.disp_alive = b->core.ticks;
+        X_VBLANK_INSTALL(b);
+        b->dispatcher_up = 1;
+    } else {
+        X_FORBID(); /* held until this process has ended */
+        b->disp_process = NULL;
+    }
+    b->start_status = rc;
+    b->start_done = 1;
+    if (b->start_task)
+        X_SIGNAL(b->start_task, X_SINGLE);
+    return rc;
+}
+
+/* The last half of the process, after its loop (a stop, or a break from
+ * outside). The interrupt goes first: nothing of the base is used by an
+ * interrupt after it. Returns with Forbid held: the process must return at
+ * once, and the stopper runs only when it is gone. */
+static void shell_disp_end(struct AARBase *b)
+{
+    X_VBLANK_REMOVE(b);
+    b->dispatcher_up = 0;
+    b->disp_task = NULL;
+    b->disp_mask = 0;
+    aar_core_detach(&b->core);
+    X_FREE_SIGNAL(b->disp_bit);
+    b->disp_bit = -1;
+    X_FORBID();
+    b->disp_process = NULL;
+    if (b->stop_task) /* none when a break from outside ended the process */
+        X_SIGNAL(b->stop_task, X_SINGLE);
+}
+
+/* Starts the process and waits until it runs, or has failed. */
+static int shell_dispatcher_start(struct AARBase *b)
+{
+    int rc;
+
+    X_SEM_OBTAIN(&b->ctl);
+    if (b->dispatcher_up) {
+        X_SEM_RELEASE(&b->ctl);
+        return AAR_OK;
+    }
+    b->start_done = 0;
+    b->disp_stop = 0;
+    X_SINGLE_CLEAR();
+    b->start_task = X_SELF();
+    rc = X_SPAWN(b);
+    if (rc == AAR_OK) {
+        while (!b->start_done)
+            (void)X_WAIT(X_SINGLE);
+        rc = b->start_status;
+    }
+    b->start_task = NULL;
+    X_SEM_RELEASE(&b->ctl);
+    return rc;
+}
+
+/* Stops the process and returns only when it has ended and, with it, the
+ * interrupt: no wait for a signal bit that might not be there. */
+static void shell_dispatcher_stop(struct AARBase *b)
+{
+    X_SEM_OBTAIN(&b->ctl);
+    if (b->disp_process) {
+        X_SINGLE_CLEAR();
+        b->stop_task = X_SELF();
+        b->disp_stop = 1;
+        if (b->disp_task)
+            X_SIGNAL(b->disp_task, X_BREAK);
+        while (b->disp_process)
+            (void)X_WAIT(X_SINGLE);
+        b->stop_task = NULL;
+    }
+    X_SEM_RELEASE(&b->ctl);
+}
+
 /* ---- Library level: open, close, init ---------------------------------------------------------- */
 
 static int ensure_dispatcher(struct AARBase *b)
@@ -432,7 +576,7 @@ static int ensure_dispatcher(struct AARBase *b)
     int rc = AAR_OK;
 
     if (!b->dispatcher_up) {
-        rc = X_DISPATCHER_START(b);
+        rc = shell_dispatcher_start(b);
         if (rc != AAR_OK)
             return rc;
     }
@@ -444,6 +588,8 @@ static int shell_init(struct AARBase *b)
     struct aar_core_env env;
 
     X_SEM_INIT(&b->lock);
+    X_SEM_INIT(&b->ctl);
+    b->disp_bit = -1;
     shell_env(b, &env);
     g_base = b;
     return aar_core_init(&b->core, aar_plat_get(), &env);
@@ -551,8 +697,21 @@ static int shell_close(struct AARBase *b)
 /* The final CloseLibrary: stop the dispatcher, then close what is left. */
 static void shell_final_close(struct AARBase *b)
 {
-    X_DISPATCHER_STOP(b);
+    shell_dispatcher_stop(b);
     aar_core_shutdown(&b->core);
+}
+
+/*
+ * Expunge: whether the base and the code may be freed. Everything that runs on
+ * the library's behalf is stopped first (a dispatcher started after the last
+ * close would otherwise be left running in freed memory), and the base goes
+ * only when the dispatcher process, the platform attach and the interrupt are
+ * all gone.
+ */
+static int shell_expunge_ready(struct AARBase *b)
+{
+    shell_final_close(b);
+    return !b->disp_process && !b->dispatcher_up && !b->vblank_installed;
 }
 
 /* ---- The calls ---------------------------------------------------------------------------------- */
@@ -835,7 +994,7 @@ static ULONG aar_vblank_isr(REG(a1, struct AARBase *b))
 {
     shell_vblank(b);
     if (b->disp_task && b->disp_mask)
-        Signal(b->disp_task, b->disp_mask);
+        Signal((struct Task *)b->disp_task, b->disp_mask);
     return 0;
 }
 
@@ -864,85 +1023,34 @@ static void aar_vblank_remove(struct AARBase *b)
 }
 
 /*
- * The dispatcher process. It holds the one open of zz9k.library (the platform's
- * attach), runs a pass for every vertical blank and ends at Ctrl-C from the
- * final CloseLibrary. Its start and its stop are handshakes with the caller.
+ * The dispatcher process body (the handshakes are in "The dispatcher process"
+ * above): begin, the loop, end. It ends on the stop request, or at a break
+ * signal from outside. Only this loop is Amiga code that the host test cannot
+ * run; the loop tests disp_stop before it waits, so a stop that came before the
+ * process reached the loop is not missed.
  */
 static void aar_dispatcher_proc(void)
 {
     struct AARBase *b = g_base;
-    BYTE bit;
-    ULONG mask, signals;
-    int rc;
+    ULONG signals;
 
-    bit = AllocSignal(-1);
-    if (bit < 0) {
-        b->disp_status = AAR_E_NOMEM;
-        Forbid(); /* held until this process has ended */
-        b->disp_process = NULL;
-        Signal(b->handshake_task, b->handshake_mask);
-        return;
-    }
-    mask = 1UL << bit;
-    rc = aar_core_attach(&b->core);
-    if (rc != AAR_OK) {
-        FreeSignal(bit);
-        b->disp_status = rc;
-        Forbid();
-        b->disp_process = NULL;
-        Signal(b->handshake_task, b->handshake_mask);
-        return;
-    }
-    b->disp_task = FindTask(0);
-    b->disp_mask = mask;
-    b->reap_last = b->core.ticks;
-    b->disp_stop = 0;
-    /* The gate of the lease interrupt looks at the stamp of the last pass. */
-    b->core.disp_alive = b->core.ticks;
-    aar_vblank_install(b);
-    b->dispatcher_up = 1;
-    b->disp_status = AAR_OK;
-    Signal(b->handshake_task, b->handshake_mask);
-
-    for (;;) {
-        signals = Wait(mask | SIGBREAKF_CTRL_C);
-        if ((signals & SIGBREAKF_CTRL_C) || b->disp_stop)
+    if (shell_disp_begin(b) != AAR_OK)
+        return; /* ended under Forbid */
+    while (!b->disp_stop) {
+        signals = Wait(b->disp_mask | SIGBREAKF_CTRL_C);
+        if (signals & SIGBREAKF_CTRL_C)
             break;
         shell_pass(b);
     }
-
-    aar_vblank_remove(b);
-    b->dispatcher_up = 0;
-    b->disp_task = NULL;
-    b->disp_mask = 0;
-    aar_core_detach(&b->core);
-    FreeSignal(bit);
-    /* The stopper may continue once the last use of the base is behind us. */
-    Forbid();
-    b->disp_process = NULL;
-    Signal(b->handshake_task, b->handshake_mask);
+    shell_disp_end(b); /* returns under Forbid: the process ends with it */
 }
 
-static int aar_x_dispatcher_start(struct AARBase *b)
+/* Creates the process. Under Forbid, so that it cannot finish (and clear
+ * disp_process) before this task has recorded it. */
+static int aar_x_spawn(struct AARBase *b)
 {
     struct Process *process;
-    BYTE bit;
-    int rc;
 
-    bit = AllocSignal(-1);
-    if (bit < 0)
-        return AAR_E_NOMEM;
-    ObtainSemaphore(&b->lock);
-    if (b->dispatcher_up || b->disp_process) {
-        ReleaseSemaphore(&b->lock);
-        FreeSignal(bit);
-        return b->dispatcher_up ? AAR_OK : AAR_E_BUSY;
-    }
-    b->handshake_task = FindTask(0);
-    b->handshake_mask = 1UL << bit;
-    b->disp_status = AAR_E_BUSY;
-    /* Under Forbid, so the new process cannot finish (and clear disp_process)
-     * before this task has recorded it. */
     Forbid();
     process = CreateNewProcTags(NP_Entry, (ULONG)aar_dispatcher_proc,
                                 NP_Name, (ULONG)"aar.library dispatcher",
@@ -951,41 +1059,7 @@ static int aar_x_dispatcher_start(struct AARBase *b)
     if (process)
         b->disp_process = process;
     Permit();
-    ReleaseSemaphore(&b->lock);
-    if (!process) {
-        FreeSignal(bit);
-        return AAR_E_NOMEM;
-    }
-    Wait(b->handshake_mask);
-    rc = b->disp_status;
-    b->handshake_task = NULL;
-    b->handshake_mask = 0;
-    FreeSignal(bit);
-    return rc;
-}
-
-static void aar_x_dispatcher_stop(struct AARBase *b)
-{
-    BYTE bit;
-    int waited = 0;
-
-    if (!b->disp_process)
-        return;
-    bit = AllocSignal(-1);
-    if (bit >= 0) {
-        b->handshake_task = FindTask(0);
-        b->handshake_mask = 1UL << bit;
-        waited = 1;
-    }
-    b->disp_stop = 1;
-    if (b->disp_task)
-        Signal(b->disp_task, SIGBREAKF_CTRL_C);
-    if (waited) {
-        Wait(b->handshake_mask);
-        b->handshake_task = NULL;
-        b->handshake_mask = 0;
-        FreeSignal(bit);
-    }
+    return process ? AAR_OK : AAR_E_NOMEM;
 }
 
 static int aar_x_open_system(void)
@@ -1217,7 +1291,7 @@ static BPTR aar_lib_expunge(REG(a6, struct AARBase *base))
 
     if (!base)
         return 0;
-    if (base->library.lib_OpenCnt != 0) {
+    if (base->library.lib_OpenCnt != 0 || !shell_expunge_ready(base)) {
         base->library.lib_Flags |= LIBF_DELEXP;
         return 0;
     }

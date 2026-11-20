@@ -199,6 +199,20 @@ mutant("reap-skips-closing-openers", "opener_states", SHELL,
        ("        if (shell_owner_state(b, &o->stamp) != AAR_OWNER_ALIVE) {", "        if (!o->closing && shell_owner_state(b, &o->stamp) != AAR_OWNER_ALIVE) {"))
 mutant("reap-skips-closing-handles", "opener_states", CORE,
        ("            if ((h->state == AAR_H_LIVE || h->state == AAR_H_CLOSING) &&", "            if ((h->state == AAR_H_LIVE) &&"))
+# ---- the dispatcher process is gone before the library is -----------------------------------
+mutant("stop-wait-not-retested", "dispatcher", SHELL,
+       ("        while (b->disp_process)\n            (void)X_WAIT(X_SINGLE);", "        if (b->disp_process)\n            (void)X_WAIT(X_SINGLE);"))
+mutant("start-wait-not-retested", "dispatcher", SHELL,
+       ("        while (!b->start_done)\n", "        if (!b->start_done)\n"))
+mutant("end-signals-no-stopper", "dispatcher", SHELL,
+       ("    if (b->stop_task) /* none when a break from outside ended the process */\n        X_SIGNAL(b->stop_task, X_SINGLE);",
+        "    X_SIGNAL(b->stop_task, X_SINGLE);"))
+mutant("end-without-forbid", "lifecycle", SHELL,
+       ("    X_FORBID();\n    b->disp_process = NULL;\n    if (b->stop_task)", "    b->disp_process = NULL;\n    if (b->stop_task)"))
+mutant("expunge-ignores-interrupt", "dispatcher", SHELL,
+       ("    return !b->disp_process && !b->dispatcher_up && !b->vblank_installed;", "    return 1;"))
+mutant("expunge-does-not-stop", "dispatcher", SHELL,
+       ("static int shell_expunge_ready(struct AARBase *b)\n{\n    shell_final_close(b);\n", "static int shell_expunge_ready(struct AARBase *b)\n{\n"))
 # ---- size and offset arithmetic ---------------------------------------------------------
 mutant("map-length-wraps", "size_arithmetic", CORE,
        ("    if (len > UINT32_MAX - off)\n        return 0;\n", ""))

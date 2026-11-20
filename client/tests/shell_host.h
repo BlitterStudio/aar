@@ -40,7 +40,10 @@ struct Library {
 /* ---- Tasks and signals ------------------------------------------------------ */
 
 #define HX_TASKS 16
+#define HX_DISP 15    /* the task of the dispatcher process */
 #define HX_SIGBITS 12 /* a task has about a dozen free signal bits */
+#define SIGF_SINGLE (1u << 4)       /* Exec's one-shot signal: never handed out by AllocSignal */
+#define SIGBREAKF_CTRL_C (1u << 12)
 
 struct hx_task {
     int used;
@@ -68,6 +71,10 @@ int hx_disable_max;
 unsigned long hx_disable_calls;
 unsigned long hx_delays;
 unsigned long hx_dispatcher_starts, hx_dispatcher_stops;
+int hx_forbid;                   /* Forbid() nesting of the running task */
+unsigned long hx_waits;
+int hx_spurious;                 /* the next n Waits end early, with nothing happened */
+void (*hx_bg)(void);             /* what the other processes do while the current task waits */
 
 #define HX_UNUSED __attribute__((unused))
 
@@ -366,10 +373,11 @@ HX_UNUSED static int hx_alloc_signal(void)
 {
     int bit;
 
+    /* Bit 4 is SIGF_SINGLE, which AllocSignal never returns. */
     for (bit = 0; bit < HX_SIGBITS; bit++) {
-        if (!(hx_cur->sig_alloc & (1u << (bit + 4)))) {
-            hx_cur->sig_alloc |= 1u << (bit + 4);
-            return bit + 4;
+        if (!(hx_cur->sig_alloc & (1u << (bit + 5)))) {
+            hx_cur->sig_alloc |= 1u << (bit + 5);
+            return bit + 5;
         }
     }
     return -1;
@@ -391,7 +399,36 @@ HX_UNUSED static void hx_signal(const void *task, uint32_t mask)
     if (!hx_task_lookup(task, &st))
         HX_FAIL("Signal to a task that is not on a task list");
     t->signals |= mask;
-    t->signalled++;
+    if (mask != SIGF_SINGLE) /* `signalled` counts notifications, not handshakes */
+        t->signalled++;
+}
+
+/*
+ * Wait() of the current task. A signal that is pending ends it at once. Else
+ * the other processes get to run (hx_bg: the dispatcher's next step), and if
+ * still nothing is pending the task would sleep for ever: the test aborts
+ * instead of hanging.
+ */
+HX_UNUSED static uint32_t hx_wait(uint32_t mask)
+{
+    uint32_t got;
+
+    hx_waits++;
+    if (hx_spurious > 0) {
+        hx_spurious--;
+        hx_cur->signals |= mask; /* a stale or early signal */
+    }
+    if (!(hx_cur->signals & mask) && hx_bg) {
+        void (*run)(void) = hx_bg;
+
+        hx_bg = NULL;
+        run();
+    }
+    got = hx_cur->signals & mask;
+    if (!got)
+        HX_FAIL("Wait() that no signal will ever end");
+    hx_cur->signals &= ~got;
+    return got;
 }
 
 /* ---- The bindings ----------------------------------------------------------------------- */
@@ -425,11 +462,18 @@ HX_UNUSED static void hx_signal(const void *task, uint32_t mask)
 #define X_TASK_LOOKUP(task, st) hx_task_lookup((task), (st))
 #define X_TASK_LOOKUP_LOCKED(task, st) hx_task_lookup((task), (st))
 #define X_STAMP(task, st) hx_stamp((struct hx_task *)(uintptr_t)(task), (st))
-#define X_DISPATCHER_START(base) hx_dispatcher_start(base)
-#define X_DISPATCHER_STOP(base) hx_dispatcher_stop(base)
+#define X_FORBID() (hx_forbid++)
+#define X_WAIT(mask) hx_wait(mask)
+#define X_SINGLE SIGF_SINGLE
+#define X_BREAK SIGBREAKF_CTRL_C
+#define X_SINGLE_CLEAR() (hx_cur->signals &= ~SIGF_SINGLE)
+#define X_SPAWN(base) hx_spawn(base)
+#define X_VBLANK_INSTALL(base) hx_vblank_install(base)
+#define X_VBLANK_REMOVE(base) hx_vblank_remove(base)
 
 struct AARBase;
-static int hx_dispatcher_start(struct AARBase *base);
-static void hx_dispatcher_stop(struct AARBase *base);
+static int hx_spawn(struct AARBase *base);
+static void hx_vblank_install(struct AARBase *base);
+static void hx_vblank_remove(struct AARBase *base);
 
 #endif /* SHELL_HOST_H */

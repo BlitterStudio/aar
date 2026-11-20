@@ -171,6 +171,13 @@ own dispatcher process dies or stalls for five seconds, the library stops
 renewing and the platform's lease expires, so a crashed library cannot hold an
 app for ever.
 
+The dispatcher process starts with the first call that needs the platform
+(`AARQuery`, `AAROpen`, `AARExt`), and the last `CloseLibrary` stops it and
+returns only after it has ended and its interrupt is gone. Neither needs a free
+signal bit of the calling task, so a task that has opened no handle can start
+and stop it. Expunging the library waits for the same, so a library that is
+flushed from memory leaves no process running in freed memory.
+
 ## Structures
 
 ### AARInfo
