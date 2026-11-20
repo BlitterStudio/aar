@@ -583,7 +583,7 @@ may belong to another app.
 
 | Error | Cause |
 |---|---|
-| `AAR_E_INVAL` | `bytes` is 0, a flag is set, or the range is outside the aperture |
+| `AAR_E_INVAL` | `bytes` is 0, a flag is set, the range is outside the aperture, or the range rounded up to 8 KiB does not fit in 32 bits (the same holds for the buffer of a service request, which the library refuses to the app) |
 | `AAR_E_NOMEM` | no memory for the map |
 | `AAR_E_NOSYS` | the platform cannot map (ZZ9000: no `mmu.library`) |
 | `AAR_E_STALE` | the handle's claim has been revoked |

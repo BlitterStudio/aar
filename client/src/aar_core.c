@@ -58,9 +58,35 @@ static void irq_on(aar_core *c)
         c->env.irq_on(c->env.user);
 }
 
-static uint32_t round_step(uint32_t bytes)
+/*
+ * The size rule of this file: a sum or a round-up of a value that the client,
+ * the app or the platform supplies is checked against the room that is left
+ * (a > MAX - b) before it is computed, never after, so a huge length cannot
+ * wrap to a small one and pass. The helpers answer 0 when the result does not
+ * fit in 32 bits.
+ */
+
+/* [off, off + len) rounded up to the map step, in *need. */
+static int map_need(uint32_t off, uint32_t len, uint32_t *need)
 {
-    return (bytes + (AAR_CORE_MAP_STEP - 1u)) & ~(AAR_CORE_MAP_STEP - 1u);
+    uint32_t end;
+
+    if (len > UINT32_MAX - off)
+        return 0;
+    end = off + len;
+    if (end > UINT32_MAX - (AAR_CORE_MAP_STEP - 1u))
+        return 0;
+    *need = (end + (AAR_CORE_MAP_STEP - 1u)) & ~(AAR_CORE_MAP_STEP - 1u);
+    return 1;
+}
+
+/* `v` rounded up to a multiple of the power of two `g`, in *out. */
+static int align_up(uint32_t v, uint32_t g, uint32_t *out)
+{
+    if (v > UINT32_MAX - (g - 1u))
+        return 0;
+    *out = (v + (g - 1u)) & ~(g - 1u);
+    return 1;
 }
 
 static uint32_t str_len(const char *s)
@@ -370,9 +396,8 @@ static int map_range(AARHandle *h, uint32_t token, uint32_t off, uint32_t len,
         return token == 0u ? AAR_E_INVAL : AAR_E_NOSYS;
     if (len == 0u)
         len = 1u;
-    if (off > UINT32_MAX - len - (AAR_CORE_MAP_STEP - 1u))
+    if (!map_need(off, len, &need))
         return AAR_E_INVAL;
-    need = round_step(off + len);
     for (i = 0u; i < AAR_CORE_MAPS; i++) {
         if (h->maps[i].ptr && h->maps[i].token == token) {
             if (h->maps[i].bytes >= need) {
@@ -533,7 +558,12 @@ int aar_core_open(aar_core *c, uint32_t signal_mask, void *notify, void *opener,
     *out = NULL;
     if (c->attach_rc != AAR_OK)
         return c->attach_rc;
-    bytes = ROUND8((uint32_t)sizeof(*h)) + ROUND8(o->claim_priv_bytes);
+    /* The handle and the platform's claim state are one block: their sizes
+     * must add up. */
+    if (!align_up(o->claim_priv_bytes, 8u, &bytes) ||
+        bytes > UINT32_MAX - ROUND8((uint32_t)sizeof(*h)))
+        return AAR_E_NOMEM;
+    bytes += ROUND8((uint32_t)sizeof(*h));
     h = (AARHandle *)c->env.alloc(c->env.user, bytes);
     if (!h)
         return AAR_E_NOMEM;
@@ -1605,12 +1635,12 @@ static int shared_cache(AARHandle *h, struct AARSharedMap *map, ULONG offset, UL
     if (map->flags & (AAR_MAPF_UNCACHED | AAR_MAPF_COHERENT))
         return AAR_OK;
     start = offset;
-    end = offset + length;
+    end = offset + length; /* map_check: length <= bytes - offset */
     g = map->granule;
     if (g != 0u && (g & (g - 1u)) == 0u) {
         start &= ~(g - 1u);
-        end = (end + g - 1u) & ~(g - 1u);
-        if (end > map->bytes || end < offset)
+        /* A rounded end past the map, or past 4 GiB, is the end of the map. */
+        if (!align_up(end, g, &end) || end > map->bytes)
             end = map->bytes;
     }
     if (publish) {

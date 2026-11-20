@@ -184,6 +184,16 @@ mutant("fault-reported-as-complete", "notify", CORE,
 mutant("stale-after-open", "revoked_codes", SHELL,
        ("    rc = aar_core_check(c, h);\n    if (rc != AAR_OK)\n        return rc;\n    if (!path)\n        return AAR_E_INVAL;\n    f = X_FILE_OPEN(path);\n    if (!f)\n        return AAR_E_NOENT;",
         "    if (!path)\n        return AAR_E_INVAL;\n    f = X_FILE_OPEN(path);\n    if (!f)\n        return AAR_E_NOENT;\n    rc = aar_core_check(c, h);\n    if (rc != AAR_OK)\n        return rc;"))
+# ---- size and offset arithmetic ---------------------------------------------------------
+mutant("map-length-wraps", "size_arithmetic", CORE,
+       ("    if (len > UINT32_MAX - off)\n        return 0;\n", ""))
+mutant("map-round-up-wraps", "size_arithmetic", CORE,
+       ("    if (end > UINT32_MAX - (AAR_CORE_MAP_STEP - 1u))\n        return 0;\n", ""))
+mutant("align-up-wraps", "size_arithmetic", CORE,
+       ("    if (v > UINT32_MAX - (g - 1u))\n        return 0;\n", ""))
+mutant("handle-size-wraps", "size_arithmetic", CORE,
+       ("    if (!align_up(o->claim_priv_bytes, 8u, &bytes) ||\n        bytes > UINT32_MAX - ROUND8((uint32_t)sizeof(*h)))",
+        "    if (!align_up(o->claim_priv_bytes, 8u, &bytes))"))
 # ---- allocator balance (the card's AvailMem check) -------------------------------------
 mutant("handle-memory-not-released", "alloc_balance", CORE,
        ("    c->env.release(c->env.user, h, bytes);\n}", "    (void)bytes;\n}"))

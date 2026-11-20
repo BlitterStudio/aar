@@ -1738,6 +1738,89 @@ static void test_alloc_balance(void)
     finish();
 }
 
+/*
+ * Size and offset arithmetic. The rule: a sum or a round-up of values that the
+ * client, the app or the platform supplies is checked against the room that is
+ * left (a > MAX - b) before it is computed, so a huge length cannot wrap to a
+ * small one and pass. Each case below is a value that wrapped before.
+ */
+static void test_size_arithmetic(void)
+{
+    AARHandle *h;
+    struct AARSharedMap map;
+    AARServiceReq req;
+    uint8_t entry[AAR_ENTRY_BYTES];
+    static const ULONG huge[] = { 0xFFFFFFFFu, 0xFFFFFFF0u, 0xFFFFF000u, 0xFFFFE001u };
+    uint32_t arg[6] = { 0 };
+    struct aar_plat plat = *aar_plat_get();
+    struct aar_plat_ops ops = *plat.ops;
+    aar_core other;
+    uint32_t tok;
+    unsigned i;
+    ULONG reason = 0;
+    AARHandle *g = NULL;
+    int slot, rc;
+
+    setup("size_arithmetic");
+    h = open1(1);
+    slot = slot_of(h);
+    tok = refplat_buf_token(slot, 0x2000);
+    /* The block is cached by an ordinary map first: a length that wraps to 0
+     * would then be answered from the cache as if it fitted. */
+    memset(&map, 0, sizeof(map));
+    map.size = sizeof(map);
+    CHECK(aar_core_shared_map(&core, h, tok, 0x1000, 0, &map) == AAR_OK && map.bytes == 0x1000);
+    for (i = 0; i < sizeof(huge) / sizeof(huge[0]); i++) {
+        memset(&map, 0, sizeof(map));
+        map.size = sizeof(map);
+        CHECK(aar_core_shared_map(&core, h, tok, huge[i], 0, &map) == AAR_E_INVAL);
+        CHECK(map.bytes == 0 && map.base == 0); /* nothing advertised */
+    }
+    /* The same helper maps the buffer of a request: a request whose buffer
+     * length wraps is refused to the app, not handed to the server. */
+    CHECK(refplat_app_request(slot, AAR_OP_FILE_READ, 0, 7, arg, tok, 0x2000, 0xFFFFF000u) == AAR_OK);
+    memset(&req, 0, sizeof(req));
+    req.size = sizeof(req);
+    CHECK(aar_core_service_next(&core, h, &req) == AAR_E_BUSY);
+    CHECK(h->stats.bad_buf == 1 && h->stats.requests == 0);
+    CHECK(refplat_app_cq_pop(slot, entry) == 1 && aar_get_be16(entry + AAR_ENTRY_OP) == AAR_OP_FILE_READ);
+    CHECK((int32_t)aar_get_be32(entry + AAR_ENTRY_RESULT) == AAR_E_INVAL);
+    /* An offset and a length whose sum wraps. */
+    CHECK(refplat_app_request(slot, AAR_OP_FILE_READ, 0, 8, arg, tok, 0xFFFFF000u, 0x2000) == AAR_OK);
+    CHECK(aar_core_service_next(&core, h, &req) == AAR_E_BUSY && h->stats.bad_buf == 2);
+    /* Cache maintenance on a map object whose granule rounds past 4 GiB: the
+     * range is clamped to the map, it does not wrap to nothing. */
+    refplat.map_mapf = 0;
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    h = open1(1);
+    tok = refplat_buf_token(slot_of(h), 0x2000);
+    memset(&map, 0, sizeof(map));
+    map.size = sizeof(map);
+    CHECK(aar_core_shared_map(&core, h, tok, 0x1000, 0, &map) == AAR_OK);
+    map.bytes = 0xFFFFF000u; /* the object is the client's to edit */
+    map.granule = 0x80000000u;
+    map.flags = 0;
+    refplat.publishes = 0;
+    refplat.last_cache_len = 99;
+    CHECK(aar_core_shared_publish(&core, h, &map, 0, 0xFFFFE000u) == AAR_OK);
+    CHECK(refplat.publishes == 1 && refplat.last_cache_len == 0xFFFFF000u);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* A platform whose per-claim state is so large that the handle's size
+     * wraps is refused, not given a short block. */
+    ops.claim_priv_bytes = 0xFFFFFFF8u;
+    plat.ops = &ops;
+    memset(&other, 0, sizeof(other));
+    CHECK(aar_core_init(&other, &plat, &env) == AAR_OK);
+    CHECK(aar_core_attach(&other) == AAR_OK);
+    rc = aar_core_open(&other, 1, NULL, NULL, &g, &reason);
+    CHECK(rc == AAR_E_NOMEM && g == NULL && refplat_live() == 0);
+    if (rc == AAR_OK)
+        (void)aar_core_close(&other, g);
+    aar_core_detach(&other);
+    aar_core_init(&core, aar_plat_get(), &env);
+    finish();
+}
+
 int main(void)
 {
     test_open_close_many();
@@ -1760,6 +1843,7 @@ int main(void)
     test_revoke();
     test_alloc_balance();
     test_open_failures();
+    test_size_arithmetic();
     printf("core_test: %lu checks, %lu failures\n", checks, failures);
     return failures ? 1 : 0;
 }
