@@ -39,6 +39,7 @@ static const char *cur_test = "";
 static uint8_t pool[POOL_SLOTS][POOL_SLOT] __attribute__((aligned(16)));
 static uint8_t pool_used[POOL_SLOTS];
 static unsigned long pool_live;
+static unsigned long alloc_live_bytes; /* bytes the core has allocated and not given back */
 static int fail_alloc;
 
 static void *t_alloc(void *user, uint32_t bytes)
@@ -56,6 +57,7 @@ static void *t_alloc(void *user, uint32_t bytes)
         if (!pool_used[i]) {
             pool_used[i] = 1;
             pool_live++;
+            alloc_live_bytes += bytes;
             memset(pool[i], 0, POOL_SLOT);
             return pool[i];
         }
@@ -73,6 +75,7 @@ static void t_release(void *user, void *p, uint32_t bytes)
         if ((void *)pool[i] == p) {
             pool_used[i] = 0;
             pool_live--;
+            alloc_live_bytes -= bytes;
             memset(pool[i], 0xA5, POOL_SLOT); /* a use after free shows */
             return;
         }
@@ -163,6 +166,7 @@ static void setup(const char *name)
     refplat_reset();
     memset(pool_used, 0, sizeof(pool_used));
     pool_live = 0;
+    alloc_live_bytes = 0;
     fail_alloc = 0;
     cur = 0;
     lock_depth = irq_depth = 0;
@@ -189,6 +193,7 @@ static void finish(void)
     aar_core_detach(&core);
     CHECK(refplat_live() == 0);
     CHECK(pool_live == 0);
+    CHECK(alloc_live_bytes == 0);
     CHECK(lock_depth == 0 && irq_depth == 0);
 }
 
@@ -1662,6 +1667,67 @@ static void test_open_failures(void)
     finish();
 }
 
+/*
+ * What the core allocates it gives back: over many open and close pairs, with
+ * every kind of use in between, the allocator is net zero in bytes (the card
+ * test T3 measured AvailMem before and after 500 pairs).
+ */
+static void test_alloc_balance(void)
+{
+    static uint8_t image[64];
+    const char *argv[1] = { "x" };
+    static int port;
+    struct AARSharedMap map;
+    AARHandle *h;
+    unsigned i;
+    ULONG reason;
+    unsigned long base;
+    int slot;
+
+    setup("alloc_balance");
+    memset(ostate, 0, sizeof(ostate));
+    base = alloc_live_bytes;
+    map.size = sizeof(map);
+    for (i = 0; i < 500; i++) {
+        h = NULL;
+        CHECK(aar_core_open(&core, 1, i % 5 == 4 ? &port : NULL, NULL, &h, &reason) == AAR_OK);
+        slot = slot_of(h);
+        switch (i % 5) {
+        case 1:
+            CHECK(aar_core_load_memory(&core, h, image, sizeof(image)) == AAR_OK);
+            CHECK(aar_core_start(&core, h, argv, 1) == AAR_OK);
+            break;
+        case 2:
+            CHECK(aar_core_message_signal(&core, h) == 1);
+            dispatch_once();
+            break;
+        case 3:
+            CHECK(aar_core_shared_map(&core, h, refplat_buf_token(slot, 0x2000), 100, 0, &map) == AAR_OK);
+            break;
+        default:
+            break;
+        }
+        CHECK(aar_core_close(&core, h) == AAR_OK);
+    }
+    CHECK(alloc_live_bytes == base);
+    CHECK(pool_live == 0 && refplat_live() == 0);
+    /* The owner leaves without closing: the reap and the owner's last close give back too. */
+    for (i = 0; i < 100; i++) {
+        cur = 1;
+        h = open1(1);
+        CHECK(h != NULL);
+        ostate[1] = AAR_OWNER_CHANGED;
+        CHECK(aar_core_reap(&core, owner_fn, NULL) == 1);
+        ostate[1] = AAR_OWNER_ABSENT;
+        (void)aar_core_reap(&core, owner_fn, NULL);
+        ostate[1] = AAR_OWNER_ALIVE;
+        h = open1(1);
+        CHECK(aar_core_close_owner(&core) == 1);
+    }
+    CHECK(alloc_live_bytes == base && pool_live == 0 && refplat_live() == 0);
+    finish();
+}
+
 int main(void)
 {
     test_open_close_many();
@@ -1682,6 +1748,7 @@ int main(void)
     test_reap();
     test_notify();
     test_revoke();
+    test_alloc_balance();
     test_open_failures();
     printf("core_test: %lu checks, %lu failures\n", checks, failures);
     return failures ? 1 : 0;

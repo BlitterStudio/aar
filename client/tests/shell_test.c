@@ -96,6 +96,7 @@ static void setup(const char *name)
     }
     memset(hx_pool_used, 0, sizeof(hx_pool_used));
     hx_live_blocks = 0;
+    hx_live_bytes = 0;
     hx_alloc_calls = 0;
     hx_fail_alloc = 0;
     hx_disabled = 0;
@@ -817,6 +818,54 @@ static void test_ext(void)
     finish();
 }
 
+/*
+ * What the shell allocates it gives back: 500 open and close pairs in one task
+ * (some with a notify port, some armed), 300 probes, and 200 tasks that open the
+ * library, open and close a handle and close the library again. The allocator
+ * is net zero in bytes at each end (the card test T3 measured AvailMem).
+ */
+static void test_alloc_balance(void)
+{
+    AARHandle *h;
+    AARImageInfo info;
+    unsigned long bytes0;
+    unsigned i;
+
+    setup("alloc_balance");
+    hx_files[0] = (struct hx_file){ "Work:good.elf", good_image, good_len, 0, 0 };
+    CHECK(lib_open() == AAR_OK);
+    h = open_h(NULL); /* the warm-up: the dispatcher, the task's record and its signal bit */
+    CHECK(v_close(h) == AAR_OK);
+    bytes0 = hx_live_bytes;
+    for (i = 0; i < 500; i++) {
+        h = open_h(i % 3 == 0 ? &ports[0] : NULL);
+        if (i % 2)
+            CHECK(v_message_signal(h) != 0);
+        if (i % 7 == 0) {
+            vblanks(1);
+            shell_pass(&base);
+        }
+        CHECK(v_close(h) == AAR_OK);
+    }
+    CHECK(hx_live_bytes == bytes0);
+    info.size = sizeof(info);
+    for (i = 0; i < 300; i++)
+        CHECK(v_probe_file("Work:good.elf", &info) == AAR_OK);
+    CHECK(hx_live_bytes == bytes0 && hx_files_open == 0);
+    lib_close();
+    CHECK(hx_live_bytes == 0 && hx_live_blocks == 0);
+    for (i = 0; i < 200; i++) {
+        USE(i % 4);
+        CHECK(lib_open() == AAR_OK);
+        h = open_h(NULL);
+        CHECK(v_close(h) == AAR_OK);
+        lib_close();
+        CHECK(T(i % 4)->sig_alloc == 0);
+    }
+    CHECK(hx_live_bytes == 0 && hx_live_blocks == 0);
+    finish();
+}
+
 int main(int argc, char **argv)
 {
     uint32_t len = 0;
@@ -841,6 +890,7 @@ int main(int argc, char **argv)
     test_rename();
     test_lease_gate();
     test_ext();
+    test_alloc_balance();
     printf("shell_test: %lu checks, %lu failures\n", checks, failures);
     free(img);
     return failures ? 1 : 0;

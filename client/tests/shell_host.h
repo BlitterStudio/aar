@@ -118,6 +118,8 @@ HX_UNUSED static void hx_enable(void)
 static uint8_t hx_pool[HX_SLOTS][HX_SLOT] __attribute__((aligned(16)));
 static uint8_t hx_pool_used[HX_SLOTS];
 unsigned long hx_live_blocks;
+unsigned long hx_live_bytes;     /* bytes allocated and not freed */
+static uint32_t hx_pool_size[HX_SLOTS];
 unsigned long hx_alloc_calls;
 int hx_fail_alloc;               /* the next n allocations fail */
 
@@ -136,6 +138,8 @@ HX_UNUSED static void *hx_alloc(uint32_t bytes)
         if (!hx_pool_used[i]) {
             hx_pool_used[i] = 1u;
             hx_live_blocks++;
+            hx_live_bytes += bytes;
+            hx_pool_size[i] = bytes;
             memset(hx_pool[i], 0, HX_SLOT);
             return hx_pool[i];
         }
@@ -153,6 +157,7 @@ HX_UNUSED static void hx_free(void *p)
                 HX_FAIL("double free");
             hx_pool_used[i] = 0u;
             hx_live_blocks--;
+            hx_live_bytes -= hx_pool_size[i];
             /* A pointer that is used after this shows at once. */
             memset(hx_pool[i], 0xA5, HX_SLOT);
             return;

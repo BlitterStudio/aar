@@ -181,6 +181,15 @@ mutant("end-reported-every-scan", "notify", CORE,
        ("        h->ended_notified = 1u;\n", ""))
 mutant("fault-reported-as-complete", "notify", CORE,
        ("end_reason == AAR_END_STUCK_CALL || end_reason == AAR_END_LEASE) ?", "end_reason == AAR_END_STUCK_CALL) ?"))
+# ---- allocator balance (the card's AvailMem check) -------------------------------------
+mutant("handle-memory-not-released", "alloc_balance", CORE,
+       ("    c->env.release(c->env.user, h, bytes);\n}", "    (void)bytes;\n}"))
+mutant("tombstone-memory-not-released", "alloc_balance", CORE,
+       ("        registry_remove(c, gone);\n        handle_free(gone);\n    }\n    return n;",
+        "        registry_remove(c, gone);\n    }\n    return n;"))
+mutant("opener-record-not-freed", "alloc_balance", SHELL,
+       ("    X_SEM_RELEASE(&b->lock);\n    X_FREE(o, sizeof(*o));\n    return 0;\n}",
+        "    X_SEM_RELEASE(&b->lock);\n    return 0;\n}"))
 # ---- shell ----------------------------------------------------------------------------------------
 mutant("signal-bit-per-handle", "lifecycle", SHELL,
        ("    if (o->sigbit < 0) {\n        /* One bit per owner task", "    if (1) {\n        /* One bit per owner task"))
@@ -289,8 +298,8 @@ def run_one(name, test, path, changes, tmp):
             continue
         failed = set(re.findall(r"^FAIL \[([^\]]+)\]", out, re.M))
         last = re.findall(r"^== (\S+)", out, re.M)
-        if not failed and last:
-            failed = {last[-1]}  # a crash: the test that was running
+        if run.returncode not in (0, 1) and last:
+            failed.add(last[-1])  # a crash: the test that was running
         if test in failed:
             extra = sorted(failed - {test})
             return "KILLED", prog + (" (also: %s)" % ", ".join(extra) if extra else "")
