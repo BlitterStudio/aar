@@ -130,6 +130,13 @@ lib_tests() {
     run_tail 1 "$OUT/serve_policy_test_$tag"
     "$CC" $SERVE_CFLAGS "$@" client/tests/run_policy_test.c -o "$OUT/run_policy_test_$tag"
     run_tail 1 "$OUT/run_policy_test_$tag"
+    # The serving loop itself (client/serve/aar_serve.c with its backends) on the
+    # fake system of serve_host.h, the library core and the reference platform.
+    # The Amiga code passes addresses through 32-bit words (DOS packets, tags).
+    "$CC" $LIB_CFLAGS -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -Iclient/serve "$@" \
+        client/tests/serve_loop_test.c client/serve/aar_serve_core.c client/src/aar_core.c client/src/refplat.c \
+        -o "$OUT/serve_loop_test_$tag"
+    run_tail 1 "$OUT/serve_loop_test_$tag"
 }
 lib_tests plain -O2
 if [ "${1:-}" != nom32 ] && cc_can -m32; then

@@ -167,9 +167,16 @@ static void timer_reap(struct aar_serve *s)
 {
     if (!s->tm.io || !s->tm.pending)
         return;
-    if (!X_CHECK_IO((struct IORequest *)s->tm.io))
+    if (!X_CHECK_IO((struct IORequest *)s->tm.io)) {
         X_ABORT_IO((struct IORequest *)s->tm.io);
-    X_WAIT_IO((struct IORequest *)s->tm.io);
+        X_WAIT_IO((struct IORequest *)s->tm.io);
+        /* The abort's reply set the port's signal, and nothing is waiting for
+         * it: left set, the next Wait would return at once, and a DOS packet
+         * wait would abort and re-arm the timer in a loop. */
+        X_SET_SIGNAL(0, 1UL << s->tm.port->mp_SigBit);
+    } else {
+        X_WAIT_IO((struct IORequest *)s->tm.io);
+    }
     s->tm.pending = 0;
 }
 
