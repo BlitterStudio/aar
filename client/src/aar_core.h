@@ -104,6 +104,9 @@ struct aar_core_env {
     /* Gives the CPU away briefly while the dispatcher holds a handle (Delay(1)).
      * May be NULL (spin). */
     void (*yield)(void *user);
+    /* Called before a handle's memory is freed: L2 takes back a notify message
+     * that the handle still has on the port. May be NULL. */
+    void (*retire)(void *user, AARHandle *h);
     uint32_t ticks_per_sec;  /* vertical blanks per second: 50 or 60 */
 };
 
@@ -119,6 +122,7 @@ typedef struct aar_map_slot {
 typedef struct aar_outstanding {
     uint16_t op;          /* 0: free */
     uint32_t id;
+    uint32_t buf, buf_len;/* the request's buffer, kept for the audio ring */
 } aar_outstanding;
 
 struct aar_core;
@@ -144,7 +148,7 @@ struct AARHandle {
     volatile uint8_t *volatile cb;/* control block; NULL once dropped */
     volatile uint32_t lease;      /* last value stored in AAR_CB_LEASE_COUNTER */
     volatile uint8_t renew;       /* 1: the interrupt renews this claim */
-    uint8_t phase;                /* tick offset, spreads the stores */
+    uint8_t countdown;            /* ticks to the next store; starts at the phase, spreads the stores */
     volatile uint32_t pause_until;/* lease_pause: no renewal while ticks < this (0: none) */
 
     /* ---- owner against dispatcher handshake ---- */
@@ -224,6 +228,9 @@ void aar_core_detach(aar_core *c);
 void aar_core_shutdown(aar_core *c);
 
 /* ---- The calls, in vector order ----------------------------------------------------------- */
+
+/* AAR_OK, AAR_E_STALE or AAR_E_OWNER: whether the calling task may use `h`. */
+int aar_core_check(aar_core *c, AARHandle *h);
 
 int aar_core_query(aar_core *c, AARInfo *info);
 
@@ -350,6 +357,13 @@ void aar_core_dispatch(aar_core *c, aar_core_notify_fn notify, void *user);
  * of handles reaped.
  */
 uint32_t aar_core_reap(aar_core *c, aar_core_owner_fn owner_state, void *user);
+
+/*
+ * Fills the handle's AAREvent for L2 to post to the notify port: the type, the
+ * handle pointer and the status as of now. L2 calls it only when the previous
+ * event has been taken off the port.
+ */
+void aar_core_event_fill(AARHandle *h, uint32_t type);
 
 #ifdef __cplusplus
 }
