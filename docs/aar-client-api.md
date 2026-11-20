@@ -504,7 +504,7 @@ seconds. A load that keeps making progress is not timed out.
 
 | Error | Cause |
 |---|---|
-| `AAR_E_BUSY` | an image is already loaded, or the app has started |
+| `AAR_E_BUSY` | a load was already tried on this handle (also one that failed or was cut short), or the app has started |
 | `AAR_E_NOENT` | the file cannot be opened |
 | `AAR_E_IO` | a read failed, or Ctrl-C |
 | `AAR_E_INVAL` | the file is empty or larger than `AARInfo.max_image_bytes`, or the platform's loader refuses the image |
@@ -519,6 +519,13 @@ LONG AARLoadMemory(AARHandle *handle, const void *data, ULONG length);
 
 The same for an image in memory.
 
+Only a load that completed can be started. A load that fails after it began (a
+failed chunk or end, a Ctrl-C, a read error) leaves the handle unloaded for good:
+`AARStart` returns `AAR_E_INVAL` and a new load returns `AAR_E_BUSY`. Close
+the handle and open another. A load the platform refused to begin (for example
+`AAR_E_NORESOURCE` with a `reason`) leaves the handle as it was, and a new
+load may be tried on it.
+
 ### AARStart
 
 ```c
@@ -528,7 +535,10 @@ LONG AARStart(AARHandle *handle, const char *const *argv, ULONG argc);
 Starts the loaded image with `argc` strings, at most `AARInfo.max_args`, each
 under `AARInfo.max_arg_bytes` bytes with its NUL. The first is the program
 name. `argv` may be NULL when `argc` is 0. Returns `AAR_E_INVAL` for a bad
-argument, or when no image is loaded or the app has started already.
+argument, or when no image is loaded (a load that failed or was cut short counts as
+none), or the app has started already. When the platform itself fails the start,
+the error is returned, the handle cannot be started again, and the next step is
+`AARClose`.
 
 ### AARStop
 

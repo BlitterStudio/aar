@@ -546,6 +546,7 @@ static void test_load_file(void)
     CHECK(hx_ctrl_c == 1);           /* left set for the caller */
     CHECK(hx_files_open == 0);
     CHECK(v_load_file(h, "Work:app.elf") == AAR_E_BUSY); /* the load began and was never finished */
+    CHECK(v_start(h, NULL, 0) == AAR_E_INVAL);           /* and no image to start */
     hx_ctrl_c = 0;
     hx_ctrl_c_after_reads = 0;
     CHECK(v_close(h) == AAR_OK);
@@ -557,6 +558,7 @@ static void test_load_file(void)
     CHECK(v_load_file(h, "Work:app.elf") == AAR_E_IO);
     CHECK(hx_files_open == 0);
     hx_fail_read_at = 0;
+    CHECK(v_start(h, NULL, 0) == AAR_E_INVAL);
     CHECK(v_close(h) == AAR_OK);
 
     /* The platform refuses at the end. */
@@ -564,6 +566,7 @@ static void test_load_file(void)
     refplat.load_end_rc = AAR_E_NORESOURCE;
     refplat.load_end_reason = AAR_REASON_MEMORY;
     CHECK(v_load_file(h, "Work:app.elf") == AAR_E_NORESOURCE);
+    CHECK(v_start(h, NULL, 0) == AAR_E_INVAL);
     {
         AARStatusInfo st;
 

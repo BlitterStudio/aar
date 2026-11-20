@@ -91,7 +91,7 @@ mutant("private-mib-unchecked", "tags", CORE,
        ("    case 1u:\n        if (data > TAG_LIMIT_MIB)\n            return AAR_E_INVAL;",
         "    case 1u:"))
 mutant("tags-after-load", "tags", CORE,
-       ("    if (h->load_begun || h->started)\n        return AAR_E_BUSY;\n    if (t->set & (1u << 1))",
+       ("    if (h->load_state != AAR_LOAD_NONE || h->started)\n        return AAR_E_BUSY;\n    if (t->set & (1u << 1))",
         "    if (t->set & (1u << 1))"))
 mutant("image-limit-unchecked", "load_start", CORE,
        ("if (image_bytes == 0u || (pi->max_image_bytes != 0u && image_bytes > pi->max_image_bytes))",
@@ -254,6 +254,25 @@ mutant("hold-reports-success", "hold", LEAK,
 mutant("children-report-success", "children", LEAK,
        ("            printf(\"CreateNewProc failed after %lu children\\n\", (unsigned long)i);\n            return 0;",
         "            printf(\"CreateNewProc failed after %lu children\\n\", (unsigned long)i);\n            return 1;"))
+# ---- start needs a load that completed ---------------------------------------------------------
+mutant("start-accepts-unfinished-load", "load_failure", CORE,
+       ("(h->load_state != AAR_LOAD_LOADED || h->started))\n        rc = AAR_E_INVAL;",
+        "(h->load_state == AAR_LOAD_NONE || h->started))\n        rc = AAR_E_INVAL;"))
+mutant("load-end-failure-counts-as-loaded", "load_failure", CORE,
+       ("        h->load_state = rc == AAR_OK ? AAR_LOAD_LOADED : AAR_LOAD_FAILED;", "        h->load_state = AAR_LOAD_LOADED;"))
+mutant("load-end-success-stays-loading", "load_failure", CORE,
+       ("        h->load_state = rc == AAR_OK ? AAR_LOAD_LOADED : AAR_LOAD_FAILED;", "        h->load_state = rc == AAR_OK ? AAR_LOAD_LOADING : AAR_LOAD_FAILED;"))
+mutant("chunk-failure-not-recorded", "load_failure", CORE,
+       ("    if (rc != AAR_OK && h->load_state == AAR_LOAD_LOADING) /* not after a revoke */\n        h->load_state = AAR_LOAD_FAILED;\n", ""))
+mutant("start-failure-not-recorded", "load_failure", CORE,
+       ("            if (h->load_state == AAR_LOAD_LOADED)\n                h->load_state = AAR_LOAD_FAILED;\n", ""))
+mutant("small-staging-not-recorded", "load_failure", CORE,
+       ("        h->load_state = AAR_LOAD_FAILED;\n        return AAR_E_IO;", "        return AAR_E_IO;"))
+mutant("refused-begin-closes-load", "load_failure", CORE,
+       ("        if (rc == AAR_E_NORESOURCE)\n            h->reason = why;\n        return plat_rc(h, rc);\n    }\n    if (!area",
+        "        if (rc == AAR_E_NORESOURCE)\n            h->reason = why;\n        h->load_state = AAR_LOAD_FAILED;\n        return plat_rc(h, rc);\n    }\n    if (!area"))
+mutant("audio-ring-kept-undelivered", "audio_reply_busy", CORE,
+       ("            if (local.op == AAR_OP_AUDIO_OPEN)\n                audio_detach(h);\n            if (prc == AAR_E_BUSY) {", "            if (prc == AAR_E_BUSY) {"))
 # ---- size and offset arithmetic ---------------------------------------------------------
 mutant("map-length-wraps", "size_arithmetic", CORE,
        ("    if (len > UINT32_MAX - off)\n        return 0;\n", ""))

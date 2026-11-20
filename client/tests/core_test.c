@@ -551,6 +551,100 @@ static void test_load_start(void)
     finish();
 }
 
+/*
+ * The rule: AARStart needs a load that completed. A load the platform failed or
+ * that was not finished leaves the handle where start is refused (AAR_E_INVAL)
+ * and a new load is refused (AAR_E_BUSY); a load the platform refused to begin
+ * leaves the handle as it was.
+ */
+static void expect_unstartable(AARHandle *h, const char *tag)
+{
+    static uint8_t image[5000];
+    const char *argv[1] = { "prog" };
+    AARStatusInfo st;
+    struct aar_core_tags t;
+
+    (void)tag;
+    aar_core_tags_init(&t);
+    CHECK(aar_core_start(&core, h, argv, 1) == AAR_E_INVAL);
+    CHECK(aar_core_load_chunk(&core, h, 0, 10) == AAR_E_INVAL);
+    CHECK(aar_core_load_end(&core, h) == AAR_E_INVAL);
+    CHECK(aar_core_load_memory(&core, h, image, sizeof(image)) == AAR_E_BUSY);
+    CHECK(aar_core_set_tags(&core, h, &t) == AAR_E_BUSY);
+    st.size = sizeof(st);
+    CHECK(aar_core_status(&core, h, &st) == AAR_OK && st.state != AAR_STATE_RUNNING);
+}
+
+static void test_load_failure(void)
+{
+    static uint8_t image[5000];
+    const char *argv[1] = { "prog" };
+    volatile uint8_t *staging;
+    uint32_t chunk;
+    AARStatusInfo st;
+    AARHandle *h;
+
+    setup("load_failure");
+    /* 1. The platform fails the end of the load. */
+    h = open1(1);
+    refplat.load_end_rc = AAR_E_NORESOURCE;
+    refplat.load_end_reason = AAR_REASON_HOSTHEAP;
+    CHECK(aar_core_load_memory(&core, h, image, sizeof(image)) == AAR_E_NORESOURCE);
+    refplat.load_end_rc = AAR_OK;
+    expect_unstartable(h, "end");
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 2. The platform fails a chunk. */
+    h = open1(1);
+    refplat.load_chunk_rc = AAR_E_IO;
+    CHECK(aar_core_load_memory(&core, h, image, sizeof(image)) == AAR_E_IO);
+    refplat.load_chunk_rc = AAR_OK;
+    expect_unstartable(h, "chunk");
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 3. A load that began and was cut short (Ctrl-C between chunks). */
+    h = open1(1);
+    CHECK(aar_core_load_begin(&core, h, sizeof(image), &staging, &chunk) == AAR_OK);
+    CHECK(aar_core_load_chunk(&core, h, 0, 100) == AAR_OK);
+    CHECK(aar_core_start(&core, h, argv, 1) == AAR_E_INVAL);
+    CHECK(aar_core_load_memory(&core, h, image, sizeof(image)) == AAR_E_BUSY);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 4. A platform that begins with a staging area too small to use. */
+    h = open1(1);
+    refplat.chunk_max = 100;
+    CHECK(aar_core_load_begin(&core, h, sizeof(image), &staging, &chunk) == AAR_E_IO);
+    refplat.chunk_max = 0;
+    expect_unstartable(h, "small chunk");
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 5. A refused begin leaves the handle as it was: a new load may be tried. */
+    h = open1(1);
+    refplat.load_begin_rc = AAR_E_NORESOURCE;
+    refplat.load_begin_reason = AAR_REASON_HOSTHEAP;
+    CHECK(aar_core_load_memory(&core, h, image, sizeof(image)) == AAR_E_NORESOURCE);
+    st.size = sizeof(st);
+    CHECK(aar_core_status(&core, h, &st) == AAR_OK && st.reason == AAR_REASON_HOSTHEAP);
+    CHECK(aar_core_start(&core, h, argv, 1) == AAR_E_INVAL);
+    refplat.load_begin_rc = AAR_OK;
+    CHECK(aar_core_load_memory(&core, h, image, sizeof(image)) == AAR_OK);
+    CHECK(aar_core_start(&core, h, argv, 1) == AAR_OK);
+    CHECK(aar_core_status(&core, h, &st) == AAR_OK && st.state == AAR_STATE_RUNNING);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 6. The platform fails the start: no second start, the image is gone. */
+    h = open1(1);
+    CHECK(aar_core_load_memory(&core, h, image, sizeof(image)) == AAR_OK);
+    refplat.start_rc = AAR_E_IO;
+    CHECK(aar_core_start(&core, h, argv, 1) == AAR_E_IO);
+    refplat.start_rc = AAR_OK;
+    expect_unstartable(h, "start");
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 7. A complete load takes no more chunks and no second end. */
+    h = open1(1);
+    CHECK(aar_core_load_memory(&core, h, image, sizeof(image)) == AAR_OK);
+    CHECK(aar_core_load_chunk(&core, h, 0, 10) == AAR_E_INVAL);
+    CHECK(aar_core_load_end(&core, h) == AAR_E_INVAL);
+    CHECK(aar_core_start(&core, h, argv, 1) == AAR_OK);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    finish();
+}
+
 static void test_status(void)
 {
     AARHandle *h;
@@ -1058,6 +1152,40 @@ static void open_audio(AARHandle *h, int slot, uint32_t off, uint32_t frames, ui
     CHECK(refplat_app_cq_pop(slot, entry) == 1);
     aar_entry_get_completion(entry, &c);
     *result = (uint32_t)c.result;
+}
+
+/*
+ * The ring is attached when the open completion is delivered, not before: a
+ * reply that finds the CQ full leaves the stream unattached.
+ */
+static void test_audio_reply_busy(void)
+{
+    AARHandle *h;
+    AARServiceReq req;
+    uint32_t arg[6] = { 48000, 2, AAR_AUDIO_ROUTE_AHI, 0, 0, 0 };
+    uint8_t entry[AAR_ENTRY_BYTES];
+    int16_t pcm[8];
+    ULONG got;
+    int slot;
+
+    setup("audio_reply_busy");
+    h = open1(1);
+    slot = slot_of(h);
+    make_ring(slot, 0x4000, 64, 2, 40);
+    CHECK(refplat_app_request(slot, AAR_OP_AUDIO_OPEN, 0, 300, arg, refplat_buf_token(slot, 0x4000), 0,
+                              0x180) == AAR_OK);
+    req.size = sizeof(req);
+    CHECK(aar_core_service_next(&core, h, &req) == AAR_OK && req.op == AAR_OP_AUDIO_OPEN);
+    req.result = AAR_OK;
+    req.out[AAR_R_AUDIO_OPEN_FRAMES] = 64;
+    fill_cq_with_keys(h, 64);
+    CHECK(aar_core_service_reply(&core, h, &req) == AAR_E_BUSY);
+    CHECK(aar_core_audio_read(&core, h, pcm, 4, &got) == AAR_E_INVAL); /* not attached */
+    CHECK(refplat_app_cq_pop(slot, entry) == 1);
+    CHECK(aar_core_service_reply(&core, h, &req) == AAR_OK);
+    CHECK(aar_core_audio_read(&core, h, pcm, 4, &got) == AAR_OK && got == 4);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    finish();
 }
 
 static void test_audio(void)
@@ -2075,6 +2203,7 @@ int main(void)
     test_owner_stale();
     test_tags();
     test_load_start();
+    test_load_failure();
     test_status();
     test_messages();
     test_events();
@@ -2082,6 +2211,7 @@ int main(void)
     test_service();
     test_logs_and_stats();
     test_audio();
+    test_audio_reply_busy();
     test_shared_map();
     test_lease();
     test_close_order();

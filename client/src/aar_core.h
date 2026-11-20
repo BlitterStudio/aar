@@ -128,6 +128,19 @@ typedef struct aar_outstanding {
 struct aar_core;
 
 /*
+ * Where a handle is on the way to a running app. Only AAR_LOAD_LOADED lets the
+ * app start, and nothing leaves AAR_LOAD_FAILED: the platform's staging area
+ * and half-checked image are not a state to build on, so a handle whose load
+ * failed or was cut short is closed and another is opened.
+ */
+enum {
+    AAR_LOAD_NONE = 0,   /* no load tried, or the platform refused to begin one */
+    AAR_LOAD_LOADING,    /* begun: chunks go in, load_end has not succeeded */
+    AAR_LOAD_LOADED,     /* load_end succeeded: the image is complete */
+    AAR_LOAD_FAILED      /* the platform failed a chunk, the end or the start */
+};
+
+/*
  * One open app instance. Private: use the functions. It is plain storage
  * (about 3.5 KiB) that aar_core_open allocates together with the platform's
  * claim state (aar_plat_ops.claim_priv_bytes).
@@ -169,7 +182,7 @@ struct AARHandle {
     struct aar_plat_load_opts opts;
     volatile uint8_t *load;
     uint32_t chunk_max, image_bytes;
-    uint8_t load_begun, started;
+    uint8_t load_state, started;
 
     /* ---- messages from the app ---- */
     uint8_t inbox[AAR_CORE_INBOX][AAR_MSG_BYTES];
@@ -273,7 +286,11 @@ int aar_core_set_tags(aar_core *c, AARHandle *h, const struct aar_core_tags *t);
  * than AARInfo.max_image_bytes is AAR_E_INVAL. aar_core_load_begin writes the
  * limits, begins the load through the platform and returns the staging area and
  * the most bytes one chunk takes. AAR_E_BUSY when a load already began or the
- * app started.
+ * app started, or when a load was tried on the handle before and did not finish.
+ * A load the platform refused to begin leaves the handle as it was, and a new
+ * one may be tried. Once begun, a load that fails or is not finished leaves the
+ * handle unstartable and closed to a new load: AAR_E_INVAL from start and
+ * from the chunk and end calls, AAR_E_BUSY from a new begin.
  */
 int aar_core_load_begin(aar_core *c, AARHandle *h, uint32_t image_bytes,
                         volatile uint8_t **staging, uint32_t *chunk_max);

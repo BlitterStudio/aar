@@ -75,6 +75,10 @@ struct refplat_state {
     int attach_rc;                /* what `attach` answers (default AAR_OK) */
     uint32_t kick_busy;           /* the next n kicks answer AAR_E_BUSY */
     uint32_t map_mapf;            /* AAR_MAPF_* the map reports (default AAR_MAPF_UNCACHED) */
+    int load_begin_rc;            /* what load_begin answers (default AAR_OK) */
+    uint32_t load_begin_reason;   /* the reason with AAR_E_NORESOURCE */
+    int load_chunk_rc;            /* what load_chunk answers (default AAR_OK) */
+    int start_rc;                 /* what start answers (default AAR_OK) */
     int load_end_rc;              /* what load_end answers (default AAR_OK) */
     uint32_t load_end_reason;     /* the reason with AAR_E_NORESOURCE */
     uint32_t bad_magic;           /* a claim whose control block has no magic */

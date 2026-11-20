@@ -196,9 +196,12 @@ static int op_load_begin(struct aar_plat *p, struct aar_plat_claim *c,
     struct refplat_claim *rc;
 
     (void)p;
-    (void)reason;
     if (slot < 0 || refplat.claims[slot].revoked)
         return AAR_E_STALE;
+    if (refplat.load_begin_rc != AAR_OK) {
+        *reason = refplat.load_begin_reason;
+        return refplat.load_begin_rc;
+    }
     rc = &refplat.claims[slot];
     rc->opts = *opts;
     rc->image_len = rc->image_sum = rc->image_first = rc->chunks = 0u;
@@ -218,6 +221,8 @@ static int op_load_chunk(struct aar_plat *p, struct aar_plat_claim *c,
     (void)p;
     if (slot < 0 || refplat.claims[slot].revoked)
         return AAR_E_STALE;
+    if (refplat.load_chunk_rc != AAR_OK)
+        return refplat.load_chunk_rc;
     rc = &refplat.claims[slot];
     for (i = 0u; i < len; i++)
         rc->image_sum += rc->load[i];
@@ -254,6 +259,8 @@ static int op_start(struct aar_plat *p, struct aar_plat_claim *c,
     (void)p;
     if (slot < 0 || refplat.claims[slot].revoked)
         return AAR_E_STALE;
+    if (refplat.start_rc != AAR_OK)
+        return refplat.start_rc;
     rc = &refplat.claims[slot];
     rc->argc = argc;
     for (i = 0u; i < argc && i < 4u; i++) {

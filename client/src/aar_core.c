@@ -328,7 +328,7 @@ static void drop_pointers(AARHandle *h)
     h->audio = NULL;
     h->audio_frames = 0u;
     h->audio_channels = 0u;
-    h->load_begun = 0u;
+    h->load_state = AAR_LOAD_NONE;
     memset(h->maps, 0, sizeof(h->maps));
     h->map_next = 0u;
     memset(h->out, 0, sizeof(h->out));
@@ -796,7 +796,7 @@ static int set_tags_locked(AARHandle *h, const struct aar_core_tags *t)
 
     if (rc != AAR_OK)
         return rc;
-    if (h->load_begun || h->started)
+    if (h->load_state != AAR_LOAD_NONE || h->started)
         return AAR_E_BUSY;
     if (t->set & (1u << 1))
         h->private_mib = t->private_mib;
@@ -836,7 +836,7 @@ static int load_begin(AARHandle *h, uint32_t image_bytes, volatile uint8_t **sta
 
     if (rc != AAR_OK)
         return rc;
-    if (h->load_begun || h->started)
+    if (h->load_state != AAR_LOAD_NONE || h->started)
         return AAR_E_BUSY;
     if (image_bytes == 0u || (pi->max_image_bytes != 0u && image_bytes > pi->max_image_bytes))
         return AAR_E_INVAL;
@@ -850,12 +850,15 @@ static int load_begin(AARHandle *h, uint32_t image_bytes, volatile uint8_t **sta
             h->reason = why;
         return plat_rc(h, rc);
     }
-    if (!area || chunk < 4096u)
+    if (!area || chunk < 4096u) {
+        /* The platform has begun: this handle cannot load again. */
+        h->load_state = AAR_LOAD_FAILED;
         return AAR_E_IO;
+    }
     h->load = area;
     h->chunk_max = chunk;
     h->image_bytes = image_bytes;
-    h->load_begun = 1u;
+    h->load_state = AAR_LOAD_LOADING;
     if (staging)
         *staging = area;
     if (chunk_max)
@@ -881,12 +884,15 @@ static int load_chunk(AARHandle *h, uint32_t file_off, uint32_t len)
 
     if (rc != AAR_OK)
         return rc;
-    if (!h->load_begun || h->started)
+    if (h->load_state != AAR_LOAD_LOADING || h->started)
         return AAR_E_INVAL;
     if (len == 0u || len > h->chunk_max || file_off > h->image_bytes ||
         len > h->image_bytes - file_off)
         return AAR_E_INVAL;
-    return plat_rc(h, ops_of(h)->load_chunk(plat_of(h), &h->claim, file_off, len));
+    rc = plat_rc(h, ops_of(h)->load_chunk(plat_of(h), &h->claim, file_off, len));
+    if (rc != AAR_OK && h->load_state == AAR_LOAD_LOADING) /* not after a revoke */
+        h->load_state = AAR_LOAD_FAILED;
+    return rc;
 }
 
 int aar_core_load_chunk(aar_core *c, AARHandle *h, uint32_t file_off, uint32_t len)
@@ -907,12 +913,15 @@ static int load_end(AARHandle *h)
 
     if (rc != AAR_OK)
         return rc;
-    if (!h->load_begun || h->started)
+    if (h->load_state != AAR_LOAD_LOADING || h->started)
         return AAR_E_INVAL;
     rc = ops_of(h)->load_end(plat_of(h), &h->claim, &why);
     if (rc == AAR_E_NORESOURCE)
         h->reason = why;
-    return plat_rc(h, rc);
+    rc = plat_rc(h, rc);
+    if (h->load_state == AAR_LOAD_LOADING) /* not after a revoke */
+        h->load_state = rc == AAR_OK ? AAR_LOAD_LOADED : AAR_LOAD_FAILED;
+    return rc;
 }
 
 int aar_core_load_end(aar_core *c, AARHandle *h)
@@ -961,7 +970,7 @@ int aar_core_start(aar_core *c, AARHandle *h, const char *const *argv, ULONG arg
     if (rc != AAR_OK)
         return rc;
     rc = claim_live(h);
-    if (rc == AAR_OK && (!h->load_begun || h->started))
+    if (rc == AAR_OK && (h->load_state != AAR_LOAD_LOADED || h->started))
         rc = AAR_E_INVAL;
     if (rc == AAR_OK && ((pi->max_args != 0u && argc > pi->max_args) ||
                          (argc != 0u && !argv)))
@@ -980,10 +989,13 @@ int aar_core_start(aar_core *c, AARHandle *h, const char *const *argv, ULONG arg
         if (rc == AAR_OK) {
             /* The platform frees its staging area once it has the arguments. */
             h->started = 1u;
-            h->load_begun = 0u;
+            h->load_state = AAR_LOAD_NONE;
             h->load = NULL;
         } else {
             rc = plat_rc(h, rc);
+            /* The platform may have gone part of the way: no second start. */
+            if (h->load_state == AAR_LOAD_LOADED)
+                h->load_state = AAR_LOAD_FAILED;
         }
     }
     leave(h);
@@ -1501,13 +1513,15 @@ int aar_core_service_reply(aar_core *c, AARHandle *h, const AARServiceReq *req)
         int prc = aar_queue_post_completion(&h->cq, &comp, ops_of(h)->barrier_acquire,
                                             ops_of(h)->barrier_release);
 
-        if (prc == AAR_E_BUSY) {
-            h->stats.reply_busy++;
-            cb_add(h, AAR_CB_CQ_FULL, 1u);
-            leave(h);
-            return prc;
-        }
         if (prc != AAR_OK) {
+            /* Not delivered: the ring is attached only with the completion that
+             * tells the app it is open. The retry attaches it again. */
+            if (local.op == AAR_OP_AUDIO_OPEN)
+                audio_detach(h);
+            if (prc == AAR_E_BUSY) {
+                h->stats.reply_busy++;
+                cb_add(h, AAR_CB_CQ_FULL, 1u);
+            }
             leave(h);
             return prc;
         }
