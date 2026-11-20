@@ -4,3 +4,5 @@
 *.a binary
 *.o binary
 *.bin binary
+
+*.info binary

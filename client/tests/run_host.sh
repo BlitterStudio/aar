@@ -52,6 +52,9 @@ cc_can() {
 # The client API document names every public symbol.
 "$PYTHON" client/tools/check_client_doc.py --self-test
 
+# The Workbench icon of aar-run is what its generator makes.
+"$PYTHON" client/run/make_icon.py --check
+
 run() {
     name=$1
     shift
@@ -68,7 +71,7 @@ fi
 
 # C++ sees the same headers.
 if command -v "${CXX:-g++}" >/dev/null 2>&1; then
-    for h in libraries/aar.h libraries/aar_zz9000.h proto/aar.h; do
+    for h in libraries/aar.h libraries/aar_zz9000.h libraries/aar_serve.h proto/aar.h; do
         printf '#include <%s>\n' "$h" > "$OUT/header.cc"
         "${CXX:-g++}" -std=c++11 -Wall -Wextra -Werror \
             -Iclient/tests/stubs -Iclient/include -Iinclude -fsyntax-only "$OUT/header.cc"
@@ -105,6 +108,7 @@ fi
 LIB_CFLAGS="$CFLAGS -Iclient/tests -no-pie -fno-pie"
 CORE_SRC="client/tests/core_test.c client/src/aar_core.c client/src/refplat.c"
 SHELL_SRC="client/tests/shell_test.c client/src/aar_core.c client/src/refplat.c client/src/aar_probe.c"
+SERVE_CFLAGS="$CFLAGS -Iclient/serve -Iclient/run"
 "$PYTHON" client/tests/make_images.py "$OUT/good.elf"
 lib_tests() {
     tag=$1
@@ -116,6 +120,16 @@ lib_tests() {
     # The process handling of the leak probe, on a model of the calls it makes.
     "$CC" $LIB_CFLAGS -Wno-unused-function -pthread "$@" client/tests/aarleak_test.c -o "$OUT/aarleak_test_$tag"
     run_tail 1 "$OUT/aarleak_test_$tag"
+    # The serving loop's OS-free core (client/serve) and the launcher's policy
+    # (client/run), moved from ZZRun: the request handlers against a fake
+    # volume, console, display and audio, and the decisions of the loop and of
+    # the launcher. No library, no reference platform.
+    "$CC" $SERVE_CFLAGS "$@" client/tests/serve_core_test.c client/serve/aar_serve_core.c -o "$OUT/serve_core_test_$tag"
+    run_tail 1 "$OUT/serve_core_test_$tag"
+    "$CC" $SERVE_CFLAGS "$@" client/tests/serve_policy_test.c client/serve/aar_serve_core.c -o "$OUT/serve_policy_test_$tag"
+    run_tail 1 "$OUT/serve_policy_test_$tag"
+    "$CC" $SERVE_CFLAGS "$@" client/tests/run_policy_test.c -o "$OUT/run_policy_test_$tag"
+    run_tail 1 "$OUT/run_policy_test_$tag"
 }
 lib_tests plain -O2
 if [ "${1:-}" != nom32 ] && cc_can -m32; then

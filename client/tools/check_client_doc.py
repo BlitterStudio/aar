@@ -117,6 +117,57 @@ def self_test(headers_text, fd_text, app_text, doc_text):
     print("injection rejected: macro, typedef, struct, call, error code")
 
 
+SERVE_HEADER = ROOT / "client" / "include" / "libraries" / "aar_serve.h"
+SERVE_DOC = ROOT / "docs" / "aar-serve-api.md"
+
+
+def serve_symbols(header_text):
+    """What docs/aar-serve-api.md must name: every AAR_ macro, structure, typedef
+    and call that libraries/aar_serve.h declares."""
+    code = strip_comments(header_text)
+    names = macros(header_text)
+    names += ["struct " + n for n in re.findall(r"^struct\s+(aar_serve\w*)\s*\{", code, re.M)]
+    names += re.findall(r"^\}\s*(aar_serve\w*)\s*;", code, re.M)
+    names += re.findall(r"^typedef\s+struct\s+\w+\s+(aar_serve\w*)\s*;", code, re.M)
+    names += re.findall(r"^[A-Za-z][\w \*]*?\b(aar_serve_\w+)\s*\(", code, re.M)
+    seen, ordered = set(), []
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return ordered
+
+
+def check_serve(self_test):
+    header = SERVE_HEADER.read_text(encoding="utf-8")
+    doc = SERVE_DOC.read_text(encoding="utf-8")
+    have = documented(doc)
+
+    def absent(header_text, doc_names):
+        return [n for n in serve_symbols(header_text) if n.split()[-1] not in doc_names]
+
+    lacking = absent(header, have)
+    if lacking:
+        sys.stderr.write("%s lacks an entry for:\n" % SERVE_DOC.name)
+        for name in lacking:
+            sys.stderr.write("  %s\n" % name)
+        return 1
+    print("serve API doc: %d symbols documented" % len(serve_symbols(header)))
+    if self_test:
+        cases = {
+            "macro": ("#define AAR_SERVE_NOT_DOCUMENTED 1\n", "AAR_SERVE_NOT_DOCUMENTED"),
+            "struct": ("struct aar_serve_not_documented {\n    int x;\n};\n", "struct aar_serve_not_documented"),
+            "typedef": ("typedef struct aar_serve_nd aar_serve_nd;\n", "aar_serve_nd"),
+            "call": ("void aar_serve_not_a_call(aar_serve *s);\n", "aar_serve_not_a_call"),
+        }
+        for kind, (text, want) in cases.items():
+            if want not in absent(header + "\n" + text, have):
+                raise SystemExit("injected %s %s was not reported" % (kind, want))
+        print("injection rejected: serve macro, struct, typedef, call")
+    return 0
+
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--self-test", action="store_true")
@@ -135,7 +186,7 @@ def main():
           len(required(headers_text, fd_text, app_text)))
     if args.self_test:
         self_test(headers_text, fd_text, app_text, doc_text)
-    return 0
+    return check_serve(args.self_test)
 
 
 if __name__ == "__main__":

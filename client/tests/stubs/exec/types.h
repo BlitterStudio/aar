@@ -18,5 +18,7 @@ typedef int16_t WORD;
 typedef uint8_t UBYTE;
 typedef int8_t BYTE;
 typedef uint32_t APTR;
+typedef char *STRPTR;
+typedef const char *CONST_STRPTR;
 
 #endif

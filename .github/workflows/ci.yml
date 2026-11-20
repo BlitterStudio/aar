@@ -115,8 +115,11 @@ jobs:
   # against a reference platform and the AmigaOS shell on a fake system (both
   # also under the address and undefined-behaviour sanitizers), those tests fail
   # on deliberately broken code (client/tests/mutants.py), and the client API
-  # document names every public symbol. 64-bit and -m32. The scripts that run
-  # these tests are themselves tested to stop on a failing program.
+  # document names every public symbol. The serving loop of aar_serve and the
+  # launcher aar-run (client/serve, client/run) have their host tests here too:
+  # the request handlers on a fake volume, console, display and audio, and the
+  # decisions of the loop and of the launcher. 64-bit and -m32. The scripts that
+  # run these tests are themselves tested to stop on a failing program.
   client-host:
     name: client library host tests
     runs-on: ubuntu-latest
@@ -128,15 +131,16 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             gcc gcc-multilib g++ python3
-      - name: Generator check, layouts, probe, core, shell, mutants, API document
+      - name: Generator check, layouts, probe, core, shell, serve and run tests, mutants, API documents
         run: sh client/tests/run_host.sh
       - name: The test scripts stop when a program they run fails
         run: sh client/tests/scripts_test.sh
 
-  # The client headers and the library sources (core, probe, shell, reference
-  # platform) with the cross compiler that builds zz9k.library (the image the
-  # firmware SDK pins by digest), compile only: no warning, no function above
-  # 1 KiB of stack, every vector called through the library base.
+  # The client headers, the library sources (core, probe, shell, reference
+  # platform), the serving loop and the launcher with the cross compiler that
+  # builds zz9k.library (the image the firmware SDK pins by digest), compile
+  # only: no warning, no function above 1 KiB of stack (4 KiB in the serving
+  # code), every vector called through the library base. aar-run is linked.
   client-m68k:
     name: client headers for AmigaOS m68k
     runs-on: ubuntu-latest
