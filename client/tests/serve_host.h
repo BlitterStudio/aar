@@ -2079,6 +2079,7 @@ HX_UNUSED static void hx_reset(void)
 #define X_AAR_SHARED_TOKEN(h, p, n, t) hx_aar_shared_token((h), (p), (n), (t))
 #define X_AAR_MESSAGE_SIGNAL(h) aar_core_message_signal(hx_aar, (h))
 #define X_AAR_SET_LOG_SINK(h, sink, user) hx_aar_set_log_sink((h), (sink), (user))
+#define X_AAR_QUERY(info) aar_core_query(hx_aar, (info))
 
 #define X_GET_SYS_TIME(s, tv)                                                                  \
     do {                                                                                       \

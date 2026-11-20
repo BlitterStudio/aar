@@ -19,6 +19,7 @@
 #include <libraries/aar.h>
 #include <libraries/aar_serve.h>
 
+/* The stop grace when the platform reports none (AARInfo.stop_grace_ms is 0). */
 #define AAR_SERVE_GRACE_MS 500u
 
 static inline uint32_t aar_serve_be32(const uint8_t *p)
@@ -83,6 +84,7 @@ struct aar_serve_exit_in {
     int user_stop;
     int output_pending;
     int output_failed;
+    uint32_t grace_ms; /* AARInfo.stop_grace_ms; 0: AAR_SERVE_GRACE_MS */
 };
 
 /* A failed drain must not keep the launcher alive. Pending output still
@@ -95,9 +97,11 @@ static inline int aar_serve_output_blocks_exit(int output_pending, int output_fa
 static inline int aar_serve_run_should_exit(const struct aar_serve_exit_in *in)
 {
     int blocked;
+    uint32_t grace;
 
     if (!in)
         return 0;
+    grace = in->grace_ms ? in->grace_ms : AAR_SERVE_GRACE_MS;
     /* A stale handle belongs to nobody this launcher can serve. */
     if (in->lost)
         return 1;
@@ -105,7 +109,7 @@ static inline int aar_serve_run_should_exit(const struct aar_serve_exit_in *in)
     /* Ctrl-C ends the process once both grace periods have elapsed, even
      * when console output is still queued. The faulted path must not skip
      * this: that was the hang. */
-    if (in->user_stop && in->elapsed_ms >= AAR_SERVE_GRACE_MS * 2u)
+    if (in->user_stop && in->elapsed_ms >= grace * 2u)
         return 1;
     if ((in->state == AAR_STATE_FAULTED ||
          in->end_reason == AAR_END_RUNTIME_RESTART) &&
@@ -114,11 +118,11 @@ static inline int aar_serve_run_should_exit(const struct aar_serve_exit_in *in)
     if (in->entered &&
         (in->state == AAR_STATE_IDLE ||
          (in->state == AAR_STATE_STOPPING && in->stop_asked &&
-          in->elapsed_ms >= AAR_SERVE_GRACE_MS)) &&
-        (!in->stop_asked || in->elapsed_ms >= AAR_SERVE_GRACE_MS) &&
+          in->elapsed_ms >= grace)) &&
+        (!in->stop_asked || in->elapsed_ms >= grace) &&
         !blocked)
         return 1;
-    if (in->stop_asked && in->elapsed_ms >= AAR_SERVE_GRACE_MS * 2u &&
+    if (in->stop_asked && in->elapsed_ms >= grace * 2u &&
         !blocked)
         return 1;
     return 0;

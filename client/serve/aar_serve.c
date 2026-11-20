@@ -434,6 +434,15 @@ LONG aar_serve_create(AARHandle *h, const aar_serve_config *cfg,
         serve_free(s);
         return rc;
     }
+    {
+        /* How long an app gets to honour a stop: the platform says. */
+        AARInfo info;
+
+        memset(&info, 0, sizeof(info));
+        info.size = sizeof(info);
+        if (X_AAR_QUERY(&info) == AAR_OK)
+            s->grace_ms = info.stop_grace_ms;
+    }
     if (cfg->root) {
         s->root = X_DUP_LOCK(cfg->root);
     } else {
@@ -601,6 +610,7 @@ LONG aar_serve_step(aar_serve *s, ULONG signals)
     leave.user_stop = s->user_stop;
     leave.output_pending = aar_serve_console_output_pending(&s->core.console);
     leave.output_failed = s->console_output_failed;
+    leave.grace_ms = s->grace_ms;
     if (aar_serve_run_should_exit(&leave)) {
         timer_reap(s);
         return AAR_SERVE_ENDED;

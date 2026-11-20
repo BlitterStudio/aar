@@ -126,6 +126,7 @@
 #define X_AAR_SHARED_TOKEN(...) AARSharedToken(__VA_ARGS__)
 #define X_AAR_MESSAGE_SIGNAL(...) AARMessageSignal(__VA_ARGS__)
 #define X_AAR_SET_LOG_SINK(...) AARSetLogSink(__VA_ARGS__)
+#define X_AAR_QUERY(...) AARQuery(__VA_ARGS__)
 
 /* Calls that need a library base the program does not have: aar_serve opens
  * timer.device and Picasso96API.library itself and keeps the bases in the
@@ -206,6 +207,7 @@ struct aar_serve {
     int stop_event_sent;
     uint32_t stop_ms;
     uint32_t app_state;
+    uint32_t grace_ms;                  /* AARInfo.stop_grace_ms at create; 0: AAR_SERVE_GRACE_MS */
     int saw_fault;
     int ownership_lost;
     int queue_corrupt;

@@ -788,6 +788,34 @@ static void test_async_release_preserves_or_frees_resources_by_delivery(void)
     assert(release.sends == 1);
 }
 
+/* The time an app gets to honour a stop is the platform's (AARInfo.stop_grace_ms);
+ * the default applies only when the platform says none. */
+static void test_the_stop_grace_is_the_platforms(void)
+{
+    struct aar_serve_exit_in in = exit_in(AAR_STATE_STOPPING, 0u, 1500u, 1, 0, 0, 0);
+
+    in.grace_ms = 2000u;
+    assert(aar_serve_run_should_exit(&in) == 0);
+    in.elapsed_ms = 2000u;
+    assert(aar_serve_run_should_exit(&in) == 1);
+    in.grace_ms = 100u;
+    in.elapsed_ms = 99u;
+    assert(aar_serve_run_should_exit(&in) == 0);
+    in.elapsed_ms = 100u;
+    assert(aar_serve_run_should_exit(&in) == 1);
+    /* A user stop ends the run after two graces even if output is pending. */
+    in = exit_in(AAR_STATE_RUNNING, 0u, 399u, 1, 1, 1, 0);
+    in.grace_ms = 200u;
+    assert(aar_serve_run_should_exit(&in) == 0);
+    in.elapsed_ms = 400u;
+    assert(aar_serve_run_should_exit(&in) == 1);
+    /* None reported: the default. */
+    in = exit_in(AAR_STATE_STOPPING, 0u, AAR_SERVE_GRACE_MS - 1u, 1, 0, 0, 0);
+    assert(aar_serve_run_should_exit(&in) == 0);
+    in.elapsed_ms = AAR_SERVE_GRACE_MS;
+    assert(aar_serve_run_should_exit(&in) == 1);
+}
+
 int main(void)
 {
     test_output_failure_does_not_block_exit();
@@ -803,6 +831,7 @@ int main(void)
     test_screen_buffer_safe_messages_are_all_reaped();
     test_launcher_output_reserves_status_room();
     test_launcher_output_orders_queued_messages_before_app_output();
+    test_the_stop_grace_is_the_platforms();
     test_open_flags_map_to_one_plan_each();
     test_open_flag_refusals_are_the_invalid_combinations();
     test_dos_packet_transport_and_error_are_distinct();

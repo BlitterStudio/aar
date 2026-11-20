@@ -1394,6 +1394,38 @@ static void test_a_bitmap_token_outside_the_old_window_is_accepted(void)
     finish();
 }
 
+/* ---- Tests: the stop grace -------------------------------------------------------------------------------------- */
+
+/* The time an app gets to honour a stop is AARInfo.stop_grace_ms, not a number
+ * of the launcher: the loop waits that long (and no longer) after a stop. */
+static void stop_grace_run(uint32_t grace_ms, uint64_t *ended_us)
+{
+    struct comp c;
+
+    setup("stop_grace");
+    refplat.info.stop_grace_ms = grace_ms;
+    make_serve();
+    hx_sched(5000, ctrl_c_cb, NULL);
+    hx_sched(20000, exit_cb, H);
+    CHECK(aar_serve_run(S) == AAR_SERVE_ENDED);
+    *ended_us = hx_now;
+    (void)next_comp(&c);
+    finish();
+}
+
+static void test_the_stop_grace_is_the_platforms(void)
+{
+    uint64_t t;
+
+    stop_grace_run(2000, &t);
+    CHECK(t >= 5000 + 2000 * 1000ULL && t < 5000 + 2000 * 1000ULL + 50000);
+    stop_grace_run(100, &t);
+    CHECK(t >= 5000 + 100 * 1000ULL && t < 5000 + 100 * 1000ULL + 50000);
+    /* A platform that reports none: the default of the loop. */
+    stop_grace_run(0, &t);
+    CHECK(t >= 5000 + AAR_SERVE_GRACE_MS * 1000ULL && t < 5000 + AAR_SERVE_GRACE_MS * 1000ULL + 50000);
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -1440,6 +1472,7 @@ static const struct {
     T(test_the_output_error_note_goes_to_the_user_console),
     T(test_a_refused_audio_ring_closes_ahi),
     T(test_a_bitmap_token_outside_the_old_window_is_accepted),
+    T(test_the_stop_grace_is_the_platforms),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */
