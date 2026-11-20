@@ -213,6 +213,12 @@ mutant("expunge-ignores-interrupt", "dispatcher", SHELL,
        ("    return !b->disp_process && !b->dispatcher_up && !b->vblank_installed;", "    return 1;"))
 mutant("expunge-does-not-stop", "dispatcher", SHELL,
        ("static int shell_expunge_ready(struct AARBase *b)\n{\n    shell_final_close(b);\n", "static int shell_expunge_ready(struct AARBase *b)\n{\n"))
+mutant("wait-not-withdrawn", "single_signal", SHELL,
+       ("    *slot = NULL;\n    X_SINGLE_CLEAR();\n    X_PERMIT();", "    *slot = NULL;\n    X_PERMIT();"))
+mutant("wake-without-waiter-check", "dispatcher", SHELL,
+       ("    if (waiter)\n        X_SIGNAL(waiter, X_SINGLE);", "    X_SIGNAL(waiter, X_SINGLE);"))
+mutant("wake-after-waiter-left", "single_signal", SHELL,
+       ("    shell_wait_done(&b->stop_task);\n", "    b->stop_task = NULL;\n"))
 # ---- size and offset arithmetic ---------------------------------------------------------
 mutant("map-length-wraps", "size_arithmetic", CORE,
        ("    if (len > UINT32_MAX - off)\n        return 0;\n", ""))

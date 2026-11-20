@@ -44,6 +44,8 @@ static int hx_fail_spawn;          /* the next spawn fails */
 static uint32_t hx_disp_sigs;      /* signal bits the dispatcher's task has allocated already */
 static unsigned long hx_vblank_installs, hx_vblank_removes;
 static int hx_vblank_stuck;        /* the interrupt cannot be removed */
+static int hx_eager_start;         /* the process runs at once, before the starter goes on */
+static int hx_eager_stop;          /* the process ends at once when it is told, before the stopper goes on */
 
 static void hx_process_gone(void)
 {
@@ -80,6 +82,22 @@ static void hx_disp_begin(void)
     hx_cur = caller;
 }
 
+/* A process of higher priority than the task that signals it runs at once. */
+static void hx_preempt(const void *task, uint32_t mask)
+{
+    if (hx_eager_stop && (mask & SIGBREAKF_CTRL_C) && task == &hx_tasks[HX_DISP] &&
+        hx_disp_base && hx_disp_base->disp_stop && hx_bg == hx_disp_end) {
+        hx_bg = NULL;
+        hx_disp_end();
+    }
+}
+
+/* SIGF_SINGLE goes only to a task that has published itself as waiting. */
+static int hx_in_handshake(const void *task)
+{
+    return hx_disp_base && (task == hx_disp_base->start_task || task == hx_disp_base->stop_task);
+}
+
 static int hx_spawn(struct AARBase *b)
 {
     hx_dispatcher_starts++;
@@ -96,6 +114,10 @@ static int hx_spawn(struct AARBase *b)
     hx_tasks[HX_DISP].sig_alloc = hx_disp_sigs;
     b->disp_process = &hx_tasks[HX_DISP];
     hx_bg = hx_disp_begin;
+    if (hx_eager_start) {
+        hx_bg = NULL;
+        hx_disp_begin();
+    }
     return AAR_OK;
 }
 
@@ -170,6 +192,10 @@ static void setup(const char *name)
     hx_disp_sigs = 0;
     hx_vblank_installs = hx_vblank_removes = 0;
     hx_vblank_stuck = 0;
+    hx_eager_start = hx_eager_stop = 0;
+    hx_stale_obtains = 0;
+    hx_on_signal = hx_preempt;
+    hx_single_ok = hx_in_handshake;
     hx_delays = 0;
     memset(hx_ports, 0, sizeof(hx_ports));
     memset(ports, 0, sizeof(ports));
@@ -205,6 +231,7 @@ static void finish(void)
 {
     CHECK(base.lock.excl == 0 && base.lock.shared == 0);
     CHECK(base.ctl.excl == 0 && base.ctl.shared == 0);
+    CHECK(hx_stale_obtains == 0); /* no semaphore was obtained with SIGF_SINGLE set */
     CHECK(hx_disabled == 0);
     CHECK(hx_forbid == 0);
     CHECK(refplat_live() == 0);
@@ -1256,6 +1283,66 @@ static void test_dispatcher(void)
     finish();
 }
 
+/*
+ * The handshakes of the dispatcher use SIGF_SINGLE, which Exec's semaphores use
+ * as well: a task that leaves it set makes its next contended ObtainSemaphore
+ * return without owning the semaphore. The rule: the waiter's SIGF_SINGLE is
+ * clear when the handshake returns, whichever of the two ran first, and the
+ * process signals it only while the waiter has published itself. The cases are
+ * the orders in which the process and the waiter can meet.
+ */
+static int single_clear(void)
+{
+    return (hx_cur->signals & SIGF_SINGLE) == 0;
+}
+
+static void test_single_signal(void)
+{
+    AARInfo info;
+
+    setup("single_signal");
+    info.size = sizeof(info);
+    /* The process runs before the starter tests its condition: the starter never waits. */
+    hx_eager_start = 1;
+    CHECK(lib_open() == AAR_OK);
+    CHECK(v_query(&info) == AAR_OK && base.dispatcher_up == 1);
+    CHECK(hx_waits == 0);
+    CHECK(single_clear());
+    /* The process ends before the stopper tests its condition: the stopper never waits. */
+    hx_eager_stop = 1;
+    shell_dispatcher_stop(&base);
+    CHECK(base.disp_process == NULL && single_clear());
+    CHECK(hx_waits == 0);
+    lib_close();
+    /* The start fails before the starter tests its condition. */
+    hx_disp_sigs = 0xFFFFFFFFu;
+    CHECK(lib_open() == AAR_OK);
+    CHECK(v_query(&info) == AAR_E_NOMEM && single_clear() && hx_forbid == 0);
+    hx_disp_sigs = 0;
+    /* Both wait, and are woken by the process (the usual order). */
+    hx_eager_start = hx_eager_stop = 0;
+    CHECK(v_query(&info) == AAR_OK && single_clear());
+    CHECK(hx_waits >= 1);
+    shell_dispatcher_stop(&base);
+    CHECK(base.disp_process == NULL && single_clear());
+    lib_close();
+    /* A wake with no reason inside the handshake. */
+    CHECK(lib_open() == AAR_OK);
+    hx_spurious = 1;
+    CHECK(v_query(&info) == AAR_OK && single_clear());
+    hx_spurious = 1;
+    shell_dispatcher_stop(&base);
+    CHECK(base.disp_process == NULL && single_clear());
+    lib_close();
+    /* The start fails after a spawn that deferred the process. */
+    hx_disp_sigs = 0xFFFFFFFFu;
+    CHECK(lib_open() == AAR_OK);
+    CHECK(v_query(&info) == AAR_E_NOMEM && single_clear() && hx_forbid == 0);
+    hx_disp_sigs = 0;
+    lib_close();
+    finish();
+}
+
 int main(int argc, char **argv)
 {
     uint32_t len = 0;
@@ -1269,6 +1356,7 @@ int main(int argc, char **argv)
     good_len = len;
     test_lifecycle();
     test_dispatcher();
+    test_single_signal();
     test_last_close();
     test_owner_stale();
     test_attach_failure();

@@ -73,6 +73,16 @@ unsigned long hx_delays;
 unsigned long hx_dispatcher_starts, hx_dispatcher_stops;
 int hx_forbid;                   /* Forbid() nesting of the running task */
 unsigned long hx_waits;
+/* Exec's semaphores wait on SIGF_SINGLE too: a contended ObtainSemaphore of a
+ * task that has the bit set returns without owning the semaphore. The fake
+ * counts the obtains made with the bit set (and takes the bit, as that Wait
+ * would). */
+unsigned long hx_stale_obtains;
+/* Called after every Signal(): the test lets a higher-priority process run at
+ * once. And: whether a SIGF_SINGLE to this task is expected (a handshake is in
+ * progress); the fake aborts on one that is not. */
+void (*hx_on_signal)(const void *task, uint32_t mask);
+int (*hx_single_ok)(const void *task);
 int hx_spurious;                 /* the next n Waits end early, with nothing happened */
 void (*hx_bg)(void);             /* what the other processes do while the current task waits */
 
@@ -80,6 +90,10 @@ void (*hx_bg)(void);             /* what the other processes do while the curren
 
 HX_UNUSED static void hx_sem_obtain(struct hx_sem *s, int shared)
 {
+    if (hx_cur->signals & SIGF_SINGLE) {
+        hx_stale_obtains++;
+        hx_cur->signals &= ~SIGF_SINGLE;
+    }
     if (shared) {
         if (s->excl)
             HX_FAIL("shared obtain while exclusively held (one thread would deadlock)");
@@ -398,9 +412,13 @@ HX_UNUSED static void hx_signal(const void *task, uint32_t mask)
     /* Signalling a task that is gone writes into freed memory. */
     if (!hx_task_lookup(task, &st))
         HX_FAIL("Signal to a task that is not on a task list");
+    if (mask == SIGF_SINGLE && hx_single_ok && !hx_single_ok(task))
+        HX_FAIL("SIGF_SINGLE sent to a task that is not in a handshake");
     t->signals |= mask;
     if (mask != SIGF_SINGLE) /* `signalled` counts notifications, not handshakes */
         t->signalled++;
+    if (hx_on_signal)
+        hx_on_signal(task, mask);
 }
 
 /*
@@ -463,6 +481,12 @@ HX_UNUSED static uint32_t hx_wait(uint32_t mask)
 #define X_TASK_LOOKUP_LOCKED(task, st) hx_task_lookup((task), (st))
 #define X_STAMP(task, st) hx_stamp((struct hx_task *)(uintptr_t)(task), (st))
 #define X_FORBID() (hx_forbid++)
+#define X_PERMIT() \
+    do {                                                       \
+        if (hx_forbid <= 0)                                    \
+            HX_FAIL("Permit without Forbid");                  \
+        hx_forbid--;                                           \
+    } while (0)
 #define X_WAIT(mask) hx_wait(mask)
 #define X_SINGLE SIGF_SINGLE
 #define X_BREAK SIGBREAKF_CTRL_C

@@ -93,6 +93,7 @@ extern struct Library *UtilityBase;
 #define X_CLOSE_SYSTEM() aar_x_close_system()
 /* The dispatcher process: its start and stop are handshakes (see shell_dispatcher_*). */
 #define X_FORBID() Forbid()
+#define X_PERMIT() Permit()
 #define X_WAIT(mask) Wait(mask)
 #define X_SINGLE SIGF_SINGLE
 #define X_BREAK SIGBREAKF_CTRL_C
@@ -457,11 +458,19 @@ static void shell_vblank(struct AARBase *b)
  * has none, and its last CloseLibrary must still stop it): both use SIGF_SINGLE,
  * the signal Exec keeps for exactly this, a one-shot wait that library code
  * makes. On AmigaOS 3.x it is bit 4 of every task, never handed out by
- * AllocSignal. The discipline of its documentation is followed: the waiter
- * clears it before the request goes out, waits only for it, and re-tests the
- * condition it waits for after every wake, so a stale or early signal costs one
- * more Wait and a lost one cannot happen (Signal on a task that has not yet
- * reached Wait leaves the bit set, and Wait returns at once).
+ * AllocSignal. Exec's semaphores wait on the same bit (a contended
+ * ObtainSemaphore Waits on it; ReleaseSemaphore hands over and Signals it), so
+ * a bit left set makes the task's next contended ObtainSemaphore return
+ * without owning the semaphore. The discipline therefore is: the waiter
+ * clears the bit, publishes itself (shell_wait_arm), waits only for it and
+ * re-tests the condition it waits for after every wake (a stale or early signal
+ * costs one more Wait, and a Signal that comes before the Wait leaves the bit
+ * set, so Wait returns at once); and when the handshake is over it withdraws
+ * and clears the bit again under Forbid (shell_wait_done). The process signals
+ * only a task that is published, and does so under Forbid (shell_wake), so
+ * after the waiter's shell_wait_done no signal is on its way or can follow,
+ * whichever of the two ran first. The waiter never waits while it is queued on
+ * a semaphore: it owns `ctl` when it waits.
  *
  * The end of the process is under Forbid(), which it never releases: the task
  * that waits for the stop cannot run before the process has been removed, so
@@ -470,6 +479,31 @@ static void shell_vblank(struct AARBase *b)
  * (A Wait() inside CloseLibrary breaks the Forbid() Exec holds around it and
  * restores it.)
  */
+
+/* The waiter's side of a handshake: clear a stale bit, then publish. */
+static void shell_wait_arm(void **slot)
+{
+    X_SINGLE_CLEAR();
+    *slot = X_SELF();
+}
+
+/* The waiter has what it waited for. Under Forbid, so that the process is not
+ * in the middle of a wake: withdraw, and take a bit that was set before it
+ * could be taken by a Wait. Nothing can set it afterwards. */
+static void shell_wait_done(void **slot)
+{
+    X_FORBID();
+    *slot = NULL;
+    X_SINGLE_CLEAR();
+    X_PERMIT();
+}
+
+/* The process's side: signal the waiter if there is one. Forbid is held. */
+static void shell_wake(void *waiter)
+{
+    if (waiter)
+        X_SIGNAL(waiter, X_SINGLE);
+}
 
 /* The first half of the process: its wake bit, the platform, the interrupt.
  * Answers to the starter. On failure the process has ended (Forbid is held and
@@ -496,14 +530,15 @@ static int shell_disp_begin(struct AARBase *b)
         b->core.disp_alive = b->core.ticks;
         X_VBLANK_INSTALL(b);
         b->dispatcher_up = 1;
-    } else {
-        X_FORBID(); /* held until this process has ended */
-        b->disp_process = NULL;
     }
+    X_FORBID();
+    if (rc != AAR_OK)
+        b->disp_process = NULL; /* the process ends with Forbid held */
     b->start_status = rc;
     b->start_done = 1;
-    if (b->start_task)
-        X_SIGNAL(b->start_task, X_SINGLE);
+    shell_wake(b->start_task);
+    if (rc == AAR_OK)
+        X_PERMIT();
     return rc;
 }
 
@@ -522,8 +557,7 @@ static void shell_disp_end(struct AARBase *b)
     b->disp_bit = -1;
     X_FORBID();
     b->disp_process = NULL;
-    if (b->stop_task) /* none when a break from outside ended the process */
-        X_SIGNAL(b->stop_task, X_SINGLE);
+    shell_wake(b->stop_task); /* none when a break from outside ended the process */
 }
 
 /* Starts the process and waits until it runs, or has failed. */
@@ -538,15 +572,14 @@ static int shell_dispatcher_start(struct AARBase *b)
     }
     b->start_done = 0;
     b->disp_stop = 0;
-    X_SINGLE_CLEAR();
-    b->start_task = X_SELF();
+    shell_wait_arm(&b->start_task);
     rc = X_SPAWN(b);
     if (rc == AAR_OK) {
         while (!b->start_done)
             (void)X_WAIT(X_SINGLE);
         rc = b->start_status;
     }
-    b->start_task = NULL;
+    shell_wait_done(&b->start_task);
     X_SEM_RELEASE(&b->ctl);
     return rc;
 }
@@ -557,14 +590,13 @@ static void shell_dispatcher_stop(struct AARBase *b)
 {
     X_SEM_OBTAIN(&b->ctl);
     if (b->disp_process) {
-        X_SINGLE_CLEAR();
-        b->stop_task = X_SELF();
+        shell_wait_arm(&b->stop_task);
         b->disp_stop = 1;
         if (b->disp_task)
             X_SIGNAL(b->disp_task, X_BREAK);
         while (b->disp_process)
             (void)X_WAIT(X_SINGLE);
-        b->stop_task = NULL;
+        shell_wait_done(&b->stop_task);
     }
     X_SEM_RELEASE(&b->ctl);
 }
