@@ -40,6 +40,7 @@
 #pragma libcall AARBase AARAudioRead 09C A09804
 #pragma libcall AARBase AARSharedToken 0A2 A09804
 #pragma libcall AARBase AARExt 0A8 1002
+#pragma libcall AARBase AARSetLogSink 0AE A9803
 #endif
 
 #endif /* PRAGMAS_AAR_PRAGMAS_H */

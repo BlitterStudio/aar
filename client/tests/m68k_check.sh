@@ -8,7 +8,7 @@
 #     sh -c 'cp -r /src /w && cd /w && client/tests/m68k_check.sh'
 #
 # It compiles client/tests/m68k_compile_test.c with warnings as errors, then
-# checks the object: the 24 vector offsets of the .fd file all appear as calls
+# checks the object: the 25 vector offsets of the .fd file all appear as calls
 # through the library base, and no symbol is left undefined. It then compiles
 # the library sources (core, probe, shell, reference platform), see below.
 #
@@ -30,7 +30,7 @@ trap 'rm -rf "$OUT"' EXIT
 "$OBJDUMP" -d "$OUT/t.o" > "$OUT/t.dis"
 missing=0
 lvo=30
-while [ "$lvo" -le 168 ]; do
+while [ "$lvo" -le 174 ]; do
     # objdump prints the call as "jsr a6@(-30)".
     if ! grep -Eq "jsr[[:space:]]+a6@\(-$lvo\)" "$OUT/t.dis"; then
         echo "missing call through LVO -$lvo"
@@ -44,7 +44,7 @@ done
 # more than 1 KiB of stack (so none of the interrupt and dispatcher paths does),
 # and each leaves undefined only what it should: the core and the probe the
 # string functions (no 64-bit division or multiplication helpers), the
-# reference platform also the core's three extension functions, the shell
+# reference platform also the core's two extension functions, the shell
 # utility.library's base and the core, probe and platform entry points. The
 # shell is not built with -pedantic: the NDK's inline stubs convert function
 # pointers. The largest stack frames are printed (-fstack-usage).
@@ -71,7 +71,7 @@ check_source() {
 }
 check_source client/src/aar_probe.c "^_?($STR)\$" -pedantic
 check_source client/src/aar_core.c "^_?($STR)\$" -pedantic
-check_source client/src/refplat.c "^_?($STR|aar_core_ext_(stats|lease_pause|set_log_sink))\$" -pedantic
+check_source client/src/refplat.c "^_?($STR|aar_core_ext_(stats|lease_pause))\$" -pedantic
 check_source client/src/aar_shell.c "^_?($STR|UtilityBase|aar_plat_get|aar_core_[a-z_]+|aar_probe_[a-z_]+)\$"
 
 # The test defines AARBase itself; every call goes through it, so nothing
@@ -82,4 +82,4 @@ if [ -n "$undefined" ]; then
     echo "undefined symbols: $undefined"
     exit 1
 fi
-echo "m68k header check: 24 vectors called, 0 warnings"
+echo "m68k header check: 25 vectors called, 0 warnings"

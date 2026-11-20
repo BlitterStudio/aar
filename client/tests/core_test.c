@@ -413,7 +413,7 @@ static void test_owner_stale(void)
         CHECK(aar_core_audio_read(&core, h, buf, 1, &got) == expect);
         CHECK(aar_core_ext_stats(h, &stats) == expect);
         CHECK(aar_core_ext_lease_pause(h, 10) == expect);
-        CHECK(aar_core_ext_set_log_sink(h, NULL, 0) == expect);
+        CHECK(aar_core_set_log_sink(&core, h, NULL, 0) == expect);
         if (pass == 0) {
             /* AARMessageSignal is for any task. */
             CHECK(aar_core_message_signal(&core, h) == 0x10);
@@ -1068,16 +1068,17 @@ static void test_logs_and_stats(void)
     CHECK(refplat_app_log(slot, tok, 8, 9) == AAR_OK);
     CHECK(aar_core_service_next(&core, h, &req) == AAR_E_BUSY);
     CHECK(h->stats.logs_unclaimed == 1 && h->stats.logs == 0);
-    CHECK(aar_core_ext_set_log_sink(h, sink, (APTR)(uintptr_t)0x77) == AAR_OK);
+    CHECK(aar_core_set_log_sink(&core, h, sink, (APTR)(uintptr_t)0x77) == AAR_OK);
     CHECK(refplat_app_log(slot, tok, 8, 9) == AAR_OK);
     CHECK(aar_core_service_next(&core, h, &req) == AAR_E_BUSY);
     CHECK(sink_seen.calls == 1 && sink_seen.len == 9 && sink_seen.user == 0x77);
     CHECK(memcmp(sink_seen.data, "hello log", 9) == 0);
     CHECK(h->stats.logs == 1);
-    CHECK(aar_core_ext_set_log_sink(h, NULL, 0) == AAR_OK);
+    CHECK(aar_core_set_log_sink(&core, h, NULL, 0) == AAR_OK);
     /* The extension table. */
     ext = (const aar_client_ext_zz9000 *)aar_core_ext(&core, AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_CLIENT);
-    CHECK(ext != NULL && AAR_CLIENT_EXT_ZZ9000_COVERS(ext, set_log_sink));
+    CHECK(ext != NULL && AAR_CLIENT_EXT_ZZ9000_COVERS(ext, lease_pause));
+    CHECK(ext != NULL && ext->size == sizeof(aar_client_ext_zz9000)); /* no log sink field */
     CHECK(aar_core_ext(&core, AAR_PLATFORM_ZZ9000, 99) == NULL);
     CHECK(aar_core_ext(&core, AAR_PLATFORM_NONE, AAR_EXT_ZZ9000_CLIENT) == NULL);
     if (ext) {
@@ -1600,6 +1601,248 @@ static void test_reap(void)
     CHECK(aar_core_check(&core, a1) == AAR_E_STALE);
     CHECK(aar_core_close_owner(&core) == 1);
     CHECK(pool_live == 0);
+    finish();
+}
+
+/* ---- AARSetLogSink --------------------------------------------------------------------------- */
+
+#define LS_MAX 16
+static struct { int which; unsigned long user; ULONG len; char text[4]; } ls_log[LS_MAX];
+static unsigned ls_n;
+enum { LS_PLAIN, LS_REMOVE, LS_REPLACE, LS_CALLBACK };
+static int ls_mode;
+static AARHandle *ls_h;
+static int ls_nested_rc = 99, ls_nested_busy = -1, ls_event_rc = 99, ls_event_busy = -1;
+static unsigned ls_off;
+
+static void ls_note(int which, APTR user, const void *data, ULONG len)
+{
+    if (ls_n < LS_MAX) {
+        ls_log[ls_n].which = which;
+        ls_log[ls_n].user = (unsigned long)(uintptr_t)user;
+        ls_log[ls_n].len = len;
+        memset(ls_log[ls_n].text, 0, sizeof(ls_log[ls_n].text));
+        memcpy(ls_log[ls_n].text, data, len < 3 ? len : 3);
+    }
+    ls_n++;
+}
+
+static void ls_sink_b(APTR user, const void *data, ULONG len)
+{
+    ls_note(2, user, data, len);
+}
+
+/* The first sink: records the call, and in some modes calls the library from inside. */
+static void ls_sink_a(APTR user, const void *data, ULONG len)
+{
+    aar_event ev;
+
+    ls_note(1, user, data, len);
+    if (ls_mode == LS_REMOVE) {
+        ls_nested_rc = aar_core_set_log_sink(&core, ls_h, NULL, 0);
+        ls_nested_busy = ls_h->busy;
+    } else if (ls_mode == LS_REPLACE) {
+        ls_nested_rc = aar_core_set_log_sink(&core, ls_h, ls_sink_b, (APTR)(uintptr_t)0xB2);
+        ls_nested_busy = ls_h->busy;
+    } else if (ls_mode == LS_CALLBACK) {
+        memset(&ev, 0, sizeof(ev));
+        ev.type = AAR_EV_KEY_DOWN;
+        ls_event_rc = aar_core_post_event(&core, ls_h, &ev);
+        ls_event_busy = ls_h->busy;
+    }
+}
+
+/* One two-byte record from the app, at a new offset of its buffer. */
+static void ls_post(int slot, uint32_t tok, const char *text)
+{
+    volatile uint8_t *p = refplat_ptr(tok);
+
+    memcpy((void *)(uintptr_t)(p + ls_off), text, 2);
+    CHECK(refplat_app_log(slot, tok, ls_off, 2) == AAR_OK);
+    ls_off += 16;
+}
+
+/* The log records are taken while the client asks for requests. */
+static void ls_pump(AARHandle *h)
+{
+    AARServiceReq req;
+
+    memset(&req, 0, sizeof(req));
+    req.size = sizeof(req);
+    CHECK(aar_core_service_next(&core, h, &req) == AAR_E_BUSY);
+}
+
+static int ls_is(unsigned i, int which, unsigned long user, const char *text)
+{
+    return i < LS_MAX && ls_log[i].which == which && ls_log[i].user == user &&
+           ls_log[i].len == 2 && memcmp(ls_log[i].text, text, 2) == 0;
+}
+
+static void test_log_sink(void)
+{
+    AARHandle *h, *h2, *junk = (AARHandle *)(uintptr_t)0x1234;
+    AARMessage msg;
+    uint32_t tok, tok2;
+    int slot, slot2;
+    unsigned seen;
+
+    setup("log_sink");
+    ls_n = 0;
+    ls_off = 0;
+    ls_mode = LS_PLAIN;
+    h = open1(1);
+    slot = slot_of(h);
+    tok = refplat_buf_token(slot, 0x1000);
+
+    /* No sink: the records are swallowed, as before. */
+    ls_post(slot, tok, "a0");
+    ls_post(slot, tok, "a1");
+    ls_pump(h);
+    CHECK(ls_n == 0 && h->stats.logs == 0 && h->stats.logs_unclaimed == 2);
+
+    /* Set: every record arrives once, in order, with the user pointer. */
+    CHECK(aar_core_set_log_sink(&core, h, ls_sink_a, (APTR)(uintptr_t)0xA1) == AAR_OK);
+    ls_post(slot, tok, "b0");
+    ls_post(slot, tok, "b1");
+    ls_post(slot, tok, "b2");
+    ls_pump(h);
+    CHECK(ls_n == 3);
+    CHECK(ls_is(0, 1, 0xA1, "b0") && ls_is(1, 1, 0xA1, "b1") && ls_is(2, 1, 0xA1, "b2"));
+    CHECK(h->stats.logs == 3 && h->stats.logs_unclaimed == 2);
+    ls_pump(h); /* nothing is delivered a second time */
+    CHECK(aar_core_get_message(&core, h, &msg) == AAR_E_BUSY);
+    CHECK(ls_n == 3);
+
+    /* Replace: the next record goes to the new sink and its user, not the old. */
+    CHECK(aar_core_set_log_sink(&core, h, ls_sink_b, (APTR)(uintptr_t)0xB2) == AAR_OK);
+    ls_post(slot, tok, "c0");
+    CHECK(aar_core_get_message(&core, h, &msg) == AAR_E_BUSY); /* the other call that takes logs */
+    CHECK(ls_n == 4 && ls_is(3, 2, 0xB2, "c0"));
+    CHECK(h->stats.logs == 4);
+    /* The same sink with another user is a replace too. */
+    CHECK(aar_core_set_log_sink(&core, h, ls_sink_b, (APTR)(uintptr_t)0xB3) == AAR_OK);
+    ls_post(slot, tok, "c1");
+    ls_pump(h);
+    CHECK(ls_n == 5 && ls_is(4, 2, 0xB3, "c1"));
+
+    /* Remove: no call reaches either sink; the records are swallowed again. */
+    CHECK(aar_core_set_log_sink(&core, h, NULL, 0) == AAR_OK);
+    ls_post(slot, tok, "d0");
+    ls_post(slot, tok, "d1");
+    ls_pump(h);
+    CHECK(ls_n == 5 && h->stats.logs == 5 && h->stats.logs_unclaimed == 4);
+    CHECK(aar_core_set_log_sink(&core, h, NULL, 0) == AAR_OK); /* removing twice is fine */
+
+    /* Owner first, then live: another task changes nothing, and a stale handle
+     * is reported as stale whatever the arguments. */
+    CHECK(aar_core_set_log_sink(&core, h, ls_sink_a, (APTR)(uintptr_t)0xA1) == AAR_OK);
+    cur = 1;
+    CHECK(aar_core_set_log_sink(&core, h, ls_sink_b, (APTR)(uintptr_t)0xB4) == AAR_E_OWNER);
+    CHECK(aar_core_set_log_sink(&core, h, NULL, 0) == AAR_E_OWNER);
+    CHECK(aar_core_set_log_sink(&core, junk, ls_sink_b, 0) == AAR_E_STALE);
+    cur = 0;
+    CHECK(aar_core_set_log_sink(&core, junk, NULL, 0) == AAR_E_STALE);
+    ls_post(slot, tok, "e0");
+    ls_pump(h);
+    CHECK(ls_n == 6 && ls_is(5, 1, 0xA1, "e0")); /* still the owner's sink */
+    refplat_revoke(slot);
+    CHECK(aar_core_stop(&core, h) == AAR_E_STALE); /* the call that learns the claim is gone */
+    CHECK(aar_core_set_log_sink(&core, h, ls_sink_b, (APTR)(uintptr_t)0xB5) == AAR_E_STALE);
+    CHECK(aar_core_set_log_sink(&core, h, NULL, 0) == AAR_E_STALE);
+    CHECK(h->log_sink == ls_sink_a && h->log_user == (APTR)(uintptr_t)0xA1);
+    CHECK(aar_core_get_message(&core, h, &msg) == AAR_E_STALE && ls_n == 6);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    CHECK(aar_core_set_log_sink(&core, h, ls_sink_b, 0) == AAR_E_STALE); /* closed */
+    CHECK(ls_n == 6);
+
+    /* A new handle does not inherit what the closed one had set. */
+    h = open1(1);
+    slot = slot_of(h);
+    tok = refplat_buf_token(slot, 0x1000);
+    ls_off = 0;
+    ls_post(slot, tok, "f0");
+    ls_pump(h);
+    CHECK(ls_n == 6 && h->stats.logs == 0 && h->stats.logs_unclaimed == 1);
+
+    /* The sink may remove itself: it gets that record and no later one. */
+    h2 = open1(2);
+    slot2 = slot_of(h2);
+    tok2 = refplat_buf_token(slot2, 0x1000);
+    ls_off = 0;
+    ls_h = h2;
+    ls_mode = LS_REMOVE;
+    CHECK(aar_core_set_log_sink(&core, h2, ls_sink_a, (APTR)(uintptr_t)0xA2) == AAR_OK);
+    ls_post(slot2, tok2, "g0");
+    ls_post(slot2, tok2, "g1");
+    ls_post(slot2, tok2, "g2");
+    ls_pump(h2);
+    CHECK(ls_n == 7 && ls_is(6, 1, 0xA2, "g0"));
+    CHECK(ls_nested_rc == AAR_OK && h2->log_sink == NULL && h2->log_user == 0);
+    CHECK(ls_nested_busy >= 1); /* still inside the call after the nested one */
+    CHECK(h2->busy == 0);       /* and balanced after it */
+    CHECK(h2->stats.logs == 1 && h2->stats.logs_unclaimed == 2);
+    ls_post(slot2, tok2, "g3");
+    ls_pump(h2);
+    CHECK(ls_n == 7 && h2->stats.logs_unclaimed == 3);
+
+    /* It may replace itself: the rest of the queue goes to the new sink. */
+    ls_mode = LS_REPLACE;
+    ls_nested_rc = 99;
+    CHECK(aar_core_set_log_sink(&core, h2, ls_sink_a, (APTR)(uintptr_t)0xA3) == AAR_OK);
+    ls_post(slot2, tok2, "h0");
+    ls_post(slot2, tok2, "h1");
+    ls_pump(h2);
+    CHECK(ls_n == 9 && ls_is(7, 1, 0xA3, "h0") && ls_is(8, 2, 0xB2, "h1"));
+    CHECK(ls_nested_rc == AAR_OK && ls_nested_busy >= 1 && h2->busy == 0);
+
+    /* It may post an event to the app. */
+    ls_mode = LS_CALLBACK;
+    CHECK(aar_core_set_log_sink(&core, h2, ls_sink_a, (APTR)(uintptr_t)0xA4) == AAR_OK);
+    ls_post(slot2, tok2, "i0");
+    ls_pump(h2);
+    CHECK(ls_n == 10 && ls_is(9, 1, 0xA4, "i0"));
+    CHECK(ls_event_rc == AAR_OK && ls_event_busy >= 1 && h2->busy == 0);
+    ls_mode = LS_PLAIN;
+
+    /* Closing forgets the sink: a closed handle's records are never delivered, and
+     * the handle that takes its place starts without one. */
+    seen = ls_n;
+    CHECK(aar_core_set_log_sink(&core, h2, ls_sink_a, (APTR)(uintptr_t)0xA5) == AAR_OK);
+    CHECK(aar_core_close(&core, h2) == AAR_OK);
+    h2 = open1(2);
+    slot2 = slot_of(h2);
+    tok2 = refplat_buf_token(slot2, 0x1000);
+    ls_off = 0;
+    ls_post(slot2, tok2, "j0");
+    ls_pump(h2);
+    CHECK(ls_n == seen && h2->log_sink == NULL && h2->log_user == 0);
+    CHECK(aar_core_close(&core, h2) == AAR_OK);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    finish();
+
+    /* A reaped handle (its owner is gone) keeps no pointer of the caller's. */
+    setup("log_sink");
+    memset(ostate, 0, sizeof(ostate));
+    cur = 0;
+    h = open1(1);
+    cur = 1;
+    h2 = open1(2);
+    cur = 0;
+    CHECK(aar_core_set_log_sink(&core, h, ls_sink_a, (APTR)(uintptr_t)0xA6) == AAR_OK);
+    cur = 1;
+    CHECK(aar_core_set_log_sink(&core, h2, ls_sink_b, (APTR)(uintptr_t)0xB6) == AAR_OK);
+    ostate[0] = AAR_OWNER_CHANGED;
+    ostate[1] = AAR_OWNER_ALIVE;
+    CHECK(aar_core_reap(&core, owner_fn, NULL) == 1);
+    CHECK(h->state == AAR_H_DEAD && h->log_sink == NULL && h->log_user == 0);
+    CHECK(h2->state == AAR_H_LIVE && h2->log_sink == ls_sink_b); /* the other owner is untouched */
+    cur = 0;
+    CHECK(aar_core_set_log_sink(&core, h, ls_sink_a, 0) == AAR_E_STALE); /* a tombstone */
+    CHECK(h->log_sink == NULL);
+    cur = 1;
+    ostate[1] = AAR_OWNER_CHANGED;
+    CHECK(aar_core_reap(&core, owner_fn, NULL) == 1);
+    CHECK(h2->state == AAR_H_DEAD && h2->log_sink == NULL && h2->log_user == 0);
     finish();
 }
 
@@ -2216,6 +2459,7 @@ int main(void)
     test_lease();
     test_close_order();
     test_reap();
+    test_log_sink();
     test_notify();
     test_notify_answers();
     test_revoke();

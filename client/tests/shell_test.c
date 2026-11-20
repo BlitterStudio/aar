@@ -400,6 +400,7 @@ static void test_owner_stale(void)
         CHECK(v_post_event(h, &ev) == expect);
         CHECK(v_audio_read(h, buf, 1, &got) == expect);
         CHECK(v_shared_token(h, buf, 4, &got) == expect);
+        CHECK(v_set_log_sink(h, NULL, 0) == expect);
         CHECK(v_message_signal(h) == (pass == 0 ? T(0)->sig_alloc : 0));
     }
     CHECK(v_status(b, &st) == AAR_OK);
@@ -918,7 +919,8 @@ static void test_ext(void)
     refplat.attach_rc = AAR_OK;
     h = open_h(NULL);
     ext = (const aar_client_ext_zz9000 *)(uintptr_t)v_ext(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_CLIENT);
-    CHECK(ext != NULL && AAR_CLIENT_EXT_ZZ9000_COVERS(ext, set_log_sink));
+    CHECK(ext != NULL && AAR_CLIENT_EXT_ZZ9000_COVERS(ext, lease_pause));
+    CHECK(ext != NULL && ext->size == sizeof(aar_client_ext_zz9000)); /* no log sink field */
     CHECK(v_ext(AAR_PLATFORM_ZZ9000, 2) == 0 && v_ext(AAR_PLATFORM_NONE, 1) == 0);
     stats.size = sizeof(stats);
     CHECK(ext && ext->stats(h, &stats) == AAR_OK && stats.maps >= 2);
@@ -926,6 +928,61 @@ static void test_ext(void)
     CHECK(ext && ext->stats(h, &stats) == AAR_E_OWNER);
     USE(0);
     lib_close();
+    finish();
+}
+
+static struct { unsigned calls; unsigned long user; ULONG len; char first; } sink_seen;
+
+static void shell_sink(APTR user, const void *data, ULONG len)
+{
+    sink_seen.calls++;
+    sink_seen.user = (unsigned long)(uintptr_t)user;
+    sink_seen.len = len;
+    sink_seen.first = *(const char *)data;
+}
+
+/* AARSetLogSink through the library's own entry: set, owner, remove, close. */
+static void test_log_sink(void)
+{
+    AARHandle *h;
+    AARServiceReq req;
+    volatile uint8_t *p;
+    uint32_t tok;
+    int slot;
+
+    setup("log_sink");
+    memset(&sink_seen, 0, sizeof(sink_seen));
+    memset(&req, 0, sizeof(req));
+    req.size = sizeof(req);
+    CHECK(lib_open() == AAR_OK);
+    h = open_h(NULL);
+    slot = refplat_slot(h->claim.handle);
+    tok = refplat_buf_token(slot, 0x1000);
+    p = refplat_ptr(tok);
+    p[0] = 'x';
+    p[1] = 'y';
+    CHECK(refplat_app_log(slot, tok, 0, 2) == AAR_OK);
+    CHECK(v_service_next(h, &req) == AAR_E_BUSY);
+    CHECK(sink_seen.calls == 0); /* no sink yet: swallowed */
+    CHECK(v_set_log_sink(h, shell_sink, (APTR)(uintptr_t)0x55) == AAR_OK);
+    CHECK(refplat_app_log(slot, tok, 0, 2) == AAR_OK);
+    CHECK(v_service_next(h, &req) == AAR_E_BUSY);
+    CHECK(sink_seen.calls == 1 && sink_seen.user == 0x55 && sink_seen.len == 2 && sink_seen.first == 'x');
+    USE(1);
+    CHECK(v_set_log_sink(h, NULL, 0) == AAR_E_OWNER);
+    USE(0);
+    CHECK(refplat_app_log(slot, tok, 0, 2) == AAR_OK);
+    CHECK(v_service_next(h, &req) == AAR_E_BUSY);
+    CHECK(sink_seen.calls == 2); /* the other task's call changed nothing */
+    CHECK(v_set_log_sink(h, NULL, 0) == AAR_OK);
+    CHECK(refplat_app_log(slot, tok, 0, 2) == AAR_OK);
+    CHECK(v_service_next(h, &req) == AAR_E_BUSY);
+    CHECK(sink_seen.calls == 2); /* removed */
+    CHECK(v_set_log_sink(h, shell_sink, 0) == AAR_OK);
+    CHECK(v_close(h) == AAR_OK);
+    CHECK(v_set_log_sink(h, NULL, 0) == AAR_E_STALE);
+    lib_close();
+    CHECK(sink_seen.calls == 2); /* nothing reaches the sink after the close */
     finish();
 }
 
@@ -1038,16 +1095,17 @@ static void test_revoked_codes(void)
     CHECK(v_post_event(h, NULL) == AAR_E_STALE);
     CHECK(v_audio_read(h, NULL, 1, NULL) == AAR_E_STALE); /* not AAR_E_INVAL */
     CHECK(v_shared_token(h, NULL, 0, NULL) == AAR_E_STALE);
+    CHECK(v_set_log_sink(h, NULL, 0) == AAR_E_STALE);
     CHECK(v_probe_file("no-such", &image) == AAR_E_NOENT); /* no handle: unchanged */
     CHECK(v_probe_memory(bytes, 8, &image) == AAR_E_INVAL);
     CHECK(ext->stats(h, &(AARZZ9000Stats){ .size = sizeof(AARZZ9000Stats) }) == AAR_E_STALE);
     CHECK(ext->lease_pause(h, 0) == AAR_E_STALE);
-    CHECK(ext->set_log_sink(h, NULL, 0) == AAR_E_STALE);
     /* Owner is checked before stale. */
     USE(1);
     CHECK(v_load_file(h, "no-such-file") == AAR_E_OWNER);
     CHECK(v_audio_read(h, buf, 1, &got) == AAR_E_OWNER);
     CHECK(v_shared_token(h, buf, 4, &token) == AAR_E_OWNER);
+    CHECK(v_set_log_sink(h, NULL, 0) == AAR_E_OWNER);
     CHECK(ext->stats(h, &(AARZZ9000Stats){ .size = sizeof(AARZZ9000Stats) }) == AAR_E_OWNER);
     USE(0);
     /* Close finishes the release. */
@@ -1530,6 +1588,7 @@ int main(int argc, char **argv)
     test_rename();
     test_lease_gate();
     test_ext();
+    test_log_sink();
     test_revoked_codes();
     test_alloc_balance();
     printf("shell_test: %lu checks, %lu failures\n", checks, failures);

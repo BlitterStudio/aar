@@ -267,10 +267,11 @@ static void handle_free(AARHandle *h)
 }
 
 /*
- * The calling task's right to use `h`: AAR_OK with h->busy set (the caller
- * clears it with leave), AAR_E_STALE for a pointer that is not a live handle,
- * AAR_E_OWNER for another task's handle. The pointer is only compared until it
- * has been found in the registry.
+ * The calling task's right to use `h`: AAR_OK with h->busy raised (the caller
+ * lowers it with leave; a call from inside the log sink nests), AAR_E_STALE
+ * for a pointer that is not a live handle, AAR_E_OWNER for another task's
+ * handle. The pointer is only compared until it has been found in the
+ * registry.
  */
 static int enter(aar_core *c, AARHandle *h)
 {
@@ -290,7 +291,7 @@ static int enter(aar_core *c, AARHandle *h)
                 c->env.yield(c->env.user);
             irq_off(c);
         }
-        h->busy = 1u;
+        h->busy++;
         rc = AAR_OK;
     }
     irq_on(c);
@@ -299,7 +300,8 @@ static int enter(aar_core *c, AARHandle *h)
 
 static void leave(AARHandle *h)
 {
-    h->busy = 0u;
+    if (h->busy)
+        h->busy--;
 }
 
 /* Owner and registry first (enter), then a revoked or detached claim. A call
@@ -375,6 +377,8 @@ static void teardown(AARHandle *h)
 {
     const struct aar_plat_ops *o = ops_of(h);
 
+    h->log_sink = NULL; /* nothing reaches the caller's sink or its user again */
+    h->log_user = 0;
     h->renew = 0u;
     lease_unlink(h);
     if (h->claim.handle != 0u) {
@@ -1797,6 +1801,20 @@ int aar_core_audio_read(aar_core *c, AARHandle *h, void *dst, ULONG frames, ULON
     return AAR_OK;
 }
 
+/* ---- The log sink ---------------------------------------------------------------------------------------- */
+
+int aar_core_set_log_sink(aar_core *c, AARHandle *h, AARLogSink sink, APTR user)
+{
+    int rc = require_live(c, h);
+
+    if (rc != AAR_OK)
+        return rc;
+    h->log_sink = sink;
+    h->log_user = user;
+    leave(h);
+    return AAR_OK;
+}
+
 /* ---- Extensions ---------------------------------------------------------------------------------------- */
 
 const void *aar_core_ext(aar_core *c, ULONG platform_id, ULONG ext_id)
@@ -1852,22 +1870,6 @@ LONG aar_core_ext_lease_pause(AARHandle *h, ULONG ms)
         t = c->ticks + (ms * c->env.ticks_per_sec + 999u) / 1000u + 1u;
         h->pause_until = t ? t : 1u;
     }
-    leave(h);
-    return AAR_OK;
-}
-
-LONG aar_core_ext_set_log_sink(AARHandle *h, AARZZ9000LogSink sink, APTR user)
-{
-    aar_core *c = g_ext_core;
-    int rc;
-
-    if (!c)
-        return AAR_E_NOSYS;
-    rc = require_live(c, h);
-    if (rc != AAR_OK)
-        return rc;
-    h->log_sink = sink;
-    h->log_user = user;
     leave(h);
     return AAR_OK;
 }

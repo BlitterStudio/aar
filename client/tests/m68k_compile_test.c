@@ -12,7 +12,8 @@
 struct Library *AARBase;
 
 LONG aar_m68k_use(struct MsgPort *port, const char *path, const char *const *argv,
-                  const void *data, void *dst, const aar_event *event)
+                  const void *data, void *dst, const aar_event *event,
+                 AARLogSink sink)
 {
     AARInfo info;
     AARImageInfo image;
@@ -50,6 +51,8 @@ LONG aar_m68k_use(struct MsgPort *port, const char *path, const char *const *arg
     ext = (const struct aar_client_ext_zz9000 *)AARExt(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_CLIENT);
     if (AAR_CLIENT_EXT_ZZ9000_COVERS(ext, list))
         rc += ext->list(0, 0);
+    rc += AARSetLogSink(handle, sink, dst);
+    rc += AARSetLogSink(handle, 0, 0);
     rc += AARStop(handle);
     rc += AARClose(handle);
     return rc;

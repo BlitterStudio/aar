@@ -77,7 +77,11 @@ EOF
 cat > "$OUT/fakeobjdump" <<'EOF'
 #!/bin/sh
 lvo=30
-while [ "$lvo" -le 168 ]; do
+while [ "$lvo" -le 174 ]; do
+    # FAKE_FAIL=lvo: a header that lacks the last vector.
+    if [ "${FAKE_FAIL:-}" = lvo ] && [ "$lvo" -eq 174 ]; then
+        break
+    fi
     echo "   0:	4eae ffe2 	jsr a6@(-$lvo)"
     lvo=$((lvo + 6))
 done
@@ -139,6 +143,8 @@ m68k() {
 export FAKE_FAIL
 FAKE_FAIL=none
 expect_pass "m68k_check.sh with working tools" m68k
+FAKE_FAIL=lvo
+expect_stop "m68k_check.sh: the 25th vector is not called" "missing call through LVO -174" m68k
 FAKE_FAIL=nm
 expect_stop "m68k_check.sh: nm fails" "nm: cannot read" m68k
 FAKE_FAIL=nm-undefined

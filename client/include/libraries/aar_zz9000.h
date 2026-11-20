@@ -10,8 +10,9 @@
  *
  * The base library stays platform neutral. What a launcher needs of the card
  * beyond it lives here: the list of all claims and the administrative release
- * of any of them (ZZRun status and RELEASE), the library's counters, a test
- * hook for the lease, and the log sink.
+ * of any of them (ZZRun status and RELEASE), the library's counters and a test
+ * hook for the lease. The log sink is not here: AARSetLogSink is a call of the
+ * base library on every platform.
  *
  * The table is size-first and append-only, like every structure of the library.
  * Test a field with AAR_CLIENT_EXT_ZZ9000_COVERS before you call it. The
@@ -93,9 +94,6 @@ typedef struct AARZZ9000Stats {
     ULONG maps;            /* 64 ranges mapped */
 } AARZZ9000Stats;
 
-/* A sink for the app's log records. `data` is valid for the call only. */
-typedef void (*AARZZ9000LogSink)(APTR user, const void *data, ULONG len);
-
 typedef struct aar_client_ext_zz9000 {
     ULONG size;      /* sizeof of the table the library built */
     ULONG reserved;  /* 0 */
@@ -114,9 +112,6 @@ typedef struct aar_client_ext_zz9000 {
      * A test hook for the lease; 0 resumes. AAR_E_NOSYS in a build without
      * the hook. */
     LONG (*lease_pause)(AARHandle *handle, ULONG ms);
-    /* Sends the app's log records to `sink`; NULL discards them. Until
-     * the serving code installs its own, ZZRun sets this. */
-    LONG (*set_log_sink)(AARHandle *handle, AARZZ9000LogSink sink, APTR user);
 } aar_client_ext_zz9000;
 
 #define AAR_CLIENT_EXT_ZZ9000_COVERS(ext, field) \

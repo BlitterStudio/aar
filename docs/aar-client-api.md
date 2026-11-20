@@ -579,7 +579,9 @@ LONG AARGetMessage(AARHandle *handle, AARMessage *message);
 
 Takes the next message from the app. Returns `AAR_E_BUSY` when there is none.
 Drain it until `AAR_E_BUSY` after a signal, and serve requests as well: a full
-message inbox holds up the requests behind it.
+message inbox holds up the requests behind it. Log records in front of the
+message go to the sink of [`AARSetLogSink`](#aarsetlogsink), as in
+`AARServiceNext`.
 
 ### AARMessageSignal
 
@@ -650,7 +652,7 @@ LONG AARServiceNext(AARHandle *handle, AARServiceReq *req);
 ```
 
 Takes the next request from the app. Messages and log records in front of it
-are moved aside. Returns `AAR_OK` with `req` filled, `AAR_E_BUSY` when none is
+are moved aside; log records go to the sink of [`AARSetLogSink`](#aarsetlogsink). Returns `AAR_OK` with `req` filled, `AAR_E_BUSY` when none is
 waiting, or `AAR_E_IO` when the queue is corrupt. A request whose buffer cannot
 be mapped is answered with `AAR_E_INVAL` by the library and not returned.
 `req->ptr` is the mapped payload. `out`, `result` and `reply_flags` come back
@@ -731,6 +733,48 @@ that `platform_id` or `ext_id`, or when the platform cannot be attached (no
 board, a `zz9k.library` that is too old). A table is size-first and
 append-only. For the ZZ9000, see [ZZ9000 extension](#zz9000-extension).
 
+### AARSetLogSink
+
+```c
+LONG AARSetLogSink(AARHandle *handle, AARLogSink sink, APTR user);
+
+typedef void (*AARLogSink)(APTR user, const void *data, ULONG len);
+```
+
+Sends the app's log records (`AAR_OP_LOG`) to `sink`, a function of type
+`AARLogSink`, one call per record, in the order the app wrote them and once
+each. `data` is the record, `len` its
+length (at most `AAR_LOG_MAX`, longer records are truncated), and `user` is the
+pointer given here. `data` is valid for the call only. `NULL` as `sink` removes
+the sink. A new handle has none, and a record that arrives while there is none
+is dropped and counted in `AARZZ9000Stats.logs_unclaimed`; it is not held for a
+sink set later. Setting a sink again replaces the old one: from the next record
+on, neither the old sink nor its `user` is called. The call needs no platform
+support and works the same on every platform.
+
+The library calls the sink in the owner task, from inside `AARServiceNext` or
+`AARGetMessage`, so it must return quickly. From inside the sink a program may
+call `AARSetLogSink` (to remove or replace the sink: the record in hand is still
+delivered once, and the rest of the queue goes to the new sink or is dropped)
+and `AARPostEvent`. It must not call `AARServiceNext`, `AARGetMessage` or
+`AARClose`.
+
+The sink may be removed at any time, and a program that keeps its `user` in
+memory it frees must remove the sink first. `AARClose` forgets the sink, and so
+does the library when it takes a handle whose owner task has gone: after the
+close no call reaches the old sink or `user`. The handle calls order their
+checks as every other call does: `AAR_E_OWNER`, then `AAR_E_STALE`. A task
+other than the owner cannot set or remove the sink, and a call on a revoked
+handle leaves the sink as it was.
+
+The sink is called with the C calling convention of the compiler that built the
+library, not through registers like the library's own vectors (the way the
+functions of the extension tables are called). With GCC for m68k-amigaos that
+is arguments on the stack. A program built with a compiler that passes C
+arguments in registers by default (SAS/C, or GCC with `-mregparm`) must declare
+the sink with the stack convention (`__stdargs` in SAS/C); the library cannot
+detect a mismatch.
+
 ## Errors
 
 | Code | When the library returns it |
@@ -781,7 +825,6 @@ the C calling convention.
 | `release_handle` | `LONG release_handle(ULONG handle)`: releases any claim by its card handle word; `AAR_E_STALE` when it is not live |
 | `stats` | `LONG stats(AARHandle *handle, AARZZ9000Stats *out)`: the library's counters of one handle |
 | `lease_pause` | `LONG lease_pause(AARHandle *handle, ULONG ms)`: stops renewing the lease for `ms` milliseconds, a test hook; 0 resumes |
-| `set_log_sink` | `LONG set_log_sink(AARHandle *handle, AARZZ9000LogSink sink, APTR user)`: sends the app's log records to `sink`; NULL discards them |
 
 `AARZZ9000List` is 64 bytes: `size`, `handle`, `state`, `committed`, `index`
 (pass `index + 1` as the next cursor), `cpu_ms`, `service_ms`, `block_reason`,
@@ -791,12 +834,17 @@ characters. `AARZZ9000Stats` is 68 bytes: `size`, `requests`, `replies`,
 `msgs_sent`, `logs`, `logs_unclaimed`, `events_posted`, `events_merged`,
 `events_dropped`, `kicks`, `kicks_coalesced` and `maps`.
 
-`AARZZ9000LogSink` is `void (*)(APTR user, const void *data, ULONG len)`.
+The table has no log sink. It had a `set_log_sink` field and the type
+`AARZZ9000LogSink` while the log sink was a ZZ9000 call; both are gone, and the
+sink is set with [`AARSetLogSink`](#aarsetlogsink) on any platform. A program
+that tested `AAR_CLIENT_EXT_ZZ9000_COVERS(ext, set_log_sink)` no longer
+compiles. The table now ends at `lease_pause`; as before, a table grows only at
+the end.
 
 ## Where this differs from the draft in spec 9
 
-The spec draft listed 22 calls. The library has 24: `AARSharedToken` and
-`AARExt` are new. The other changes:
+The spec draft listed 22 calls. The library has 25: `AARSharedToken`, `AARExt`
+and `AARSetLogSink` are new. The other changes:
 
 - The launcher's own policy (root directory, absolute paths, console in and out,
   screen mode) is not a tag. It is configuration of the serving code.

@@ -356,6 +356,9 @@ static void test_layouts(void)
     CHECK_EQ(offsetof(struct Node, ln_Name), 10);
     /* The ZZ9000 extension table: two words, then the function pointers. */
     CHECK_EQ(offsetof(aar_client_ext_zz9000, list), 8);
+    /* It ends at lease_pause: the log sink is AARSetLogSink, not a field. */
+    CHECK_EQ(offsetof(aar_client_ext_zz9000, lease_pause), 8 + 3 * sizeof(void *));
+    CHECK_EQ(sizeof(aar_client_ext_zz9000), 8 + 4 * sizeof(void *));
 }
 
 /* ---- Constants ------------------------------------------------------------- */
@@ -431,6 +434,18 @@ _Static_assert(IS_TYPE(AARPostEvent, LONG (*)(AARHandle *, const aar_event *)), 
 _Static_assert(IS_TYPE(AARAudioRead, LONG (*)(AARHandle *, void *, ULONG, ULONG *)), "AARAudioRead");
 _Static_assert(IS_TYPE(AARSharedToken, LONG (*)(AARHandle *, const void *, ULONG, ULONG *)), "AARSharedToken");
 _Static_assert(IS_TYPE(AARExt, APTR (*)(ULONG, ULONG)), "AARExt");
+_Static_assert(IS_TYPE(AARSetLogSink, LONG (*)(AARHandle *, AARLogSink, APTR)), "AARSetLogSink");
+
+/* The sink is a plain C function of three arguments: the type a function that
+ * has them is accepted as, and no other. */
+static void sample_sink(APTR user, const void *data, ULONG len)
+{
+    (void)user;
+    (void)data;
+    (void)len;
+}
+_Static_assert(IS_TYPE(sample_sink, void (*)(APTR, const void *, ULONG)), "log sink shape");
+_Static_assert(_Generic(&sample_sink, AARLogSink: 1, default: 0), "AARLogSink");
 
 /* ---- The platform table ----------------------------------------------------------- */
 

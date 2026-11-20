@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Tests of client/tools/fdgen.py and of the .fd file it reads.
 
-The vector list below is the contract: 24 calls from -30 to -168 in this order,
+The vector list below is the contract: 25 calls from -30 to -174 in this order,
 with these registers. A change to the .fd file that moves or drops a call fails
 here before it reaches a header.
 """
@@ -10,6 +10,7 @@ here before it reaches a header.
 import importlib.util
 import io
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
@@ -50,6 +51,7 @@ VECTORS = [
     ("AARAudioRead", "a0/a1/d0/a2"),
     ("AARSharedToken", "a0/a1/d0/a2"),
     ("AARExt", "d0/d1"),
+    ("AARSetLogSink", "a0/a1/a2"),
 ]
 
 GENERATED = ["clib/aar_protos.h", "pragmas/aar_pragmas.h", "inline/aar.h", "proto/aar.h"]
@@ -65,13 +67,13 @@ def quiet(fn, *args):
 class VectorList(unittest.TestCase):
     def test_vectors_are_the_contract(self):
         funcs = fdgen.parse_fd(FD_TEXT)
-        self.assertEqual(len(funcs), 24)
+        self.assertEqual(len(funcs), 25)
         for n, (func, (name, regs)) in enumerate(zip(funcs, VECTORS)):
             self.assertEqual(func.name, name)
             self.assertEqual(func.lvo, 30 + 6 * n, name)
             self.assertEqual("/".join(r for _, _, r in func.params), regs, name)
         self.assertEqual(funcs[0].lvo, 30)
-        self.assertEqual(funcs[-1].lvo, 168)
+        self.assertEqual(funcs[-1].lvo, 174)
 
     def test_results(self):
         funcs = {f.name: f for f in fdgen.parse_fd(FD_TEXT)}
@@ -107,13 +109,14 @@ class Output(unittest.TestCase):
         self.assertIn("AAROpen 024 A9803\n", text)
         self.assertIn("AARSharedMap 072 9210805\n", text)
         self.assertIn("AARExt 0A8 1002\n", text)
+        self.assertIn("AARSetLogSink 0AE A9803\n", text)
         self.assertIn("#pragma tagcall AARBase AARSetTags 03C 9802\n", text)
 
     def test_inline_vectors(self):
         text = self.files["inline/aar.h"]
         for n, (name, _) in enumerate(VECTORS):
             self.assertIn("jsr -%d(a6)" % (30 + 6 * n), text, name)
-        self.assertIn("jsr -168(a6)", text)
+        self.assertIn("jsr -174(a6)", text)
 
     def test_inline_clobbers_and_results(self):
         text = self.files["inline/aar.h"]
@@ -144,6 +147,37 @@ class Output(unittest.TestCase):
             have = (CLIENT / "include" / name).read_bytes().decode("utf-8")
             self.assertEqual(have, text, name)
             self.assertNotIn("\r", have, name)
+
+
+SHELL = (CLIENT / "src" / "aar_shell.c").read_text(encoding="utf-8")
+
+
+def f_name(call):
+    """AARSetLogSink -> f_set_log_sink: the shell's entry for an fd call."""
+    return "f_" + re.sub(r"(?<!^)(?=[A-Z])", "_", call[len("AAR"):]).lower()
+
+
+class ShellVectorTable(unittest.TestCase):
+    """The library's vector table (aar_lib_vectors in aar_shell.c) follows the
+    .fd file: the four system slots, then every call in order, each entry a
+    function that takes its arguments in the registers the .fd file names. The
+    m68k build compiles this table but no host test runs it."""
+
+    def table(self):
+        body = re.search(r"aar_lib_vectors\[\]\s*=\s*\{(.*?)\};", SHELL, re.S).group(1)
+        return re.findall(r"AAR_VEC\((\w+)\)|(\(APTR\)-1)", body)
+
+    def test_order(self):
+        entries = [a or b for a, b in self.table()]
+        want = ["aar_lib_open", "aar_lib_close", "aar_lib_expunge", "aar_lib_null"]
+        want += [f_name(name) for name, _ in VECTORS] + ["(APTR)-1"]
+        self.assertEqual(entries, want)
+
+    def test_registers(self):
+        for name, regs in VECTORS:
+            match = re.search(r"^static\s[^\n]*\b%s\((.*?)\)\n\{" % f_name(name), SHELL, re.S | re.M)
+            self.assertIsNotNone(match, name)
+            self.assertEqual("/".join(re.findall(r"REG\((\w+),", match.group(1))), regs, name)
 
 
 class Check(unittest.TestCase):
