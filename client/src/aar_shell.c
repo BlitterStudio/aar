@@ -639,6 +639,12 @@ static int shell_init(struct AARBase *b)
  * is gone, nobody will ever close it. It is unlinked and freed here, and the
  * new task gets a record of its own (the handles of the old task are reaped as
  * a dead owner's by the dispatcher; the old task's signal bit went with it).
+ *
+ * The rule of the function: nothing is detached before the last step that can
+ * fail, so an error return leaves every object linked or freed. The only step
+ * that can fail is the allocation of the new record, and it comes first, with
+ * the lock released (memory is not allocated under the lock); the registry is
+ * looked at again afterwards, because it may have changed meanwhile.
  */
 static int shell_open(struct AARBase *b)
 {
@@ -646,35 +652,36 @@ static int shell_open(struct AARBase *b)
     struct AAROpener *o, *fresh = NULL, *obsolete = NULL, *prior = NULL;
 
     env_self(b, &me);
-    X_SEM_OBTAIN(&b->lock);
-    o = opener_find(b, &me, &prior);
-    if (o && !stamp_equal(&o->stamp, &me)) {
-        if (prior)
-            prior->next = o->next;
-        else
-            b->openers = o->next;
-        obsolete = o;
-        o = NULL;
-    }
-    if (!o) {
+    for (;;) {
+        X_SEM_OBTAIN(&b->lock);
+        o = opener_find(b, &me, &prior);
+        if (o && stamp_equal(&o->stamp, &me)) {
+            o->refs++;
+            break;
+        }
+        if (fresh) {
+            if (o) { /* address reuse: the old record leaves, the new one takes its place */
+                if (prior)
+                    prior->next = o->next;
+                else
+                    b->openers = o->next;
+                obsolete = o;
+            }
+            fresh->next = b->openers;
+            b->openers = fresh;
+            fresh->refs = 1u;
+            fresh = NULL;
+            break;
+        }
         X_SEM_RELEASE(&b->lock);
         fresh = (struct AAROpener *)X_ALLOC(sizeof(*fresh));
         if (!fresh)
-            return AAR_E_NOMEM;
+            return AAR_E_NOMEM; /* nothing has been changed */
         fresh->stamp = me;
         fresh->sigbit = -1;
-        X_SEM_OBTAIN(&b->lock);
-        o = opener_find(b, &me, NULL);
-        if (!o) {
-            o = fresh;
-            fresh = NULL;
-            o->next = b->openers;
-            b->openers = o;
-        }
     }
-    o->refs++;
     X_SEM_RELEASE(&b->lock);
-    if (fresh)
+    if (fresh) /* the task got a record meanwhile */
         X_FREE(fresh, sizeof(*fresh));
     if (obsolete)
         X_FREE(obsolete, sizeof(*obsolete));

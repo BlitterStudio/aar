@@ -1465,6 +1465,38 @@ static void test_admission(void)
     finish();
 }
 
+/*
+ * The rule: nothing is detached before the last step that can fail, and an
+ * error return leaves every object linked or freed. An open whose record
+ * cannot be allocated, at a task address that was reused, leaves the old task's
+ * record where the reap finds it.
+ */
+static void test_opener_alloc(void)
+{
+    static char other_name[8];
+
+    setup("opener_alloc");
+    USE(1);
+    CHECK(lib_open() == AAR_OK);
+    CHECK(openers_of(T(1)) == 1);
+    T(1)->name = other_name; /* another task has the address */
+    hx_fail_alloc = 1;
+    CHECK(shell_open(&base) == AAR_E_NOMEM);
+    CHECK(openers_of(T(1)) == 1); /* the old record is still there: nothing was detached */
+    vblanks(50);
+    shell_pass(&base);
+    CHECK(openers_of(T(1)) == 0 && hx_live_blocks == 0); /* the reap took it */
+    /* The same call with no record at all, and then with success. */
+    hx_fail_alloc = 1;
+    CHECK(shell_open(&base) == AAR_E_NOMEM && base.openers == NULL && hx_live_blocks == 0);
+    CHECK(lib_open() == AAR_OK && openers_of(T(1)) == 1);
+    base.library.lib_OpenCnt = 0;
+    (void)shell_close(&base);
+    USE(0);
+    shell_final_close(&base);
+    finish();
+}
+
 int main(int argc, char **argv)
 {
     uint32_t len = 0;
@@ -1491,6 +1523,7 @@ int main(int argc, char **argv)
     test_dead_owner_no_signal();
     test_reap();
     test_opener_states();
+    test_opener_alloc();
     test_rename();
     test_lease_gate();
     test_ext();

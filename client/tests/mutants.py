@@ -194,8 +194,11 @@ mutant("busy-port-counts-as-posted", "notify_terminal", SHELL,
        ("    if (queued)\n        return AAR_CORE_NOTIFY_BUSY;", "    if (queued)\n        return AAR_CORE_NOTIFIED;"))
 # ---- the records of a task that is gone are reclaimed whatever their state ----------------
 mutant("obsolete-opener-hidden", "opener_states", SHELL,
-       ("        if (prior)\n            prior->next = o->next;\n        else\n            b->openers = o->next;\n        obsolete = o;\n        o = NULL;",
-        "        o->closing = 1u;\n        o = NULL;"))
+       ("                if (prior)\n                    prior->next = o->next;\n                else\n                    b->openers = o->next;\n                obsolete = o;",
+        "                o->closing = 1u;"))
+mutant("open-detaches-before-alloc", "opener_alloc", SHELL,
+       ("        X_SEM_RELEASE(&b->lock);\n        fresh = (struct AAROpener *)X_ALLOC(sizeof(*fresh));",
+        "        if (o && !prior)\n            b->openers = o->next;\n        X_SEM_RELEASE(&b->lock);\n        fresh = (struct AAROpener *)X_ALLOC(sizeof(*fresh));"))
 mutant("reap-skips-closing-openers", "opener_states", SHELL,
        ("        if (shell_owner_state(b, &o->stamp) != AAR_OWNER_ALIVE) {", "        if (!o->closing && shell_owner_state(b, &o->stamp) != AAR_OWNER_ALIVE) {"))
 mutant("reap-skips-closing-handles", "opener_states", CORE,
