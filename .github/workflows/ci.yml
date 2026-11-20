@@ -126,7 +126,7 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends \
             gcc gcc-multilib g++ python3
       - name: Generator check, layouts, probe, API document
-        run: client/tests/run_host.sh
+        run: sh client/tests/run_host.sh
 
   # The client headers and the portable sources with the cross compiler that
   # builds zz9k.library (the image the firmware SDK pins by digest), compile
