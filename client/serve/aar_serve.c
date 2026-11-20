@@ -444,6 +444,11 @@ LONG aar_serve_create(AARHandle *h, const aar_serve_config *cfg,
     *out = NULL;
     if (!h || !cfg || !config_valid(cfg))
         return AAR_E_INVAL;
+    /* The AHI feeder moves at most a fiftieth of a second per pass: it needs a
+     * heartbeat at least that fast. */
+    if (cfg->audio_route == AAR_AUDIO_ROUTE_AHI &&
+        (cfg->poll_us == 0 || cfg->poll_us > 20000UL))
+        return AAR_E_NOSYS;
     s = X_ALLOC_VEC(sizeof(*s), MEMF_PUBLIC | MEMF_CLEAR);
     if (!s)
         return AAR_E_NOMEM;
@@ -552,6 +557,9 @@ void aar_serve_destroy(aar_serve *s)
      * that wait so the prompt is not hidden behind it. */
     close_display(s);
     console_read_finish(s);
+    /* What a handler still holds is answered, once, with AAR_E_IO. */
+    aar_serve_core_abort(&s->core);
+    reply_flush(s);
     if (s->con.owned && s->con.handle)
         X_CLOSE(s->con.handle);
     if (s->core.files.dos)
@@ -572,6 +580,13 @@ ULONG aar_serve_sigmask(const aar_serve *cs)
         mask |= 1UL << s->con.port->mp_SigBit;
     if (s->gfx.input_win && s->gfx.input_win->UserPort)
         mask |= 1UL << s->gfx.input_win->UserPort->mp_SigBit;
+    /* The SafeMessage of a flip and the completion of an AHI buffer: with no
+     * heartbeat they are what wakes the program to finish the flip and refill
+     * AHI. */
+    if (s->gfx.safe_port)
+        mask |= 1UL << s->gfx.safe_port->mp_SigBit;
+    if (s->ahi.port)
+        mask |= 1UL << s->ahi.port->mp_SigBit;
     if (s->cfg.flags & AAR_SERVEF_USE_SIGNAL)
         mask |= X_AAR_MESSAGE_SIGNAL(s->handle);
     return mask;

@@ -1572,6 +1572,31 @@ void aar_serve_core_init(struct aar_serve_core *s, const struct aar_serve_sink *
     s->sink = *sink;
 }
 
+/* Every request a handler still holds is completed with AAR_E_IO, once: the
+ * serving state is going away and the app must not stay parked on them. */
+void aar_serve_core_abort(struct aar_serve_core *s)
+{
+    struct aar_serve_console *c = &s->console;
+    struct aar_serve_display *d = &s->display;
+
+    if (c->app_write_active)
+        app_write_finish(c, AAR_E_IO);
+    if (c->read_active)
+        read_finish(c, AAR_E_IO, 0);
+    if (d->flip_active) {
+        struct aar_serve_req finished = d->flip_req;
+
+        d->flip_active = 0;
+        flip_complete(d, &finished, AAR_E_IO);
+    }
+    if (d->flip_queued) {
+        struct aar_serve_req next = d->flip_next;
+
+        d->flip_queued = 0;
+        flip_complete(d, &next, AAR_E_IO);
+    }
+}
+
 int aar_serve_core_request(struct aar_serve_core *s, const struct aar_serve_req *req,
                            struct aar_serve_done *done)
 {

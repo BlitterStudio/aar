@@ -1530,6 +1530,113 @@ static void test_keep_messages_leaves_them_for_the_program(void)
     finish();
 }
 
+/* ---- Tests: destroy, the signal mask and the heartbeat ----------------------------------------------------------- */
+
+/*
+ * Every request the loop took is answered exactly once: with its result, or with
+ * AAR_E_IO at destroy. Here a console read that never started (the app is not
+ * running) and a flip whose SafeMessage had not come are held at destroy.
+ */
+static void test_destroy_answers_every_held_request_once(void)
+{
+    struct comp c;
+    unsigned n_read = 0, n_flip = 0, n_other = 0;
+    int32_t r_read = 0, r_flip = 0;
+
+    setup("destroy_held");
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(c.result == AAR_OK);
+    app_state(H, AAR_STATE_STARTING, AAR_END_NONE); /* a read is not started while the app does not run */
+    ticks(2);                                       /* the loop has seen it */
+    CHECK(post(AAR_OP_CONSOLE_READ, 70, 0, 0, 0, 0, 0x200, 64) == AAR_OK);
+    CHECK(post(AAR_OP_DISPLAY_FLIP, 71, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0) == AAR_OK);
+    ticks(1);
+    CHECK(hx_changes == 1 && hx_safe_msgs == 0); /* the flip is out, its SafeMessage is not back */
+    CHECK(!next_comp(&c));
+    aar_serve_destroy(S);
+    S = NULL;
+    while (next_comp(&c)) {
+        if (c.id == 70) {
+            n_read++;
+            r_read = c.result;
+        } else if (c.id == 71) {
+            n_flip++;
+            r_flip = c.result;
+        } else {
+            n_other++;
+        }
+    }
+    CHECK(n_read == 1 && r_read == AAR_E_IO);
+    CHECK(n_flip == 1 && r_flip == AAR_E_IO);
+    CHECK(n_other == 0);
+    finish();
+}
+
+static void test_the_signal_mask_includes_the_flip_and_ahi_ports(void)
+{
+    struct comp c;
+    ULONG mask;
+
+    setup("sigmask");
+    cfg.audio_route = AAR_AUDIO_ROUTE_AHI;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(c.result == AAR_OK && S->gfx.safe_port != NULL);
+    mask = aar_serve_sigmask(S);
+    CHECK(mask & (1UL << S->gfx.safe_port->mp_SigBit));
+    CHECK(mask & (1UL << S->tm.port->mp_SigBit));
+    CHECK(mask & (1UL << S->gfx.input_win->UserPort->mp_SigBit));
+    CHECK(mask & AAR_SERVE_BREAK_ALL);
+    make_ring(0x4000, 64, 0);
+    CHECK(open_audio(&c, 0x4000, 64));
+    CHECK(c.result == AAR_OK && S->ahi.port != NULL);
+    CHECK(aar_serve_sigmask(S) & (1UL << S->ahi.port->mp_SigBit));
+    CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 32, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
+/* A program with no heartbeat (poll_us 0) waits only on the loop's signals: the
+ * SafeMessage of a flip has to be one of them, or the flip is never completed. */
+static void test_a_flip_completes_with_no_heartbeat(void)
+{
+    struct comp c;
+    int i;
+
+    setup("flip_no_heartbeat");
+    cfg.poll_us = 0;
+    make_serve();
+    CHECK(post(AAR_OP_DISPLAY_OPEN, 20, DW, DH, AAR_FMT_RGB565, 0, 0, 0) == AAR_OK);
+    hx_sched(2000, ctrl_c_cb, NULL); /* something to wake the first Wait */
+    CHECK(ticks(1) == AAR_SERVE_CONTINUE);
+    CHECK(next_comp(&c) && c.result == AAR_OK);
+    CHECK(post(AAR_OP_DISPLAY_FLIP, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0) == AAR_OK);
+    hx_sched(1000, ctrl_c_cb, NULL);
+    for (i = 0; i < 20 && !next_comp(&c); i++)
+        tick();
+    CHECK(i < 20 && c.id == 21 && c.result == AAR_OK);
+    hx_sig &= ~SIGBREAKF_CTRL_C;
+    finish();
+}
+
+/* The feeder takes at most a fiftieth of a second per pass: it needs a heartbeat
+ * of that period or faster. */
+static void test_ahi_needs_a_heartbeat_of_at_most_a_fiftieth_of_a_second(void)
+{
+    aar_serve *s = NULL;
+
+    setup("ahi_heartbeat");
+    cfg.audio_route = AAR_AUDIO_ROUTE_AHI;
+    cfg.poll_us = 20001;
+    CHECK(aar_serve_create(H, &cfg, &s) == AAR_E_NOSYS && s == NULL);
+    cfg.poll_us = 0;
+    CHECK(aar_serve_create(H, &cfg, &s) == AAR_E_NOSYS && s == NULL);
+    cfg.poll_us = 20000;
+    make_serve();
+    finish();
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -1580,6 +1687,10 @@ static const struct {
     T(test_app_messages_are_drained_and_counted_by_default),
     T(test_the_message_hook_gets_the_messages),
     T(test_keep_messages_leaves_them_for_the_program),
+    T(test_destroy_answers_every_held_request_once),
+    T(test_the_signal_mask_includes_the_flip_and_ahi_ports),
+    T(test_a_flip_completes_with_no_heartbeat),
+    T(test_ahi_needs_a_heartbeat_of_at_most_a_fiftieth_of_a_second),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

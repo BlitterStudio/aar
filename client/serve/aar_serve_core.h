@@ -892,6 +892,9 @@ struct aar_serve_core {
 };
 
 void aar_serve_core_init(struct aar_serve_core *s, const struct aar_serve_sink *sink);
+/* Completes every request a handler still holds (a console write or read, a
+ * flip) with AAR_E_IO through the sink, once. */
+void aar_serve_core_abort(struct aar_serve_core *s);
 /* Serves one request. AAR_SERVE_REQ_DEFERRED: the completion comes later
  * through the sink. An op aar_serve does not serve completes with AAR_E_NOSYS. */
 int aar_serve_core_request(struct aar_serve_core *s, const struct aar_serve_req *req,

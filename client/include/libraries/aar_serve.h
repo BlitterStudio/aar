@@ -147,7 +147,6 @@ struct aar_serve_console_ops {
 #define AAR_SERVE_WHY_DISPLAY 4UL  /* the display cannot be opened */
 #define AAR_SERVE_WHY_AUDIO   5UL  /* AHI cannot be opened */
 #define AAR_SERVE_WHY_QUEUE   6UL  /* the request queue is corrupt */
-#define AAR_SERVE_WHY_CALLER  7UL  /* aar_serve_stop was called */
 
 /* The default AHI, joystick and heartbeat settings of aar_serve_config_default. */
 #define AAR_SERVE_DEFAULT_POLL_US    1000UL

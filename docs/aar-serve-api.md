@@ -90,8 +90,9 @@ owner task with `user`.
 Reasons: `AAR_SERVE_WHY_BREAK` (Ctrl-C, also the raw key in the display window),
 `AAR_SERVE_WHY_WINDOW` (the input window was closed), `AAR_SERVE_WHY_CONSOLE`,
 `AAR_SERVE_WHY_DISPLAY`, `AAR_SERVE_WHY_AUDIO` (the output cannot be opened or
-written), `AAR_SERVE_WHY_QUEUE` (the request queue is corrupt) and
-`AAR_SERVE_WHY_CALLER` (`aar_serve_stop` was called).
+written) and `AAR_SERVE_WHY_QUEUE` (the request queue is corrupt). The hook may
+call `aar_serve_stop` now or later, or not at all; `aar_serve_stop` itself does
+not call the hook.
 
 ## Requests and the replaceable tables
 
