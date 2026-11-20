@@ -39,6 +39,21 @@ while [ "$lvo" -le 168 ]; do
 done
 [ "$missing" = 0 ]
 
+# The portable sources compile for the 68k with no warning, stay inside the
+# stack the library build allows, and need nothing from the C library but the
+# string functions (no 64-bit division or multiplication helpers).
+for src in client/src/aar_probe.c; do
+    "$CC" -std=gnu11 -noixemul -m68020 -Os -Wall -Wextra -Werror -pedantic \
+        -Wstack-usage=4000 -Iclient/include -Iinclude -c "$src" -o "$OUT/src.o"
+    bad=$("$NM" "$OUT/src.o" | awk '$1 == "U" { print $2 }' | \
+        grep -Ev '^_?(memcpy|memset|memcmp)$' || true)
+    if [ -n "$bad" ]; then
+        echo "$src needs: $bad"
+        exit 1
+    fi
+    echo "$src: compiles for m68k, 0 warnings"
+done
+
 # The test defines AARBase itself; every call goes through it, so nothing
 # else may be undefined (no stub library, no helper function).
 undefined=$("$NM" "$OUT/t.o" | awk '$1 == "U" { print $2 }' | tr '\n' ' ')
