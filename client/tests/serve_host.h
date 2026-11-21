@@ -701,6 +701,7 @@ HX_UNUSED static uint8_t hx_ahi_last[8192];          /* the last buffer sent */
 HX_UNUSED static int hx_ahi_pending_now;
 HX_UNUSED static int hx_ahi_max_pending;
 HX_UNUSED static struct Device hx_timer_dev, hx_ahi_dev;
+HX_UNUSED static unsigned long hx_timer_aborts;      /* timer requests aborted while still pending */
 
 static void hx_io_done(void *arg)
 {
@@ -811,6 +812,8 @@ HX_UNUSED static void hx_abort_io(struct IORequest *io)
 {
     if (!io->hx_pending)
         return;
+    if (io->io_Device == &hx_timer_dev)
+        hx_timer_aborts++;
     hx_cancel(hx_io_done, io);
     io->io_Error = -2;
     hx_io_done(io);
@@ -1950,6 +1953,7 @@ HX_UNUSED static void hx_reset(void)
     hx_sig = 0;
     hx_steps = 0;
     hx_waits = 0;
+    hx_timer_aborts = 0;
     hx_next_sigbit = 16;
     hx_ahi_fail_open = hx_ahi_open_count = hx_timer_open_count = hx_timer_fail_open = 0;
     hx_ahi_writes = hx_ahi_bytes = 0;

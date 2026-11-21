@@ -632,6 +632,34 @@ static inline int aar_run_load_failure_exit(int ctrl_c_pending, int user_stop)
     return (ctrl_c_pending != 0 || user_stop != 0) ? 5 : 20;
 }
 
+/* A Ctrl-C the launcher has seen stays seen: a later read of the signal (a
+ * libnix stdio call, a DOS packet wait, the library) may have consumed it, and
+ * the exit code must still be the user's 5, not a launcher error. */
+static inline int aar_run_break_latch(int latched, int ctrl_c_pending,
+                                      int user_stop)
+{
+    return (latched != 0 || ctrl_c_pending != 0 || user_stop != 0) ? 1 : 0;
+}
+
+/* The stack a command really runs on. A Shell command gets the CLI's default
+ * stack (cli_DefaultStack, in longwords: what the Stack command sets); the
+ * task bounds alone can describe a larger stack than the command was given.
+ * A Workbench start has no CLI: the task bounds are the icon's stack. */
+static inline int aar_run_stack_ok(uint32_t task_bytes, int has_cli,
+                                   uint32_t cli_default_longs)
+{
+    uint32_t bytes = task_bytes;
+
+    if (has_cli) {
+        uint32_t cli_bytes = cli_default_longs > UINT32_MAX / 4u ?
+                                 UINT32_MAX : cli_default_longs * 4u;
+
+        if (cli_bytes < bytes)
+            bytes = cli_bytes;
+    }
+    return bytes >= AAR_SERVE_MIN_STACK;
+}
+
 /* AmigaDOS keywords are case-insensitive: "aar-run status" lists claims
  * instead of trying to load a file called "status". */
 static inline int aar_run_is_status_keyword(const char *arg)

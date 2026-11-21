@@ -90,12 +90,24 @@ static int tool_is_ahi(const char *value);
 
 static int stack_ok(void)
 {
-    struct Task *task = FindTask(NULL);
-    if (!task || (uintptr_t)task->tc_SPUpper <= (uintptr_t)task->tc_SPLower ||
-        (uintptr_t)task->tc_SPUpper - (uintptr_t)task->tc_SPLower <
-            AAR_SERVE_MIN_STACK)
+    struct Process *process = (struct Process *)FindTask(NULL);
+    uint32_t task_bytes = 0;
+    uint32_t cli_longs = 0;
+    int has_cli = 0;
+
+    if (!process)
         return 0;
-    return 1;
+    if ((uintptr_t)process->pr_Task.tc_SPUpper > (uintptr_t)process->pr_Task.tc_SPLower)
+        task_bytes = (uint32_t)((uintptr_t)process->pr_Task.tc_SPUpper -
+                                (uintptr_t)process->pr_Task.tc_SPLower);
+    if (process->pr_Task.tc_Node.ln_Type == NT_PROCESS && process->pr_CLI) {
+        struct CommandLineInterface *cli =
+            (struct CommandLineInterface *)BADDR(process->pr_CLI);
+
+        has_cli = 1;
+        cli_longs = (uint32_t)cli->cli_DefaultStack;
+    }
+    return aar_run_stack_ok(task_bytes, has_cli, cli_longs);
 }
 
 static int ctrl_c_set(void)
@@ -136,6 +148,23 @@ static int user_stop_seen(void)
     if (g_serve)
         (void)aar_serve_result(g_serve, &res);
     return (res.flags & AAR_SERVE_R_USER_STOP) != 0;
+}
+
+/* The break latch of the launch (aar_run_break_latch). */
+static int break_latched;
+
+static int break_seen(void)
+{
+    break_latched = aar_run_break_latch(break_latched, ctrl_c_set(),
+                                        user_stop_seen());
+    return break_latched;
+}
+
+/* libnix's default __chkabort() ends the program with exit code 20 at the first
+ * stdio call that finds Ctrl-C set. aar-run handles the break itself (the
+ * load, the packet waits and the serving loop), and exits with 5 for it. */
+void __chkabort(void)
+{
 }
 
 static void usage(void)
@@ -480,8 +509,9 @@ static int finish_run(LONG ended)
     dropped_messages = (unsigned long)res.dropped_messages;
     runtime_dropped_logs = (unsigned long)res.runtime_dropped_logs;
     if (audio_ahi)
-        printf("aar-run: AHI underruns %lu (heartbeat %lu us; required 1..20000 us).\n",
-               (unsigned long)res.ahi_underruns, (unsigned long)poll_us);
+        printf("aar-run: AHI underruns %lu, late refills %lu (heartbeat %lu us; required 1..20000 us).\n",
+               (unsigned long)res.ahi_underruns, (unsigned long)res.ahi_gaps,
+               (unsigned long)poll_us);
     if (ended == AAR_SERVE_LOST) {
         snprintf(line, sizeof(line), "aar-run: claim lost (%s).",
                  aar_run_claim_loss_text(1, AAR_END_NONE));
@@ -593,11 +623,13 @@ static int apply_options(void)
 static void load_failed(LONG rc)
 {
     char line[200];
+    /* Decided before any output: a stdio call may consume the break. */
+    int broke = break_seen();
 
     aar_run_load_failure_line(line, sizeof(line), rc,
                               rc == AAR_E_NORESOURCE ? claim_reason() :
                                                        AAR_REASON_NONE,
-                              ctrl_c_set(), platform_info.max_image_bytes);
+                              broke, platform_info.max_image_bytes);
     puts(line);
 }
 
@@ -617,10 +649,12 @@ static enum aar_run_probe_verdict probe_image(const char *path)
 static int refuse_image(enum aar_run_probe_verdict v, const char *path)
 {
     char line[320];
+    /* Decided before any output: a stdio call may consume the break. */
+    int broke = break_seen();
 
     aar_run_probe_line(line, sizeof(line), v, path, &image_note, &platform_info);
     tell(line);
-    return aar_run_probe_exit(v, ctrl_c_set(), user_stop_seen());
+    return aar_run_probe_exit(v, broke, 0);
 }
 
 /* One command-line word of the options aar-run takes itself: the diagnostics
@@ -873,7 +907,7 @@ int main(int argc, char **argv)
     }
     /* The options go to the library before the load. */
     if (!apply_options()) {
-        rc = aar_run_load_failure_exit(ctrl_c_set(), user_stop_seen());
+        rc = aar_run_load_failure_exit(break_seen(), 0);
         cleanup();
         return rc;
     }
@@ -892,7 +926,7 @@ int main(int argc, char **argv)
                                   sizeof(elf_full));
         if (status == AAR_E_NOENT) {
             printf("aar-run: cannot open %s\n", elf_path);
-            rc = aar_run_load_failure_exit(ctrl_c_set(), user_stop_seen());
+            rc = aar_run_load_failure_exit(break_seen(), 0);
             cleanup();
             return rc;
         }
@@ -920,7 +954,7 @@ int main(int argc, char **argv)
     status = AARLoadFile(aar_handle, elf_full);
     if (status != AAR_OK) {
         load_failed(status);
-        rc = aar_run_load_failure_exit(ctrl_c_set(), user_stop_seen());
+        rc = aar_run_load_failure_exit(break_seen(), 0);
         cleanup();
         return rc;
     }

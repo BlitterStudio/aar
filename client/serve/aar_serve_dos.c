@@ -500,7 +500,7 @@ static int dos_packet_async(struct aar_serve *s, struct MsgPort *handler,
      * may have run outside the loop (aar_serve_locate, between create and the
      * first Wait): the end of a step would not re-arm it, and the loop would
      * sleep until some other signal came. */
-    if (s->cfg.poll_us)
+    if (s->cfg.poll_us && !s->in_step)
         timer_arm(s);
     if (check_live && !claim_live(s)) {
         abandoned = 1;

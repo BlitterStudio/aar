@@ -1957,6 +1957,57 @@ static void test_workbench_project_uses_dostrue_from_name_from_lock(void)
     finish();
 }
 
+/* AHI went idle with data waiting in the ring: a gap with no ring underrun. */
+static void test_a_late_ahi_refill_is_counted_as_a_gap(void)
+{
+    struct comp c;
+    struct aar_serve_result res;
+
+    setup("ahi_gaps");
+    cfg.audio_route = AAR_AUDIO_ROUTE_AHI;
+    make_serve();
+    make_ring(0x4000, 64, 40);
+    CHECK(open_audio(&c, 0x4000, 64));
+    ticks(2); /* the first buffer (40 frames, 5 ms) is queued and still playing */
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_gaps == 0 && res.ahi_underruns == 0);
+    /* the app wrote 20 more frames, the loop did not run for a while */
+    put_le(buf(0x4000) + AAR_AUDIO_RING_WRITE_FRAME, 60);
+    hx_run_for(30000);
+    ticks(1);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_gaps == 1 && res.ahi_underruns == 0);
+    CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
+/* A request that needs several DOS packets: the timer is armed once per packet
+ * by the wait itself and aborted once; the end-of-wait arm is only for calls
+ * made outside the loop (aar_serve_locate). */
+static void test_a_multi_packet_read_costs_one_timer_abort_per_packet(void)
+{
+    struct comp c;
+    static char big[24576];
+    unsigned long before;
+
+    setup("timer_ops");
+    data_dir();
+    memset(big, 'x', sizeof(big));
+    hx_node_add(((struct FileLock *)BADDR(root_lock))->fl_Key, "big", 0, big, sizeof(big));
+    make_serve();
+    put_str(0x100, "big");
+    CHECK(call(AAR_OP_FILE_OPEN, 3, 3, AAR_FILE_READ, 0, 0, 0x100, 4, &c));
+    CHECK(c.result == AAR_OK);
+    before = hx_timer_aborts;
+    CHECK(call(AAR_OP_FILE_READ, 4, 3, sizeof(big), 0, 0, 0x2000, sizeof(big), &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_FILE_COUNT] == sizeof(big));
+    printf("  timer aborts for 3 packets: %lu\n", hx_timer_aborts - before);
+    CHECK(hx_timer_aborts - before <= 3);
+    finish();
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -2022,6 +2073,8 @@ static const struct {
     T(test_the_heartbeat_runs_after_a_call_made_outside_the_loop),
     T(test_the_result_counts_the_logs_the_runtime_dropped),
     T(test_workbench_project_uses_dostrue_from_name_from_lock),
+    T(test_a_late_ahi_refill_is_counted_as_a_gap),
+    T(test_a_multi_packet_read_costs_one_timer_abort_per_packet),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

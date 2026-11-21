@@ -193,7 +193,7 @@ the final status and returns `AAR_OK`, otherwise the library's error
 
 `struct aar_serve_result` holds `size` (set by the caller), `flags`, `state`,
 `end_reason`, `exit_code`, `dropped_logs`, `runtime_dropped_logs`,
-`dropped_messages`, `ahi_underruns` and the final
+`dropped_messages`, `ahi_underruns`, `ahi_gaps` and the final
 `status`. The flags: `AAR_SERVE_R_FAULTED`, `AAR_SERVE_R_USER_STOP`,
 `AAR_SERVE_R_STOP_ASKED`, `AAR_SERVE_R_CLAIM_LOST`, `AAR_SERVE_R_DISPLAY_FAILED`,
 `AAR_SERVE_R_CONSOLE_FAILED`, `AAR_SERVE_R_AUDIO_FAILED` and
@@ -245,11 +245,14 @@ program's own window signals are not lost.
   `aar_serve_result.dropped_logs`. A program that reports lost output adds the
   two. After the claim is lost `aar_serve_result` returns `AAR_E_STALE` and
   `runtime_dropped_logs` is the value of the last successful call.
-- **AHI underruns.** `aar_serve_result.ahi_underruns` sums the AHI ring headers'
-  underrun counts across streams, sampled while the claim runs and before audio
-  close. The cached total survives audio close and app end; it is 0 on the
-  platform route. AHI needs a heartbeat of 1..20000 us (1000 by default).
-  aar-run prints this count and its heartbeat for `AUDIO=AHI`.
+- **AHI underruns and late refills.** `aar_serve_result.ahi_underruns` sums the
+  AHI ring headers' underrun counts across streams: the app wrote less than AHI
+  needed. `ahi_gaps` counts refills that found AHI already idle although the
+  ring had data: the loop came late (a DOS wait, a slow pass) and AHI played
+  silence between two writes, which no ring counter shows. Both are sampled while
+  the claim runs, survive audio close and app end, and are 0 on the platform
+  route. AHI needs a heartbeat of 1..20000 us (1000 by default). aar-run prints
+  both and its heartbeat for `AUDIO=AHI`.
 - **The stop grace** is `AARInfo.stop_grace_ms` (read by `aar_serve_create`);
   500 ms only when the platform reports none.
 - **Framebuffer tokens** are checked by the library and the platform. The loop

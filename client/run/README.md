@@ -29,8 +29,11 @@ tables left, not enough shared memory for the queues) and returns 20.
 ## Starting an app
 
 Run `Stack 32768` in the launching Shell first. aar-run requires at least a
-16 KiB process stack and prints `Run Stack 32768 in this Shell before aar-run.`
-(returning 10) when it has less.
+16 KiB stack and prints `Run Stack 32768 in this Shell before aar-run.`
+(returning 10) when it has less. For a Shell command the stack that counts is
+the CLI's default stack (what the `Stack` command sets, `cli_DefaultStack`), also
+when the task's own stack bounds are larger; a Workbench start uses the icon's
+stack.
 
 ```text
 aar-run <app.elf> [MAXMEM=<MiB>] [HOSTMEM=<MiB>] [WEIGHT=<n>] [AUDIO=AHI] [args]

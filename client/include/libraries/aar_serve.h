@@ -229,6 +229,8 @@ struct aar_serve_result {
     ULONG dropped_messages;         /* app messages drained and dropped */
     ULONG ahi_underruns;            /* sum of the AHI rings' underrun counts, cached before close/end;
                                        0 for the platform route. AHI needs poll_us 1..20000 */
+    ULONG ahi_gaps;                 /* AHI refills that came after AHI had already run dry although the
+                                       ring had data: audible gaps that are not ring underruns */
     AARStatusInfo status;           /* the final AARStatus read */
 };
 

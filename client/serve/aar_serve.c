@@ -599,7 +599,7 @@ ULONG aar_serve_sigmask(const aar_serve *cs)
     return mask;
 }
 
-LONG aar_serve_step(aar_serve *s, ULONG signals)
+static LONG step_body(aar_serve *s, ULONG signals)
 {
     ULONG breaks = s->cfg.break_mask;
     struct aar_serve_exit_in leave;
@@ -666,6 +666,16 @@ LONG aar_serve_step(aar_serve *s, ULONG signals)
     if (s->cfg.poll_us)
         timer_arm(s);
     return AAR_SERVE_CONTINUE;
+}
+
+LONG aar_serve_step(aar_serve *s, ULONG signals)
+{
+    LONG rc;
+
+    s->in_step = 1;
+    rc = step_body(s, signals);
+    s->in_step = 0;
+    return rc;
 }
 
 LONG aar_serve_run(aar_serve *s)
@@ -735,6 +745,7 @@ LONG aar_serve_result(aar_serve *s, struct aar_serve_result *out)
     out->runtime_dropped_logs = s->runtime_dropped_logs;
     ahi_count_underruns(s);
     out->ahi_underruns = s->ahi.underruns;
+    out->ahi_gaps = s->ahi.gaps;
     if (!claim_live(s))
         return rc;
     memset(&st, 0, sizeof(st));

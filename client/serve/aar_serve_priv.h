@@ -212,6 +212,7 @@ struct aar_serve {
     uint32_t dropped_messages;          /* app messages drained and dropped */
     uint32_t runtime_dropped_logs;      /* AARStatusInfo.log_dropped at the last full status read */
     int saw_fault;
+    int in_step;                        /* aar_serve_step is running: it arms the heartbeat itself */
     int ownership_lost;
     int queue_corrupt;
     int display_failed;
@@ -281,6 +282,7 @@ struct aar_serve {
         volatile uint8_t *ring;         /* attached AUDIO_OPEN payload, until audio close */
         uint32_t ring_underruns;        /* last count observed in this ring */
         uint32_t underruns;             /* accumulated across AHI streams */
+        uint32_t gaps;                  /* refills that found AHI already idle with data waiting */
     } ahi;
 
     /* ---- aar_serve_input.c: the input window's events and the joystick ---------------- */

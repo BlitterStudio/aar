@@ -669,7 +669,7 @@ mutant("log-hook-ignored", "hooks", SL,
 mutant("hook-table-size-unchecked", "hooks_size", "client/serve/aar_serve_priv.h",
        ("     (s)->cfg.hooks->size >= offsetof(aar_serve_hooks, field) +               \\\n                             sizeof((s)->cfg.hooks->field) &&                 \\\n", ""))
 mutant("dos-wait-leaves-the-heartbeat-unarmed", "heartbeat_after_locate", "client/serve/aar_serve_dos.c",
-       ("    if (s->cfg.poll_us)\n        timer_arm(s);\n    if (check_live && !claim_live(s)) {", "    if (check_live && !claim_live(s)) {"))
+       ("    if (s->cfg.poll_us && !s->in_step)\n        timer_arm(s);\n    if (check_live && !claim_live(s)) {", "    if (check_live && !claim_live(s)) {"))
 mutant("destroy-lets-a-dos-wait-arm-the-timer", "heartbeat_after_locate", SL,
        ("    s->cfg.poll_us = 0; /* the DOS waits below must not arm the timer again */\n", ""))
 mutant("runtime-log-drops-not-reported", "log_dropped", SL,
@@ -685,6 +685,22 @@ mutant("ahi-underruns-counted-twice", "ahi_audio", "client/serve/aar_serve_ahi.c
 mutant("workbench-rejects-dostrue", "workbench_project", "client/run/aar_run_workbench.h",
        ("                     (LONG)sizeof(directory)) != 0) {",
         "                     (LONG)sizeof(directory)) > 0) {"))
+mutant("a-seen-break-is-forgotten", "run_policy", "client/run/aar_run_policy.h",
+       ("    return (latched != 0 || ctrl_c_pending != 0 || user_stop != 0) ? 1 : 0;",
+        "    return (ctrl_c_pending != 0 || user_stop != 0) ? 1 : 0;"))
+mutant("stack-ignores-the-cli-default", "run_policy", "client/run/aar_run_policy.h",
+       ("        if (cli_bytes < bytes)\n            bytes = cli_bytes;", "        (void)cli_bytes;"))
+mutant("cli-stack-longs-wrap", "run_policy", "client/run/aar_run_policy.h",
+       ("cli_default_longs > UINT32_MAX / 4u ?\n                                 UINT32_MAX : cli_default_longs * 4u;",
+        "cli_default_longs * 4u;"))
+mutant("dos-wait-in-a-step-arms-the-timer", "timer_ops", "client/serve/aar_serve_dos.c",
+       ("    if (s->cfg.poll_us && !s->in_step)", "    if (s->cfg.poll_us)"))
+mutant("ahi-late-refill-not-counted", "ahi_gaps", "client/serve/aar_serve_ahi.c",
+       ("    if (completed && ahi_idle(s))\n        s->ahi.gaps++;", "    if (completed && ahi_idle(s))\n        ;"))
+mutant("ahi-first-buffer-counted-late", "ahi_gaps", "client/serve/aar_serve_ahi.c",
+       ("    if (completed && ahi_idle(s))\n        s->ahi.gaps++;", "    if (ahi_idle(s))\n        s->ahi.gaps++;"))
+mutant("ahi-gaps-not-reported", "ahi_gaps", SL,
+       ("    out->ahi_gaps = s->ahi.gaps;", "    out->ahi_gaps = 0;"))
 # the backends
 mutant("nil-takes-no-packets", "nil_output", "client/serve/aar_serve_con.c",
        ("    if (!handle->fh_Type) {", "    if (0) {"))
@@ -749,6 +765,11 @@ def run_serve(work, test):
         ("serve_loop", ["client/tests/serve_loop_test.c", core, "client/src/aar_core.c",
                         "client/src/refplat.c"]),
     ]
+    if test == "run_policy":
+        flags.append("-Iclient/run")
+        programs = [("run_policy", ["client/tests/run_policy_test.c"])]
+    programs += [
+    ]
     failed = set()
     for prog, srcs in programs:
         exe = os.path.join(work, prog)
@@ -795,7 +816,7 @@ def run_one(name, test, path, changes, tmp):
     with open(target, "w", newline="") as fh:
         fh.write(text)
 
-    if path.startswith("client/serve/") or path == "client/run/aar_run_workbench.h":
+    if path.startswith("client/serve/") or path == "client/run/aar_run_workbench.h" or test == "run_policy":
         return run_serve(work, test)
 
     is_shell = path == SHELL

@@ -13,6 +13,38 @@
 
 #include "aar_run_policy.h"
 
+static void test_a_break_that_was_seen_stays_seen(void)
+{
+    int latched = 0;
+
+    /* the load saw Ctrl-C; later reads of the signal find it consumed */
+    latched = aar_run_break_latch(latched, 1, 0);
+    latched = aar_run_break_latch(latched, 0, 0);
+    assert(latched == 1);
+    assert(aar_run_load_failure_exit(latched, 0) == 5);
+    /* the loop's own record of a user stop counts too */
+    assert(aar_run_break_latch(0, 0, 1) == 1);
+    /* no break: a failed load is a launcher error */
+    assert(aar_run_load_failure_exit(aar_run_break_latch(0, 0, 0), 0) == 20);
+}
+
+static void test_the_stack_is_the_one_the_command_runs_on(void)
+{
+    /* Stack 8192 before the command: refused although the task bounds are large */
+    assert(!aar_run_stack_ok(65536u, 1, 2048u));
+    assert(aar_run_stack_ok(65536u, 1, 8192u));       /* Stack 32768 */
+    assert(aar_run_stack_ok(16384u, 1, 4096u));       /* exactly the minimum */
+    assert(!aar_run_stack_ok(16380u, 1, 8192u));
+    assert(!aar_run_stack_ok(65536u, 1, 4095u));
+    /* the CLI default is a floor, not a ceiling: small task bounds still refuse */
+    assert(!aar_run_stack_ok(8192u, 1, 8192u));
+    /* Workbench: no CLI, the icon's stack is the task bounds */
+    assert(aar_run_stack_ok(32768u, 0, 0u));
+    assert(!aar_run_stack_ok(8192u, 0, 100000u));
+    /* a huge longword count does not wrap */
+    assert(aar_run_stack_ok(65536u, 1, 0x40000000u));
+}
+
 static void test_ahi_open_failure_exits_20(void)
 {
     assert(aar_run_process_exit(0, 0, 0, 1, 0) == 20);
@@ -1166,6 +1198,8 @@ static void test_load_break_consumed_by_packet_returns_warn(void)
 int main(void)
 {
     test_ahi_open_failure_exits_20();
+    test_a_break_that_was_seen_stays_seen();
+    test_the_stack_is_the_one_the_command_runs_on();
     test_corrupt_queue_exits_20();
     test_positive_mib_parse();
     test_limits_are_read_from_aarinfo();

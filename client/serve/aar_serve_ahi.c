@@ -233,6 +233,10 @@ static void service_ahi_audio(struct aar_serve *s)
         }
         return;
     }
+    /* A buffer finished and nothing else was queued although the ring had
+     * data: AHI played silence between the two writes, with no ring underrun. */
+    if (completed && ahi_idle(s))
+        s->ahi.gaps++;
     slot = ahi_free_slot(s);
     if (slot < 0)
         return;
