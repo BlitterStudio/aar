@@ -848,7 +848,7 @@ void aar_serve_audio_close_request(struct aar_serve_audio *a,
  * AAR_OK: the audio is closed again (nothing is attached to the ring). */
 void aar_serve_audio_refused(struct aar_serve_audio *a);
 /* The frames one AHI buffer takes from the ring: what is available, at most
- * 1/50 s of audio and the buffer size. */
+ * 3/50 s (60 ms) of audio and the buffer size. */
 uint32_t aar_serve_audio_chunk_frames(uint32_t available_frames, uint32_t rate,
                                       uint32_t channels, uint32_t buffer_bytes);
 

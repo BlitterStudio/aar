@@ -395,14 +395,16 @@ names it in an `AUDIO_OPEN` request; aar-run opens AHI at the requested rate
 and detaches it at `AUDIO_CLOSE`. aar-run reads the PCM with `AARAudioRead`,
 which converts the ring's interleaved S16LE samples (rate and channel count in
 its header) into AHI's S16BE bounce buffers without resampling or downmixing,
-one request of at most 1/50 s (20 ms) at a time. aar-run keeps six such requests
-queued in AHI (about 120 ms of audio, each chained to the one before it) and
-refills every free slot in one pass while whole chunks wait in the ring, so a
-delay of the loop of up to about 100 ms, such as a low priority task on a busy
-machine, plays out of AHI's queue. The price is up to 120 ms of latency between
-the app's ring and the speakers when the app writes ahead of the player; a ring
-that fills in real time adds none, because the last, partial chunk is queued as
-soon as it is 5 ms long or AHI has nothing left to play. If AHI cannot be opened, aar-run stops
+in two requests of up to 3/50 s (60 ms) each, the double buffering of the AHI
+developer guide: each is linked (`ahir_Link`) to the other while that one is
+queued, and a request is sent again as soon as it has finished. Together they
+keep about 120 ms of audio in AHI, so a delay of the loop of up to about 100 ms,
+such as a low priority task on a busy machine, plays out of AHI's queue. A
+buffer is queued when it is full, when AHI has nothing left to play, when at most
+5 ms are left in the other buffer, or when at most 20 ms are left and the ring
+holds at least 5 ms, so a ring that the app fills in real time is not cut into
+tiny requests and a slow one cannot let AHI run dry. The price is up to 120 ms of
+latency between the app's ring and the speakers when the app writes ahead. If AHI cannot be opened, aar-run stops
 the app and returns 20. Before each read aar-run asks the library how many frames
 are readable (`AARAudioRead` with no buffer), which counts nothing, so an
 underrun in the ring header is counted only when AHI finished a buffer and

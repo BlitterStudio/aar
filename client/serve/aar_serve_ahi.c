@@ -165,12 +165,13 @@ static void ahi_submit(struct aar_serve *s, unsigned slot, uint32_t bytes)
     struct AHIRequest *link = NULL;
 
     if (s->ahi.pending[s->ahi.last])
-        link = s->ahi.request[s->ahi.last]; /* the chain's tail */
+        link = s->ahi.request[s->ahi.last]; /* the other request: still queued */
     request->ahir_Std.io_Command = CMD_WRITE;
     request->ahir_Std.io_Length = bytes;
     request->ahir_Std.io_Data = s->ahi.buffer[slot];
-    if (!link)
-        request->ahir_Std.io_Offset = 0;
+    /* io_Offset must be 0 and the device trashes it, and ahir_Link, when a
+     * request finishes: every field is set again for every write. */
+    request->ahir_Std.io_Offset = 0;
     request->ahir_Type = AHIST_S16S;
     request->ahir_Frequency = s->ahi.rate;
     request->ahir_Volume = 0x10000L;
@@ -179,6 +180,7 @@ static void ahi_submit(struct aar_serve *s, unsigned slot, uint32_t bytes)
     s->ahi.pending_bytes[slot] = bytes;
     s->ahi.pending[slot] = 1u;
     s->ahi.last = slot;
+    s->ahi.sent_ms[slot] = now_ms(s);
     X_SEND_IO((struct IORequest *)request);
 }
 
@@ -205,14 +207,39 @@ static int ahi_idle(struct aar_serve *s)
     return 1;
 }
 
-/* Moves PCM from the app's audio ring to AHI. Each request holds at most 1/50 s
- * (the earlier launcher's chunk) and up to AAR_SERVE_AHI_BUFFER_COUNT requests
- * are queued, so a stall of the loop shorter than about 100 ms plays out of the
- * queue instead of starving AHI. Every free slot is refilled in one pass while a
- * whole chunk is waiting in the ring; the last, partial chunk is queued when AHI
- * has nothing else to play or when it is at least 1/200 s, so a ring that fills
- * in real time is not cut into tiny requests. AARAudioRead copies the ring's
- * little-endian words into samples in CPU order. */
+/* What AHI still has to play, in milliseconds: the queued requests less the time
+ * since each was sent. A request that started later than it was sent (it waited
+ * behind the other one) is counted as shorter than it is, which only makes the
+ * feeder queue the next buffer sooner. */
+static uint32_t ahi_queued_ms(struct aar_serve *s)
+{
+    uint32_t now = now_ms(s);
+    uint32_t left = 0u;
+    unsigned i;
+
+    for (i = 0u; i < AAR_SERVE_AHI_BUFFER_COUNT; i++) {
+        uint32_t length, played;
+
+        if (!s->ahi.pending[i])
+            continue;
+        length = s->ahi.pending_bytes[i] / (s->ahi.channels * 2u) * 1000u /
+                 s->ahi.rate;
+        played = now - s->ahi.sent_ms[i];
+        if (played < length)
+            left += length - played;
+    }
+    return left;
+}
+
+/* Moves PCM from the app's audio ring to AHI, the way the AHI developer guide
+ * double-buffers: two requests, each linked to the other one while that is
+ * queued. A request holds up to 3/50 s (60 ms), so the two together keep about
+ * 120 ms of audio in AHI and a stall of the loop of up to about 100 ms plays out
+ * of them. A buffer is queued when it is full, when AHI has nothing to play, when
+ * at most 5 ms are left in the other buffer, or when at most 20 ms are left and
+ * the ring holds at least 5 ms: a ring that fills in real time is not cut into
+ * tiny requests, and a slow one cannot let AHI run dry. AARAudioRead copies the
+ * ring's little-endian words into samples in CPU order. */
 static void service_ahi_audio(struct aar_serve *s)
 {
     uint32_t available, frames, full;
@@ -233,6 +260,8 @@ static void service_ahi_audio(struct aar_serve *s)
     full = aar_serve_audio_chunk_frames(0xffffffffu, s->ahi.rate, s->ahi.channels,
                                         AAR_SERVE_AHI_BUFFER_BYTES);
     for (;;) {
+        uint32_t queued, chunk_ms;
+
         frames = aar_serve_audio_chunk_frames(available, s->ahi.rate,
                                               s->ahi.channels,
                                               AAR_SERVE_AHI_BUFFER_BYTES);
@@ -246,8 +275,10 @@ static void service_ahi_audio(struct aar_serve *s)
             }
             return;
         }
-        if (submitted ? frames < full :
-                        (!ahi_idle(s) && frames < s->ahi.rate / 200u))
+        queued = ahi_queued_ms(s);
+        chunk_ms = frames * 1000u / s->ahi.rate;
+        if (!(frames >= full || ahi_idle(s) || queued <= 5u ||
+              (queued <= 20u && chunk_ms >= 5u)))
             return;
         slot = ahi_free_slot(s);
         if (slot < 0)

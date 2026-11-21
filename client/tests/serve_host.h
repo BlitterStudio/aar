@@ -711,8 +711,15 @@ static void hx_io_done(void *arg)
 
     io->hx_pending = 0;
     io->hx_done = 1;
-    if (io->io_Command == CMD_WRITE && io->io_Device == &hx_ahi_dev)
+    if (io->io_Command == CMD_WRITE && io->io_Device == &hx_ahi_dev) {
+        struct AHIRequest *ar = (struct AHIRequest *)io;
+
         hx_ahi_pending_now--;
+        /* CMD_WRITE: "the other fields, except io_Device, io_Unit and io_Command,
+         * are trashed" when the request finishes */
+        ar->ahir_Std.io_Offset = 0x5a5a;
+        ar->ahir_Link = (struct AHIRequest *)(uintptr_t)1;
+    }
     hx_post(io->io_Message.mn_ReplyPort, &io->io_Message);
 }
 
@@ -804,7 +811,14 @@ HX_UNUSED static void hx_send_io(struct IORequest *io)
                 HX_FAIL("an AHI write is not chained to the tail of the queue");
             hx_ahi_tail = io;
         }
+        if (ar->ahir_Std.io_Offset != 0)
+            HX_FAIL("an AHI write with io_Offset not 0 (the device trashes it when a request finishes)");
         hx_ahi_pending_now++;
+        /* The AHI developer guide describes double buffering with two requests;
+         * on the card (8c7be36) ahi.device played the first of six chained
+         * writes and nothing after it. More than two in flight is not played. */
+        if (hx_ahi_pending_now > 2)
+            HX_FAIL("more than two AHI writes in flight: ahi.device does not play them");
         if (hx_ahi_pending_now > hx_ahi_max_pending)
             hx_ahi_max_pending = hx_ahi_pending_now;
         us = (uint64_t)ar->ahir_Std.io_Length / 4u * 1000000u / ar->ahir_Frequency;

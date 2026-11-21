@@ -450,8 +450,8 @@ LONG aar_serve_create(AARHandle *h, const aar_serve_config *cfg,
     *out = NULL;
     if (!h || !cfg || !config_valid(cfg))
         return AAR_E_INVAL;
-    /* The AHI feeder moves at most a fiftieth of a second per pass: it needs a
-     * heartbeat at least that fast. */
+    /* The AHI feeder queues a buffer as soon as the other one is nearly played:
+     * it needs a heartbeat at least as fast as the limit below. */
     if (cfg->audio_route == AAR_AUDIO_ROUTE_AHI &&
         (cfg->poll_us == 0 || cfg->poll_us > 20000UL))
         return AAR_E_NOSYS;

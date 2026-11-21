@@ -1063,7 +1063,7 @@ static void test_audio_chunk_is_a_fiftieth_of_a_second(void)
     CHECK(open_audio(&c, 0x4000, 1024));
     CHECK(c.result == AAR_OK);
     ticks(3);
-    CHECK(hx_ahi_writes >= 1 && hx_ahi_bytes / hx_ahi_writes <= 8000 / 50 * 4);
+    CHECK(hx_ahi_writes >= 1 && hx_ahi_bytes / hx_ahi_writes <= 8000 / 50 * 3 * 4);
     CHECK(hx_ahi_max_pending <= (int)AAR_SERVE_AHI_BUFFER_COUNT);
     CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
     finish();
@@ -2033,6 +2033,40 @@ static void test_a_sixty_ms_loop_stall_does_not_starve_ahi(void)
     finish();
 }
 
+/* The app writes its ring in real time, 1 ms at a time. A buffer is not queued
+ * while AHI holds more than 20 ms (no tiny requests), and it is queued, however
+ * short, in time before AHI runs out. */
+static void test_a_slow_ring_is_neither_cut_into_tiny_requests_nor_left_to_run_dry(void)
+{
+    struct comp c;
+    struct aar_serve_result res;
+    unsigned i;
+
+    setup("ahi_slow_ring");
+    cfg.audio_route = AAR_AUDIO_ROUTE_AHI;
+    make_serve();
+    make_ring(0x4000, 1024, 480); /* 60 ms at 8000 Hz: one full buffer */
+    CHECK(open_audio(&c, 0x4000, 1024));
+    CHECK(c.result == AAR_OK);
+    ticks(3);
+    CHECK(hx_ahi_writes == 1);
+    for (i = 1; i <= 15; i++) {
+        put_le(buf(0x4000) + AAR_AUDIO_RING_WRITE_FRAME, 480 + 8 * i);
+        tick();
+    }
+    CHECK(hx_ahi_writes == 1); /* more than 20 ms are queued: wait */
+    for (i = 16; i <= 50; i++) {
+        put_le(buf(0x4000) + AAR_AUDIO_RING_WRITE_FRAME, 480 + 8 * i);
+        tick();
+    }
+    CHECK(hx_ahi_writes == 2); /* at most 20 ms left: the second buffer is queued */
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_gaps == 0 && res.ahi_underruns == 0);
+    CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -2101,6 +2135,7 @@ static const struct {
     T(test_a_late_ahi_refill_is_counted_as_a_gap),
     T(test_a_multi_packet_read_costs_one_timer_abort_per_packet),
     T(test_a_sixty_ms_loop_stall_does_not_starve_ahi),
+    T(test_a_slow_ring_is_neither_cut_into_tiny_requests_nor_left_to_run_dry),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

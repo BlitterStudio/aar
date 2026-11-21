@@ -701,13 +701,19 @@ mutant("ahi-first-buffer-counted-late", "ahi_gaps", "client/serve/aar_serve_ahi.
        ("        if (!submitted && completed && ahi_idle(s))\n            s->ahi.gaps++;", "        if (!submitted && ahi_idle(s))\n            s->ahi.gaps++;"))
 mutant("ahi-gaps-not-reported", "ahi_gaps", SL,
        ("    out->ahi_gaps = s->ahi.gaps;", "    out->ahi_gaps = 0;"))
-mutant("ahi-queue-is-two-requests-deep", "ahi_stall", "client/serve/aar_serve_priv.h",
-       ("#define AAR_SERVE_AHI_BUFFER_COUNT 6u   /* requests in flight: 6 x 20 ms = 120 ms of queued audio */",
-        "#define AAR_SERVE_AHI_BUFFER_COUNT 2u   /* requests in flight: 6 x 20 ms = 120 ms of queued audio */"))
-mutant("ahi-refills-one-slot-per-pass", "ahi_stall", "client/serve/aar_serve_ahi.c",
-       ("        submitted++;\n        available = got < available ? available - got : 0u;\n    }", "        return;\n    }"))
+mutant("ahi-six-requests-in-flight", "ahi_stall", "client/serve/aar_serve_priv.h",
+       ("#define AAR_SERVE_AHI_BUFFER_COUNT 2u   /* requests in flight: the guide's double buffering */",
+        "#define AAR_SERVE_AHI_BUFFER_COUNT 6u   /* requests in flight: the guide's double buffering */"))
+mutant("ahi-chunk-is-a-fiftieth", "serve_core", SC,
+       ("    uint32_t tick = rate / 50u * 3u; /* 60 ms */", "    uint32_t tick = rate / 50u;"))
+mutant("ahi-offset-left-from-the-last-use", "ahi_stall", "client/serve/aar_serve_ahi.c",
+       ("    request->ahir_Std.io_Offset = 0;", "    if (!link)\n        request->ahir_Std.io_Offset = 0;"))
+mutant("ahi-tiny-requests-while-much-is-queued", "ahi_slow_ring", "client/serve/aar_serve_ahi.c",
+       ("              (queued <= 20u && chunk_ms >= 5u)))", "              (chunk_ms >= 5u)))"))
+mutant("ahi-waits-for-the-last-5-ms", "ahi_slow_ring", "client/serve/aar_serve_ahi.c",
+       ("              (queued <= 20u && chunk_ms >= 5u)))", "              0))"))
 mutant("ahi-chains-to-the-wrong-request", "ahi_audio", "client/serve/aar_serve_ahi.c",
-       ("    if (s->ahi.pending[s->ahi.last])\n        link = s->ahi.request[s->ahi.last]; /* the chain's tail */",
+       ("    if (s->ahi.pending[s->ahi.last])\n        link = s->ahi.request[s->ahi.last]; /* the other request: still queued */",
         "    link = s->ahi.request[0];"))
 # the backends
 mutant("nil-takes-no-packets", "nil_output", "client/serve/aar_serve_con.c",

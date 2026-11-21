@@ -158,8 +158,8 @@
                              sizeof((s)->cfg.hooks->field) &&                 \
      (s)->cfg.hooks->field != NULL)
 
-#define AAR_SERVE_AHI_BUFFER_COUNT 6u   /* requests in flight: 6 x 20 ms = 120 ms of queued audio */
-#define AAR_SERVE_AHI_BUFFER_BYTES 8192u
+#define AAR_SERVE_AHI_BUFFER_COUNT 2u   /* requests in flight: the guide's double buffering */
+#define AAR_SERVE_AHI_BUFFER_BYTES 24576u /* one request: 3/50 s up to 96 kHz stereo */
 
 /* One walk over the candidates of a DOS name: GetDeviceProc candidates, or one
  * fixed handler and directory lock (a relative parent, or a candidate pinned
@@ -282,6 +282,7 @@ struct aar_serve {
         volatile uint8_t *ring;         /* attached AUDIO_OPEN payload, until audio close */
         uint32_t ring_underruns;        /* last count observed in this ring */
         uint32_t underruns;             /* accumulated across AHI streams */
+        uint32_t sent_ms[AAR_SERVE_AHI_BUFFER_COUNT]; /* when each request was sent */
         uint32_t gaps;                  /* refills that found AHI already idle with data waiting */
         unsigned last;                  /* slot of the request submitted last: the next one chains to it */
         unsigned passes;                /* feeder passes, to sample the ring's underrun word now and then */

@@ -1507,7 +1507,7 @@ uint32_t aar_serve_audio_chunk_frames(uint32_t available_frames, uint32_t rate,
                                       uint32_t channels, uint32_t buffer_bytes)
 {
     uint32_t frames = available_frames;
-    uint32_t tick = rate / 50u;
+    uint32_t tick = rate / 50u * 3u; /* 60 ms */
     uint32_t fit = channels ? buffer_bytes / (channels * 2u) : 0u;
 
     if (tick < frames)

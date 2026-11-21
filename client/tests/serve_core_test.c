@@ -2245,14 +2245,14 @@ static void test_audio_open_refusals(void)
 
 static void test_audio_chunk_is_a_fiftieth_of_a_second_at_most(void)
 {
-    /* 44100 Hz: 882 frames per 1/50 s */
-    assert(aar_serve_audio_chunk_frames(5000u, 44100u, 2u, 8192u) == 882u);
-    assert(aar_serve_audio_chunk_frames(100u, 44100u, 2u, 8192u) == 100u);
-    assert(aar_serve_audio_chunk_frames(0u, 44100u, 2u, 8192u) == 0u);
-    /* 48 kHz: 960 frames; the buffer holds 2048 frames of stereo */
-    assert(aar_serve_audio_chunk_frames(5000u, 48000u, 2u, 8192u) == 960u);
-    assert(aar_serve_audio_chunk_frames(5000u, 192000u, 2u, 8192u) == 2048u);
-    assert(aar_serve_audio_chunk_frames(5000u, 44100u, 0u, 8192u) == 0u);
+    /* 44100 Hz: 2646 frames per 3/50 s */
+    assert(aar_serve_audio_chunk_frames(5000u, 44100u, 2u, 24576u) == 2646u);
+    assert(aar_serve_audio_chunk_frames(100u, 44100u, 2u, 24576u) == 100u);
+    assert(aar_serve_audio_chunk_frames(0u, 44100u, 2u, 24576u) == 0u);
+    /* 48 kHz: 2880 frames; the buffer holds 6144 frames of stereo */
+    assert(aar_serve_audio_chunk_frames(5000u, 48000u, 2u, 24576u) == 2880u);
+    assert(aar_serve_audio_chunk_frames(20000u, 192000u, 2u, 24576u) == 6144u);
+    assert(aar_serve_audio_chunk_frames(5000u, 44100u, 0u, 24576u) == 0u);
 }
 
 /* ---- Events ------------------------------------------------------------- */
