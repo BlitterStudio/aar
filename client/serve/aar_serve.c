@@ -206,6 +206,12 @@ static int post_reply(struct aar_serve *s, const struct aar_serve_req *q,
     for (i = 0; i < AAR_ENTRY_OUTS; i++)
         r.out[i] = d->out[i];
     rc = (int)claim_note(s, X_AAR_SERVICE_REPLY(s->handle, &r));
+    if (q->op == AAR_OP_AUDIO_OPEN && d->result == AAR_OK && rc == AAR_OK &&
+        s->ahi.request[0]) {
+        s->ahi.ring = q->buf;
+        s->ahi.ring_underruns = 0;
+        ahi_count_underruns(s);
+    }
     if (q->op == AAR_OP_AUDIO_OPEN && d->result == AAR_OK && rc != AAR_OK &&
         rc != AAR_E_BUSY) {
         /* The library turned the completion into a refusal (the ring does not
@@ -726,6 +732,9 @@ LONG aar_serve_result(aar_serve *s, struct aar_serve_result *out)
                  (s->queue_corrupt ? AAR_SERVE_R_QUEUE_CORRUPT : 0UL);
     out->dropped_logs = s->core.console.launcher_dropped;
     out->dropped_messages = s->dropped_messages;
+    out->runtime_dropped_logs = s->runtime_dropped_logs;
+    ahi_count_underruns(s);
+    out->ahi_underruns = s->ahi.underruns;
     if (!claim_live(s))
         return rc;
     memset(&st, 0, sizeof(st));
@@ -734,6 +743,8 @@ LONG aar_serve_result(aar_serve *s, struct aar_serve_result *out)
     if (rc != AAR_OK)
         return rc;
     out->status = st;
+    s->runtime_dropped_logs = st.log_dropped;
+    out->runtime_dropped_logs = st.log_dropped;
     out->state = st.state;
     out->end_reason = st.end_reason;
     out->exit_code = st.exit_code;

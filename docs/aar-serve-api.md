@@ -192,7 +192,8 @@ the final status and returns `AAR_OK`, otherwise the library's error
 (`AAR_E_STALE` after `AAR_SERVE_LOST`).
 
 `struct aar_serve_result` holds `size` (set by the caller), `flags`, `state`,
-`end_reason`, `exit_code`, `dropped_logs`, `dropped_messages` and the final
+`end_reason`, `exit_code`, `dropped_logs`, `runtime_dropped_logs`,
+`dropped_messages`, `ahi_underruns` and the final
 `status`. The flags: `AAR_SERVE_R_FAULTED`, `AAR_SERVE_R_USER_STOP`,
 `AAR_SERVE_R_STOP_ASKED`, `AAR_SERVE_R_CLAIM_LOST`, `AAR_SERVE_R_DISPLAY_FAILED`,
 `AAR_SERVE_R_CONSOLE_FAILED`, `AAR_SERVE_R_AUDIO_FAILED` and
@@ -237,6 +238,18 @@ program's own window signals are not lost.
   `AAR_SERVEF_KEEP_MESSAGES` is set the loop takes them every pass: the
   `message` hook gets each one, or it is dropped and counted in
   `aar_serve_result.dropped_messages`.
+- **Log records.** The runtime drops a log record when its queue is full and
+  counts it (`AARStatusInfo.log_dropped`, copied into
+  `aar_serve_result.runtime_dropped_logs` by `aar_serve_result`). The launcher's
+  console queue counts the records it had no room for in
+  `aar_serve_result.dropped_logs`. A program that reports lost output adds the
+  two. After the claim is lost `aar_serve_result` returns `AAR_E_STALE` and
+  `runtime_dropped_logs` is the value of the last successful call.
+- **AHI underruns.** `aar_serve_result.ahi_underruns` sums the AHI ring headers'
+  underrun counts across streams, sampled while the claim runs and before audio
+  close. The cached total survives audio close and app end; it is 0 on the
+  platform route. AHI needs a heartbeat of 1..20000 us (1000 by default).
+  aar-run prints this count and its heartbeat for `AUDIO=AHI`.
 - **The stop grace** is `AARInfo.stop_grace_ms` (read by `aar_serve_create`);
   500 ms only when the platform reports none.
 - **Framebuffer tokens** are checked by the library and the platform. The loop

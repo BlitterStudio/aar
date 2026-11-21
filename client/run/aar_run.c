@@ -82,6 +82,7 @@ static uint32_t display_strategy = AAR_SERVE_DISPLAY_BUFFERS;
 static int launcher_output_active;
 static unsigned long dropped_logs;
 static unsigned long dropped_messages;
+static unsigned long runtime_dropped_logs;
 
 static void cleanup(void);
 static int tool_is_ahi(const char *value);
@@ -476,6 +477,10 @@ static int finish_run(LONG ended)
     rc = aar_serve_result(g_serve, &res);
     dropped_logs = (unsigned long)res.dropped_logs;
     dropped_messages = (unsigned long)res.dropped_messages;
+    runtime_dropped_logs = (unsigned long)res.runtime_dropped_logs;
+    if (audio_ahi)
+        printf("aar-run: AHI underruns %lu (heartbeat %lu us; required 1..20000 us).\n",
+               (unsigned long)res.ahi_underruns, (unsigned long)poll_us);
     if (ended == AAR_SERVE_LOST) {
         snprintf(line, sizeof(line), "aar-run: claim lost (%s).",
                  aar_run_claim_loss_text(1, AAR_END_NONE));
@@ -549,9 +554,10 @@ static void cleanup(void)
     }
     if (launcher_output_active) {
         launcher_output_active = 0;
-        if (dropped_logs)
-            printf("aar-run: dropped %lu diagnostic log records.\n",
-                   dropped_logs);
+        if (dropped_logs || runtime_dropped_logs)
+            printf("aar-run: log records not shown: %lu dropped by the runtime "
+                   "(its queue was full), %lu by the launcher's console queue.\n",
+                   runtime_dropped_logs, dropped_logs);
         if (dropped_messages)
             printf("aar-run: dropped %lu app messages.\n", dropped_messages);
     }

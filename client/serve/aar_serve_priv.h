@@ -210,6 +210,7 @@ struct aar_serve {
     uint32_t app_state;
     uint32_t grace_ms;                  /* AARInfo.stop_grace_ms at create; 0: AAR_SERVE_GRACE_MS */
     uint32_t dropped_messages;          /* app messages drained and dropped */
+    uint32_t runtime_dropped_logs;      /* AARStatusInfo.log_dropped at the last full status read */
     int saw_fault;
     int ownership_lost;
     int queue_corrupt;
@@ -277,6 +278,9 @@ struct aar_serve {
         uint32_t pending_bytes[AAR_SERVE_AHI_BUFFER_COUNT];
         uint8_t *buffer[AAR_SERVE_AHI_BUFFER_COUNT];
         uint8_t pending[AAR_SERVE_AHI_BUFFER_COUNT];
+        volatile uint8_t *ring;         /* attached AUDIO_OPEN payload, until audio close */
+        uint32_t ring_underruns;        /* last count observed in this ring */
+        uint32_t underruns;             /* accumulated across AHI streams */
     } ahi;
 
     /* ---- aar_serve_input.c: the input window's events and the joystick ---------------- */

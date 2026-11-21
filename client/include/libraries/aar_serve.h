@@ -222,8 +222,13 @@ struct aar_serve_result {
     ULONG state;                    /* AAR_STATE_* of the final read */
     ULONG end_reason;               /* AAR_END_* of the final read */
     LONG  exit_code;                /* the app's exit code of the final read */
-    ULONG dropped_logs;             /* log records the console queue had no room for */
+    ULONG dropped_logs;             /* log records the launcher's console queue had no room for */
+    ULONG runtime_dropped_logs;     /* log records the runtime dropped because its queue was full
+                                       (AARStatusInfo.log_dropped); the value of the last status
+                                       read when the claim was lost */
     ULONG dropped_messages;         /* app messages drained and dropped */
+    ULONG ahi_underruns;            /* sum of the AHI rings' underrun counts, cached before close/end;
+                                       0 for the platform route. AHI needs poll_us 1..20000 */
     AARStatusInfo status;           /* the final AARStatus read */
 };
 

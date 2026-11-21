@@ -672,6 +672,16 @@ mutant("dos-wait-leaves-the-heartbeat-unarmed", "heartbeat_after_locate", "clien
        ("    if (s->cfg.poll_us)\n        timer_arm(s);\n    if (check_live && !claim_live(s)) {", "    if (check_live && !claim_live(s)) {"))
 mutant("destroy-lets-a-dos-wait-arm-the-timer", "heartbeat_after_locate", SL,
        ("    s->cfg.poll_us = 0; /* the DOS waits below must not arm the timer again */\n", ""))
+mutant("runtime-log-drops-not-reported", "log_dropped", SL,
+       ("    out->runtime_dropped_logs = st.log_dropped;\n", ""))
+mutant("runtime-log-drops-forgotten-with-the-claim", "log_dropped", SL,
+       ("    s->runtime_dropped_logs = st.log_dropped;\n", ""))
+mutant("runtime-log-drops-not-from-the-status", "log_dropped", SL,
+       ("    out->runtime_dropped_logs = st.log_dropped;\n", "    out->runtime_dropped_logs = 0;\n"))
+mutant("ahi-underruns-not-reported", "ahi_audio", SL,
+       ("    out->ahi_underruns = s->ahi.underruns;", "    out->ahi_underruns = 0;"))
+mutant("ahi-underruns-counted-twice", "ahi_audio", "client/serve/aar_serve_ahi.c",
+       ("    s->ahi.ring_underruns = count;", "    s->ahi.ring_underruns = 0;"))
 # the backends
 mutant("nil-takes-no-packets", "nil_output", "client/serve/aar_serve_con.c",
        ("    if (!handle->fh_Type) {", "    if (0) {"))

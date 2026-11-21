@@ -332,8 +332,15 @@ except the stop event, which aar-run retries until it is delivered.
 The platform posts the app's log records on the submission queue. aar-run stages them
 and its own runtime status through the same asynchronous writer as app console
 output. If a stalled destination fills the bounded staging queue, aar-run drops
-diagnostic log records but reserves space for launcher status and errors; after
-pending writes finish during cleanup it reports the number of dropped records.
+diagnostic log records but reserves space for launcher status and errors. The
+runtime itself drops a log record when its submission queue is full and counts
+it (`AARStatusInfo.log_dropped`). After the run, once the pending writes have
+finished, aar-run prints one line, `log records not shown: <n> dropped by the
+runtime (its queue was full), <m> by the launcher's console queue.`, when
+either count is not zero.
+For `AUDIO=AHI`, the summary also prints the ring's underrun count (summed over
+streams) and the heartbeat. AHI requires `POLL` between 1 and 20000 us; the
+default is 1000 us.
 aar-run does not write to stderr while the app is running.
 
 aar-run takes the app's messages itself: the serving loop drains them with

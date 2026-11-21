@@ -1022,8 +1022,25 @@ static void test_ahi_audio_open_feed_underrun_close(void)
     hx_run_for(30000);
     ticks(40);
     CHECK(get_le(ring + AAR_AUDIO_RING_UNDERRUNS) == 1);
+    {
+        struct aar_serve_result res;
+
+        memset(&res, 0, sizeof(res));
+        res.size = sizeof(res);
+        CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_underruns == 1);
+    }
     CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
     CHECK(c.result == AAR_OK && hx_ahi_open_count == 0);
+    {
+        struct aar_serve_result res;
+
+        memset(&res, 0, sizeof(res));
+        res.size = sizeof(res);
+        CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_underruns == 1);
+        CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_underruns == 1);
+        app_state(H, AAR_STATE_IDLE, AAR_END_EXIT);
+        CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_underruns == 1);
+    }
     finish();
 }
 
@@ -1885,6 +1902,30 @@ static void test_the_heartbeat_runs_after_a_call_made_outside_the_loop(void)
     finish();
 }
 
+/* The runtime drops a log record when the SQ is full and counts it in the
+ * control block; the launcher's own console queue counts separately. The
+ * result reports both, and keeps the runtime's count once the claim is gone. */
+static void test_the_result_counts_the_logs_the_runtime_dropped(void)
+{
+    struct aar_serve_result res;
+
+    setup("log_dropped");
+    make_serve();
+    aar_put_be32(refplat_cb(SLOT) + AAR_CB_LOG_DROPPED, 10000);
+    app_state(H, AAR_STATE_IDLE, AAR_END_EXIT);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    CHECK(aar_serve_result(S, &res) == AAR_OK);
+    CHECK(res.runtime_dropped_logs == 10000 && res.dropped_logs == 0);
+    CHECK(res.status.log_dropped == 10000);
+    revoke_notice_cb(NULL);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    CHECK(aar_serve_result(S, &res) == AAR_E_STALE);
+    CHECK(res.runtime_dropped_logs == 10000);
+    finish();
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -1948,6 +1989,7 @@ static const struct {
     T(test_a_tall_screen_that_opens_too_short_is_not_used),
     T(test_a_completion_of_a_held_request_waits_for_a_full_cq),
     T(test_the_heartbeat_runs_after_a_call_made_outside_the_loop),
+    T(test_the_result_counts_the_logs_the_runtime_dropped),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

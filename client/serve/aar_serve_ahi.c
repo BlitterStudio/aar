@@ -30,10 +30,34 @@ static void ahi_abort_pending(struct aar_serve *s)
     }
 }
 
+/* A ring belongs to this stream only while the claim still runs. Cache its
+ * count before close/end; never dereference its mapping after an ended status. */
+static void ahi_count_underruns(struct aar_serve *s)
+{
+    AARStatusInfo st;
+    const volatile uint8_t *p;
+    uint32_t count;
+
+    if (!s->ahi.ring || !claim_live(s))
+        return;
+    memset(&st, 0, sizeof(st));
+    st.size = offsetof(AARStatusInfo, end_reason);
+    if (claim_note(s, X_AAR_STATUS(s->handle, &st)) != AAR_OK ||
+        (st.state != AAR_STATE_RUNNING && st.state != AAR_STATE_STOPPING))
+        return;
+    p = s->ahi.ring + AAR_AUDIO_RING_UNDERRUNS;
+    count = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    s->ahi.underruns += count - s->ahi.ring_underruns;
+    s->ahi.ring_underruns = count;
+}
+
 static void ahi_close(struct aar_serve *s)
 {
     unsigned i;
 
+    ahi_count_underruns(s);
+    s->ahi.ring = NULL;
     ahi_abort_pending(s);
     if (s->ahi.device_open == 0 && s->ahi.request[0])
         X_CLOSE_DEVICE((struct IORequest *)s->ahi.request[0]);
@@ -196,14 +220,17 @@ static void service_ahi_audio(struct aar_serve *s)
         return;
     completed = ahi_reap(s);
     available = audio_available(s);
+    ahi_count_underruns(s);
     frames = aar_serve_audio_chunk_frames(available, s->ahi.rate, s->ahi.channels,
                                           AAR_SERVE_AHI_BUFFER_BYTES);
     if (frames == 0u) {
         /* An underrun: a buffer just finished and AHI has nothing queued.
          * A read that finds less than asked counts it in the ring header. */
-        if (completed && available == 0u && ahi_idle(s))
+        if (completed && available == 0u && ahi_idle(s)) {
             (void)claim_note(s, X_AAR_AUDIO_READ(s->handle, s->ahi.buffer[0], 1u,
                                           &got));
+            ahi_count_underruns(s);
+        }
         return;
     }
     slot = ahi_free_slot(s);
