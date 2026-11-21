@@ -43,6 +43,7 @@
 #include <libraries/aar_serve.h>
 
 #include "aar_run_policy.h"
+#include "aar_run_workbench.h"
 
 struct Library *AARBase;
 struct GfxBase *GfxBase;
@@ -681,18 +682,8 @@ int main(int argc, char **argv)
     }
     if (_WBenchMsg) {
         if (_WBenchMsg->sm_NumArgs >= 2) {
-            char name[256];
-            if (NameFromLock(_WBenchMsg->sm_ArgList[1].wa_Lock, (STRPTR)name,
-                             (LONG)sizeof(name)) > 0) {
-                size_t n = strlen(name);
-                size_t m = strlen((char *)_WBenchMsg->sm_ArgList[1].wa_Name);
-                if (n + 1 + m < sizeof(elf_path)) {
-                    memcpy(elf_path, name, n);
-                    if (n && elf_path[n - 1] != ':')
-                        elf_path[n++] = '/';
-                    memcpy(elf_path + n, _WBenchMsg->sm_ArgList[1].wa_Name, m + 1);
-                }
-            }
+            (void)aar_run_project_path(&_WBenchMsg->sm_ArgList[1],
+                                       elf_path, sizeof(elf_path));
         } else if (app_from_icon[0]) {
             memcpy(elf_path, app_from_icon, strlen(app_from_icon) + 1);
         }

@@ -34,6 +34,14 @@
 #include "../src/refplat.h"
 #include "../serve/aar_serve.c"
 
+struct WBArg {
+    BPTR wa_Lock;
+    STRPTR wa_Name;
+};
+#define NameFromLock(lock, name, size) X_NAME_FROM_LOCK(lock, name, size)
+#include "../run/aar_run_workbench.h"
+#undef NameFromLock
+
 /* The tests call the display open of the app side by this name; the backend's
  * open_display is the loop's. */
 #define open_display(c, format, flags) disp_open((c), (format), (flags))
@@ -1926,6 +1934,29 @@ static void test_the_result_counts_the_logs_the_runtime_dropped(void)
     finish();
 }
 
+/* NameFromLock succeeds with DOSTRUE (-1). Exercise the same project-argument
+ * path builder the Workbench branch calls, then locate it through the loop. */
+static void test_workbench_project_uses_dostrue_from_name_from_lock(void)
+{
+    struct WBArg project;
+    char path[256], full[256], directory[256];
+
+    setup("workbench_project");
+    data_dir();
+    hx_node_add(((struct FileLock *)BADDR(root_lock))->fl_Key,
+                "hello.elf", 0, "elf", 3);
+    make_serve();
+    project.wa_Lock = root_lock;
+    project.wa_Name = (STRPTR)"hello.elf";
+    CHECK(hx_name_from_lock(project.wa_Lock, directory, sizeof(directory)) == -1);
+    CHECK(aar_run_project_path(&project, path, sizeof(path)));
+    CHECK(strcmp(path, "RAM:data/hello.elf") == 0);
+    if (path[0])
+        CHECK(aar_serve_locate(S, 0, path, full, sizeof(full)) == AAR_OK);
+    CHECK(!aar_run_project_path(&project, path, 1) && path[0] == 0);
+    finish();
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -1990,6 +2021,7 @@ static const struct {
     T(test_a_completion_of_a_held_request_waits_for_a_full_cq),
     T(test_the_heartbeat_runs_after_a_call_made_outside_the_loop),
     T(test_the_result_counts_the_logs_the_runtime_dropped),
+    T(test_workbench_project_uses_dostrue_from_name_from_lock),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

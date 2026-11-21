@@ -682,6 +682,9 @@ mutant("ahi-underruns-not-reported", "ahi_audio", SL,
        ("    out->ahi_underruns = s->ahi.underruns;", "    out->ahi_underruns = 0;"))
 mutant("ahi-underruns-counted-twice", "ahi_audio", "client/serve/aar_serve_ahi.c",
        ("    s->ahi.ring_underruns = count;", "    s->ahi.ring_underruns = 0;"))
+mutant("workbench-rejects-dostrue", "workbench_project", "client/run/aar_run_workbench.h",
+       ("                     (LONG)sizeof(directory)) != 0) {",
+        "                     (LONG)sizeof(directory)) > 0) {"))
 # the backends
 mutant("nil-takes-no-packets", "nil_output", "client/serve/aar_serve_con.c",
        ("    if (!handle->fh_Type) {", "    if (0) {"))
@@ -792,7 +795,7 @@ def run_one(name, test, path, changes, tmp):
     with open(target, "w", newline="") as fh:
         fh.write(text)
 
-    if path.startswith("client/serve/"):
+    if path.startswith("client/serve/") or path == "client/run/aar_run_workbench.h":
         return run_serve(work, test)
 
     is_shell = path == SHELL

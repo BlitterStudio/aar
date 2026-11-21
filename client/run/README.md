@@ -190,6 +190,9 @@ icon, or giving a project icon whose default tool is `aar-run`, takes
 precedence over `APP`. A Workbench start has no Shell: the ELF comes from the
 project icon or `APP`, and without either aar-run requests `Set the APP
 tooltype, or start aar-run from a project icon.` and returns 10.
+The project directory lock is resolved with `NameFromLock`: any nonzero DOS
+BOOLEAN result is success, including `DOSTRUE` (-1). The project name is then
+appended to that directory, without adding a slash after a volume colon.
 
 | ToolType | Meaning |
 | --- | --- |

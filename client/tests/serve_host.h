@@ -1558,7 +1558,7 @@ HX_UNUSED static LONG hx_name_from_lock(BPTR b, char *buf, LONG size)
     }
     if (snprintf(buf, (size_t)size, "RAM:%s", tmp + pos + (tmp[pos] == '/' ? 1 : 0)) >= size)
         return 0;
-    return 1;
+    return -1; /* dos.library DOSTRUE, not Exec TRUE */
 }
 
 /* ---- Intuition, graphics, Picasso96 --------------------------------------------------------- */
