@@ -10,7 +10,7 @@
  *
  * The base library stays platform neutral. What a launcher needs of the card
  * beyond it lives here: the list of all claims and the administrative release
- * of any of them (ZZRun status and RELEASE), the library's counters and a test
+ * of any of them (aar-run STATUS and RELEASE), the library's counters and a test
  * hook for the lease. The log sink is not here: AARSetLogSink is a call of the
  * base library on every platform.
  *
@@ -102,7 +102,7 @@ typedef struct aar_client_ext_zz9000 {
      * without a handle: it lists every claim on the card, not only this
      * program's. */
     LONG (*list)(ULONG cursor, AARZZ9000List *info);
-    /* Releases any claim by its card handle word (ZZRun RELEASE, clearing a
+    /* Releases any claim by its card handle word (aar-run RELEASE, clearing a
      * quarantined claim). AAR_OK, or AAR_E_STALE for a handle that is not
      * live. It does not touch the library's own handles: use AARClose. */
     LONG (*release_handle)(ULONG handle);

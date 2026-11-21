@@ -14,7 +14,7 @@ Build the Arm app with the normal SDK build, then copy it to the Amiga. The
 
 ```text
 make build-a32-mgl-conformance
-ZZRun RAM:mgl-conformance.elf
+aar-run RAM:mgl-conformance.elf
 ```
 
 The ELF is `build/a32/mgl-conformance.elf`; `build-a64-mgl-conformance` builds

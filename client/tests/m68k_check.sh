@@ -10,7 +10,8 @@
 # It compiles client/tests/m68k_compile_test.c with warnings as errors, then
 # checks the object: the 25 vector offsets of the .fd file all appear as calls
 # through the library base, and no symbol is left undefined. It then compiles
-# the library sources (core, probe, shell, reference platform), see below.
+# the library sources (core, probe, shell, reference platform), the serving loop
+# (client/serve) and the launcher (client/run), and links aar-run, see below.
 #
 # SPDX-License-Identifier: MIT
 set -eu
@@ -49,12 +50,13 @@ done
 # shell is not built with -pedantic: the NDK's inline stubs convert function
 # pointers. The largest stack frames are printed (-fstack-usage).
 STR='memcpy|memset|memcmp|strlen'
+stack=1024
 check_source() {
     src=$1
     allowed=$2
     shift 2
     "$CC" -std=gnu11 -noixemul -m68020 -Os -Wall -Wextra -Werror "$@" \
-        -Wstack-usage=1024 -fstack-usage -Iclient/include -Iinclude -c "$src" -o "$OUT/src.o"
+        -Wstack-usage="$stack" -fstack-usage -Iclient/include -Iinclude -c "$src" -o "$OUT/src.o"
     # No pipelines: each program's status is checked (set -e), grep's only for
     # an error (1 means nothing was left over, which is the good case).
     "$NM" "$OUT/src.o" > "$OUT/src.nm"
@@ -73,6 +75,57 @@ check_source client/src/aar_probe.c "^_?($STR)\$" -pedantic
 check_source client/src/aar_core.c "^_?($STR)\$" -pedantic
 check_source client/src/refplat.c "^_?($STR|aar_core_ext_(stats|lease_pause))\$" -pedantic
 check_source client/src/aar_shell.c "^_?($STR|UtilityBase|aar_plat_get|aar_core_[a-z_]+|aar_probe_[a-z_]+)\$"
+
+# The serving loop (client/serve) and the reference launcher (client/run). The
+# public header compiles alone, in the C dialects the library header allows. The
+# OS-free core compiles like the library core; its palette handler holds a 3 KiB
+# table, so its stack limit is 4 KiB. aar_serve.c is the one translation unit of
+# the loop (it includes the Amiga backends) and leaves undefined only the
+# program's library bases, the core and the C library. aar-run is linked as the
+# firmware SDK builds it (-lamiga -noixemul -m68030), so that a break is found
+# here and not in the firmware build.
+printf '#include <libraries/aar_serve.h>\nint aar_serve_header_alone;\n' > "$OUT/header_alone.c"
+for std in gnu89 c99 "c11 -pedantic"; do
+    "$CC" -std=$std -noixemul -m68020 -Wall -Wextra -Werror \
+        -Iclient/include -Iinclude -c "$OUT/header_alone.c" -o "$OUT/header_alone.o"
+done
+echo "client/include/libraries/aar_serve.h: compiles alone as gnu89, c99 and c11 -pedantic, 0 warnings"
+stack=4096
+check_source client/serve/aar_serve_core.c "^_?($STR|strchr|strcmp)\$" -pedantic
+check_source client/serve/aar_serve.c "^_?($STR|memmove|snprintf|AARBase|DOSBase|GfxBase|IntuitionBase|SysBase|__bcopz|aar_serve_[a-z0-9_]+)\$"
+# aar-run is a program: it may leave the C library and the program's own library
+# bases undefined; the link below is its undefined-symbol check.
+check_source client/run/aar_run.c "."
+# Every line aar-run prints goes through its own router, so that a Workbench
+# start has one window: a reference to the C library's stdout writers is a bug.
+grep -E '^_?(printf|puts|putchar|fprintf|vprintf|vfprintf)$' "$OUT/src.undef" > "$OUT/stdout.bad" || [ $? -eq 1 ]
+if [ -s "$OUT/stdout.bad" ]; then
+    echo "client/run/aar_run.c writes through the C library's stdout: $(cat "$OUT/stdout.bad")"
+    exit 1
+fi
+echo "client/run/aar_run.c: no reference to the C library's stdout writers"
+stack=1024
+"$CC" -std=gnu11 -noixemul -m68030 -O2 -Wall -Wextra -Werror \
+    -Iclient/include -Iinclude \
+    client/run/aar_run.c client/serve/aar_serve.c client/serve/aar_serve_core.c \
+    -lamiga -o "$OUT/aar-run"
+test -e "$OUT/aar-run"
+echo "aar-run: links for m68k with -lamiga -noixemul, 0 warnings, $(wc -c < "$OUT/aar-run") bytes"
+
+# libaarserve.a, the loop as the firmware SDK package ships it (the source of the
+# MIT code is the aar tag; the archive and the header go into the package's
+# Developer directory), and the embedding example linked against it.
+AR="${AR:-m68k-amigaos-ar}"
+"$CC" -std=gnu11 -noixemul -m68030 -O2 -Wall -Wextra -Werror -Iclient/include -Iinclude \
+    -c client/serve/aar_serve.c -o "$OUT/aar_serve.o"
+"$CC" -std=gnu11 -noixemul -m68030 -O2 -Wall -Wextra -Werror -Iclient/include -Iinclude \
+    -c client/serve/aar_serve_core.c -o "$OUT/aar_serve_core.o"
+"$AR" rcs "$OUT/libaarserve.a" "$OUT/aar_serve.o" "$OUT/aar_serve_core.o"
+check_source client/examples/aar-embed.c "."
+"$CC" -std=gnu11 -noixemul -m68030 -O2 -Wall -Wextra -Werror -Iclient/include -Iinclude \
+    client/examples/aar-embed.c -L"$OUT" -laarserve -lamiga -o "$OUT/aar-embed"
+test -e "$OUT/aar-embed"
+echo "libaarserve.a builds and client/examples/aar-embed.c links against it, 0 warnings"
 
 # The test defines AARBase itself; every call goes through it, so nothing
 # else may be undefined (no stub library, no helper function).
