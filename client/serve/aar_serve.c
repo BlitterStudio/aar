@@ -75,9 +75,12 @@ static uint32_t now_ms(struct aar_serve *s)
     return (uint32_t)tv.tv_secs * 1000u + (uint32_t)(tv.tv_micro / 1000);
 }
 
-static int ctrl_c_set(void)
+/* Ctrl-C is the program's own when config.break_mask leaves it out: it is not
+ * looked at, waited for or consumed then. */
+static int ctrl_c_set(struct aar_serve *s)
 {
-    return (X_SET_SIGNAL(0, 0) & SIGBREAKF_CTRL_C) != 0;
+    return (s->cfg.break_mask & SIGBREAKF_CTRL_C) != 0 &&
+           (X_SET_SIGNAL(0, 0) & SIGBREAKF_CTRL_C) != 0;
 }
 
 static void push_event(struct aar_serve *s, uint16_t type, uint16_t code,
@@ -149,18 +152,48 @@ static void serve_requester(struct aar_serve *s, const char *msg)
     X_EASY_REQUEST(NULL, &es, NULL, NULL);
 }
 
-/* The heartbeat: poll_us, or the default while the loop has none (a DOS packet
- * wait still needs a tick to see a lost claim). */
-static void timer_arm(struct aar_serve *s)
+/* One timer request of us microseconds. */
+static void timer_arm_for(struct aar_serve *s, uint32_t us)
 {
     if (!s->tm.io || s->tm.pending)
         return;
     s->tm.io->tr_node.io_Command = TR_ADDREQUEST;
     s->tm.io->tr_time.tv_secs = 0;
-    s->tm.io->tr_time.tv_micro = s->cfg.poll_us ? s->cfg.poll_us :
-                                                  AAR_SERVE_DEFAULT_POLL_US;
+    s->tm.io->tr_time.tv_micro = us ? us : AAR_SERVE_DEFAULT_POLL_US;
     X_SEND_IO((struct IORequest *)s->tm.io);
     s->tm.pending = 1;
+}
+
+/* The heartbeat: poll_us, or the default while the loop has none (a DOS packet
+ * wait still needs a tick to see a lost claim). */
+static void timer_arm(struct aar_serve *s)
+{
+    timer_arm_for(s, s->cfg.poll_us);
+}
+
+/* How long the loop may sleep. With a heartbeat it is poll_us. Without one
+ * (poll_us 0) nothing that waits on time may be left to the heartbeat: a timed
+ * wake is armed for every outstanding timed condition, whatever else is armed.
+ *   - a stop that was asked (the grace deadlines), a stop event that found the
+ *     queue full: 10 ms
+ *   - completions that waited for the completion queue to have room: 1 ms
+ *     (a console write that finishes at once is delivered in the pass itself)
+ *   - the input window, whose joysticks are polled: 20 ms
+ *   - the claim, which may be revoked without a signal: 250 ms */
+static uint32_t timed_wake_us(struct aar_serve *s)
+{
+    uint32_t us;
+
+    if (s->cfg.poll_us)
+        return s->cfg.poll_us;
+    us = AAR_SERVE_WATCHDOG_US;
+    if (s->gfx.input_win && us > 20000UL)
+        us = 20000UL;
+    if ((s->stop_asked || s->events.stop_pending) && us > 10000UL)
+        us = 10000UL;
+    if (s->reply_n)
+        us = 1000UL;
+    return us;
 }
 
 static void timer_reap(struct aar_serve *s)
@@ -403,6 +436,74 @@ void aar_serve_config_default(aar_serve_config *cfg)
     cfg->display_strategy = AAR_SERVE_DISPLAY_BUFFERS;
 }
 
+/* A replacement console (hooks.console) is called through these: the loop's own
+ * handling of a failed output (stop the app, the CONSOLE_FAILED flag) runs
+ * before the table's output_error, whichever table is used. */
+#define REPL_CON(s) ((s)->cfg.hooks->console)
+
+static int repl_con_open(void *ctx)
+{
+    struct aar_serve *s = ctx;
+
+    return REPL_CON(s)->open ? REPL_CON(s)->open(REPL_CON(s)->ctx) : 1;
+}
+
+static int repl_con_write_start(void *ctx, const uint8_t *data, uint32_t bytes)
+{
+    struct aar_serve *s = ctx;
+
+    return REPL_CON(s)->write_start(REPL_CON(s)->ctx, data, bytes);
+}
+
+static int repl_con_read_start(void *ctx, uint32_t max)
+{
+    struct aar_serve *s = ctx;
+
+    return REPL_CON(s)->read_start(REPL_CON(s)->ctx, max);
+}
+
+static int repl_con_read_allowed(void *ctx)
+{
+    struct aar_serve *s = ctx;
+
+    return REPL_CON(s)->read_allowed ? REPL_CON(s)->read_allowed(REPL_CON(s)->ctx) : 1;
+}
+
+static int repl_con_live(void *ctx)
+{
+    struct aar_serve *s = ctx;
+
+    return REPL_CON(s)->live(REPL_CON(s)->ctx);
+}
+
+static void repl_con_output_error(void *ctx)
+{
+    struct aar_serve *s = ctx;
+
+    want_stop(s, AAR_SERVE_WHY_CONSOLE);
+    s->console_output_failed = 1;
+    if (REPL_CON(s)->output_error)
+        REPL_CON(s)->output_error(REPL_CON(s)->ctx);
+}
+
+/* A replacement display table needs open; a replacement console table needs
+ * write_start, read_start and live. The other members are optional. */
+static int hooks_valid(const aar_serve_config *cfg)
+{
+    const aar_serve_hooks *h = cfg->hooks;
+
+    if (!h)
+        return 1;
+    if (h->size >= offsetof(aar_serve_hooks, display) + sizeof(h->display) &&
+        h->display && !h->display->open)
+        return 0;
+    if (h->size >= offsetof(aar_serve_hooks, console) + sizeof(h->console) &&
+        h->console &&
+        (!h->console->write_start || !h->console->read_start || !h->console->live))
+        return 0;
+    return 1;
+}
+
 static int config_valid(const aar_serve_config *cfg)
 {
     const ULONG known = AAR_SERVEF_ABS_PATHS | AAR_SERVEF_KEEP_MESSAGES |
@@ -416,7 +517,8 @@ static int config_valid(const aar_serve_config *cfg)
            (cfg->joy_ports & ~3UL) == 0 &&
            (cfg->break_mask & ~AAR_SERVE_BREAK_ALL) == 0 &&
            cfg->display_strategy <= AAR_SERVE_DISPLAY_SINGLE &&
-           cfg->platform == 0;
+           cfg->platform == 0 &&
+           hooks_valid(cfg);
 }
 
 /* Everything create opened, in the reverse order. Used by destroy and by a
@@ -527,10 +629,15 @@ LONG aar_serve_create(AARHandle *h, const aar_serve_config *cfg,
         gfx_ops.ctx = s;
         ahi_ops.ctx = s;
         ev_ops.ctx = s;
-        aar_serve_console_init(&s->core.console,
-                               AAR_SERVE_HOOK(s, console) ?
-                                   s->cfg.hooks->console : &con_ops,
-                               &s->core.sink);
+        if (AAR_SERVE_HOOK(s, console)) {
+            con_ops.open = repl_con_open;
+            con_ops.write_start = repl_con_write_start;
+            con_ops.read_start = repl_con_read_start;
+            con_ops.read_allowed = repl_con_read_allowed;
+            con_ops.live = repl_con_live;
+            con_ops.output_error = repl_con_output_error;
+        }
+        aar_serve_console_init(&s->core.console, &con_ops, &s->core.sink);
         aar_serve_display_init(&s->core.display,
                                AAR_SERVE_HOOK(s, display) ?
                                    s->cfg.hooks->display : &gfx_ops,
@@ -539,8 +646,7 @@ LONG aar_serve_create(AARHandle *h, const aar_serve_config *cfg,
         aar_serve_events_init(&s->events, &ev_ops);
     }
     log_sink_install(s);
-    if (cfg->poll_us)
-        timer_arm(s);
+    timer_arm_for(s, timed_wake_us(s));
     *out = s;
     return AAR_OK;
 }
@@ -550,7 +656,7 @@ void aar_serve_destroy(aar_serve *s)
     if (!s)
         return;
     timer_reap(s);
-    s->cfg.poll_us = 0; /* the DOS waits below must not arm the timer again */
+    s->closing = 1; /* the DOS waits below must not arm the timer again */
     if (!s->stop_asked && claim_live(s)) {
         uint32_t leaving, leaving_end;
 
@@ -562,8 +668,14 @@ void aar_serve_destroy(aar_serve *s)
     ahi_close(s);
     /* A pending console read cannot be cancelled. Close the app screen before
      * that wait so the prompt is not hidden behind it. */
-    close_display(s);
-    console_read_finish(s);
+    /* A replacement display is closed through its own table; a replacement
+     * console is the program's: its writes are not waited for here. */
+    if (!AAR_SERVE_HOOK(s, display))
+        close_display(s);
+    else if (s->core.display.open && s->core.display.ops.close)
+        s->core.display.ops.close(s->core.display.ops.ctx);
+    if (!AAR_SERVE_HOOK(s, console))
+        console_read_finish(s);
     /* What a handler still holds is answered, once, with AAR_E_IO. */
     aar_serve_core_abort(&s->core);
     reply_flush(s);
@@ -581,7 +693,7 @@ ULONG aar_serve_sigmask(const aar_serve *cs)
     struct aar_serve *s = (struct aar_serve *)cs;
     ULONG mask = s->cfg.break_mask;
 
-    if (s->tm.port && s->cfg.poll_us)
+    if (s->tm.port && (s->cfg.poll_us || s->tm.pending))
         mask |= 1UL << s->tm.port->mp_SigBit;
     if (s->con.port)
         mask |= 1UL << s->con.port->mp_SigBit;
@@ -615,7 +727,7 @@ static LONG step_body(aar_serve *s, ULONG signals)
         return AAR_SERVE_LOST;
     }
     if ((breaks & SIGBREAKF_CTRL_C) &&
-        ((signals & SIGBREAKF_CTRL_C) || ctrl_c_set())) {
+        ((signals & SIGBREAKF_CTRL_C) || ctrl_c_set(s))) {
         X_SET_SIGNAL(0, SIGBREAKF_CTRL_C);
         s->user_stop = 1;
         want_stop(s, AAR_SERVE_WHY_BREAK);
@@ -663,8 +775,7 @@ static LONG step_body(aar_serve *s, ULONG signals)
         timer_reap(s);
         return AAR_SERVE_ENDED;
     }
-    if (s->cfg.poll_us)
-        timer_arm(s);
+    timer_arm_for(s, timed_wake_us(s));
     return AAR_SERVE_CONTINUE;
 }
 
@@ -699,6 +810,18 @@ LONG aar_serve_post_event(aar_serve *s, const aar_event *ev)
 void aar_serve_flip_shown(aar_serve *s)
 {
     aar_serve_display_flip_safe(&s->core.display);
+}
+
+/* The completions of a replacement console (hooks.console): the program tells
+ * aar_serve how a write_start or a read_start ended. See aar_serve.h. */
+void aar_serve_write_done(aar_serve *s, LONG written)
+{
+    aar_serve_console_write_done(&s->core.console, (int32_t)written);
+}
+
+void aar_serve_read_done(aar_serve *s, LONG got, const void *data)
+{
+    aar_serve_console_read_done(&s->core.console, (int32_t)got, (const uint8_t *)data);
 }
 
 void aar_serve_stop(aar_serve *s)

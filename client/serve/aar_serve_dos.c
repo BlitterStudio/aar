@@ -79,7 +79,7 @@ static int be_user_break(void *ctx)
 {
     struct aar_serve *s = ctx;
 
-    return aar_serve_user_break(ctrl_c_set(), s->user_stop);
+    return aar_serve_user_break(ctrl_c_set(s), s->user_stop);
 }
 
 static uintptr_t be_dup_lock(void *ctx, uintptr_t lock)
@@ -429,7 +429,7 @@ static int dos_packet_async(struct aar_serve *s, struct MsgPort *handler,
     /* A packet whose operation is already lost is not sent at all: the
      * handler would act on it (create, truncate, write) before the result
      * is discarded as abandoned. Releases always go out. */
-    ctrl_c = ctrl_c_set();
+    ctrl_c = ctrl_c_set(s);
     owned = !check_live || claim_live(s);
     if (!aar_serve_packet_may_send(action == ACTION_END ||
                                    action == ACTION_FREE_LOCK, owned, ctrl_c)) {
@@ -469,12 +469,12 @@ static int dos_packet_async(struct aar_serve *s, struct MsgPort *handler,
     X_PUT_MSG(handler, &packet->sp_Msg);
     timer_reap(s);
     timer_arm(s);
-    mask = (1UL << port->mp_SigBit) | SIGBREAKF_CTRL_C;
+    mask = (1UL << port->mp_SigBit) | (s->cfg.break_mask & SIGBREAKF_CTRL_C);
     if (s->tm.port)
         mask |= 1UL << s->tm.port->mp_SigBit;
     for (;;) {
         signals = X_WAIT(mask);
-        if ((signals & SIGBREAKF_CTRL_C) || ctrl_c_set()) {
+        if ((signals & SIGBREAKF_CTRL_C) || ctrl_c_set(s)) {
             X_SET_SIGNAL(0, SIGBREAKF_CTRL_C);
             s->user_stop = 1;
             if (aar_serve_ctrl_c_must_request_stop(1))
@@ -500,8 +500,8 @@ static int dos_packet_async(struct aar_serve *s, struct MsgPort *handler,
      * may have run outside the loop (aar_serve_locate, between create and the
      * first Wait): the end of a step would not re-arm it, and the loop would
      * sleep until some other signal came. */
-    if (s->cfg.poll_us && !s->in_step)
-        timer_arm(s);
+    if (!s->closing && !s->in_step)
+        timer_arm_for(s, timed_wake_us(s));
     if (check_live && !claim_live(s)) {
         abandoned = 1;
         if (ownership_lost)

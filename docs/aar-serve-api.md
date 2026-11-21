@@ -55,8 +55,8 @@ structure is size-first and grows at the end only.
 | `audio_route` | `AAR_AUDIO_ROUTE_PLATFORM` or `AAR_AUDIO_ROUTE_AHI`: what this loop serves; it must equal the `AAR_TAG_AUDIO_ROUTE` the handle was given |
 | `groups` | `AAR_GROUP_*` to serve; the display and audio ops of a group not in the mask complete with `AAR_E_NOSYS`. 0: every group |
 | `joy_ports` | bit 0 port 0, bit 1 port 1; default `AAR_SERVE_DEFAULT_JOY_PORTS` (port 1 only) |
-| `poll_us` | the heartbeat of the timer in microseconds; 0: none (a DOS wait still ticks at the default). Default `AAR_SERVE_DEFAULT_POLL_US` |
-| `break_mask` | the task signals the loop consumes: Ctrl-C stops the app, Ctrl-D, Ctrl-E and Ctrl-F become `AAR_EV_BREAK` events. Default `AAR_SERVE_BREAK_ALL`; 0: the program owns its signals |
+| `poll_us` | the heartbeat of the timer in microseconds; 0: none. Without a heartbeat the loop still wakes for what waits on time: a stop that was asked or a stop event that found the queue full (10 ms), the joysticks of the input window (20 ms), completions waiting for room in the completion queue (1 ms), and a claim that is revoked without a signal (250 ms). Default `AAR_SERVE_DEFAULT_POLL_US` |
+| `break_mask` | the task signals the loop consumes: Ctrl-C stops the app, Ctrl-D, Ctrl-E and Ctrl-F become `AAR_EV_BREAK` events. A signal left out is the program's: the loop's DOS packet waits and the keys of its window do not wait on it, test it, or clear it either. Default `AAR_SERVE_BREAK_ALL`; 0: the program owns its signals |
 | `display_strategy` | `AAR_SERVE_DISPLAY_*`, the first strategy to try |
 | `hooks` | an `aar_serve_hooks`, may be NULL |
 | `user` | passed to every hook |
@@ -102,12 +102,27 @@ completion a handler produces: `result` (`AAR_OK` or an `AAR_E_*`), the entry
 `flags` and the result words `out[]`.
 
 `struct aar_serve_display_ops` is the table under the display handlers: `open`
-(opens the screen and fills the completion), `change_buffer`, `pan`, `wait_tof`,
-`load_rgb32` and `close`. A program that draws into its own window replaces it
-and calls `aar_serve_flip_shown` when a flip it started is on the screen.
-`struct aar_serve_console_ops` is the table under the console handlers: `open`,
-`write_start`, `read_start`, `read_allowed`, `live` and `output_error`. The first
-member of both is the `ctx` that every call receives.
+(required; opens the screen and fills the completion with `AAR_OK` and the
+pitch, front, back and spare tokens), `change_buffer`, `pan`, `wait_tof`,
+`load_rgb32` and `close` (all optional). The loop records the screen from the
+completion that `open` filled, so flips, palettes and the close work on a
+replacement table; the table decides the mode: `change_buffer` and a back token
+make two screen buffers (a flip completes at `aar_serve_flip_shown`), else `pan`
+and a back token make the pages of one bitmap, else there is one buffer. An
+`open` that gives no front token or pitch has opened nothing (`AAR_E_IO`, `close`
+is called); a negative result is the table's own failure. `load_rgb32` NULL:
+palette requests complete with `AAR_E_NOSYS`. `close` is called at
+`DISPLAY_CLOSE` and at `aar_serve_destroy`.
+`struct aar_serve_console_ops` is the table under the console handlers:
+`write_start`, `read_start` and `live` are required, `open`, `read_allowed` and
+`output_error` optional. A start that returns 1 is completed by exactly one
+`aar_serve_write_done` or `aar_serve_read_done`, outside the table call, in the
+task that runs the loop; `output_error` is called after the loop has asked the
+app to stop, and `aar_serve_destroy` does not wait for a replacement console. The
+first member of both tables is the `ctx` that every call receives.
+`aar_serve_create` answers `AAR_E_INVAL` for a table without what it requires.
+The other hooks (`status`, `log`, `message`, `stop_wanted`) are synchronous
+notifications that nothing completes, and the audio route cannot be replaced.
 
 ## Calls
 
@@ -164,6 +179,22 @@ again on every pass until it is delivered.
 
 `void aar_serve_flip_shown(aar_serve *s)`: a replacement display table tells the
 loop that the flip it started with `change_buffer` is on the screen.
+
+### aar_serve_write_done
+
+`void aar_serve_write_done(aar_serve *s, LONG written)`: a replacement console
+tells the loop how the write that `write_start` started ended: `written` bytes
+were taken. All of them completes the app's request (or the launcher's line);
+fewer, or a negative value, fails the output: the app is stopped once and every
+later write completes with `AAR_E_IO`. Ignored when no write is started.
+
+### aar_serve_read_done
+
+`void aar_serve_read_done(aar_serve *s, LONG got, const void *data)`: a
+replacement console tells the loop how the read that `read_start` started ended:
+`got` bytes in `data` (at most the `max` it was given; copied before the call
+returns), or 0 or less at the end of input, which stays the end. Ignored when no
+read is started.
 
 ### aar_serve_stop
 

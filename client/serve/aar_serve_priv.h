@@ -214,6 +214,7 @@ struct aar_serve {
     uint32_t runtime_dropped_logs;      /* AARStatusInfo.log_dropped at the last full status read */
     int saw_fault;
     int in_step;                        /* aar_serve_step is running: it arms the heartbeat itself */
+    int closing;                        /* aar_serve_destroy is running: no timer is armed any more */
     int ownership_lost;
     int queue_corrupt;
     int display_failed;
@@ -323,7 +324,8 @@ static int claim_live(struct aar_serve *s);
 static LONG claim_note(struct aar_serve *s, LONG rc);
 static int claim_check(struct aar_serve *s);
 static uint32_t now_ms(struct aar_serve *s);
-static int ctrl_c_set(void);
+static int ctrl_c_set(struct aar_serve *s);
+#define AAR_SERVE_WATCHDOG_US 250000UL /* the longest the loop sleeps without a heartbeat (poll_us 0) */
 static void timer_arm(struct aar_serve *s);
 static void timer_reap(struct aar_serve *s);
 static void push_event(struct aar_serve *s, uint16_t type, uint16_t code,

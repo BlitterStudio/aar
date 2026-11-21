@@ -610,8 +610,8 @@ mutant("lost-claim-not-noticed", "revoke_read_pending", SL,
        ("    return s->handle != NULL && !s->claim_lost;", "    return s->handle != NULL;"))
 mutant("user-stop-not-recorded", "ctrl_c_stop", SL,
        ("        s->user_stop = 1;\n        want_stop(s, AAR_SERVE_WHY_BREAK);\n    }\n    /* A Shell", "        want_stop(s, AAR_SERVE_WHY_BREAK);\n    }\n    /* A Shell"))
-mutant("ctrl-c-while-the-program-owns-signals", "ctrl_def", SL,
-       ("    if ((breaks & SIGBREAKF_CTRL_C) &&\n        ((signals & SIGBREAKF_CTRL_C) || ctrl_c_set())) {", "    if (((signals & SIGBREAKF_CTRL_C) || ctrl_c_set())) {"))
+# Also equivalent, so not run: the `breaks &` before ctrl_c_set(s) in aar_serve_step
+# (ctrl_c_set(s) and the Wait mask already leave Ctrl-C out without break_mask).
 mutant("unserved-group-is-served", "groups", SL,
        ("    return group == 0 || s->cfg.groups == 0 || (s->cfg.groups & group) != 0;", "    return 1;"))
 mutant("full-cq-completion-dropped", "full_cq_held", SL,
@@ -654,7 +654,7 @@ mutant("joy-ports-unchecked", "config", SL,
 mutant("display-strategy-unchecked", "config", SL,
        ("           cfg->display_strategy <= AAR_SERVE_DISPLAY_SINGLE &&\n", ""))
 mutant("reserved-word-unchecked", "config", SL,
-       ("           cfg->platform == 0;", "           1;"))
+       ("           cfg->platform == 0 &&\n           hooks_valid(cfg);", "           hooks_valid(cfg);"))
 mutant("stale-claim-served", "config", SL,
        ("    rc = claim_note(s, X_AAR_STATUS(h, &st));\n    if (rc != AAR_OK) {\n        serve_free(s);\n        return rc;\n    }",
         "    rc = claim_note(s, X_AAR_STATUS(h, &st));\n    (void)rc;"))
@@ -669,9 +669,9 @@ mutant("log-hook-ignored", "hooks", SL,
 mutant("hook-table-size-unchecked", "hooks_size", "client/serve/aar_serve_priv.h",
        ("     (s)->cfg.hooks->size >= offsetof(aar_serve_hooks, field) +               \\\n                             sizeof((s)->cfg.hooks->field) &&                 \\\n", ""))
 mutant("dos-wait-leaves-the-heartbeat-unarmed", "heartbeat_after_locate", "client/serve/aar_serve_dos.c",
-       ("    if (s->cfg.poll_us && !s->in_step)\n        timer_arm(s);\n    if (check_live && !claim_live(s)) {", "    if (check_live && !claim_live(s)) {"))
+       ("    if (!s->closing && !s->in_step)\n        timer_arm_for(s, timed_wake_us(s));\n    if (check_live && !claim_live(s)) {", "    if (check_live && !claim_live(s)) {"))
 mutant("destroy-lets-a-dos-wait-arm-the-timer", "heartbeat_after_locate", SL,
-       ("    s->cfg.poll_us = 0; /* the DOS waits below must not arm the timer again */\n", ""))
+       ("    s->closing = 1; /* the DOS waits below must not arm the timer again */\n", ""))
 mutant("runtime-log-drops-not-reported", "log_dropped", SL,
        ("    out->runtime_dropped_logs = st.log_dropped;\n", ""))
 mutant("runtime-log-drops-forgotten-with-the-claim", "log_dropped", SL,
@@ -694,7 +694,7 @@ mutant("cli-stack-longs-wrap", "run_policy", "client/run/aar_run_policy.h",
        ("cli_default_longs > UINT32_MAX / 4u ?\n                                 UINT32_MAX : cli_default_longs * 4u;",
         "cli_default_longs * 4u;"))
 mutant("dos-wait-in-a-step-arms-the-timer", "timer_ops", "client/serve/aar_serve_dos.c",
-       ("    if (s->cfg.poll_us && !s->in_step)", "    if (s->cfg.poll_us)"))
+       ("    if (!s->closing && !s->in_step)", "    if (!s->closing)"))
 mutant("ahi-dry-not-counted", "ahi_gaps", "client/serve/aar_serve_ahi.c",
        ("            s->ahi.gaps++;", "            ;"))
 mutant("ahi-end-of-a-sound-counted-as-dry", "ahi_audio", "client/serve/aar_serve_ahi.c",
@@ -723,6 +723,63 @@ mutant("ahi-requests-not-counted", "ahi_audio", "client/serve/aar_serve_ahi.c",
 mutant("ahi-chains-to-the-wrong-request", "ahi_audio", "client/serve/aar_serve_ahi.c",
        ("    if (s->ahi.pending[s->ahi.last])\n        link = s->ahi.request[s->ahi.last]; /* the other request: still queued */",
         "    link = s->ahi.request[0];"))
+# ---- serve: the embedder's contract -----------------------------------------------------
+mutant("repl-display-not-recorded", "repl_display", SC,
+       ("            if (done->result == AAR_OK && !s->display.open)\n                display_adopt(&s->display, req, done);", "            ;"))
+mutant("repl-display-without-a-front-token-opens", "repl_display_min", SC,
+       ("    if (front == 0u || pitch == 0u) {", "    if (0) {"))
+mutant("repl-display-two-buffers-without-change-buffer", "repl_display_min", SC,
+       ("    int two = d->ops.change_buffer != NULL && back != 0u;", "    int two = back != 0u;"))
+mutant("repl-display-never-pans", "repl_display_pan", SC,
+       ("    int pan = !two && d->ops.pan != NULL && back != 0u;", "    int pan = 0;"))
+mutant("display-close-without-a-close-op", "repl_display_min", SC,
+       ("    /* The close waits for the SafeMessages of flips still in flight. */\n    if (d->ops.close)\n        d->ops.close(d->ops.ctx);",
+        "    /* The close waits for the SafeMessages of flips still in flight. */\n    d->ops.close(d->ops.ctx);"))
+mutant("palette-without-load-rgb32", "repl_display_min", SC,
+       ("    if (!d->ops.load_rgb32) {\n        done->result = AAR_E_NOSYS;\n        return;\n    }\n", ""))
+mutant("flip-waits-for-a-missing-wait-tof", "repl_display_min", SC,
+       ("    if ((d->flags & AAR_DISPLAY_VSYNC) && d->ops.wait_tof)", "    if (d->flags & AAR_DISPLAY_VSYNC)"))
+mutant("write-done-without-a-write", "repl_console", SC,
+       ("    if (!c->write_pending)\n        return; /* nothing was started: a completion without a write is ignored */\n", ""))
+mutant("repl-console-failure-not-handled", "repl_console", SL,
+       ("    want_stop(s, AAR_SERVE_WHY_CONSOLE);\n    s->console_output_failed = 1;\n    if (REPL_CON(s)->output_error)",
+        "    if (REPL_CON(s)->output_error)"))
+mutant("repl-console-error-hook-required", "repl_console_quiet", SL,
+       ("    if (REPL_CON(s)->output_error)\n        REPL_CON(s)->output_error(REPL_CON(s)->ctx);", "    REPL_CON(s)->output_error(REPL_CON(s)->ctx);"))
+mutant("repl-console-open-required", "repl_console", SL,
+       ("    return REPL_CON(s)->open ? REPL_CON(s)->open(REPL_CON(s)->ctx) : 1;", "    return REPL_CON(s)->open(REPL_CON(s)->ctx);"))
+mutant("repl-console-read-allowed-required", "repl_console_read", SL,
+       ("    return REPL_CON(s)->read_allowed ? REPL_CON(s)->read_allowed(REPL_CON(s)->ctx) : 1;", "    return REPL_CON(s)->read_allowed(REPL_CON(s)->ctx);"))
+mutant("destroy-waits-for-a-replacement-console", "repl_console_destroy", SL,
+       ("    if (!AAR_SERVE_HOOK(s, console))\n        console_read_finish(s);", "    console_read_finish(s);"))
+mutant("destroy-forgets-a-replacement-display", "repl_display", SL,
+       ("    else if (s->core.display.open && s->core.display.ops.close)\n        s->core.display.ops.close(s->core.display.ops.ctx);", ""))
+mutant("display-table-without-open-accepted", "hooks_tables", SL,
+       ("        h->display && !h->display->open)", "        0)"))
+mutant("console-table-without-write-accepted", "hooks_tables", SL,
+       ("(!h->console->write_start || !h->console->read_start || !h->console->live))", "(!h->console->read_start || !h->console->live))"))
+mutant("console-table-without-read-accepted", "hooks_tables", SL,
+       ("(!h->console->write_start || !h->console->read_start || !h->console->live))", "(!h->console->write_start || !h->console->live))"))
+mutant("console-table-without-live-accepted", "hooks_tables", SL,
+       ("(!h->console->write_start || !h->console->read_start || !h->console->live))", "(!h->console->write_start || !h->console->read_start))"))
+mutant("no-timed-wake-while-a-stop-is-pending", "poll0_stop", SL,
+       ("    if ((s->stop_asked || s->events.stop_pending) && us > 10000UL)\n        us = 10000UL;\n", ""))
+mutant("no-watchdog-without-a-heartbeat", "poll0_claim", SL,
+       ("    us = AAR_SERVE_WATCHDOG_US;", "    us = 900000UL;"))
+mutant("no-timed-wake-for-a-completion-backlog", "poll0_backlog", SL,
+       ("    if (s->reply_n)\n        us = 1000UL;\n", ""))
+mutant("step-arms-the-timer-only-with-a-heartbeat", "poll0_stop", SL,
+       ("    timer_arm_for(s, timed_wake_us(s));\n    return AAR_SERVE_CONTINUE;", "    if (s->cfg.poll_us)\n        timer_arm(s);\n    return AAR_SERVE_CONTINUE;"))
+mutant("sigmask-ignores-a-timed-wake", "poll0_mask", SL,
+       ("    if (s->tm.port && (s->cfg.poll_us || s->tm.pending))", "    if (s->tm.port && s->cfg.poll_us)"))
+mutant("a-dos-wait-takes-the-break-the-program-owns", "break_mask_dos", "client/serve/aar_serve_dos.c",
+       ("    mask = (1UL << port->mp_SigBit) | (s->cfg.break_mask & SIGBREAKF_CTRL_C);", "    mask = (1UL << port->mp_SigBit) | SIGBREAKF_CTRL_C;"))
+mutant("ctrl-c-looked-at-without-break-mask", "break_mask_dos", SL,
+       ("    return (s->cfg.break_mask & SIGBREAKF_CTRL_C) != 0 &&\n           (X_SET_SIGNAL(0, 0) & SIGBREAKF_CTRL_C) != 0;", "    return (X_SET_SIGNAL(0, 0) & SIGBREAKF_CTRL_C) != 0;"))
+mutant("window-ctrl-c-stops-without-break-mask", "break_mask_keys", "client/serve/aar_serve_input.c",
+       ("                (s->cfg.break_mask & SIGBREAKF_CTRL_C) &&\n", ""))
+mutant("window-ctrl-d-break-without-break-mask", "break_mask_keys", "client/serve/aar_serve_input.c",
+       ("            if (signal && !(s->cfg.break_mask & break_signal_bit(signal)))\n                signal = 0;\n", ""))
 # the backends
 mutant("nil-takes-no-packets", "nil_output", "client/serve/aar_serve_con.c",
        ("    if (!handle->fh_Type) {", "    if (0) {"))

@@ -80,44 +80,66 @@ struct aar_serve_done {
  * screen with two screen buffers, a three or two page tall screen that is
  * panned, or a single buffer (AAR_SERVE_DISPLAY_*). A program that draws into
  * its own window supplies its own table and the pixel memory through
- * AARSharedToken. */
+ * AARSharedToken. Required: open. The loop records the screen from the
+ * completion open fills (pitch, front, back and spare tokens; it sets the id,
+ * the layout and the AAR_DISPCAP_* bits itself), so flips, palettes and the
+ * close work on a replacement table; an open that leaves no front token or no
+ * pitch has opened nothing (AAR_E_IO, close is called). The mode follows the
+ * table: change_buffer and a back token: two screen buffers; else pan and a
+ * back token: pages of one bitmap at pitch * height (a third page with a spare
+ * token); else one buffer. Everything but open is optional. */
 struct aar_serve_display_ops {
     void *ctx;                      /* the first argument of every call */
     /* DISPLAY_OPEN: opens the screen, finds the tokens of its bitmaps and fills
-     * *done (the completion carries the pitch, the layout, front, back and
-     * spare tokens and the AAR_DISPCAP_* flags). */
+     * *done with result AAR_OK and the pitch, front, back and spare tokens (a
+     * negative result is the failure). Synchronous. */
     void (*open)(void *ctx, const struct aar_serve_req *req,
                  struct aar_serve_done *done);
-    /* Show the back (1) or the front (0) buffer. 0: the change failed. A flip
-     * that succeeds is completed when the program calls aar_serve_flip_shown
-     * (the built-in table does so when the SafeMessage of the change comes back). */
+    /* Show the back (1) or the front (0) buffer. 0: the change failed (the flip
+     * completes with AAR_E_IO). A flip that succeeds is completed when the
+     * program calls aar_serve_flip_shown (the built-in table does so when the
+     * SafeMessage of the change comes back); a close completes it with
+     * AAR_E_IO. */
     int (*change_buffer)(void *ctx, int to_back);
-    /* Pan the screen to page (page * screen height rows down). */
+    /* Pan the screen to page (page * screen height rows down). Synchronous. */
     void (*pan)(void *ctx, uint32_t page);
+    /* Wait for the top of frame (NULL: do not). Synchronous. */
     void (*wait_tof)(void *ctx);
     /* A palette: (count << 16) | first, then three 32 bit words per colour,
-     * then 0 (the LoadRGB32 table). */
+     * then 0 (the LoadRGB32 table). NULL: a palette request completes with
+     * AAR_E_NOSYS. Synchronous. */
     void (*load_rgb32)(void *ctx, const uint32_t *table);
+    /* Close the screen (DISPLAY_CLOSE, and at aar_serve_destroy). NULL: nothing
+     * to close. Synchronous. */
     void (*close)(void *ctx);
 };
 
 /* The calls under the console handlers. Writes and reads are asynchronous: a
- * start returns at once, and the program tells aar_serve how it ended. */
+ * start returns at once, and the program tells aar_serve how it ended with
+ * aar_serve_write_done and aar_serve_read_done. Required: write_start,
+ * read_start, live. The destroy of the loop does not wait for a replacement
+ * console's writes. */
 struct aar_serve_console_ops {
     void *ctx;
-    /* Open the Workbench console, if there is one to open. 0: it cannot open. */
+    /* Open the Workbench console, if there is one to open. 0: it cannot open.
+     * Optional (NULL: it opens). Synchronous. */
     int (*open)(void *ctx);
     /* Start one write of bytes (copy them before returning). 0: it could not
-     * start. */
+     * start. Returns 1: one aar_serve_write_done follows, outside this call;
+     * only one write is started at a time. */
     int (*write_start)(void *ctx, const uint8_t *data, uint32_t bytes);
-    /* Start one read of at most max bytes. 0: it could not start (end of input). */
+    /* Start one read of at most max bytes. 0: it could not start (end of input).
+     * Returns 1: one aar_serve_read_done follows, outside this call; only one
+     * read is started at a time, and only for an outstanding CONSOLE_READ. */
     int (*read_start)(void *ctx, uint32_t max);
-    /* The app is RUNNING and no stop was asked: a read may start. */
+    /* The app is RUNNING and no stop was asked: a read may start. Optional
+     * (NULL: allowed). Synchronous. */
     int (*read_allowed)(void *ctx);
     /* The claim is still served; a request's buffer is not touched after it is
-     * not. */
+     * not. Synchronous. */
     int (*live)(void *ctx);
-    /* Output cannot be written: stop the app and say so once. */
+    /* Output cannot be written: stop the app and say so once. Optional (NULL:
+     * silent). Synchronous; the loop has already asked the app to stop. */
     void (*output_error)(void *ctx);
 };
 
@@ -168,7 +190,11 @@ struct aar_serve_hooks {
      * aar_serve_stop. Lets a program close its own window first. */
     void (*stop_wanted)(APTR user, ULONG why);
     /* Replacements for the P96 screen and for the console. NULL: the built-in
-     * ones. */
+     * ones. A table must supply what its comment in aar_serve_display_ops or
+     * aar_serve_console_ops calls required; aar_serve_create answers
+     * AAR_E_INVAL for a table without it. The other hooks above are synchronous
+     * notifications: nothing is completed for them. The audio route is not
+     * replaceable (the loop feeds AHI). */
     const struct aar_serve_display_ops *display;
     const struct aar_serve_console_ops *console;
 };
@@ -193,11 +219,18 @@ typedef struct aar_serve_config {
     ULONG groups;                   /* AAR_GROUP_* to serve; the other groups' ops complete with
                                        AAR_E_NOSYS. 0: every group */
     ULONG joy_ports;                /* bit 0 port 0, bit 1 port 1; default AAR_SERVE_DEFAULT_JOY_PORTS */
-    ULONG poll_us;                  /* the heartbeat of the timer in microseconds; 0: none. Default
-                                       AAR_SERVE_DEFAULT_POLL_US */
+    ULONG poll_us;                  /* the heartbeat of the timer in microseconds; 0: none. Without
+                                       one the loop still wakes for what waits on time (a stop
+                                       that was asked, a stop event that found the queue full: 10 ms;
+                                       the joysticks of the input window: 20 ms; completions that
+                                       wait for room in the completion queue: 1 ms; a claim revoked
+                                       without a signal: 250 ms). Default AAR_SERVE_DEFAULT_POLL_US */
     ULONG break_mask;               /* the task signals the loop consumes: CTRL_C stops the app,
-                                       CTRL_D, CTRL_E and CTRL_F become AAR_EV_BREAK. Default
-                                       AAR_SERVE_BREAK_ALL; 0: the program owns its signals */
+                                       CTRL_D, CTRL_E and CTRL_F become AAR_EV_BREAK. A signal that
+                                       is left out is the program's: the loop neither waits on it,
+                                       looks at it, nor clears it, in its DOS packet waits and in
+                                       the keys of its window as well. Default AAR_SERVE_BREAK_ALL;
+                                       0: the program owns its signals */
     ULONG display_strategy;         /* AAR_SERVE_DISPLAY_*, the first strategy to try */
     const aar_serve_hooks *hooks;   /* may be NULL */
     APTR user;                      /* passed to every hook */
@@ -272,9 +305,25 @@ LONG aar_serve_step(aar_serve *s, ULONG signals);
 /* Post an input event for the app (a program that has its own window). */
 LONG aar_serve_post_event(aar_serve *s, const aar_event *ev);
 
-/* A replacement display table tells the loop that the flip it started with
- * change_buffer is on the screen and the old buffer is free to draw into. */
+/* Completion calls of the replacement tables (all in the task that runs the
+ * loop, never from inside the table call that started the work):
+ *   display: aar_serve_flip_shown. A flip that change_buffer started completes
+ *            with it, once per successful change_buffer. A queued second flip
+ *            starts then.
+ *   console: aar_serve_write_done after write_start returned 1, and
+ *            aar_serve_read_done after read_start returned 1, exactly once each. */
 void aar_serve_flip_shown(aar_serve *s);
+
+/* The write that write_start started ended: written bytes were taken (all of
+ * them, or fewer: a short write, or a negative value, fails the output and stops
+ * the app). Ignored when no write is started. */
+void aar_serve_write_done(aar_serve *s, LONG written);
+
+/* The read that read_start started ended: got bytes in data (copied before the
+ * call returns; at most the max that read_start was given), or 0 or less at the
+ * end of input (sticky: later reads complete with 0 bytes). Ignored when no read
+ * is started. */
+void aar_serve_read_done(aar_serve *s, LONG got, const void *data);
 
 /* Ask the app to stop. Idempotent. */
 void aar_serve_stop(aar_serve *s);

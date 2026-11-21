@@ -2100,6 +2100,524 @@ static void test_a_real_time_ring_gets_whole_requests_and_no_gap(void)
     finish();
 }
 
+/* ---- Tests: the embedder's contract ---------------------------------------------------------------------------------- */
+
+/* A replacement display (hooks.display): open succeeds, the loop records the
+ * screen from its completion, and flips, palettes and the close work. */
+static struct {
+    unsigned opens, changes, pans, tofs, palettes, closes;
+    int last_to_back, fail_change, no_front;
+    uint32_t pal0;
+} rd;
+
+static void rd_open(void *ctx, const struct aar_serve_req *req, struct aar_serve_done *done)
+{
+    (void)ctx;
+    (void)req;
+    rd.opens++;
+    done->result = AAR_OK;
+    done->out[AAR_R_DISPLAY_OPEN_PITCH] = 128;
+    done->out[AAR_R_DISPLAY_OPEN_FRONT] = rd.no_front ? 0u : 0x1000u;
+    done->out[AAR_R_DISPLAY_OPEN_BACK] = 0x2000;
+}
+
+static int rd_change(void *ctx, int to_back)
+{
+    (void)ctx;
+    rd.changes++;
+    rd.last_to_back = to_back;
+    return !rd.fail_change;
+}
+
+static void rd_pan(void *ctx, uint32_t page)
+{
+    (void)ctx;
+    (void)page;
+    rd.pans++;
+}
+
+static void rd_tof(void *ctx)
+{
+    (void)ctx;
+    rd.tofs++;
+}
+
+static void rd_palette(void *ctx, const uint32_t *table)
+{
+    (void)ctx;
+    rd.palettes++;
+    rd.pal0 = table[0];
+}
+
+static void rd_close(void *ctx)
+{
+    (void)ctx;
+    rd.closes++;
+}
+
+static const struct aar_serve_display_ops rd_full = {
+    NULL, rd_open, rd_change, rd_pan, rd_tof, rd_palette, rd_close
+};
+static const struct aar_serve_display_ops rd_only_open = { .open = rd_open };
+static aar_serve_hooks table_hooks;
+
+static void use_hooks(const struct aar_serve_display_ops *display, const struct aar_serve_console_ops *console)
+{
+    memset(&table_hooks, 0, sizeof(table_hooks));
+    table_hooks.size = sizeof(table_hooks);
+    table_hooks.display = display;
+    table_hooks.console = console;
+    cfg.hooks = &table_hooks;
+}
+
+static void test_a_replacement_display_is_recorded_and_completable(void)
+{
+    struct comp c;
+
+    setup("repl_display");
+    memset(&rd, 0, sizeof(rd));
+    use_hooks(&rd_full, NULL);
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC));
+    CHECK(c.result == AAR_OK && rd.opens == 1);
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_ID] == AAR_SERVE_DISPLAY_ID);
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_PITCH] == 128 && c.out[AAR_R_DISPLAY_OPEN_FRONT] == 0x1000 &&
+          c.out[AAR_R_DISPLAY_OPEN_BACK] == 0x2000);
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(c.result == AAR_E_BUSY && rd.opens == 1);
+    /* a flip is completed by the program's aar_serve_flip_shown */
+    CHECK(post(AAR_OP_DISPLAY_FLIP, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0) == AAR_OK);
+    ticks(2);
+    CHECK(rd.changes == 1 && rd.last_to_back == 1);
+    CHECK(!next_comp(&c));
+    aar_serve_flip_shown(S);
+    CHECK(wait_comp(&c, 20));
+    CHECK(c.id == 21 && c.result == AAR_OK && c.out[AAR_R_DISPLAY_FLIP_FRONT] == 0x2000 &&
+          c.out[AAR_R_DISPLAY_FLIP_BACK] == 0x1000);
+    /* a change that fails fails the flip */
+    rd.fail_change = 1;
+    CHECK(call(AAR_OP_DISPLAY_FLIP, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_E_IO);
+    rd.fail_change = 0;
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK && rd.closes == 1);
+    /* a palette reaches the table */
+    CHECK(open_display(&c, AAR_FMT_CLUT8, 0));
+    CHECK(c.result == AAR_OK && rd.opens == 2);
+    CHECK(call(AAR_OP_DISPLAY_PALETTE, 24, AAR_SERVE_DISPLAY_ID, 5, 2, 0, 0x100, 8, &c));
+    CHECK(c.result == AAR_OK && rd.palettes == 1 && rd.pal0 == ((2u << 16) | 5u));
+    /* destroy closes a screen that is still open, through the table */
+    aar_serve_destroy(S);
+    S = NULL;
+    CHECK(rd.closes == 2);
+    while (next_comp(&c))
+        ;
+    finish();
+}
+
+static void test_a_minimal_replacement_display_still_flips_and_closes(void)
+{
+    struct comp c;
+
+    setup("repl_display_min");
+    memset(&rd, 0, sizeof(rd));
+    use_hooks(&rd_only_open, NULL);
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_CLUT8, AAR_DISPLAY_VSYNC));
+    CHECK(c.result == AAR_OK);
+    /* one buffer: the flip completes at once, the table has no wait_tof or pan */
+    CHECK(call(AAR_OP_DISPLAY_FLIP, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_DISPLAY_FLIP_FRONT] == 0x1000 && rd.changes == 0 && rd.pans == 0);
+    CHECK(call(AAR_OP_DISPLAY_PALETTE, 22, AAR_SERVE_DISPLAY_ID, 0, 1, 0, 0x100, 4, &c));
+    CHECK(c.result == AAR_E_NOSYS); /* no load_rgb32 */
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK && rd.closes == 0);
+    /* an open that gives no front token has opened nothing */
+    rd.no_front = 1;
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(c.result == AAR_E_IO);
+    rd.no_front = 0;
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0)); /* and it is not recorded as open */
+    CHECK(c.result == AAR_OK);
+    finish();
+}
+
+/* A replacement console (hooks.console): the program completes what it started
+ * through aar_serve_write_done and aar_serve_read_done. */
+static struct {
+    unsigned write_starts, read_starts, errors;
+    uint8_t data[256];
+    uint32_t bytes, read_max;
+    int live;
+} rc;
+
+static int rc_write_start(void *ctx, const uint8_t *data, uint32_t bytes)
+{
+    (void)ctx;
+    rc.write_starts++;
+    rc.bytes = bytes;
+    memset(rc.data, 0, sizeof(rc.data));
+    memcpy(rc.data, data, bytes < sizeof(rc.data) ? bytes : sizeof(rc.data));
+    return 1;
+}
+
+static int rc_read_start(void *ctx, uint32_t max)
+{
+    (void)ctx;
+    rc.read_starts++;
+    rc.read_max = max;
+    return 1;
+}
+
+static int rc_live(void *ctx)
+{
+    (void)ctx;
+    return rc.live;
+}
+
+static void rc_error(void *ctx)
+{
+    (void)ctx;
+    rc.errors++;
+}
+
+/* order: ctx, open, write_start, read_start, read_allowed, live, output_error;
+ * open and read_allowed are left out: they are optional */
+static const struct aar_serve_console_ops rc_full = {
+    NULL, NULL, rc_write_start, rc_read_start, NULL, rc_live, rc_error
+};
+
+static void test_a_replacement_console_is_completed_through_the_public_calls(void)
+{
+    struct comp c;
+    struct aar_serve_result res;
+
+    setup("repl_console");
+    memset(&rc, 0, sizeof(rc));
+    rc.live = 1;
+    use_hooks(NULL, &rc_full);
+    make_serve();
+    aar_serve_write_done(S, 3); /* nothing was started: ignored */
+    ticks(2);
+    CHECK(rc.write_starts == 0 && !next_comp(&c));
+    /* the launcher's own line goes out first, through write_start */
+    aar_serve_status(S, "note");
+    ticks(2);
+    CHECK(rc.write_starts == 1 && strstr((const char *)rc.data, "note") != NULL);
+    aar_serve_write_done(S, (LONG)rc.bytes);
+    /* the app's write follows and completes with the program's completion */
+    put_str(0x100, "hello");
+    CHECK(post(AAR_OP_CONSOLE_WRITE, 8, 0, 0, 0, 0, 0x100, 5) == AAR_OK);
+    ticks(2);
+    CHECK(rc.write_starts == 2 && rc.bytes == 5 && memcmp(rc.data, "hello", 5) == 0);
+    CHECK(!next_comp(&c));
+    aar_serve_write_done(S, 5);
+    CHECK(wait_comp(&c, 20));
+    CHECK(c.id == 8 && c.result == AAR_OK);
+    /* a short write fails the output: the app is stopped, once */
+    put_str(0x100, "world!");
+    CHECK(post(AAR_OP_CONSOLE_WRITE, 9, 0, 0, 0, 0, 0x100, 6) == AAR_OK);
+    ticks(2);
+    CHECK(rc.write_starts == 3);
+    aar_serve_write_done(S, 2);
+    CHECK(wait_comp(&c, 20));
+    CHECK(c.id == 9 && c.result == AAR_E_IO && rc.errors == 1);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    (void)aar_serve_result(S, &res);
+    CHECK((res.flags & AAR_SERVE_R_CONSOLE_FAILED) && (res.flags & AAR_SERVE_R_STOP_ASKED));
+    CHECK(call(AAR_OP_CONSOLE_WRITE, 10, 0, 0, 0, 0, 0x100, 6, &c));
+    CHECK(c.result == AAR_E_IO && rc.write_starts == 3);
+    aar_serve_destroy(S); /* does not wait for a console it does not own */
+    S = NULL;
+    while (next_comp(&c))
+        ;
+    finish();
+}
+
+static void test_a_replacement_console_read_and_end_of_input(void)
+{
+    struct comp c;
+
+    setup("repl_console_read");
+    memset(&rc, 0, sizeof(rc));
+    rc.live = 1;
+    use_hooks(NULL, &rc_full);
+    make_serve();
+    CHECK(post(AAR_OP_CONSOLE_READ, 7, 0, 0, 0, 0, 0x200, 64) == AAR_OK);
+    ticks(2);
+    CHECK(rc.read_starts == 1 && rc.read_max == 64);
+    CHECK(!next_comp(&c));
+    aar_serve_read_done(S, 5, "typed");
+    CHECK(wait_comp(&c, 20));
+    CHECK(c.id == 7 && c.result == AAR_OK && c.out[AAR_R_CONSOLE_COUNT] == 5);
+    CHECK(memcmp((const void *)(uintptr_t)buf(0x200), "typed", 5) == 0);
+    /* the end of input: 0 bytes, and it stays the end */
+    CHECK(post(AAR_OP_CONSOLE_READ, 8, 0, 0, 0, 0, 0x200, 64) == AAR_OK);
+    ticks(2);
+    CHECK(rc.read_starts == 2);
+    aar_serve_read_done(S, 0, NULL);
+    CHECK(wait_comp(&c, 20));
+    CHECK(c.id == 8 && c.result == AAR_OK && c.out[AAR_R_CONSOLE_COUNT] == 0);
+    CHECK(call(AAR_OP_CONSOLE_READ, 9, 0, 0, 0, 0, 0x200, 64, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_CONSOLE_COUNT] == 0 && rc.read_starts == 2);
+    finish();
+}
+
+/* A launcher line the program's console never completes does not hold the
+ * destroy: the console is the program's. */
+static void test_destroy_does_not_wait_for_a_replacement_console(void)
+{
+    struct comp c;
+
+    setup("repl_console_destroy");
+    memset(&rc, 0, sizeof(rc));
+    rc.live = 1;
+    use_hooks(NULL, &rc_full);
+    make_serve();
+    aar_serve_status(S, "unfinished");
+    ticks(2);
+    CHECK(rc.write_starts == 1);
+    aar_serve_destroy(S);
+    S = NULL;
+    while (next_comp(&c))
+        ;
+    finish();
+}
+
+/* A table is checked when the loop is created: open for a display, write_start,
+ * read_start and live for a console. */
+static void test_replacement_tables_are_checked_at_create(void)
+{
+    static const struct aar_serve_display_ops no_open = { 0 };
+    static const struct aar_serve_console_ops no_live = { NULL, NULL, rc_write_start, rc_read_start, NULL, NULL, NULL };
+    static const struct aar_serve_console_ops no_write = { NULL, NULL, NULL, rc_read_start, NULL, rc_live, NULL };
+    static const struct aar_serve_console_ops no_read = { NULL, NULL, rc_write_start, NULL, NULL, rc_live, NULL };
+    aar_serve *s = (aar_serve *)(uintptr_t)1;
+
+    setup("hooks_tables");
+    use_hooks(&no_open, NULL);
+    CHECK(aar_serve_create(H, &cfg, &s) == AAR_E_INVAL && s == NULL);
+    use_hooks(NULL, &no_live);
+    CHECK(aar_serve_create(H, &cfg, &s) == AAR_E_INVAL);
+    use_hooks(NULL, &no_write);
+    CHECK(aar_serve_create(H, &cfg, &s) == AAR_E_INVAL);
+    use_hooks(NULL, &no_read);
+    CHECK(aar_serve_create(H, &cfg, &s) == AAR_E_INVAL);
+    use_hooks(&rd_only_open, &rc_full);
+    app_state(H, AAR_STATE_RUNNING, AAR_END_NONE);
+    CHECK(aar_serve_create(H, &cfg, &s) == AAR_OK && s != NULL);
+    aar_serve_destroy(s);
+    finish();
+}
+
+/* With poll_us 0 and only the library's signal, a stop that was asked still ends
+ * the run at its grace deadline: a timed wake of at most 10 ms is armed for it. */
+static void stop_cb(void *arg)
+{
+    (void)arg;
+    aar_serve_stop(S);
+}
+
+static void test_a_stop_deadline_is_met_without_a_heartbeat(void)
+{
+    uint64_t t0;
+
+    setup("poll0_stop");
+    cfg.poll_us = 0;
+    cfg.flags |= AAR_SERVEF_USE_SIGNAL;
+    make_serve();
+    /* the armed timer is in the mask, whatever poll_us says */
+    CHECK((aar_serve_sigmask(S) & (1UL << S->tm.port->mp_SigBit)) != 0);
+    (void)t0;
+    hx_sched(70000, stop_cb, NULL); /* between two watchdog ticks */
+    CHECK(aar_serve_run(S) == AAR_SERVE_ENDED);
+    CHECK(hx_now < 70000u + 1100000u); /* two graces of 500 ms and a tick, not a slow watchdog */
+    finish();
+}
+
+/* ... and a claim that is revoked while the app is quiet is noticed within the
+ * watchdog's 250 ms. */
+static void test_a_revoked_claim_is_noticed_without_a_heartbeat(void)
+{
+    setup("poll0_claim");
+    cfg.poll_us = 0;
+    cfg.flags |= AAR_SERVEF_USE_SIGNAL;
+    make_serve();
+    hx_sched(300000, revoke_notice_cb, NULL); /* the loop learns of it at its next pass */
+    CHECK(aar_serve_run(S) == AAR_SERVE_LOST);
+    CHECK(hx_now < 600000u);
+    finish();
+}
+
+/* ... and a console write to NIL: is still delivered. */
+static void test_a_nil_write_is_delivered_without_a_heartbeat(void)
+{
+    struct comp c;
+
+    setup("poll0_nil");
+    cfg.poll_us = 0;
+    cfg.flags |= AAR_SERVEF_USE_SIGNAL;
+    hx_output_bptr = MKBADDR(&hx_nil_fh_store);
+    hx_input_bptr = MKBADDR(&hx_nil_fh_store);
+    make_serve();
+    put_str(0x100, "hello");
+    aar_serve_status(S, "note"); /* a launcher line goes first */
+    CHECK(call(AAR_OP_CONSOLE_WRITE, 1, 0, 0, 0, 0, 0x100, 5, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_CONSOLE_COUNT] == 5);
+    finish();
+}
+
+/* ... and a completion that found the completion queue full is posted soon after
+ * the app has taken the others (a 1 ms wake), not a watchdog period later. */
+static void test_a_completion_backlog_is_flushed_without_a_heartbeat(void)
+{
+    struct comp c;
+    unsigned sent = 0, got = 0, got_read = 0, guard;
+    uint64_t t, t99 = 0;
+
+    setup("poll0_backlog");
+    cfg.poll_us = 0;
+    cfg.flags |= AAR_SERVEF_USE_SIGNAL;
+    data_dir();
+    make_serve();
+    memcpy(hx_in_data, "late\n", 5);
+    hx_in_len = 5;
+    hx_con_delay_us = 1000000;
+    put_str(0x100, "hello.txt");
+    CHECK(post(AAR_OP_CONSOLE_READ, 99, 0, 0, 0, 0, 0x200, 64) == AAR_OK);
+    for (guard = 0; guard < 200; guard++) {
+        while (sent < 120 && post(AAR_OP_FILE_STAT, 100 + sent, 0, 0, 0, 0, 0x100, 10) == AAR_OK)
+            sent++;
+        ticks(2);
+    }
+    CHECK(refplat_app_cq_used(SLOT) >= AAR_QUEUE_DEPTH_DEFAULT - 1);
+    hx_run_for(1500000);
+    ticks(10); /* the read is done; its completion has no room */
+    t = hx_now;
+    for (guard = 0; guard < 4000 && (got < sent || !got_read); guard++) {
+        while (next_comp(&c)) {
+            if (c.id == 99) {
+                got_read++;
+                t99 = hx_now;
+            } else {
+                got++;
+            }
+        }
+        tick();
+    }
+    CHECK(got == sent && got_read == 1);
+    CHECK(t99 - t < 100000u); /* the held completion, not the rest of the requests */
+    finish();
+}
+
+/* Without USE_SIGNAL the timed wakes are all that wakes a loop without a
+ * heartbeat: the armed timer is in the mask. */
+static void test_the_timer_is_in_the_mask_without_a_heartbeat(void)
+{
+    setup("poll0_mask");
+    cfg.poll_us = 0;
+    make_serve();
+    CHECK((aar_serve_sigmask(S) & (1UL << S->tm.port->mp_SigBit)) != 0);
+    finish();
+}
+
+/* A replacement display that only pans (no change_buffer) pans its pages. */
+static void test_a_replacement_display_that_pans(void)
+{
+    static const struct aar_serve_display_ops pan_only = { .open = rd_open, .pan = rd_pan, .wait_tof = rd_tof };
+    struct comp c;
+
+    setup("repl_display_pan");
+    memset(&rd, 0, sizeof(rd));
+    use_hooks(&pan_only, NULL);
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC));
+    CHECK(c.result == AAR_OK);
+    CHECK(call(AAR_OP_DISPLAY_FLIP, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK && (c.flags & AAR_CFLAG_FLIP_SUBMITTED) && rd.pans == 1 && rd.changes == 0);
+    CHECK(c.out[AAR_R_DISPLAY_FLIP_FRONT] == 0x1000 + 128u * DH);
+    CHECK(call(AAR_OP_DISPLAY_FLIP, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK && rd.pans == 2 && c.out[AAR_R_DISPLAY_FLIP_FRONT] == 0x1000);
+    finish();
+}
+
+/* A replacement console without an output_error still has its failure handled. */
+static void test_a_replacement_console_without_an_error_hook(void)
+{
+    static const struct aar_serve_console_ops quiet = { NULL, NULL, rc_write_start, rc_read_start, NULL, rc_live, NULL };
+    struct comp c;
+    struct aar_serve_result res;
+
+    setup("repl_console_quiet");
+    memset(&rc, 0, sizeof(rc));
+    rc.live = 1;
+    use_hooks(NULL, &quiet);
+    make_serve();
+    put_str(0x100, "hello");
+    CHECK(post(AAR_OP_CONSOLE_WRITE, 8, 0, 0, 0, 0, 0x100, 5) == AAR_OK);
+    ticks(2);
+    aar_serve_write_done(S, 1);
+    CHECK(wait_comp(&c, 20));
+    CHECK(c.result == AAR_E_IO);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    (void)aar_serve_result(S, &res);
+    CHECK((res.flags & AAR_SERVE_R_CONSOLE_FAILED) && (res.flags & AAR_SERVE_R_STOP_ASKED));
+    finish();
+}
+
+/* The window's raw keys follow break_mask too: with only Ctrl-E left to the loop,
+ * Ctrl-C does not stop the app and Ctrl-D is an ordinary key, Ctrl-E is a break. */
+static void test_the_window_keys_follow_break_mask(void)
+{
+    struct comp c;
+    struct aar_serve_result res;
+
+    setup("break_mask_keys");
+    cfg.break_mask = SIGBREAKF_CTRL_E;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    hx_window_post(IDCMP_RAWKEY, 0x33, IEQUALIFIER_CONTROL, 0, 0); /* Ctrl-C */
+    hx_window_post(IDCMP_RAWKEY, 0x22, IEQUALIFIER_CONTROL, 0, 0); /* Ctrl-D */
+    hx_window_post(IDCMP_RAWKEY, 0x12, IEQUALIFIER_CONTROL, 0, 0); /* Ctrl-E */
+    ticks(3);
+    nev = 0;
+    (void)next_comp(&c);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    (void)aar_serve_result(S, &res);
+    CHECK(!(res.flags & (AAR_SERVE_R_USER_STOP | AAR_SERVE_R_STOP_ASKED)));
+    CHECK(event_seen(AAR_EV_KEY_DOWN, 0x33) && event_seen(AAR_EV_KEY_DOWN, 0x22));
+    CHECK(!event_seen(AAR_EV_BREAK, AAR_BREAK_CTRL_D));
+    CHECK(event_seen(AAR_EV_BREAK, AAR_BREAK_CTRL_E));
+    finish();
+}
+
+/* break_mask leaves Ctrl-C to the program: a DOS wait neither waits on it, nor
+ * stops the request, nor stops the app, nor consumes it. */
+static void test_a_break_the_program_owns_is_not_consumed_by_a_dos_wait(void)
+{
+    struct comp c;
+    struct aar_serve_result res;
+
+    setup("break_mask_dos");
+    cfg.break_mask = 0;
+    data_dir();
+    make_serve();
+    hx_sig |= SIGBREAKF_CTRL_C;
+    put_str(0x100, "hello.txt");
+    CHECK(call(AAR_OP_FILE_STAT, 3, 0, 0, 0, 0, 0x100, 10, &c));
+    CHECK(c.result == AAR_OK);
+    CHECK((hx_sig & SIGBREAKF_CTRL_C) != 0);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    (void)aar_serve_result(S, &res);
+    CHECK(!(res.flags & (AAR_SERVE_R_USER_STOP | AAR_SERVE_R_STOP_ASKED)));
+    hx_sig &= ~SIGBREAKF_CTRL_C;
+    finish();
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -2169,6 +2687,21 @@ static const struct {
     T(test_a_multi_packet_read_costs_one_timer_abort_per_packet),
     T(test_a_sixty_ms_loop_stall_does_not_starve_ahi),
     T(test_a_real_time_ring_gets_whole_requests_and_no_gap),
+    T(test_a_replacement_display_is_recorded_and_completable),
+    T(test_a_minimal_replacement_display_still_flips_and_closes),
+    T(test_a_replacement_console_is_completed_through_the_public_calls),
+    T(test_a_replacement_console_read_and_end_of_input),
+    T(test_replacement_tables_are_checked_at_create),
+    T(test_destroy_does_not_wait_for_a_replacement_console),
+    T(test_a_stop_deadline_is_met_without_a_heartbeat),
+    T(test_a_revoked_claim_is_noticed_without_a_heartbeat),
+    T(test_a_nil_write_is_delivered_without_a_heartbeat),
+    T(test_a_completion_backlog_is_flushed_without_a_heartbeat),
+    T(test_the_timer_is_in_the_mask_without_a_heartbeat),
+    T(test_a_replacement_display_that_pans),
+    T(test_a_replacement_console_without_an_error_hook),
+    T(test_a_break_the_program_owns_is_not_consumed_by_a_dos_wait),
+    T(test_the_window_keys_follow_break_mask),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

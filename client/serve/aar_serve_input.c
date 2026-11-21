@@ -21,6 +21,16 @@ static uint16_t break_signal_for_rawkey(uint16_t code, uint16_t qualifiers)
     }
 }
 
+static ULONG break_signal_bit(uint16_t signal)
+{
+    switch (signal) {
+    case AAR_BREAK_CTRL_D: return SIGBREAKF_CTRL_D;
+    case AAR_BREAK_CTRL_E: return SIGBREAKF_CTRL_E;
+    case AAR_BREAK_CTRL_F: return SIGBREAKF_CTRL_F;
+    default: return 0;
+    }
+}
+
 static void drain_window(struct aar_serve *s, struct Window *win)
 {
     struct IntuiMessage *im;
@@ -42,7 +52,12 @@ static void drain_window(struct aar_serve *s, struct Window *win)
             uint16_t signal = type == AAR_EV_KEY_DOWN ?
                 break_signal_for_rawkey(raw, qual) : 0;
 
+            /* Ctrl-C and Ctrl-D/E/F are the loop's only while break_mask says so:
+             * otherwise the key is the program's, an ordinary key event. */
+            if (signal && !(s->cfg.break_mask & break_signal_bit(signal)))
+                signal = 0;
             if (type == AAR_EV_KEY_DOWN &&
+                (s->cfg.break_mask & SIGBREAKF_CTRL_C) &&
                 aar_serve_rawkey_requests_stop(raw, qual, IEQUALIFIER_CONTROL)) {
                 s->user_stop = 1;
                 want_stop(s, AAR_SERVE_WHY_BREAK);

@@ -889,6 +889,8 @@ void aar_serve_files_serve(struct aar_serve_files *f, const struct aar_serve_req
 
 /* ---- Console ------------------------------------------------------------ */
 
+/* A console table needs all its members; aar_serve wraps a program's table so
+ * that the optional ones may be NULL there (aar_serve.c, repl_con_*). */
 void aar_serve_console_init(struct aar_serve_console *c,
                             const struct aar_serve_console_ops *ops,
                             const struct aar_serve_sink *sink)
@@ -1092,6 +1094,8 @@ void aar_serve_console_write_done(struct aar_serve_console *c, int32_t written)
     int source = c->write_source;
     int failed = aar_serve_console_write_failed(c->write_bytes, written);
 
+    if (!c->write_pending)
+        return; /* nothing was started: a completion without a write is ignored */
     c->write_pending = 0;
     c->write_source = AAR_SERVE_OUTPUT_NONE;
     if (source == AAR_SERVE_OUTPUT_LAUNCHER) {
@@ -1334,9 +1338,35 @@ void aar_serve_display_flip_request(struct aar_serve_display *d,
         return;
     }
     /* A single buffer: the firmware copies the frame. */
-    if (d->flags & AAR_DISPLAY_VSYNC)
+    if ((d->flags & AAR_DISPLAY_VSYNC) && d->ops.wait_tof)
         d->ops.wait_tof(d->ops.ctx);
     display_flip_outs(d, done);
+}
+
+/* A replacement table's open succeeded and left the screen unrecorded (the
+ * built-in table records it itself): record it from the completion. The table's
+ * ops decide the mode: with change_buffer there are two screen buffers (a flip
+ * completes at aar_serve_flip_shown), else with pan the pages are one tall
+ * bitmap (a third page when a spare token is given), else there is one buffer.
+ * A table that gives no front token or pitch has opened nothing. */
+static void display_adopt(struct aar_serve_display *d, const struct aar_serve_req *req,
+                          struct aar_serve_done *done)
+{
+    uint32_t pitch = done->out[AAR_R_DISPLAY_OPEN_PITCH];
+    uint32_t front = done->out[AAR_R_DISPLAY_OPEN_FRONT];
+    uint32_t back = done->out[AAR_R_DISPLAY_OPEN_BACK];
+    uint32_t spare = done->out[AAR_R_DISPLAY_OPEN_SPARE];
+    int two = d->ops.change_buffer != NULL && back != 0u;
+    int pan = !two && d->ops.pan != NULL && back != 0u;
+
+    if (front == 0u || pitch == 0u) {
+        if (d->ops.close)
+            d->ops.close(d->ops.ctx);
+        done_result(done, AAR_E_IO);
+        return;
+    }
+    aar_serve_display_opened(d, req, pitch, front, back, spare, two, pan,
+                             pan ? (spare ? 3u : 2u) : 0u, done);
 }
 
 static void flip_complete(struct aar_serve_display *d, const struct aar_serve_req *req,
@@ -1396,6 +1426,10 @@ void aar_serve_display_palette_request(struct aar_serve_display *d,
         colors[3u + i * 3u] = (rgb & 0xffu) * 0x01010101u;
     }
     colors[1u + count * 3u] = 0;
+    if (!d->ops.load_rgb32) {
+        done->result = AAR_E_NOSYS;
+        return;
+    }
     d->ops.load_rgb32(d->ops.ctx, colors);
     done->result = AAR_OK;
 }
@@ -1410,7 +1444,8 @@ void aar_serve_display_close_request(struct aar_serve_display *d,
         return;
     }
     /* The close waits for the SafeMessages of flips still in flight. */
-    d->ops.close(d->ops.ctx);
+    if (d->ops.close)
+        d->ops.close(d->ops.ctx);
     if (d->flip_active) {
         struct aar_serve_req finished = d->flip_req;
 
@@ -1626,8 +1661,11 @@ int aar_serve_core_request(struct aar_serve_core *s, const struct aar_serve_req 
             done->result = AAR_E_INVAL;
         else if (s->display.open)
             done->result = AAR_E_BUSY;
-        else
+        else {
             s->display.ops.open(s->display.ops.ctx, req, done);
+            if (done->result == AAR_OK && !s->display.open)
+                display_adopt(&s->display, req, done);
+        }
         break;
     case AAR_OP_DISPLAY_FLIP:
         aar_serve_display_flip_request(&s->display, req, done, &deferred);

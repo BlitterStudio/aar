@@ -223,7 +223,7 @@ not passed to the app. A bad value prints the usage and returns 10.
 
 | Word | Effect |
 | --- | --- |
-| `POLL=<us>` | The heartbeat of the loop, in microseconds. The default is 1000 (one wake-up per millisecond, the latency the launcher has always had). `POLL=20000` suits a program that is happy with a vertical-blank wake-up; `POLL=0` turns the timer off and waits on the library's signal alone (the library wakes the loop within about one vertical blank). The value is below 1000000. A slower heartbeat costs latency for DOS and audio work, not correctness. |
+| `POLL=<us>` | The heartbeat of the loop, in microseconds. The default is 1000 (one wake-up per millisecond, the latency the launcher has always had). `POLL=20000` suits a program that is happy with a vertical-blank wake-up; `POLL=0` turns the heartbeat off and waits on the library's signal and on a few timed wakes (10 ms while a stop is pending, 20 ms for the joysticks of a display, 1 ms for completions waiting for the completion queue, 250 ms to see a revoked claim); it is refused with `AUDIO=AHI`. The value is below 1000000. A slower heartbeat costs latency for DOS and audio work, not correctness. |
 | `DISPLAY=<BUFFERS\|PAN3\|PAN2\|SINGLE>` | The display strategy aar-run starts with, and the fallbacks after it. `BUFFERS` (the default) uses screen buffers, then a three page tall screen, a two page one and one buffer. `PAN3` starts at the three page tall screen, `PAN2` at the two page one, and `SINGLE` uses one buffer the platform copies each frame. A strategy the screen cannot open falls back to the next one, as in the default order. |
 
 ```text
