@@ -4,7 +4,7 @@
 # checkout:
 #
 #   docker run --rm -v "$PWD:/src:ro" -v "$PWD/out:/out" \
-#     amigadev/crosstools@sha256:98c6671ce9bfec0355e9336e02cbef2a39bad8c5ddd71c43720acacdb697b9a0 \
+#     amigadev/crosstools@sha256:9391792c327c1058f04cb0a0e5e67bbf5504e9b696f486f6fbfb214bf6ca2d64 \
 #     sh -c 'cp -r /src /w && cd /w && sh client/tests/amiga/build_leak.sh /out'
 #
 # Writes aar.library and aarleak to the directory given (default ./out).
