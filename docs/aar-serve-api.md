@@ -263,8 +263,14 @@ program's own window signals are not lost.
   console write, a flip waiting for its SafeMessage) are answered with
   `AAR_E_IO`, once. A completion that cannot be posted because the completion
   queue is full stays unanswered: the app has gone away with the claim.
-- **The heartbeat.** The AHI route needs one of at most 20 ms (the feeder moves a
-  fiftieth of a second per pass); `aar_serve_create` answers `AAR_E_NOSYS` for
+- **The AHI queue.** `AAR_SERVE_AHI_BUFFER_COUNT` (6) requests of at most 1/50 s
+  each are queued in AHI, about 120 ms, each chained to the one before it; every
+  free slot is refilled in one pass while whole chunks wait in the ring, and a
+  partial chunk is queued when AHI has nothing else or it is at least 1/200 s.
+  A stall of the loop of up to about 100 ms plays out of the queue (the late
+  refill counter stays 0); the latency is up to 120 ms when the app writes ahead.
+- **The heartbeat.** The AHI route needs one of at most 20 ms (the chunk is a
+  fiftieth of a second); `aar_serve_create` answers `AAR_E_NOSYS` for
   other values with it. Without AHI, `poll_us` 0 is allowed: the program is woken
   by the flip and AHI ports, the console, the input window and, with
   `AAR_SERVEF_USE_SIGNAL`, by the library.

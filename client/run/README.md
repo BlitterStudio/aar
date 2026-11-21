@@ -211,8 +211,9 @@ appended to that directory, without adding a slash after a volume colon.
 | `WEIGHT=<n>` | Decimal CPU share weight from 1 to the platform's `weight_max` (`AAR_TAG_WEIGHT`). |
 
 The same limits and refusals apply as in a Shell launch. The diagnostic words
-below are not ToolTypes. A Workbench start opens no console unless the app
-uses one: see [Console and audio routes](#console-and-audio-routes).
+below are not ToolTypes. A Workbench start opens one console window titled
+`aar-run` for aar-run's lines and the app's console: see
+[Console and audio routes](#console-and-audio-routes).
 
 ## Diagnostics
 
@@ -378,10 +379,12 @@ or audio. A regular file completes immediately. If a non-interactive read is
 still pending at exit, aar-run writes `waiting for pending input to finish.` to
 the user console (not stdout, and not the pipe) and waits, because a pipe read
 cannot be cancelled. The custom screen is closed before either of those waits,
-so the prompt is not hidden behind the app display. A Workbench launch opens
-no console by default; only when the app first uses console I/O, aar-run opens a
-closable `CON:` window. If opening that requested console fails, or if writing
-app output fails, aar-run stops the app and returns 20.
+so the prompt is not hidden behind the app display. A Workbench launch opens one
+closable `CON:` window titled `aar-run` when it starts, and aar-run's own lines
+and the app's console output both go to it; aar-run does not write through the C
+library's stdout, so no second, untitled window appears. If that window cannot be
+opened, aar-run opens it at the app's first console use instead. If writing app
+output fails, aar-run stops the app and returns 20.
 
 The default audio route is the platform's own audio path and needs nothing from aar-run. Set
 `AUDIO=AHI` in the app icon or pass `AUDIO=AHI` after the ELF in a Shell
@@ -392,7 +395,14 @@ names it in an `AUDIO_OPEN` request; aar-run opens AHI at the requested rate
 and detaches it at `AUDIO_CLOSE`. aar-run reads the PCM with `AARAudioRead`,
 which converts the ring's interleaved S16LE samples (rate and channel count in
 its header) into AHI's S16BE bounce buffers without resampling or downmixing,
-one buffer of at most 1/50 s per pass. If AHI cannot be opened, aar-run stops
+one request of at most 1/50 s (20 ms) at a time. aar-run keeps six such requests
+queued in AHI (about 120 ms of audio, each chained to the one before it) and
+refills every free slot in one pass while whole chunks wait in the ring, so a
+delay of the loop of up to about 100 ms, such as a low priority task on a busy
+machine, plays out of AHI's queue. The price is up to 120 ms of latency between
+the app's ring and the speakers when the app writes ahead of the player; a ring
+that fills in real time adds none, because the last, partial chunk is queued as
+soon as it is 5 ms long or AHI has nothing left to play. If AHI cannot be opened, aar-run stops
 the app and returns 20. Before each read aar-run asks the library how many frames
 are readable (`AARAudioRead` with no buffer), which counts nothing, so an
 underrun in the ring header is counted only when AHI finished a buffer and

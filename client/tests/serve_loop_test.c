@@ -1064,7 +1064,7 @@ static void test_audio_chunk_is_a_fiftieth_of_a_second(void)
     CHECK(c.result == AAR_OK);
     ticks(3);
     CHECK(hx_ahi_writes >= 1 && hx_ahi_bytes / hx_ahi_writes <= 8000 / 50 * 4);
-    CHECK(hx_ahi_max_pending <= 2); /* two buffers */
+    CHECK(hx_ahi_max_pending <= (int)AAR_SERVE_AHI_BUFFER_COUNT);
     CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
     finish();
 }
@@ -2008,6 +2008,31 @@ static void test_a_multi_packet_read_costs_one_timer_abort_per_packet(void)
     finish();
 }
 
+/* The loop can be late (a DOS wait, a low priority task on a busy machine): AHI
+ * keeps playing out of its queue. 6 requests of 20 ms are queued, so a 60 ms
+ * stall leaves AHI busy and the late refill counter at 0. */
+static void test_a_sixty_ms_loop_stall_does_not_starve_ahi(void)
+{
+    struct comp c;
+    struct aar_serve_result res;
+
+    setup("ahi_stall");
+    cfg.audio_route = AAR_AUDIO_ROUTE_AHI;
+    make_serve();
+    make_ring(0x4000, 1024, 1024);
+    CHECK(open_audio(&c, 0x4000, 1024));
+    CHECK(c.result == AAR_OK);
+    ticks(3);
+    CHECK(hx_ahi_max_pending == (int)AAR_SERVE_AHI_BUFFER_COUNT); /* all slots filled in one pass */
+    hx_run_for(60000);
+    ticks(1);
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_gaps == 0 && res.ahi_underruns == 0);
+    CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -2075,6 +2100,7 @@ static const struct {
     T(test_workbench_project_uses_dostrue_from_name_from_lock),
     T(test_a_late_ahi_refill_is_counted_as_a_gap),
     T(test_a_multi_packet_read_costs_one_timer_abort_per_packet),
+    T(test_a_sixty_ms_loop_stall_does_not_starve_ahi),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

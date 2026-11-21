@@ -39,6 +39,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include <libraries/aar_serve.h>
 
@@ -55,9 +56,60 @@ extern struct WBStartup *_WBenchMsg;
 static const char version[] __attribute__((used)) =
     "$VER: aar-run " AAR_RUN_VERSION " (20.11.2026)\r\n";
 
-/* The Workbench console of a start without a Shell, opened at the app's first
- * console use. */
+/* The console of a start without a Shell: one window titled aar-run, opened at
+ * the start of the run. aar-run's own lines and the app's console both go to
+ * it (the serving loop writes the app's output to this handle), and WAIT keeps
+ * it open until the user closes it. If it cannot be opened, the loop opens the
+ * same spec at the app's first console use. */
 #define AAR_RUN_WB_CONSOLE "CON:0/0/640/160/aar-run/CLOSE/WAIT"
+
+static BPTR wb_console;
+
+/* aar-run never writes through libnix's stdout: for a Workbench start that would
+ * open a second, untitled window (the m68k check refuses a reference to the C
+ * library's printf and puts). */
+static void out_text(const char *text)
+{
+    if (wb_console)
+        (void)Write(wb_console, (APTR)text, (LONG)strlen(text));
+    else
+        fputs(text, stdout);
+}
+
+static int out_printf(const char *format, ...) __attribute__((format(printf, 1, 2)));
+static int out_printf(const char *format, ...)
+{
+    char text[512];
+    va_list args;
+    int n;
+
+    va_start(args, format);
+    n = vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    out_text(text);
+    return n;
+}
+
+static int out_puts(const char *text)
+{
+    out_text(text);
+    out_text("\n");
+    return 0;
+}
+
+static int out_putchar(int c)
+{
+    char text[2];
+
+    text[0] = (char)c;
+    text[1] = '\0';
+    out_text(text);
+    return c;
+}
+
+#define printf out_printf
+#define puts out_puts
+#define putchar out_putchar
 
 /* What the launch gathered from the arguments and the tool types. */
 static AARHandle *aar_handle;
@@ -592,6 +644,10 @@ static void cleanup(void)
         if (dropped_messages)
             printf("aar-run: dropped %lu app messages.\n", dropped_messages);
     }
+    if (wb_console) {
+        Close(wb_console);
+        wb_console = 0;
+    }
 }
 
 /* The claim gate before each load step: a claim the platform has already
@@ -691,6 +747,8 @@ int main(int argc, char **argv)
     uint32_t release_handle = 0;
 
     app_from_icon[0] = 0;
+    if (_WBenchMsg)
+        wb_console = Open((CONST_STRPTR)AAR_RUN_WB_CONSOLE, MODE_OLDFILE);
     root_text[0] = 0;
     elf_path[0] = 0;
     if (!stack_ok()) {
@@ -884,7 +942,9 @@ int main(int argc, char **argv)
     cfg.root = root_lock;
     cfg.screen_mode = have_mode ? forced_mode : 0;
     cfg.screen_title = (CONST_STRPTR)"aar-run";
-    cfg.console_spec = _WBenchMsg ? (CONST_STRPTR)AAR_RUN_WB_CONSOLE : NULL;
+    cfg.console_in = wb_console;
+    cfg.console_out = wb_console;
+    cfg.console_spec = _WBenchMsg && !wb_console ? (CONST_STRPTR)AAR_RUN_WB_CONSOLE : NULL;
     cfg.audio_route = audio_ahi ? AAR_AUDIO_ROUTE_AHI : AAR_AUDIO_ROUTE_PLATFORM;
     cfg.joy_ports = joy_port0 ? 3UL : 2UL;
     cfg.poll_us = poll_us;

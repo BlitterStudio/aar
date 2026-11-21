@@ -702,6 +702,8 @@ HX_UNUSED static int hx_ahi_pending_now;
 HX_UNUSED static int hx_ahi_max_pending;
 HX_UNUSED static struct Device hx_timer_dev, hx_ahi_dev;
 HX_UNUSED static unsigned long hx_timer_aborts;      /* timer requests aborted while still pending */
+HX_UNUSED static uint64_t hx_ahi_end;                /* when the last queued AHI write finishes playing */
+HX_UNUSED static struct IORequest *hx_ahi_tail;      /* the AHI write sent last */
 
 static void hx_io_done(void *arg)
 {
@@ -793,11 +795,24 @@ HX_UNUSED static void hx_send_io(struct IORequest *io)
         hx_ahi_bytes += ar->ahir_Std.io_Length;
         memcpy(hx_ahi_last, ar->ahir_Std.io_Data,
                ar->ahir_Std.io_Length < sizeof(hx_ahi_last) ? ar->ahir_Std.io_Length : sizeof(hx_ahi_last));
+        {
+            /* ahi.device chains a write to the one before it, if that is still queued */
+            struct IORequest *want = (hx_ahi_tail && hx_ahi_tail != io && hx_ahi_tail->hx_pending) ?
+                                         hx_ahi_tail : NULL;
+
+            if ((struct IORequest *)ar->ahir_Link != want)
+                HX_FAIL("an AHI write is not chained to the tail of the queue");
+            hx_ahi_tail = io;
+        }
         hx_ahi_pending_now++;
         if (hx_ahi_pending_now > hx_ahi_max_pending)
             hx_ahi_max_pending = hx_ahi_pending_now;
         us = (uint64_t)ar->ahir_Std.io_Length / 4u * 1000000u / ar->ahir_Frequency;
-        hx_sched(us, hx_io_done, io);
+        /* ahi.device plays the queued writes one after the other */
+        if (hx_ahi_end < hx_now)
+            hx_ahi_end = hx_now;
+        hx_ahi_end += us;
+        hx_sched(hx_ahi_end - hx_now, hx_io_done, io);
     } else {
         HX_FAIL("SendIO on a request with no device");
     }
@@ -1954,6 +1969,8 @@ HX_UNUSED static void hx_reset(void)
     hx_steps = 0;
     hx_waits = 0;
     hx_timer_aborts = 0;
+    hx_ahi_end = 0;
+    hx_ahi_tail = NULL;
     hx_next_sigbit = 16;
     hx_ahi_fail_open = hx_ahi_open_count = hx_timer_open_count = hx_timer_fail_open = 0;
     hx_ahi_writes = hx_ahi_bytes = 0;

@@ -96,6 +96,14 @@ check_source client/serve/aar_serve.c "^_?($STR|memmove|snprintf|AARBase|DOSBase
 # aar-run is a program: it may leave the C library and the program's own library
 # bases undefined; the link below is its undefined-symbol check.
 check_source client/run/aar_run.c "."
+# Every line aar-run prints goes through its own router, so that a Workbench
+# start has one window: a reference to the C library's stdout writers is a bug.
+grep -E '^_?(printf|puts|putchar|fprintf|vprintf|vfprintf)$' "$OUT/src.undef" > "$OUT/stdout.bad" || [ $? -eq 1 ]
+if [ -s "$OUT/stdout.bad" ]; then
+    echo "client/run/aar_run.c writes through the C library's stdout: $(cat "$OUT/stdout.bad")"
+    exit 1
+fi
+echo "client/run/aar_run.c: no reference to the C library's stdout writers"
 stack=1024
 "$CC" -std=gnu11 -noixemul -m68030 -O2 -Wall -Wextra -Werror \
     -Iclient/include -Iinclude \

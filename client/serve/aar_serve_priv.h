@@ -158,7 +158,7 @@
                              sizeof((s)->cfg.hooks->field) &&                 \
      (s)->cfg.hooks->field != NULL)
 
-#define AAR_SERVE_AHI_BUFFER_COUNT 2u
+#define AAR_SERVE_AHI_BUFFER_COUNT 6u   /* requests in flight: 6 x 20 ms = 120 ms of queued audio */
 #define AAR_SERVE_AHI_BUFFER_BYTES 8192u
 
 /* One walk over the candidates of a DOS name: GetDeviceProc candidates, or one
@@ -283,6 +283,8 @@ struct aar_serve {
         uint32_t ring_underruns;        /* last count observed in this ring */
         uint32_t underruns;             /* accumulated across AHI streams */
         uint32_t gaps;                  /* refills that found AHI already idle with data waiting */
+        unsigned last;                  /* slot of the request submitted last: the next one chains to it */
+        unsigned passes;                /* feeder passes, to sample the ring's underrun word now and then */
     } ahi;
 
     /* ---- aar_serve_input.c: the input window's events and the joystick ---------------- */

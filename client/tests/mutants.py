@@ -696,11 +696,19 @@ mutant("cli-stack-longs-wrap", "run_policy", "client/run/aar_run_policy.h",
 mutant("dos-wait-in-a-step-arms-the-timer", "timer_ops", "client/serve/aar_serve_dos.c",
        ("    if (s->cfg.poll_us && !s->in_step)", "    if (s->cfg.poll_us)"))
 mutant("ahi-late-refill-not-counted", "ahi_gaps", "client/serve/aar_serve_ahi.c",
-       ("    if (completed && ahi_idle(s))\n        s->ahi.gaps++;", "    if (completed && ahi_idle(s))\n        ;"))
+       ("        if (!submitted && completed && ahi_idle(s))\n            s->ahi.gaps++;", "        if (!submitted && completed && ahi_idle(s))\n            ;"))
 mutant("ahi-first-buffer-counted-late", "ahi_gaps", "client/serve/aar_serve_ahi.c",
-       ("    if (completed && ahi_idle(s))\n        s->ahi.gaps++;", "    if (ahi_idle(s))\n        s->ahi.gaps++;"))
+       ("        if (!submitted && completed && ahi_idle(s))\n            s->ahi.gaps++;", "        if (!submitted && ahi_idle(s))\n            s->ahi.gaps++;"))
 mutant("ahi-gaps-not-reported", "ahi_gaps", SL,
        ("    out->ahi_gaps = s->ahi.gaps;", "    out->ahi_gaps = 0;"))
+mutant("ahi-queue-is-two-requests-deep", "ahi_stall", "client/serve/aar_serve_priv.h",
+       ("#define AAR_SERVE_AHI_BUFFER_COUNT 6u   /* requests in flight: 6 x 20 ms = 120 ms of queued audio */",
+        "#define AAR_SERVE_AHI_BUFFER_COUNT 2u   /* requests in flight: 6 x 20 ms = 120 ms of queued audio */"))
+mutant("ahi-refills-one-slot-per-pass", "ahi_stall", "client/serve/aar_serve_ahi.c",
+       ("        submitted++;\n        available = got < available ? available - got : 0u;\n    }", "        return;\n    }"))
+mutant("ahi-chains-to-the-wrong-request", "ahi_audio", "client/serve/aar_serve_ahi.c",
+       ("    if (s->ahi.pending[s->ahi.last])\n        link = s->ahi.request[s->ahi.last]; /* the chain's tail */",
+        "    link = s->ahi.request[0];"))
 # the backends
 mutant("nil-takes-no-packets", "nil_output", "client/serve/aar_serve_con.c",
        ("    if (!handle->fh_Type) {", "    if (0) {"))
@@ -725,9 +733,9 @@ mutant("safe-messages-not-awaited", "destroy_flip_out", "client/serve/aar_serve_
 mutant("tall-screen-height-unchecked", "display_pan3_short", "client/serve/aar_serve_gfx.c",
        ("        if (tall && tall->Height >= (WORD)(h * 3u) &&", "        if (tall &&"))
 mutant("underrun-counted-every-pass", "ahi_audio", "client/serve/aar_serve_ahi.c",
-       ("        if (completed && available == 0u && ahi_idle(s))", "        if (available == 0u && ahi_idle(s))"))
+       ("            if (!submitted && completed && available == 0u && ahi_idle(s)) {", "            if (!submitted && available == 0u && ahi_idle(s)) {"))
 mutant("ahi-buffer-reused-while-pending", "audio_chunk", "client/serve/aar_serve_ahi.c",
-       ("    slot = ahi_free_slot(s);\n    if (slot < 0)\n        return;", "    slot = 0;"))
+       ("        slot = ahi_free_slot(s);\n        if (slot < 0)\n            return;", "        slot = 0;"))
 mutant("ctrl-d-raw-key-is-e", "raw_key_ctrl_c", "client/serve/aar_serve_input.c",
        ("    case 0x22u: return AAR_BREAK_CTRL_D;", "    case 0x22u: return AAR_BREAK_CTRL_E;"))
 mutant("right-button-is-left", "mouse_and_close", "client/serve/aar_serve_input.c",
