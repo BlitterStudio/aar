@@ -1417,6 +1417,53 @@ static void test_the_workbench_console_opens_at_the_first_use(void)
     finish(); /* destroy closes the console it opened */
 }
 
+/* console_in, console_out and console_spec each have one default that does not
+ * depend on the others: an output stream alone leaves reads on Input(). */
+static void test_an_output_stream_alone_does_not_take_the_input(void)
+{
+    struct comp c;
+
+    setup("con_defaults_out");
+    cfg.console_out = MKBADDR(&hx_nil_fh_store); /* console_in 0: Input() */
+    memcpy(hx_in_data, "abc\n", 4);
+    hx_in_len = 4;
+    make_serve();
+    CHECK(call(AAR_OP_CONSOLE_READ, 1, 0, 0, 0, 0, 0x200, 64, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_CONSOLE_COUNT] == 4);
+    finish();
+}
+
+/* ... an input stream alone leaves writes on Output() ... */
+static void test_an_input_stream_alone_does_not_take_the_output(void)
+{
+    struct comp c;
+
+    setup("con_defaults_in");
+    cfg.console_in = MKBADDR(&hx_nil_fh_store); /* console_out 0: Output() */
+    make_serve();
+    put_str(0x100, "x");
+    CHECK(call(AAR_OP_CONSOLE_WRITE, 1, 0, 0, 0, 0, 0x100, 1, &c));
+    CHECK(c.result == AAR_OK && hx_con_out_len == 1);
+    finish();
+}
+
+/* ... and the window aar_serve opens from console_spec is bidirectional: a
+ * program that gave no console_in reads from it, not from Input(). */
+static void test_the_window_it_opened_is_read_as_well_as_written(void)
+{
+    struct comp c;
+
+    setup("con_defaults_spec");
+    cfg.console_spec = (CONST_STRPTR)"CON:0/0/640/160/aar-run/CLOSE/WAIT";
+    hx_input_bptr = MKBADDR(&hx_nil_fh_store); /* Input() would give end of file */
+    memcpy(hx_in_data, "abc\n", 4);
+    hx_in_len = 4;
+    make_serve();
+    CHECK(call(AAR_OP_CONSOLE_READ, 1, 0, 0, 0, 0, 0x200, 64, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_CONSOLE_COUNT] == 4);
+    finish();
+}
+
 /* ---- Tests: the fixes of the move ------------------------------------------------------------------------------- */
 
 static int sync_has(const char *text)
@@ -2660,6 +2707,9 @@ static const struct {
     T(test_hooks_replace_the_defaults),
     T(test_the_configuration_is_checked),
     T(test_the_workbench_console_opens_at_the_first_use),
+    T(test_an_output_stream_alone_does_not_take_the_input),
+    T(test_an_input_stream_alone_does_not_take_the_output),
+    T(test_the_window_it_opened_is_read_as_well_as_written),
     T(test_nil_output_is_written_synchronously_and_the_app_is_not_stopped),
     T(test_the_output_error_note_goes_to_the_user_console),
     T(test_a_refused_audio_ring_closes_ahi),

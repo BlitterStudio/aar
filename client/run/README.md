@@ -363,7 +363,7 @@ ringtest tools, or a program of its own that creates `aar_serve` with
 The app's console output arrives as `CONSOLE_WRITE` requests naming bytes in a
 console buffer the platform allocated; a request completes when the DOS write has
 finished, with the number of bytes written. A Shell launch writes those bytes
-through `Output()` and takes app stdin from `Input()`. A `CONSOLE_READ` request
+through `Output()` and takes app stdin from `Input()` (a Workbench start opens one titled `CON:` window and uses it both ways). A `CONSOLE_READ` request
 is the app's demand for input; aar-run starts one DOS read for it and completes it
 with the bytes read, or with 0 at the end of input. A redirected input (`<file`
 or a pipe) ends the app's stdin at the end of that stream. From the keyboard,

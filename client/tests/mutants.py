@@ -780,6 +780,12 @@ mutant("window-ctrl-c-stops-without-break-mask", "break_mask_keys", "client/serv
        ("                (s->cfg.break_mask & SIGBREAKF_CTRL_C) &&\n", ""))
 mutant("window-ctrl-d-break-without-break-mask", "break_mask_keys", "client/serve/aar_serve_input.c",
        ("            if (signal && !(s->cfg.break_mask & break_signal_bit(signal)))\n                signal = 0;\n", ""))
+mutant("output-stream-takes-the-input", "con_defaults_out", "client/serve/aar_serve_con.c",
+       ("    return s->con.owned && s->con.handle ? s->con.handle : X_INPUT();", "    return s->con.handle ? s->con.handle : X_INPUT();"))
+mutant("opened-window-is-not-read", "con_defaults_spec", "client/serve/aar_serve_con.c",
+       ("    return s->con.owned && s->con.handle ? s->con.handle : X_INPUT();", "    return X_INPUT();"))
+mutant("input-stream-takes-the-output", "con_defaults_in", "client/serve/aar_serve_con.c",
+       ("    return s->con.handle ? s->con.handle : X_OUTPUT();", "    return s->con.handle ? s->con.handle : s->con.in ? s->con.in : X_OUTPUT();"))
 # the backends
 mutant("nil-takes-no-packets", "nil_output", "client/serve/aar_serve_con.c",
        ("    if (!handle->fh_Type) {", "    if (0) {"))

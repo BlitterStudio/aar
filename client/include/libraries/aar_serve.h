@@ -207,12 +207,14 @@ typedef struct aar_serve_config {
                                        duplicates it. 0: a duplicate of the current directory */
     ULONG screen_mode;              /* the P96 DisplayID to force; 0: choose by size and format */
     CONST_STRPTR screen_title;      /* title of the P96 screen and of requesters; NULL: "aar-serve" */
-    BPTR console_in;                /* 0: Input() */
-    BPTR console_out;               /* 0: Output(). A stream the caller gives is the caller's to close */
+    BPTR console_in;                /* 0: Input(), whatever console_out is */
+    BPTR console_out;               /* 0: Output(), whatever console_in is. A stream the caller gives
+                                       is the caller's to close */
     CONST_STRPTR console_spec;      /* opened at the first console use when console_out is 0 and the
                                        program has no Shell stream (a Workbench start, for example
-                                       "CON:0/0/640/160/aar-run/CLOSE/WAIT"); NULL: none, and console
-                                       I/O then fails as AAR_E_IO */
+                                       "CON:0/0/640/160/aar-run/CLOSE/WAIT"): that window is one
+                                       bidirectional console, so it is also the input when console_in
+                                       is 0. NULL: none, and console I/O then fails as AAR_E_IO */
     ULONG audio_route;              /* AAR_AUDIO_ROUTE_PLATFORM or AAR_AUDIO_ROUTE_AHI: what this loop
                                        serves; it must equal the AAR_TAG_AUDIO_ROUTE the handle was
                                        given */

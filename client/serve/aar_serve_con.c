@@ -15,11 +15,15 @@ static BPTR console_output(struct aar_serve *s)
     return s->con.handle ? s->con.handle : X_OUTPUT();
 }
 
+/* Each of console_in and console_out defaults to the program's own stream
+ * (Input(), Output()) whatever the other is. The one exception is the window
+ * aar_serve opened itself from console_spec: that is one bidirectional console,
+ * so a program given no console_in reads from it. */
 static BPTR console_input(struct aar_serve *s)
 {
     if (s->con.in)
         return s->con.in;
-    return s->con.handle ? s->con.handle : X_INPUT();
+    return s->con.owned && s->con.handle ? s->con.handle : X_INPUT();
 }
 
 static int console_open_if_needed(struct aar_serve *s)

@@ -50,8 +50,8 @@ structure is size-first and grows at the end only.
 | `root` | a lock the app's relative paths resolve under; duplicated by `aar_serve_create`. 0: a duplicate of the current directory |
 | `screen_mode` | the Picasso96 DisplayID to force; 0 chooses by size and format |
 | `screen_title` | title of the screen and of requesters; NULL: `aar-serve` |
-| `console_in`, `console_out` | the streams of the console; 0: `Input()` and `Output()`. A stream the caller gives is the caller's to close |
-| `console_spec` | opened at the first console use when `console_out` is 0 (a Workbench start, for example `CON:0/0/640/160/aar-run/CLOSE/WAIT`); NULL: none, console I/O then fails as `AAR_E_IO` |
+| `console_in`, `console_out` | the streams of the console; 0: `Input()` and `Output()`, each default independent of the other (an output stream alone leaves reads on `Input()`). A stream the caller gives is the caller's to close |
+| `console_spec` | opened at the first console use when `console_out` is 0 (a Workbench start, for example `CON:0/0/640/160/aar-run/CLOSE/WAIT`). That window is one bidirectional console: with `console_in` 0 it is the input as well. NULL: none, console I/O then fails as `AAR_E_IO` |
 | `audio_route` | `AAR_AUDIO_ROUTE_PLATFORM` or `AAR_AUDIO_ROUTE_AHI`: what this loop serves; it must equal the `AAR_TAG_AUDIO_ROUTE` the handle was given |
 | `groups` | `AAR_GROUP_*` to serve; the display and audio ops of a group not in the mask complete with `AAR_E_NOSYS`. 0: every group |
 | `joy_ports` | bit 0 port 0, bit 1 port 1; default `AAR_SERVE_DEFAULT_JOY_PORTS` (port 1 only) |
