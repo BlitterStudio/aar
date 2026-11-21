@@ -9,6 +9,7 @@
  */
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "aar_run_policy.h"
@@ -994,14 +995,18 @@ static void test_probe_lines_name_the_cause(void)
     assert(strstr(line, "lacks: gl, services"));
     assert(!strstr(line, "display"));
 
-    /* A name that fills the line is cut, never overrun. */
+    /* A name that fills the line is cut, never overrun. The buffer comes from
+     * the heap so a fortified build cannot see its size and reject the cut
+     * this case is about. */
     {
-        char tiny[24];
-        volatile size_t room = sizeof(tiny);
+        volatile size_t room = 24u;
+        char *tiny = malloc(room);
 
+        assert(tiny);
         aar_run_probe_line(tiny, room, AAR_RUN_PROBE_NOT_AAR,
                            "RAM:a-rather-long-name.elf", &img, &info);
-        assert(strlen(tiny) == sizeof(tiny) - 1u);
+        assert(strlen(tiny) == room - 1u);
+        free(tiny);
     }
 }
 
