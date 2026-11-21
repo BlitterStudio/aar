@@ -1621,6 +1621,7 @@ HX_UNUSED static struct Screen *hx_cur_screen;
 HX_UNUSED static struct Window *hx_cur_window;
 HX_UNUSED static int hx_requesters;
 HX_UNUSED static char hx_requester_text[256];
+HX_UNUSED static char hx_requester_format[16];
 static uint32_t hx_gfx_next;                         /* the bump pointer in the arena */
 #define HX_GFX_SLOT (REFPLAT_CLAIMS - 1u)
 
@@ -1924,11 +1925,19 @@ HX_UNUSED static void hx_reply_msg(struct Message *m)
 
 HX_UNUSED static LONG hx_easy_request(void *win, struct EasyStruct *es, void *a, void *b)
 {
+    const char *format = es->es_TextFormat ? (const char *)es->es_TextFormat : "";
+
     (void)win;
-    (void)a;
-    (void)b;
+    (void)a; /* the IDCMP pointer */
     hx_requesters++;
-    snprintf(hx_requester_text, sizeof(hx_requester_text), "%s", es->es_TextFormat ? (const char *)es->es_TextFormat : "");
+    snprintf(hx_requester_format, sizeof(hx_requester_format), "%s", format);
+    /* Only a fixed "%s" is expanded, with its one argument; any other format is
+     * recorded as it is, so a test sees a directive that would be interpreted. */
+    if (strcmp(format, "%s") == 0 && b)
+        snprintf(hx_requester_text, sizeof(hx_requester_text), "%s",
+                 ((const char *const *)b)[0]);
+    else
+        snprintf(hx_requester_text, sizeof(hx_requester_text), "%s", format);
     return 1;
 }
 
@@ -2052,6 +2061,7 @@ HX_UNUSED static void hx_reset(void)
     hx_cur_window = NULL;
     hx_requesters = 0;
     hx_requester_text[0] = 0;
+    hx_requester_format[0] = 0;
     hx_gfx_next = 0;
     hx_vblank_us = 20000;
     hx_joydat[0] = hx_joydat[1] = 0;

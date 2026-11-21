@@ -240,27 +240,21 @@ static void say(const char *msg)
         puts(msg);
 }
 
-/* The requester shows msg as text, not as a format: a '%' in a file name is
- * doubled so that it stays one. */
+/* The requester shows msg as an argument of a fixed "%s" format, never as the
+ * format: a '%' in a file name stays one. */
 static void requester(const char *msg)
 {
     if (_WBenchMsg && IntuitionBase) {
         struct EasyStruct es;
-        char text[400];
-        size_t i, j = 0;
+        const char *args[1]; /* a 32-bit pointer on AmigaOS */
 
-        for (i = 0; msg[i] && j + 2 < sizeof(text); i++) {
-            if (msg[i] == '%')
-                text[j++] = '%';
-            text[j++] = msg[i];
-        }
-        text[j] = '\0';
+        args[0] = msg;
         memset(&es, 0, sizeof(es));
         es.es_StructSize = sizeof(es);
         es.es_Title = (UBYTE *)"aar-run";
-        es.es_TextFormat = (UBYTE *)text;
+        es.es_TextFormat = (UBYTE *)"%s";
         es.es_GadgetFormat = (UBYTE *)"OK";
-        EasyRequestArgs(NULL, &es, NULL, NULL);
+        EasyRequestArgs(NULL, &es, NULL, args);
     }
 }
 

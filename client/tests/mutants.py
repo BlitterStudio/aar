@@ -458,7 +458,8 @@ mutant("root-leaf-unchecked", "serve_core", SC,
 mutant("root-parent-unchecked", "serve_core", SC,
        ("    if (!parent || !under_root(f, parent)) {", "    if (!parent) {"))
 mutant("root-target-unchecked", "serve_core", SC,
-       ("    if (!f->abs_paths && !under_root(f, locked)) {", "    if (0) {"))
+       ("    if (!under_root(f, locked)) {\n        d->unlock(d->ctx, locked);\n        *err = AAR_E_ACCES;\n        return 0;\n    }\n    *out = locked;",
+        "    if (0) {\n        d->unlock(d->ctx, locked);\n        *err = AAR_E_ACCES;\n        return 0;\n    }\n    *out = locked;"))
 mutant("abs-open-without-flag", "serve_core", SC,
        ("        if (!f->abs_paths)\n            return AAR_E_ACCES;\n        absolute = 1;", "        absolute = 1;"))
 mutant("abs-stat-without-flag", "serve_core", SC,
@@ -482,7 +483,7 @@ mutant("transfer-length-unchecked", "serve_core", SC,
        ("    if (left > req->buf_len || (left && !req->buf))\n        return AAR_E_INVAL;",
         "    if (0)\n        return AAR_E_INVAL;", 2))
 mutant("write-after-loss", "serve_core", SC,
-       ("        if (!d->live(d->ctx)) {\n            err = AAR_E_IO;\n            break;\n        }\n        memcpy(f->io, req->buf + put, chunk);",
+       ("        if (!open_step_allowed(d)) {\n            err = AAR_E_IO;\n            break;\n        }\n        memcpy(f->io, req->buf + put, chunk);",
         "        memcpy(f->io, req->buf + put, chunk);"))
 mutant("write-of-nothing-is-ok", "serve_core", SC,
        ("        if (n == 0) {\n            err = AAR_E_NOSPC;\n            break;\n        }\n", ""))
@@ -600,7 +601,7 @@ mutant("lost-claim-does-not-abandon-a-packet", "serve_policy", SH,
 mutant("any-key-with-control-stops", "serve_policy", SH,
        ("return (qualifiers & control_qualifier) != 0 && code == 0x33u;", "return (qualifiers & control_qualifier) != 0;"))
 mutant("step-ignores-a-user-break", "serve_policy", SH,
-       ("return request_current && !aar_serve_user_break(ctrl_c_pending, user_stop);", "return request_current;"))
+       ("return request_current && !stopping;", "return request_current;"))
 mutant("consumed-break-forgotten", "serve_policy", SH,
        ("return ctrl_c_pending != 0 || user_stop != 0;", "return ctrl_c_pending != 0;"))
 mutant("safe-message-count-wraps", "serve_policy", SH,
@@ -786,6 +787,28 @@ mutant("opened-window-is-not-read", "con_defaults_spec", "client/serve/aar_serve
        ("    return s->con.owned && s->con.handle ? s->con.handle : X_INPUT();", "    return X_INPUT();"))
 mutant("input-stream-takes-the-output", "con_defaults_in", "client/serve/aar_serve_con.c",
        ("    return s->con.handle ? s->con.handle : X_OUTPUT();", "    return s->con.handle ? s->con.handle : s->con.in ? s->con.in : X_OUTPUT();"))
+# ---- serve: confinement and stops --------------------------------------------------------
+mutant("root-target-skipped-with-abs", "serve_core", SC,
+       ("    if (!under_root(f, locked)) {\n        d->unlock(d->ctx, locked);\n        *err = AAR_E_ACCES;\n        return 0;\n    }\n    *out = locked;",
+        "    if (!f->abs_paths && !under_root(f, locked)) {\n        d->unlock(d->ctx, locked);\n        *err = AAR_E_ACCES;\n        return 0;\n    }\n    *out = locked;"))
+mutant("mutation-ignores-every-stop-but-a-break", "serve_core", SC,
+       ("    return aar_serve_mutation_allowed(d->live(d->ctx), d->stopping(d->ctx));",
+        "    return aar_serve_mutation_allowed(d->live(d->ctx), d->user_break(d->ctx));"))
+mutant("write-runs-while-stopping", "serve_core", SC,
+       ("        if (!open_step_allowed(d)) {\n            err = AAR_E_IO;\n            break;\n        }\n        memcpy(f->io, req->buf + put, chunk);",
+        "        if (!d->live(d->ctx)) {\n            err = AAR_E_IO;\n            break;\n        }\n        memcpy(f->io, req->buf + put, chunk);"))
+mutant("stopping-ignores-an-asked-stop", "serve_policy", SH,
+       ("aar_serve_user_break(ctrl_c_pending, user_stop) || stop_asked != 0 ||", "aar_serve_user_break(ctrl_c_pending, user_stop) ||"))
+mutant("stopping-ignores-the-platform-stopping", "serve_policy", SH,
+       ("           app_state == AAR_STATE_STOPPING || app_state == AAR_STATE_FAULTED;", "           app_state == AAR_STATE_FAULTED;"))
+mutant("stopping-ignores-the-platform-fault", "serve_policy", SH,
+       ("           app_state == AAR_STATE_STOPPING || app_state == AAR_STATE_FAULTED;", "           app_state == AAR_STATE_STOPPING;"))
+mutant("dos-stopping-ignores-the-asked-stop", "stop_files", "client/serve/aar_serve_dos.c",
+       ("s->user_stop, s->stop_asked,\n                              s->app_state);", "s->user_stop, 0,\n                              s->app_state);"))
+mutant("dos-stopping-uses-a-stale-state", "stop_platform_end", "client/serve/aar_serve_dos.c",
+       ("    if (claim_state(s, &state, &end_reason) == AAR_OK)\n        s->app_state = state;\n", ""))
+mutant("requester-text-is-the-format", "requester_format", SL,
+       ("    es.es_TextFormat = (UBYTE *)\"%s\";", "    es.es_TextFormat = (UBYTE *)msg;"))
 # the backends
 mutant("nil-takes-no-packets", "nil_output", "client/serve/aar_serve_con.c",
        ("    if (!handle->fh_Type) {", "    if (0) {"))

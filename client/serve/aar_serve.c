@@ -137,19 +137,24 @@ static void launcher_say(struct aar_serve *s, const char *text)
     launcher_status(s, line);
 }
 
-/* A requester for a Workbench start, where the console text may never be seen. */
+/* A requester for a Workbench start, where the console text may never be seen.
+ * The text is an argument of a fixed "%s" format, never the format itself: it
+ * carries the screen title and other text the caller gave, and a '%' in it must
+ * stay a '%'. */
 static void serve_requester(struct aar_serve *s, const char *msg)
 {
     struct EasyStruct es;
+    const char *args[1]; /* a 32-bit pointer on AmigaOS: one argument of the format */
 
     if (!s->con.spec || !IntuitionBase)
         return;
+    args[0] = msg;
     memset(&es, 0, sizeof(es));
     es.es_StructSize = sizeof(es);
     es.es_Title = (UBYTE *)s->title;
-    es.es_TextFormat = (UBYTE *)msg;
+    es.es_TextFormat = (UBYTE *)"%s";
     es.es_GadgetFormat = (UBYTE *)"OK";
-    X_EASY_REQUEST(NULL, &es, NULL, NULL);
+    X_EASY_REQUEST(NULL, &es, NULL, args);
 }
 
 /* One timer request of us microseconds. */

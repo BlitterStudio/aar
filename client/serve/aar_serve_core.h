@@ -543,14 +543,23 @@ static inline enum aar_serve_leaf_action aar_serve_leaf_lock_failure(
     }
 }
 
-/* A step that creates, truncates or replaces a file runs only while the
- * request is live (the claim is still served) and no stop was asked.
- * user_stop records a Ctrl-C that an earlier packet wait consumed, so a
- * cancelled request stays cancelled for the steps that follow it. */
-static inline int aar_serve_open_step_allowed(int request_current,
-                                              int ctrl_c_pending, int user_stop)
+/* Once a stop is requested nothing that changes the file system runs: a user
+ * break (pending, or consumed by an earlier packet wait and recorded as
+ * user_stop), aar_serve_stop or a stop from the input window (stop_asked), and
+ * the platform ending the app (STOPPING or FAULTED) all count. */
+static inline int aar_serve_stopping(int ctrl_c_pending, int user_stop,
+                                     int stop_asked, uint32_t app_state)
 {
-    return request_current && !aar_serve_user_break(ctrl_c_pending, user_stop);
+    return aar_serve_user_break(ctrl_c_pending, user_stop) || stop_asked != 0 ||
+           app_state == AAR_STATE_STOPPING || app_state == AAR_STATE_FAULTED;
+}
+
+/* A step that creates, truncates, replaces or writes a file runs only while
+ * the request is live (the claim is still served) and no stop is under way. A
+ * cancelled request stays cancelled for the steps that follow it. */
+static inline int aar_serve_mutation_allowed(int request_current, int stopping)
+{
+    return request_current && !stopping;
 }
 
 /* Completes a request that a handler left deferred. */
@@ -626,6 +635,10 @@ struct aar_serve_dos_ops {
     int (*live)(void *ctx);
     /* A Ctrl-C is pending, or one was consumed by an earlier packet wait. */
     int (*user_break)(void *ctx);
+    /* Any stop is under way: a Ctrl-C pending or consumed, aar_serve_stop, a stop
+     * from the input window, or the platform ending the app (see
+     * aar_serve_stopping). */
+    int (*stopping)(void *ctx);
 
     uintptr_t (*dup_lock)(void *ctx, uintptr_t lock);
     void (*unlock)(void *ctx, uintptr_t lock);

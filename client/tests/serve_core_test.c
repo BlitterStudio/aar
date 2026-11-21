@@ -62,6 +62,7 @@ struct fake {
 
     int live;            /* the request is still wanted */
     int broken;          /* a Ctrl-C is pending */
+    int stop;            /* a stop is under way (aar_serve_stop, the window, the platform) */
     int break_after_open; /* set `broken` once an open succeeded */
     int lose_after_open;  /* the request is lost the moment an open succeeded */
     int write_zero;       /* a write that stores nothing and reports no error */
@@ -176,6 +177,12 @@ static int f_user_break(void *ctx)
 {
     (void)ctx;
     return fk.broken;
+}
+
+static int f_stopping(void *ctx)
+{
+    (void)ctx;
+    return fk.stop || fk.broken;
 }
 
 static uintptr_t f_dup_lock(void *ctx, uintptr_t lock)
@@ -570,7 +577,7 @@ static void f_list_close(void *ctx, uintptr_t list)
 }
 
 static const struct aar_serve_dos_ops fake_dos = {
-    NULL, f_live, f_user_break, f_dup_lock, f_unlock, f_parent_dir,
+    NULL, f_live, f_user_break, f_stopping, f_dup_lock, f_unlock, f_parent_dir,
     f_same_lock, f_lock_rel, f_lock_abs, f_lock_examine, f_target_begin,
     f_target_probe, f_target_open, f_target_end, f_fh_set_size0, f_fh_read,
     f_fh_write, f_fh_seek, f_fh_end_or_close, f_fh_close, f_list_open,
@@ -1035,7 +1042,49 @@ static void test_root_confinement(void)
            AAR_OK);
     /* relative names stay confined even with ABS */
     assert(do_open(3, R, "../outside/secret.txt") == AAR_E_ACCES);
+    /* a link out of ROOT is refused by stat, list and open with ABS on as well */
+    assert(do_open(3, R, "escape") == AAR_E_ACCES);
+    assert(do_stat("escape", &(struct aar_serve_done){ 0 }) == AAR_E_ACCES);
+    assert(do_list_open(3, "escape") == AAR_E_ACCES);
+    assert(do_stat("../outside", &(struct aar_serve_done){ 0 }) == AAR_E_ACCES);
+    assert(do_list_open(3, "../outside") == AAR_E_ACCES);
     fixture_free();
+}
+
+/* A stop of any kind (aar_serve_stop, the input window, the platform ending the
+ * app, a break) cancels every step that changes the file system: no open that
+ * creates, truncates, replaces or updates, and no write. Reads, seeks and
+ * closes still run. */
+static void test_a_stop_cancels_every_mutating_step(void)
+{
+    static const uint8_t data[4] = { 'a', 'b', 'c', 'd' };
+    uint32_t count = 99u;
+    uint8_t b[8];
+    int stop_kind;
+
+    for (stop_kind = 0; stop_kind < 2; stop_kind++) {
+        fixture(0);
+        assert(do_open(5, W | C, "keep.txt") == AAR_OK); /* open before the stop */
+        fk.stop = 1;
+        fk.broken = stop_kind; /* a stop asked, or a break still pending */
+        assert(do_write(5, data, sizeof(data), &count) == AAR_E_IO && count == 0u);
+        assert(fk.writes == 0);
+        assert(do_open(3, W | C, "new.txt") == AAR_E_IO);
+        assert(child_of(N_ROOT, "new.txt") < 0);
+        assert(do_open(3, W | T, "top.txt") == AAR_E_IO);
+        assert(do_open(3, W | C | T, "top.txt") == AAR_E_IO);
+        assert(do_open(3, W | C | X, "other.txt") == AAR_E_IO);
+        assert(do_open(3, W, "top.txt") == AAR_E_IO);
+        assert(do_open(3, W | C, "top.txt") == AAR_E_IO);
+        assert(fk.set_sizes == 0 && fk.opens[AAR_SERVE_MODE_NEW] == 1);
+        assert(fk.nodes[child_of(N_ROOT, "top.txt")].size == 3u);
+        /* a read, a seek and a close still run */
+        assert(do_open(3, R, "top.txt") == AAR_OK);
+        assert(do_read(3, 3u, b, sizeof(b), &count) == AAR_OK || fk.broken);
+        assert(do_close(3) == AAR_OK);
+        assert(do_close(5) == AAR_OK);
+        fixture_free();
+    }
 }
 
 static void test_transport_failures_are_io_errors_not_dos_results(void)
@@ -2331,6 +2380,7 @@ int main(void)
     test_root_confinement();
     test_transport_failures_are_io_errors_not_dos_results();
     test_a_lost_request_does_not_create_or_truncate();
+    test_a_stop_cancels_every_mutating_step();
     test_each_guard_of_the_file_handlers_has_its_own_check();
     test_the_descriptor_table();
     test_list_walks_the_directory();

@@ -307,7 +307,7 @@ static int lock_target(const struct aar_serve_files *f, uintptr_t dir,
         *err = lock_errno(io);
         return 0;
     }
-    if (!f->abs_paths && !under_root(f, locked)) {
+    if (!under_root(f, locked)) {
         d->unlock(d->ctx, locked);
         *err = AAR_E_ACCES;
         return 0;
@@ -352,11 +352,11 @@ static int final_path_under_root(const struct aar_serve_files *f, uintptr_t dir,
     return 1;
 }
 
-/* A step that creates, truncates or replaces a file runs only while its
- * request is live and no break is pending. */
+/* A step that creates, truncates, replaces or writes a file runs only while
+ * its request is live and no stop is under way. */
 static int open_step_allowed(const struct aar_serve_dos_ops *d)
 {
-    return aar_serve_open_step_allowed(d->live(d->ctx), d->user_break(d->ctx), 0);
+    return aar_serve_mutation_allowed(d->live(d->ctx), d->stopping(d->ctx));
 }
 
 /* Every open that can create or replace a file (anything but MODE_OLDFILE)
@@ -619,7 +619,7 @@ static int32_t serve_write(struct aar_serve_files *f, const struct aar_serve_req
         int32_t io = 0;
         int32_t n;
 
-        if (!d->live(d->ctx)) {
+        if (!open_step_allowed(d)) {
             err = AAR_E_IO;
             break;
         }

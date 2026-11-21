@@ -1464,6 +1464,90 @@ static void test_the_window_it_opened_is_read_as_well_as_written(void)
     finish();
 }
 
+/* The text of a requester (the screen title, a path) is an argument of a fixed
+ * "%s" format, never the format: a '%' in it is shown as it is. */
+static void test_a_requester_text_is_never_a_format(void)
+{
+    struct comp c;
+
+    setup("requester_format");
+    cfg.screen_title = (CONST_STRPTR)"50%s%n done";
+    cfg.console_spec = (CONST_STRPTR)"NOPE:unopenable"; /* the window cannot be opened */
+    make_serve();
+    put_str(0x100, "x");
+    CHECK(call(AAR_OP_CONSOLE_WRITE, 50, 0, 0, 0, 0, 0x100, 1, &c));
+    CHECK(c.result == AAR_E_IO);
+    CHECK(hx_requesters >= 1);
+    CHECK(strcmp(hx_requester_format, "%s") == 0);
+    CHECK(strstr(hx_requester_text, "50%s%n done") != NULL);
+    finish();
+}
+
+/* Once any stop is requested (aar_serve_stop, a stop from the input window, a
+ * break, the platform ending the app) a queued request that changes the file
+ * system no longer runs: no create, no truncate, no write. */
+static void test_a_stop_cancels_the_requests_that_change_files(void)
+{
+    struct comp c;
+    int n;
+
+    setup("stop_files");
+    data_dir();
+    make_serve();
+    put_str(0x100, "out.txt");
+    CHECK(call(AAR_OP_FILE_OPEN, 3, 3, AAR_FILE_WRITE | AAR_FILE_CREATE, 0, 0, 0x100, 8, &c));
+    CHECK(c.result == AAR_OK);
+    put_str(0x400, "abc");
+    CHECK(call(AAR_OP_FILE_WRITE, 4, 3, 3, 0, 0, 0x400, 3, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_FILE_COUNT] == 3);
+    aar_serve_stop(S);
+    put_str(0x400, "defgh");
+    CHECK(call(AAR_OP_FILE_WRITE, 5, 3, 5, 0, 0, 0x400, 5, &c));
+    CHECK(c.result == AAR_E_IO && c.out[AAR_R_FILE_COUNT] == 0);
+    put_str(0x100, "hello.txt");
+    CHECK(call(AAR_OP_FILE_OPEN, 6, 4, AAR_FILE_WRITE | AAR_FILE_TRUNCATE, 0, 0, 0x100, 10, &c));
+    CHECK(c.result == AAR_E_IO);
+    put_str(0x100, "late.txt");
+    CHECK(call(AAR_OP_FILE_OPEN, 7, 5, AAR_FILE_WRITE | AAR_FILE_CREATE, 0, 0, 0x100, 9, &c));
+    CHECK(c.result == AAR_E_IO);
+    CHECK(call(AAR_OP_FILE_CLOSE, 8, 3, 0, 0, 0, 0, 0, &c)); /* a close still runs */
+    CHECK(c.result == AAR_OK);
+    n = hx_node_find(2, "out.txt");
+    CHECK(n != 0 && hx_nodes[n].size == 3);
+    n = hx_node_find(2, "hello.txt");
+    CHECK(n != 0 && hx_nodes[n].size == 13 && memcmp(hx_nodes[n].data, "Hello, world!", 13) == 0);
+    CHECK(hx_node_find(2, "late.txt") == 0);
+    finish();
+}
+
+/* ... also when only the platform ended the app (no stop was asked here). */
+static void test_the_platform_ending_the_app_cancels_the_requests_that_change_files(void)
+{
+    struct comp c;
+    int n;
+
+    setup("stop_platform_end");
+    data_dir();
+    make_serve();
+    put_str(0x100, "out.txt");
+    CHECK(call(AAR_OP_FILE_OPEN, 3, 3, AAR_FILE_WRITE | AAR_FILE_CREATE, 0, 0, 0x100, 8, &c));
+    CHECK(c.result == AAR_OK);
+    app_state(H, AAR_STATE_STOPPING, 0);
+    put_str(0x400, "abc");
+    CHECK(call(AAR_OP_FILE_WRITE, 4, 3, 3, 0, 0, 0x400, 3, &c));
+    CHECK(c.result == AAR_E_IO);
+    put_str(0x100, "hello.txt");
+    CHECK(call(AAR_OP_FILE_OPEN, 6, 4, AAR_FILE_WRITE | AAR_FILE_TRUNCATE, 0, 0, 0x100, 10, &c));
+    CHECK(c.result == AAR_E_IO);
+    n = hx_node_find(2, "out.txt");
+    CHECK(n != 0 && hx_nodes[n].size == 0);
+    n = hx_node_find(2, "hello.txt");
+    CHECK(n != 0 && hx_nodes[n].size == 13);
+    CHECK(call(AAR_OP_FILE_CLOSE, 8, 3, 0, 0, 0, 0, 0, &c)); /* a close still runs */
+    CHECK(c.result == AAR_OK);
+    finish();
+}
+
 /* ---- Tests: the fixes of the move ------------------------------------------------------------------------------- */
 
 static int sync_has(const char *text)
@@ -2710,6 +2794,9 @@ static const struct {
     T(test_an_output_stream_alone_does_not_take_the_input),
     T(test_an_input_stream_alone_does_not_take_the_output),
     T(test_the_window_it_opened_is_read_as_well_as_written),
+    T(test_a_requester_text_is_never_a_format),
+    T(test_a_stop_cancels_the_requests_that_change_files),
+    T(test_the_platform_ending_the_app_cancels_the_requests_that_change_files),
     T(test_nil_output_is_written_synchronously_and_the_app_is_not_stopped),
     T(test_the_output_error_note_goes_to_the_user_console),
     T(test_a_refused_audio_ring_closes_ahi),

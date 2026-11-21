@@ -82,6 +82,19 @@ static int be_user_break(void *ctx)
     return aar_serve_user_break(ctrl_c_set(s), s->user_stop);
 }
 
+/* The state is read now, not taken from the end of the last pass: a request
+ * served in this pass must see an end the platform has just decided. */
+static int be_stopping(void *ctx)
+{
+    struct aar_serve *s = ctx;
+    uint32_t state, end_reason;
+
+    if (claim_state(s, &state, &end_reason) == AAR_OK)
+        s->app_state = state;
+    return aar_serve_stopping(ctrl_c_set(s), s->user_stop, s->stop_asked,
+                              s->app_state);
+}
+
 static uintptr_t be_dup_lock(void *ctx, uintptr_t lock)
 {
     (void)ctx;
@@ -374,6 +387,7 @@ static const struct aar_serve_dos_ops aar_serve_dos_backend = {
     .ctx = NULL,
     .live = be_live,
     .user_break = be_user_break,
+    .stopping = be_stopping,
     .dup_lock = be_dup_lock,
     .unlock = be_unlock,
     .parent_dir = be_parent_dir,

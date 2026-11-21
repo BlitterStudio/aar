@@ -489,13 +489,16 @@ With `ABS` on a multi-directory assign, the probe finds the directory that holds
 the file and the open, `SetFileSize` and `MODE_NEWFILE` fallback all go to that
 same directory, so an existing file is updated, truncated, kept or replaced
 where it is rather than shadowed by a new file in the first directory. Every
-step that can create, truncate or replace a file is skipped, and answers `EIO`,
-once the request is no longer wanted: the claim was revoked, a Ctrl-C or stop is
-pending, or an earlier wait for AmigaDOS was abandoned.
+step that can create, truncate, replace or write a file is skipped, and answers
+`EIO`, once the request is no longer wanted: the claim was revoked, any stop is
+under way (Ctrl-C, `aar_serve_stop`, a stop from the app's window, the platform
+ending the app), or an earlier wait for AmigaDOS was abandoned.
 
-Relative paths stay below `ROOT`. `..`, leading `/`, and empty path components
+Relative paths stay below `ROOT`, for open, stat and list alike, with or without
+`ABS`. `..`, leading `/`, and empty path components
 that would leave the root are rejected, and so is a link whose target lies
-outside it. Paths containing `:` are rejected unless `ABS` is enabled. With
+outside it. Paths containing `:` are rejected unless `ABS` is enabled (the only
+thing `ABS` admits). With
 `ABS`, file open, stat, and directory-list requests use `GetDeviceProc` and try
 later multi-directory assign candidates after `ERROR_OBJECT_NOT_FOUND`. This is
 path hygiene for an app that is already trusted; it is not an isolation

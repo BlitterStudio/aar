@@ -313,6 +313,21 @@ program's own window signals are not lost.
   other values with it. Without AHI, `poll_us` 0 is allowed: the program is woken
   by the flip and AHI ports, the console, the input window and, with
   `AAR_SERVEF_USE_SIGNAL`, by the library.
+- **Paths.** A relative path is resolved below `ROOT` and checked there for every
+  op that takes one (open, stat, list), whatever `AAR_SERVEF_ABS_PATHS` says:
+  `..`, a leading `/`, and a link whose target lies outside `ROOT` answer
+  `AAR_E_ACCES`. The flag only admits paths with a volume or assign colon, which
+  go to AmigaDOS as they are.
+- **Stops.** Once any stop is requested (a break, `aar_serve_stop`, a stop from
+  the input window, or the platform ending the app) no request that changes the
+  file system runs: an open that creates, truncates, replaces or updates, and a
+  write, answer `AAR_E_IO`. Reads, seeks, closes, stat and list change nothing
+  and still run. The check is one predicate, `aar_serve_stopping`, with the
+  platform state read live before each such step.
+- **Text for the user.** A requester (a Workbench console that cannot be opened)
+  shows its text as the argument of a fixed `%s` format: a `%` in the screen
+  title or in a path stays a `%`. No caller or app text is used as a format
+  string anywhere in `client/serve`, `client/run` or the example.
 
 ## The example and the library
 

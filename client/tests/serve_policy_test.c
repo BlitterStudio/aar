@@ -701,15 +701,22 @@ static void test_lost_operation_packets_are_not_sent_but_releases_are(void)
 
 /* The NEWFILE fallback after a handler without ACTION_SET_FILE_SIZE follows
  * an ACTION_END wait that Ctrl-C or a generation change may have abandoned.
- * Ownership, a Ctrl-C still pending, and a Ctrl-C an earlier wait already
- * consumed (user_stop) each stop the destructive step. */
+ * Ownership and every kind of stop each stop a step that changes the file
+ * system: a Ctrl-C pending or consumed (user_stop), aar_serve_stop or a stop
+ * from the input window (stop_asked), and the platform ending the app. */
 static void test_destructive_open_steps_stop_when_the_request_is_cancelled(void)
 {
-    assert(aar_serve_open_step_allowed(1, 0, 0));
-    assert(!aar_serve_open_step_allowed(0, 0, 0));
-    assert(!aar_serve_open_step_allowed(1, 1, 0));
-    assert(!aar_serve_open_step_allowed(1, 0, 1));
-    assert(!aar_serve_open_step_allowed(0, 1, 1));
+    assert(aar_serve_mutation_allowed(1, 0));
+    assert(!aar_serve_mutation_allowed(0, 0));
+    assert(!aar_serve_mutation_allowed(1, 1));
+    assert(!aar_serve_mutation_allowed(0, 1));
+    assert(!aar_serve_stopping(0, 0, 0, AAR_STATE_RUNNING));
+    assert(aar_serve_stopping(1, 0, 0, AAR_STATE_RUNNING));
+    assert(aar_serve_stopping(0, 1, 0, AAR_STATE_RUNNING));
+    assert(aar_serve_stopping(0, 0, 1, AAR_STATE_RUNNING));
+    assert(aar_serve_stopping(0, 0, 0, AAR_STATE_STOPPING));
+    assert(aar_serve_stopping(0, 0, 0, AAR_STATE_FAULTED));
+    assert(!aar_serve_stopping(0, 0, 0, AAR_STATE_STARTING));
 }
 
 struct fake_release {
