@@ -138,7 +138,10 @@ the app has ended. Returns `AAR_SERVE_ENDED` or `AAR_SERVE_LOST`.
 now: the break signals of `break_mask`, the timer, the console packet port, the
 input window, the SafeMessage port of a flip and the AHI port when they exist,
 and the library signal with `AAR_SERVEF_USE_SIGNAL`. It changes while the app
-runs: ask again before each `Wait`.
+runs: ask again before each `Wait`. The heartbeat timer is armed whenever it is
+in the mask: `aar_serve_create`, the end of every step and every call that
+waits on DOS (`aar_serve_locate` included) arm it again, so a program may call
+those between `aar_serve_create` and its first `Wait`.
 
 ### aar_serve_step
 

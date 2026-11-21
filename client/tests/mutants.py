@@ -668,6 +668,10 @@ mutant("log-hook-ignored", "hooks", SL,
        ("    if (AAR_SERVE_HOOK(s, log))\n        s->cfg.hooks->log", "    if (0)\n        s->cfg.hooks->log"))
 mutant("hook-table-size-unchecked", "hooks_size", "client/serve/aar_serve_priv.h",
        ("     (s)->cfg.hooks->size >= offsetof(aar_serve_hooks, field) +               \\\n                             sizeof((s)->cfg.hooks->field) &&                 \\\n", ""))
+mutant("dos-wait-leaves-the-heartbeat-unarmed", "heartbeat_after_locate", "client/serve/aar_serve_dos.c",
+       ("    if (s->cfg.poll_us)\n        timer_arm(s);\n    if (check_live && !claim_live(s)) {", "    if (check_live && !claim_live(s)) {"))
+mutant("destroy-lets-a-dos-wait-arm-the-timer", "heartbeat_after_locate", SL,
+       ("    s->cfg.poll_us = 0; /* the DOS waits below must not arm the timer again */\n", ""))
 # the backends
 mutant("nil-takes-no-packets", "nil_output", "client/serve/aar_serve_con.c",
        ("    if (!handle->fh_Type) {", "    if (0) {"))

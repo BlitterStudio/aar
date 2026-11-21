@@ -544,6 +544,7 @@ void aar_serve_destroy(aar_serve *s)
     if (!s)
         return;
     timer_reap(s);
+    s->cfg.poll_us = 0; /* the DOS waits below must not arm the timer again */
     if (!s->stop_asked && claim_live(s)) {
         uint32_t leaving, leaving_end;
 

@@ -1856,6 +1856,35 @@ static void test_the_log_sink_is_gone_after_destroy(void)
     finish();
 }
 
+/* The card hang: aar-run locates the ELF (a DOS wait that reaps the heartbeat
+ * timer) between create and the first Wait. Nothing re-armed the timer until
+ * some other signal arrived, so a program that only waits on aar_serve_sigmask
+ * never served the app. */
+static void test_the_heartbeat_runs_after_a_call_made_outside_the_loop(void)
+{
+    struct comp c;
+    char full[128];
+
+    setup("heartbeat_after_locate");
+    data_dir();
+    make_serve();
+    CHECK(aar_serve_locate(S, root_lock, "hello.txt", full, sizeof(full)) == AAR_OK);
+    put_str(0x100, "hello.txt");
+    CHECK(call(AAR_OP_FILE_STAT, 3, 0, 0, 0, 0, 0x100, 10, &c));
+    CHECK(c.result == AAR_OK);
+    /* and the same with no DOS call in between: the heartbeat keeps running */
+    CHECK(call(AAR_OP_FILE_STAT, 4, 0, 0, 0, 0, 0x100, 10, &c));
+    CHECK(c.result == AAR_OK);
+    /* destroy closes an open file with a DOS wait of its own: that wait must not
+     * leave the timer armed */
+    CHECK(call(AAR_OP_FILE_OPEN, 5, 3, AAR_FILE_READ, 0, 0, 0x100, 10, &c));
+    CHECK(c.result == AAR_OK);
+    aar_serve_destroy(S);
+    S = NULL;
+    (void)next_comp(&c);
+    finish();
+}
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -1918,6 +1947,7 @@ static const struct {
     T(test_destroy_waits_for_the_flip_that_is_out),
     T(test_a_tall_screen_that_opens_too_short_is_not_used),
     T(test_a_completion_of_a_held_request_waits_for_a_full_cq),
+    T(test_the_heartbeat_runs_after_a_call_made_outside_the_loop),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */
