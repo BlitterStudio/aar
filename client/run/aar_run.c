@@ -561,9 +561,11 @@ static int finish_run(LONG ended)
     dropped_messages = (unsigned long)res.dropped_messages;
     runtime_dropped_logs = (unsigned long)res.runtime_dropped_logs;
     if (audio_ahi)
-        printf("aar-run: AHI underruns %lu, late refills %lu (heartbeat %lu us; required 1..20000 us).\n",
+        printf("aar-run: AHI underruns %lu, ran dry %lu, requests %lu (frames min %lu avg %lu), "
+               "heartbeat %lu us (required 1..20000 us).\n",
                (unsigned long)res.ahi_underruns, (unsigned long)res.ahi_gaps,
-               (unsigned long)poll_us);
+               (unsigned long)res.ahi_requests, (unsigned long)res.ahi_min_frames,
+               (unsigned long)res.ahi_avg_frames, (unsigned long)poll_us);
     if (ended == AAR_SERVE_LOST) {
         snprintf(line, sizeof(line), "aar-run: claim lost (%s).",
                  aar_run_claim_loss_text(1, AAR_END_NONE));

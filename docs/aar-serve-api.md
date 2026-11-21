@@ -245,14 +245,15 @@ program's own window signals are not lost.
   `aar_serve_result.dropped_logs`. A program that reports lost output adds the
   two. After the claim is lost `aar_serve_result` returns `AAR_E_STALE` and
   `runtime_dropped_logs` is the value of the last successful call.
-- **AHI underruns and late refills.** `aar_serve_result.ahi_underruns` sums the
-  AHI ring headers' underrun counts across streams: the app wrote less than AHI
-  needed. `ahi_gaps` counts refills that found AHI already idle although the
-  ring had data: the loop came late (a DOS wait, a slow pass) and AHI played
-  silence between two writes, which no ring counter shows. Both are sampled while
-  the claim runs, survive audio close and app end, and are 0 on the platform
-  route. AHI needs a heartbeat of 1..20000 us (1000 by default). aar-run prints
-  both and its heartbeat for `AUDIO=AHI`.
+- **AHI counters.** `aar_serve_result.ahi_underruns` sums the AHI ring headers'
+  underrun counts across streams (the app wrote less than AHI needed).
+  `ahi_gaps` counts the times AHI ran dry while the app was still writing, which
+  no ring counter shows. `ahi_requests`, `ahi_min_frames` and `ahi_avg_frames`
+  give the number of requests sent and their shortest and average length in
+  frames: whole requests are all the same size, only the last one of a sound is
+  shorter. All are sampled while the claim runs, survive audio close and app end,
+  and are 0 on the platform route. AHI needs a heartbeat of 1..20000 us (1000 by
+  default). aar-run prints them with its heartbeat for `AUDIO=AHI`.
 - **The stop grace** is `AARInfo.stop_grace_ms` (read by `aar_serve_create`);
   500 ms only when the platform reports none.
 - **Framebuffer tokens** are checked by the library and the platform. The loop
@@ -263,15 +264,19 @@ program's own window signals are not lost.
   console write, a flip waiting for its SafeMessage) are answered with
   `AAR_E_IO`, once. A completion that cannot be posted because the completion
   queue is full stays unanswered: the app has gone away with the claim.
-- **The AHI queue.** AHI gets two requests of up to 3/50 s (60 ms) each, as in
-  the AHI developer guide's double buffering: each is linked to the other while
-  that one is queued, and a request is sent again as soon as it has finished
-  (`io_Offset` is set to 0 every time: the device trashes it). That keeps about
-  120 ms of audio in AHI; a stall of the loop of up to about 100 ms plays out of
-  it (the late refill counter stays 0) and the latency is up to 120 ms when the
-  app writes ahead. A buffer is queued when it is full, when AHI is idle, when at
-  most 5 ms are left in the other one, or when at most 20 ms are left and the
-  ring holds 5 ms. More than two requests in flight do not play on the card.
+- **The AHI queue.** PCM goes from the app's ring into a reserve (a FIFO of up to
+  two requests' worth, at most 20 ms read from the ring per pass) and from there
+  into two AHI requests of up to 3/50 s (60 ms), as in the AHI developer guide's
+  double buffering: each is linked to the other while that one is queued, and a
+  request is sent again as soon as it has finished (`io_Offset` is set to 0 every
+  time: the device trashes it). AHI is started when two requests' worth is in the
+  reserve (about 120 ms); after that every request is whole. When the app stops
+  writing for 30 ms the rest is played as a last, short request; at `AUDIO_CLOSE`
+  the queued audio plays out before AHI is closed (`aar_serve_destroy` cuts it).
+  If AHI runs dry while the app is still writing, `ahi_gaps` counts it, the empty
+  ring is read once (a ring underrun) and the stream is buffered again. The
+  added latency is about 120 ms (240 ms in all). More than two requests in
+  flight do not play on the card.
 - **The heartbeat.** The AHI route needs one of at most 20 ms (a buffer has to
   be refilled well before the other one has played); `aar_serve_create` answers `AAR_E_NOSYS` for
   other values with it. Without AHI, `poll_us` 0 is allowed: the program is woken

@@ -746,6 +746,9 @@ LONG aar_serve_result(aar_serve *s, struct aar_serve_result *out)
     ahi_count_underruns(s);
     out->ahi_underruns = s->ahi.underruns;
     out->ahi_gaps = s->ahi.gaps;
+    out->ahi_requests = s->ahi.requests;
+    out->ahi_min_frames = s->ahi.requests ? s->ahi.min_frames : 0u;
+    out->ahi_avg_frames = s->ahi.requests ? s->ahi.total_frames / s->ahi.requests : 0u;
     if (!claim_live(s))
         return rc;
     memset(&st, 0, sizeof(st));

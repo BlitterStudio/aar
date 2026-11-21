@@ -229,9 +229,16 @@ struct aar_serve_result {
     ULONG dropped_messages;         /* app messages drained and dropped */
     ULONG ahi_underruns;            /* sum of the AHI rings' underrun counts, cached before close/end;
                                        0 for the platform route. AHI needs poll_us 1..20000; the loop
-                                       keeps 2 x 60 ms of audio queued in AHI */
-    ULONG ahi_gaps;                 /* AHI refills that came after AHI had already run dry although the
-                                       ring had data: audible gaps that are not ring underruns */
+                                       buffers about 120 ms before it starts AHI and then sends whole
+                                       requests of up to 60 ms, two in flight (about 120 ms of latency
+                                       added) */
+    ULONG ahi_gaps;                 /* times AHI ran dry although the app was still writing: the
+                                       reserve could not keep it fed (audible gaps that are not ring
+                                       underruns); the stream is buffered again after each */
+    ULONG ahi_requests;             /* AHI requests sent, over all streams */
+    ULONG ahi_min_frames;           /* the shortest of them in frames (0: none); all but the last
+                                       request of a sound are whole requests */
+    ULONG ahi_avg_frames;           /* their average length in frames */
     AARStatusInfo status;           /* the final AARStatus read */
 };
 

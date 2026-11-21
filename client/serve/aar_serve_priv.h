@@ -160,6 +160,7 @@
 
 #define AAR_SERVE_AHI_BUFFER_COUNT 2u   /* requests in flight: the guide's double buffering */
 #define AAR_SERVE_AHI_BUFFER_BYTES 24576u /* one request: 3/50 s up to 96 kHz stereo */
+#define AAR_SERVE_AHI_RESERVE_BYTES 65536u /* the reserve between the ring and the requests */
 
 /* One walk over the candidates of a DOS name: GetDeviceProc candidates, or one
  * fixed handler and directory lock (a relative parent, or a candidate pinned
@@ -282,7 +283,19 @@ struct aar_serve {
         volatile uint8_t *ring;         /* attached AUDIO_OPEN payload, until audio close */
         uint32_t ring_underruns;        /* last count observed in this ring */
         uint32_t underruns;             /* accumulated across AHI streams */
-        uint32_t sent_ms[AAR_SERVE_AHI_BUFFER_COUNT]; /* when each request was sent */
+        uint8_t *reserve;               /* the FIFO between the ring and the requests */
+        uint32_t reserve_frames;        /* its capacity */
+        uint32_t ring_frames;           /* the app's ring: no request or prebuffer is larger */
+        uint32_t rsv_head;              /* first frame in the reserve */
+        uint32_t rsv_fill;              /* frames in the reserve */
+        uint32_t last_data_ms;          /* when the ring last gave frames */
+        int started;                    /* prebuffered: whole requests are sent */
+        int dry;                        /* AHI ran dry since it was started (counted once) */
+        int draining;                   /* the app closed the audio: the tail plays out */
+        int tail;                       /* a last, short request was sent: the end of a sound */
+        uint32_t requests;              /* requests sent */
+        uint32_t min_frames;            /* the shortest of them */
+        uint32_t total_frames;          /* frames in all of them */
         uint32_t gaps;                  /* refills that found AHI already idle with data waiting */
         unsigned last;                  /* slot of the request submitted last: the next one chains to it */
         unsigned passes;                /* feeder passes, to sample the ring's underrun word now and then */

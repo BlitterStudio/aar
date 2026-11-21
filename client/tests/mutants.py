@@ -678,9 +678,9 @@ mutant("runtime-log-drops-forgotten-with-the-claim", "log_dropped", SL,
        ("    s->runtime_dropped_logs = st.log_dropped;\n", ""))
 mutant("runtime-log-drops-not-from-the-status", "log_dropped", SL,
        ("    out->runtime_dropped_logs = st.log_dropped;\n", "    out->runtime_dropped_logs = 0;\n"))
-mutant("ahi-underruns-not-reported", "ahi_audio", SL,
+mutant("ahi-underruns-not-reported", "ahi_gaps", SL,
        ("    out->ahi_underruns = s->ahi.underruns;", "    out->ahi_underruns = 0;"))
-mutant("ahi-underruns-counted-twice", "ahi_audio", "client/serve/aar_serve_ahi.c",
+mutant("ahi-underruns-counted-twice", "ahi_gaps", "client/serve/aar_serve_ahi.c",
        ("    s->ahi.ring_underruns = count;", "    s->ahi.ring_underruns = 0;"))
 mutant("workbench-rejects-dostrue", "workbench_project", "client/run/aar_run_workbench.h",
        ("                     (LONG)sizeof(directory)) != 0) {",
@@ -695,23 +695,31 @@ mutant("cli-stack-longs-wrap", "run_policy", "client/run/aar_run_policy.h",
         "cli_default_longs * 4u;"))
 mutant("dos-wait-in-a-step-arms-the-timer", "timer_ops", "client/serve/aar_serve_dos.c",
        ("    if (s->cfg.poll_us && !s->in_step)", "    if (s->cfg.poll_us)"))
-mutant("ahi-late-refill-not-counted", "ahi_gaps", "client/serve/aar_serve_ahi.c",
-       ("        if (!submitted && completed && ahi_idle(s))\n            s->ahi.gaps++;", "        if (!submitted && completed && ahi_idle(s))\n            ;"))
-mutant("ahi-first-buffer-counted-late", "ahi_gaps", "client/serve/aar_serve_ahi.c",
-       ("        if (!submitted && completed && ahi_idle(s))\n            s->ahi.gaps++;", "        if (!submitted && ahi_idle(s))\n            s->ahi.gaps++;"))
+mutant("ahi-dry-not-counted", "ahi_gaps", "client/serve/aar_serve_ahi.c",
+       ("            s->ahi.gaps++;", "            ;"))
+mutant("ahi-end-of-a-sound-counted-as-dry", "ahi_audio", "client/serve/aar_serve_ahi.c",
+       ("    if (!s->ahi.tail && ahi_idle(s) && completed &&", "    if (ahi_idle(s) && completed &&"))
 mutant("ahi-gaps-not-reported", "ahi_gaps", SL,
        ("    out->ahi_gaps = s->ahi.gaps;", "    out->ahi_gaps = 0;"))
-mutant("ahi-six-requests-in-flight", "ahi_stall", "client/serve/aar_serve_priv.h",
+mutant("ahi-six-requests-in-flight", "ahi_audio", "client/serve/aar_serve_priv.h",
        ("#define AAR_SERVE_AHI_BUFFER_COUNT 2u   /* requests in flight: the guide's double buffering */",
         "#define AAR_SERVE_AHI_BUFFER_COUNT 6u   /* requests in flight: the guide's double buffering */"))
 mutant("ahi-chunk-is-a-fiftieth", "serve_core", SC,
        ("    uint32_t tick = rate / 50u * 3u; /* 60 ms */", "    uint32_t tick = rate / 50u;"))
 mutant("ahi-offset-left-from-the-last-use", "ahi_stall", "client/serve/aar_serve_ahi.c",
        ("    request->ahir_Std.io_Offset = 0;", "    if (!link)\n        request->ahir_Std.io_Offset = 0;"))
-mutant("ahi-tiny-requests-while-much-is-queued", "ahi_slow_ring", "client/serve/aar_serve_ahi.c",
-       ("              (queued <= 20u && chunk_ms >= 5u)))", "              (chunk_ms >= 5u)))"))
-mutant("ahi-waits-for-the-last-5-ms", "ahi_slow_ring", "client/serve/aar_serve_ahi.c",
-       ("              (queued <= 20u && chunk_ms >= 5u)))", "              0))"))
+mutant("ahi-starts-without-prebuffer", "ahi_slow_ring", "client/serve/aar_serve_ahi.c",
+       ("        if (s->ahi.rsv_fill < 2u * ahi_request_frames(s) && !stalled)", "        if (s->ahi.rsv_fill == 0u)"))
+mutant("ahi-short-requests-without-a-stall", "ahi_gaps", "client/serve/aar_serve_ahi.c",
+       ("    submitted = ahi_queue(s, stalled);", "    submitted = ahi_queue(s, 1);"))
+mutant("ahi-no-last-request-when-the-app-stops", "ahi_audio", "client/serve/aar_serve_ahi.c",
+       ("    stalled = s->ahi.rsv_fill != 0u && left == 0u &&", "    stalled = 0 && s->ahi.rsv_fill != 0u && left == 0u &&"))
+mutant("ahi-close-drops-the-tail", "ahi_slow_ring", "client/serve/aar_serve_ahi.c",
+       ("    if (s->ahi.rsv_fill != 0u || !ahi_idle(s)) {\n        s->ahi.draining = 1;\n        return;\n    }\n    ahi_close(s);", "    ahi_close(s);"))
+mutant("ahi-min-frames-not-tracked", "ahi_gaps", "client/serve/aar_serve_ahi.c",
+       ("    if (s->ahi.requests == 1u || frames < s->ahi.min_frames)", "    if (s->ahi.requests == 1u)"))
+mutant("ahi-requests-not-counted", "ahi_audio", "client/serve/aar_serve_ahi.c",
+       ("    s->ahi.requests++;\n", ""))
 mutant("ahi-chains-to-the-wrong-request", "ahi_audio", "client/serve/aar_serve_ahi.c",
        ("    if (s->ahi.pending[s->ahi.last])\n        link = s->ahi.request[s->ahi.last]; /* the other request: still queued */",
         "    link = s->ahi.request[0];"))
@@ -738,10 +746,10 @@ mutant("safe-messages-not-awaited", "destroy_flip_out", "client/serve/aar_serve_
        ("        flip_wait_safe_messages(s);\n        s->gfx.flip_pending = 0;", "        s->gfx.flip_pending = 0;"))
 mutant("tall-screen-height-unchecked", "display_pan3_short", "client/serve/aar_serve_gfx.c",
        ("        if (tall && tall->Height >= (WORD)(h * 3u) &&", "        if (tall &&"))
-mutant("underrun-counted-every-pass", "ahi_audio", "client/serve/aar_serve_ahi.c",
-       ("            if (!submitted && completed && available == 0u && ahi_idle(s)) {", "            if (!submitted && available == 0u && ahi_idle(s)) {"))
+mutant("ahi-ring-underrun-not-read", "ahi_gaps", "client/serve/aar_serve_ahi.c",
+       ("        if (left == 0u) {", "        if (0) {"))
 mutant("ahi-buffer-reused-while-pending", "audio_chunk", "client/serve/aar_serve_ahi.c",
-       ("        slot = ahi_free_slot(s);\n        if (slot < 0)\n            return;", "        slot = 0;"))
+       ("        slot = ahi_free_slot(s);\n        if (slot < 0)\n            break;", "        slot = 0;"))
 mutant("ctrl-d-raw-key-is-e", "raw_key_ctrl_c", "client/serve/aar_serve_input.c",
        ("    case 0x22u: return AAR_BREAK_CTRL_D;", "    case 0x22u: return AAR_BREAK_CTRL_E;"))
 mutant("right-button-is-left", "mouse_and_close", "client/serve/aar_serve_input.c",

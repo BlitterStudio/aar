@@ -703,6 +703,8 @@ HX_UNUSED static int hx_ahi_max_pending;
 HX_UNUSED static struct Device hx_timer_dev, hx_ahi_dev;
 HX_UNUSED static unsigned long hx_timer_aborts;      /* timer requests aborted while still pending */
 HX_UNUSED static uint64_t hx_ahi_end;                /* when the last queued AHI write finishes playing */
+HX_UNUSED static unsigned long hx_ahi_short;         /* writes shorter than hx_ahi_short_ms (each costs a 5 ms gap) */
+HX_UNUSED static unsigned hx_ahi_short_ms = 40;      /* a write shorter than this leaves a gap */
 HX_UNUSED static struct IORequest *hx_ahi_tail;      /* the AHI write sent last */
 
 static void hx_io_done(void *arg)
@@ -822,6 +824,12 @@ HX_UNUSED static void hx_send_io(struct IORequest *io)
         if (hx_ahi_pending_now > hx_ahi_max_pending)
             hx_ahi_max_pending = hx_ahi_pending_now;
         us = (uint64_t)ar->ahir_Std.io_Length / 4u * 1000000u / ar->ahir_Frequency;
+        /* A driver that leaves a gap at every request boundary when the request is
+         * shorter than hx_ahi_short_ms: the gap is silence between two writes. */
+        if (us < (uint64_t)hx_ahi_short_ms * 1000u) {
+            hx_ahi_short++;
+            hx_ahi_end += 5000u;
+        }
         /* ahi.device plays the queued writes one after the other */
         if (hx_ahi_end < hx_now)
             hx_ahi_end = hx_now;
@@ -1984,6 +1992,7 @@ HX_UNUSED static void hx_reset(void)
     hx_waits = 0;
     hx_timer_aborts = 0;
     hx_ahi_end = 0;
+    hx_ahi_short = 0;
     hx_ahi_tail = NULL;
     hx_next_sigbit = 16;
     hx_ahi_fail_open = hx_ahi_open_count = hx_timer_open_count = hx_timer_fail_open = 0;

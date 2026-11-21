@@ -395,20 +395,30 @@ names it in an `AUDIO_OPEN` request; aar-run opens AHI at the requested rate
 and detaches it at `AUDIO_CLOSE`. aar-run reads the PCM with `AARAudioRead`,
 which converts the ring's interleaved S16LE samples (rate and channel count in
 its header) into AHI's S16BE bounce buffers without resampling or downmixing,
-in two requests of up to 3/50 s (60 ms) each, the double buffering of the AHI
-developer guide: each is linked (`ahir_Link`) to the other while that one is
-queued, and a request is sent again as soon as it has finished. Together they
-keep about 120 ms of audio in AHI, so a delay of the loop of up to about 100 ms,
-such as a low priority task on a busy machine, plays out of AHI's queue. A
-buffer is queued when it is full, when AHI has nothing left to play, when at most
-5 ms are left in the other buffer, or when at most 20 ms are left and the ring
-holds at least 5 ms, so a ring that the app fills in real time is not cut into
-tiny requests and a slow one cannot let AHI run dry. The price is up to 120 ms of
-latency between the app's ring and the speakers when the app writes ahead. If AHI cannot be opened, aar-run stops
+through a reserve of up to two requests' worth (a FIFO between the ring and
+AHI), in two requests of up to 3/50 s (60 ms) each, the double buffering of the
+AHI developer guide: each is linked (`ahir_Link`) to the other while that one is
+queued, and a request is sent again as soon as it has finished. AHI is not
+started before about 120 ms are in the reserve (the prebuffer); after that every
+request is a whole one, never a short piece, because some drivers leave a gap at
+every short request boundary and an app that fills its ring just ahead of the
+player (a tone generator) would otherwise produce many. Together the two
+requests keep about 120 ms of audio in AHI, so a delay of the loop of up to about
+100 ms plays out of AHI's queue. The price is latency: the prebuffer adds about
+120 ms, up to 240 ms in all between the app's ring and the speakers. If the app
+stops writing for 30 ms, what is left in the reserve is played as a last, short
+request (the end of a sound), and when the app closes the audio the queued audio
+plays out before AHI is closed (a run that ends without closing it cuts the last
+250 ms or so). If AHI runs dry while the app is still writing (the reserve cannot
+keep up), aar-run counts it (`ran dry`), reads the empty ring once so that the
+ring's underrun counter shows it, and buffers again before it goes on. The AHI
+line printed at the end gives underruns, times AHI ran dry, the number of
+requests and their length in frames (minimum and average): with whole requests
+they are equal, except for the last one of a sound. If AHI cannot be opened, aar-run stops
 the app and returns 20. Before each read aar-run asks the library how many frames
 are readable (`AARAudioRead` with no buffer), which counts nothing, so an
-underrun in the ring header is counted only when AHI finished a buffer and
-found the ring empty.
+underrun in the ring header is counted only when AHI ran dry and found the ring
+empty.
 
 Output to `NIL:` works. A console handle with no handler port, which is what
 `NIL:` is, cannot take the asynchronous DOS packet the loop uses for other

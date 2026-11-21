@@ -5,6 +5,13 @@
  * loop and before the public calls; it is not compiled alone. State lives in the
  * instance (struct aar_serve in aar_serve_priv.h).
  *
+ * The feed: PCM is copied from the app's ring into a client-side reserve (a FIFO
+ * of frames), AHI is started once two requests' worth is buffered, and from then
+ * on every request is the same size, taken from the reserve (the AHI developer
+ * guide's double buffering: two requests, each linked to the other). A ring that
+ * the app fills just ahead of playback is thus never cut into short requests,
+ * which some drivers play with a gap between them.
+ *
  * Copyright (C) 2024-2026, Dimitris Panokostas / BlitterStudio
  * SPDX-License-Identifier: MIT
  */
@@ -78,19 +85,29 @@ static void ahi_close(struct aar_serve *s)
             s->ahi.buffer[i] = NULL;
         }
     }
+    if (s->ahi.reserve) {
+        X_FREE_VEC(s->ahi.reserve);
+        s->ahi.reserve = NULL;
+    }
     if (s->ahi.port) {
         X_DELETE_PORT(s->ahi.port);
         s->ahi.port = NULL;
     }
     s->ahi.rate = 0u;
     s->ahi.channels = 0u;
+    s->ahi.rsv_head = 0u;
+    s->ahi.rsv_fill = 0u;
+    s->ahi.started = 0;
+    s->ahi.dry = 0;
+    s->ahi.draining = 0;
 }
 
-static int ahi_open(struct aar_serve *s, uint32_t rate, uint32_t channels)
+static int ahi_open(struct aar_serve *s, uint32_t rate, uint32_t channels,
+                    uint32_t ring_frames)
 {
     unsigned i;
 
-    if (channels != 2u || rate == 0u)
+    if (channels != 2u || rate == 0u || ring_frames == 0u)
         return 0;
     s->ahi.port = X_CREATE_PORT();
     if (!s->ahi.port)
@@ -118,8 +135,20 @@ static int ahi_open(struct aar_serve *s, uint32_t rate, uint32_t channels)
         if (!s->ahi.buffer[i])
             goto failed;
     }
+    s->ahi.reserve = X_ALLOC_VEC(AAR_SERVE_AHI_RESERVE_BYTES, MEMF_PUBLIC);
+    if (!s->ahi.reserve)
+        goto failed;
+    s->ahi.reserve_frames = AAR_SERVE_AHI_RESERVE_BYTES / (channels * 2u);
+    s->ahi.ring_frames = ring_frames;
+    s->ahi.last_data_ms = now_ms(s);
+    s->ahi.tail = 0;
     s->ahi.rate = rate;
     s->ahi.channels = channels;
+    s->ahi.rsv_head = 0u;
+    s->ahi.rsv_fill = 0u;
+    s->ahi.started = 0;
+    s->ahi.dry = 0;
+    s->ahi.draining = 0;
     return 1;
 failed:
     ahi_close(s);
@@ -163,6 +192,7 @@ static void ahi_submit(struct aar_serve *s, unsigned slot, uint32_t bytes)
 {
     struct AHIRequest *request = s->ahi.request[slot];
     struct AHIRequest *link = NULL;
+    uint32_t frames = bytes / (s->ahi.channels * 2u);
 
     if (s->ahi.pending[s->ahi.last])
         link = s->ahi.request[s->ahi.last]; /* the other request: still queued */
@@ -180,7 +210,10 @@ static void ahi_submit(struct aar_serve *s, unsigned slot, uint32_t bytes)
     s->ahi.pending_bytes[slot] = bytes;
     s->ahi.pending[slot] = 1u;
     s->ahi.last = slot;
-    s->ahi.sent_ms[slot] = now_ms(s);
+    s->ahi.requests++;
+    s->ahi.total_frames += frames;
+    if (s->ahi.requests == 1u || frames < s->ahi.min_frames)
+        s->ahi.min_frames = frames;
     X_SEND_IO((struct IORequest *)request);
 }
 
@@ -207,93 +240,151 @@ static int ahi_idle(struct aar_serve *s)
     return 1;
 }
 
-/* What AHI still has to play, in milliseconds: the queued requests less the time
- * since each was sent. A request that started later than it was sent (it waited
- * behind the other one) is counted as shorter than it is, which only makes the
- * feeder queue the next buffer sooner. */
-static uint32_t ahi_queued_ms(struct aar_serve *s)
+/* One request: up to 3/50 s (60 ms), and never more than the ring holds. */
+static uint32_t ahi_request_frames(struct aar_serve *s)
 {
-    uint32_t now = now_ms(s);
-    uint32_t left = 0u;
-    unsigned i;
+    uint32_t frames = aar_serve_audio_chunk_frames(0xffffffffu, s->ahi.rate,
+                                                   s->ahi.channels,
+                                                   AAR_SERVE_AHI_BUFFER_BYTES);
 
-    for (i = 0u; i < AAR_SERVE_AHI_BUFFER_COUNT; i++) {
-        uint32_t length, played;
-
-        if (!s->ahi.pending[i])
-            continue;
-        length = s->ahi.pending_bytes[i] / (s->ahi.channels * 2u) * 1000u /
-                 s->ahi.rate;
-        played = now - s->ahi.sent_ms[i];
-        if (played < length)
-            left += length - played;
-    }
-    return left;
+    return frames < s->ahi.ring_frames ? frames : s->ahi.ring_frames;
 }
 
-/* Moves PCM from the app's audio ring to AHI, the way the AHI developer guide
- * double-buffers: two requests, each linked to the other one while that is
- * queued. A request holds up to 3/50 s (60 ms), so the two together keep about
- * 120 ms of audio in AHI and a stall of the loop of up to about 100 ms plays out
- * of them. A buffer is queued when it is full, when AHI has nothing to play, when
- * at most 5 ms are left in the other buffer, or when at most 20 ms are left and
- * the ring holds at least 5 ms: a ring that fills in real time is not cut into
- * tiny requests, and a slow one cannot let AHI run dry. AARAudioRead copies the
- * ring's little-endian words into samples in CPU order. */
-static void service_ahi_audio(struct aar_serve *s)
+/* Ring to reserve: at most 20 ms per pass (a read from the card is slow, and the
+ * loop has to be on time), up to two requests' worth in the reserve, so that the
+ * latency stays bounded when the app writes far ahead. Returns the frames the
+ * ring still holds. */
+static uint32_t ahi_fill_reserve(struct aar_serve *s, uint32_t available)
 {
-    uint32_t available, frames, full;
-    ULONG got = 0;
-    uint32_t bytes;
-    int completed;
-    int slot;
+    uint32_t frame_bytes = s->ahi.channels * 2u;
+    uint32_t cap = s->ahi.reserve_frames;
+    uint32_t target = 2u * ahi_request_frames(s);
+    uint32_t budget = s->ahi.rate / 50u;
+
+    if (target > cap)
+        target = cap;
+    while (budget != 0u && available != 0u && s->ahi.rsv_fill < target) {
+        uint32_t tail = (s->ahi.rsv_head + s->ahi.rsv_fill) % cap;
+        uint32_t n = target - s->ahi.rsv_fill;
+        ULONG got = 0;
+
+        if (n > available)
+            n = available;
+        if (n > cap - tail)
+            n = cap - tail;
+        if (n > budget)
+            n = budget;
+        if (claim_note(s, X_AAR_AUDIO_READ(s->handle,
+                                           s->ahi.reserve + tail * frame_bytes,
+                                           n, &got)) != AAR_OK || got == 0u)
+            break;
+        s->ahi.rsv_fill += got;
+        available = got < available ? available - got : 0u;
+        budget = got < budget ? budget - got : 0u;
+        s->ahi.last_data_ms = now_ms(s);
+        s->ahi.tail = 0;
+    }
+    return available;
+}
+
+/* Reserve to a request buffer. */
+static void ahi_take(struct aar_serve *s, uint8_t *dst, uint32_t frames)
+{
+    uint32_t frame_bytes = s->ahi.channels * 2u;
+    uint32_t cap = s->ahi.reserve_frames;
+    uint32_t first = cap - s->ahi.rsv_head;
+
+    if (first > frames)
+        first = frames;
+    memcpy(dst, s->ahi.reserve + s->ahi.rsv_head * frame_bytes, first * frame_bytes);
+    if (first < frames)
+        memcpy(dst + first * frame_bytes, s->ahi.reserve,
+               (frames - first) * frame_bytes);
+    s->ahi.rsv_head = (s->ahi.rsv_head + frames) % cap;
+    s->ahi.rsv_fill -= frames;
+}
+
+/* Queues the reserve into the free requests: whole requests, and, when
+ * `flush` says nothing more is coming, a last short one. */
+static unsigned ahi_queue(struct aar_serve *s, int flush)
+{
+    uint32_t request = ahi_request_frames(s);
     unsigned submitted = 0u;
 
-    if (!s->core.audio.open || !s->ahi.request[0])
+    for (;;) {
+        uint32_t frames = s->ahi.rsv_fill < request ? s->ahi.rsv_fill : request;
+        int slot;
+
+        if (frames == 0u || (frames < request && !flush))
+            break;
+        slot = ahi_free_slot(s);
+        if (slot < 0)
+            break;
+        ahi_take(s, s->ahi.buffer[slot], frames);
+        ahi_submit(s, (unsigned)slot, frames * s->ahi.channels * 2u);
+        submitted++;
+    }
+    return submitted;
+}
+
+/* Moves PCM from the app's audio ring to AHI. AHI is not started before two
+ * requests' worth is in the reserve (the prebuffer, about 120 ms); after that
+ * every request is a whole one. If the reserve cannot keep AHI fed, AHI runs dry:
+ * that is counted (ahi_gaps), a read of the empty ring is counted in the ring
+ * header too (a ring underrun), and the stream is buffered again before it goes
+ * on; short requests are not used to hide it. When the app stops writing (no new
+ * frames for 30 ms) what is left in the reserve is played as a last, short
+ * request: the end of a sound. AARAudioRead copies the ring's little-endian
+ * words into samples in CPU order. */
+static void service_ahi_audio(struct aar_serve *s)
+{
+    uint32_t available, left;
+    int completed;
+    int stalled;
+    unsigned submitted;
+    ULONG got = 0;
+
+    if ((!s->core.audio.open && !s->ahi.draining) || !s->ahi.request[0])
         return;
     completed = ahi_reap(s);
+    if (s->ahi.draining) {
+        /* The app closed the audio: the ring is gone, what is queued plays out. */
+        (void)ahi_queue(s, 1);
+        if (s->ahi.rsv_fill == 0u && ahi_idle(s))
+            ahi_close(s);
+        return;
+    }
     available = audio_available(s);
     /* The ring's underrun word is read now and then, not every pass: it costs a
      * status read, and the loop has to be on time. */
     if ((++s->ahi.passes & 63u) == 0u)
         ahi_count_underruns(s);
-    full = aar_serve_audio_chunk_frames(0xffffffffu, s->ahi.rate, s->ahi.channels,
-                                        AAR_SERVE_AHI_BUFFER_BYTES);
-    for (;;) {
-        uint32_t queued, chunk_ms;
-
-        frames = aar_serve_audio_chunk_frames(available, s->ahi.rate,
-                                              s->ahi.channels,
-                                              AAR_SERVE_AHI_BUFFER_BYTES);
-        if (frames == 0u) {
-            /* An underrun: a buffer just finished and AHI has nothing queued.
-             * A read that finds less than asked counts it in the ring header. */
-            if (!submitted && completed && available == 0u && ahi_idle(s)) {
-                (void)claim_note(s, X_AAR_AUDIO_READ(s->handle, s->ahi.buffer[0],
-                                                     1u, &got));
-                ahi_count_underruns(s);
-            }
-            return;
-        }
-        queued = ahi_queued_ms(s);
-        chunk_ms = frames * 1000u / s->ahi.rate;
-        if (!(frames >= full || ahi_idle(s) || queued <= 5u ||
-              (queued <= 20u && chunk_ms >= 5u)))
-            return;
-        slot = ahi_free_slot(s);
-        if (slot < 0)
-            return;
-        /* A buffer finished and nothing else was queued although the ring had
-         * data: AHI played silence between two writes, with no ring underrun. */
-        if (!submitted && completed && ahi_idle(s))
+    left = ahi_fill_reserve(s, available);
+    stalled = s->ahi.rsv_fill != 0u && left == 0u &&
+              (uint32_t)(now_ms(s) - s->ahi.last_data_ms) >= 30u;
+    if (!s->ahi.started) {
+        if (s->ahi.rsv_fill < 2u * ahi_request_frames(s) && !stalled)
+            return; /* prebuffering */
+        s->ahi.started = 1;
+        s->ahi.dry = 0;
+    }
+    submitted = ahi_queue(s, stalled);
+    if (stalled && submitted)
+        s->ahi.tail = 1; /* the end of a sound: not a gap when it has played */
+    if (!s->ahi.tail && ahi_idle(s) && completed &&
+        s->ahi.rsv_fill < ahi_request_frames(s)) {
+        /* AHI has nothing left to play and the reserve is empty: it ran dry.
+         * A read that finds less than asked counts it in the ring header. */
+        if (!s->ahi.dry) {
+            s->ahi.dry = 1;
             s->ahi.gaps++;
-        if (claim_note(s, X_AAR_AUDIO_READ(s->handle, s->ahi.buffer[slot], frames,
-                                           &got)) != AAR_OK || got == 0u)
-            return;
-        bytes = got * s->ahi.channels * 2u;
-        ahi_submit(s, (unsigned)slot, bytes);
-        submitted++;
-        available = got < available ? available - got : 0u;
+        }
+        if (left == 0u) {
+            (void)claim_note(s, X_AAR_AUDIO_READ(s->handle, s->ahi.buffer[0],
+                                                 1u, &got));
+            ahi_count_underruns(s);
+        }
+        s->ahi.started = 0; /* prebuffer again */
     }
 }
 
@@ -307,8 +398,9 @@ static int audio_op_open(void *ctx, uint32_t rate, uint32_t channels,
 
     (void)token;
     (void)bytes;
-    (void)frames;
-    if (!ahi_open(s, rate, channels)) {
+    if (s->ahi.port)
+        ahi_close(s); /* a stream that was still playing out its tail */
+    if (!ahi_open(s, rate, channels, frames)) {
         ahi_close(s);
         /* An AHI open failure on the AUDIO=AHI route ends the run with an
          * error, as before. */
@@ -320,10 +412,18 @@ static int audio_op_open(void *ctx, uint32_t rate, uint32_t channels,
     return 1;
 }
 
+/* The ring is detached with the close: what the reserve and AHI still hold plays
+ * out, and the device is closed when it has. */
 static void audio_op_close(void *ctx)
 {
     struct aar_serve *s = ctx;
 
+    ahi_count_underruns(s);
+    s->ahi.ring = NULL;
+    if (s->ahi.rsv_fill != 0u || !ahi_idle(s)) {
+        s->ahi.draining = 1;
+        return;
+    }
     ahi_close(s);
 }
 

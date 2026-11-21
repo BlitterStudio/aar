@@ -1018,7 +1018,7 @@ static void test_ahi_audio_open_feed_underrun_close(void)
     CHECK(open_audio(&c, 0x4000, 64));
     CHECK(c.result == AAR_OK && c.out[AAR_R_AUDIO_OPEN_FRAMES] == 64 && c.out[AAR_R_AUDIO_OPEN_RATE] == 8000);
     CHECK(hx_ahi_open_count == 1);
-    ticks(6);
+    ticks(40); /* the app wrote 40 frames and stopped: they are played as one request */
     /* 40 frames of S16 stereo reach AHI in one buffer, in order. */
     CHECK(hx_ahi_writes == 1 && hx_ahi_bytes == 160);
     for (i = 0; i < 40; i++)
@@ -1026,16 +1026,17 @@ static void test_ahi_audio_open_feed_underrun_close(void)
             break;
     CHECK(i == 40);
     CHECK(get_le(ring + AAR_AUDIO_RING_READ_FRAME) == 40);
-    /* The buffer ends (20 ms), nothing is left and AHI is idle: one underrun. */
     hx_run_for(30000);
-    ticks(40);
-    CHECK(get_le(ring + AAR_AUDIO_RING_UNDERRUNS) == 1);
+    ticks(3);
+    /* the end of a sound is neither a gap nor an underrun */
+    CHECK(get_le(ring + AAR_AUDIO_RING_UNDERRUNS) == 0);
     {
         struct aar_serve_result res;
 
         memset(&res, 0, sizeof(res));
         res.size = sizeof(res);
-        CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_underruns == 1);
+        CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_underruns == 0 && res.ahi_gaps == 0);
+        CHECK(res.ahi_requests == 1 && res.ahi_min_frames == 40 && res.ahi_avg_frames == 40);
     }
     CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
     CHECK(c.result == AAR_OK && hx_ahi_open_count == 0);
@@ -1044,10 +1045,9 @@ static void test_ahi_audio_open_feed_underrun_close(void)
 
         memset(&res, 0, sizeof(res));
         res.size = sizeof(res);
-        CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_underruns == 1);
-        CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_underruns == 1);
+        CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_requests == 1);
         app_state(H, AAR_STATE_IDLE, AAR_END_EXIT);
-        CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_underruns == 1);
+        CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_requests == 1 && res.ahi_min_frames == 40);
     }
     finish();
 }
@@ -1062,10 +1062,14 @@ static void test_audio_chunk_is_a_fiftieth_of_a_second(void)
     make_ring(0x4000, 1024, 1000);
     CHECK(open_audio(&c, 0x4000, 1024));
     CHECK(c.result == AAR_OK);
-    ticks(3);
-    CHECK(hx_ahi_writes >= 1 && hx_ahi_bytes / hx_ahi_writes <= 8000 / 50 * 3 * 4);
+    ticks(10);
+    CHECK(hx_ahi_writes >= 1 && hx_ahi_bytes / hx_ahi_writes <= 8000 / 50 * 3 * 4); /* 3/50 s at most */
     CHECK(hx_ahi_max_pending <= (int)AAR_SERVE_AHI_BUFFER_COUNT);
     CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
+    hx_run_for(300000);
+    ticks(3);
+    hx_run_for(300000);
+    ticks(3);
     finish();
 }
 
@@ -1514,10 +1518,13 @@ static void test_a_refused_audio_ring_closes_ahi(void)
     make_ring(0x8000, 64, 40);
     CHECK(open_audio(&c, 0x8000, 64));
     CHECK(c.result == AAR_OK && hx_ahi_open_count == 1);
-    ticks(6);
+    ticks(40);
     CHECK(hx_ahi_writes == 1);
     CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
-    CHECK(c.result == AAR_OK && hx_ahi_open_count == 0);
+    CHECK(c.result == AAR_OK);
+    hx_run_for(300000);
+    ticks(3);
+    CHECK(hx_ahi_open_count == 0);
     finish();
 }
 
@@ -1957,29 +1964,44 @@ static void test_workbench_project_uses_dostrue_from_name_from_lock(void)
     finish();
 }
 
-/* AHI went idle with data waiting in the ring: a gap with no ring underrun. */
-static void test_a_late_ahi_refill_is_counted_as_a_gap(void)
+/* The app writes slower than AHI plays (2 frames per ms against 8): when the two
+ * requests have played AHI runs dry with the reserve short of a request. That is
+ * counted (ran dry, and a ring underrun, the ring being empty), the stream is
+ * buffered again, and what the app wrote is played as a last, short request once
+ * it stops writing. */
+static void test_ahi_that_runs_dry_is_counted_and_buffered_again(void)
 {
     struct comp c;
     struct aar_serve_result res;
+    unsigned i;
 
     setup("ahi_gaps");
     cfg.audio_route = AAR_AUDIO_ROUTE_AHI;
     make_serve();
-    make_ring(0x4000, 64, 40);
-    CHECK(open_audio(&c, 0x4000, 64));
-    ticks(2); /* the first buffer (40 frames, 5 ms) is queued and still playing */
+    make_ring(0x4000, 1024, 960);
+    CHECK(open_audio(&c, 0x4000, 1024));
+    ticks(10); /* prebuffered: two requests of 60 ms are playing */
     memset(&res, 0, sizeof(res));
     res.size = sizeof(res);
-    CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_gaps == 0 && res.ahi_underruns == 0);
-    /* the app wrote 20 more frames, the loop did not run for a while */
-    put_le(buf(0x4000) + AAR_AUDIO_RING_WRITE_FRAME, 60);
-    hx_run_for(30000);
-    ticks(1);
+    CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_gaps == 0 && res.ahi_underruns == 0 && res.ahi_requests == 2);
+    for (i = 1; i <= 140; i++) {
+        put_le(buf(0x4000) + AAR_AUDIO_RING_WRITE_FRAME, 960 + 2 * i);
+        tick();
+    }
     memset(&res, 0, sizeof(res));
     res.size = sizeof(res);
-    CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_gaps == 1 && res.ahi_underruns == 0);
+    CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_gaps == 1 && res.ahi_underruns == 1);
+    CHECK(res.ahi_requests == 2 && res.ahi_min_frames == 480);
+    ticks(60); /* the app stopped: the 280 frames it wrote are played, short, once */
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_requests == 3 && res.ahi_min_frames < 480);
+    CHECK(res.ahi_gaps == 1 && res.ahi_underruns == 1);
     CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
+    hx_run_for(300000);
+    ticks(3);
+    hx_run_for(300000);
+    ticks(3);
     finish();
 }
 
@@ -2009,8 +2031,8 @@ static void test_a_multi_packet_read_costs_one_timer_abort_per_packet(void)
 }
 
 /* The loop can be late (a DOS wait, a low priority task on a busy machine): AHI
- * keeps playing out of its queue. 6 requests of 20 ms are queued, so a 60 ms
- * stall leaves AHI busy and the late refill counter at 0. */
+ * keeps playing out of its two 60 ms requests, so a 60 ms stall leaves AHI busy
+ * and the counters at 0. */
 static void test_a_sixty_ms_loop_stall_does_not_starve_ahi(void)
 {
     struct comp c;
@@ -2022,21 +2044,26 @@ static void test_a_sixty_ms_loop_stall_does_not_starve_ahi(void)
     make_ring(0x4000, 1024, 1024);
     CHECK(open_audio(&c, 0x4000, 1024));
     CHECK(c.result == AAR_OK);
-    ticks(3);
-    CHECK(hx_ahi_max_pending == (int)AAR_SERVE_AHI_BUFFER_COUNT); /* all slots filled in one pass */
+    ticks(10); /* prebuffered: both requests are in AHI */
+    CHECK(hx_ahi_max_pending == (int)AAR_SERVE_AHI_BUFFER_COUNT);
     hx_run_for(60000);
     ticks(1);
     memset(&res, 0, sizeof(res));
     res.size = sizeof(res);
     CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_gaps == 0 && res.ahi_underruns == 0);
     CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
+    hx_run_for(300000);
+    ticks(3);
+    hx_run_for(300000);
+    ticks(3);
     finish();
 }
 
-/* The app writes its ring in real time, 1 ms at a time. A buffer is not queued
- * while AHI holds more than 20 ms (no tiny requests), and it is queued, however
- * short, in time before AHI runs out. */
-static void test_a_slow_ring_is_neither_cut_into_tiny_requests_nor_left_to_run_dry(void)
+/* The app writes its ring in real time, 8 frames (1 ms at 8000 Hz) at a time, just
+ * ahead of the player. AHI is started after the prebuffer and then gets whole
+ * requests only: a driver that leaves a gap at every short request boundary (the
+ * fake counts them) plays this without one. */
+static void test_a_real_time_ring_gets_whole_requests_and_no_gap(void)
 {
     struct comp c;
     struct aar_serve_result res;
@@ -2045,25 +2072,31 @@ static void test_a_slow_ring_is_neither_cut_into_tiny_requests_nor_left_to_run_d
     setup("ahi_slow_ring");
     cfg.audio_route = AAR_AUDIO_ROUTE_AHI;
     make_serve();
-    make_ring(0x4000, 1024, 480); /* 60 ms at 8000 Hz: one full buffer */
-    CHECK(open_audio(&c, 0x4000, 1024));
+    make_ring(0x4000, 4096, 0);
+    CHECK(open_audio(&c, 0x4000, 4096));
     CHECK(c.result == AAR_OK);
-    ticks(3);
-    CHECK(hx_ahi_writes == 1);
-    for (i = 1; i <= 15; i++) {
-        put_le(buf(0x4000) + AAR_AUDIO_RING_WRITE_FRAME, 480 + 8 * i);
+    for (i = 1; i <= 100; i++) {
+        put_le(buf(0x4000) + AAR_AUDIO_RING_WRITE_FRAME, 8 * i);
         tick();
     }
-    CHECK(hx_ahi_writes == 1); /* more than 20 ms are queued: wait */
-    for (i = 16; i <= 50; i++) {
-        put_le(buf(0x4000) + AAR_AUDIO_RING_WRITE_FRAME, 480 + 8 * i);
+    CHECK(hx_ahi_writes == 0); /* prebuffering: 120 ms are not there yet */
+    for (i = 101; i <= 600; i++) {
+        put_le(buf(0x4000) + AAR_AUDIO_RING_WRITE_FRAME, 8 * i);
         tick();
     }
-    CHECK(hx_ahi_writes == 2); /* at most 20 ms left: the second buffer is queued */
+    CHECK(hx_ahi_writes >= 6);
+    CHECK(hx_ahi_short == 0); /* every request is a whole one: 60 ms */
     memset(&res, 0, sizeof(res));
     res.size = sizeof(res);
     CHECK(aar_serve_result(S, &res) == AAR_OK && res.ahi_gaps == 0 && res.ahi_underruns == 0);
+    CHECK(res.ahi_requests == hx_ahi_writes && res.ahi_min_frames == 480 && res.ahi_avg_frames == 480);
     CHECK(call(AAR_OP_AUDIO_CLOSE, 31, 0, 0, 0, 0, 0, 0, &c));
+    CHECK(hx_ahi_open_count == 1); /* the queued audio plays out before AHI is closed */
+    hx_run_for(300000);
+    ticks(3);
+    hx_run_for(300000);
+    ticks(3);
+    CHECK(hx_ahi_open_count == 0);
     finish();
 }
 
@@ -2132,10 +2165,10 @@ static const struct {
     T(test_the_heartbeat_runs_after_a_call_made_outside_the_loop),
     T(test_the_result_counts_the_logs_the_runtime_dropped),
     T(test_workbench_project_uses_dostrue_from_name_from_lock),
-    T(test_a_late_ahi_refill_is_counted_as_a_gap),
+    T(test_ahi_that_runs_dry_is_counted_and_buffered_again),
     T(test_a_multi_packet_read_costs_one_timer_abort_per_packet),
     T(test_a_sixty_ms_loop_stall_does_not_starve_ahi),
-    T(test_a_slow_ring_is_neither_cut_into_tiny_requests_nor_left_to_run_dry),
+    T(test_a_real_time_ring_gets_whole_requests_and_no_gap),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */
