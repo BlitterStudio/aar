@@ -182,20 +182,20 @@ because the registers differ.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-SHARED.1 | 4.2 | MUST | core | any | payload | todo | `shared_alloc` with `flags` other than 0 is `AAR_E_INVAL` |
-| C-SHARED.2 | 4.2 | MUST | core | any | payload | todo | a granted block has `bytes` rounded up to `shared_granule`, `ptr` aligned to the requested alignment (rounded up to `shared_granule`) and writable over all `bytes`; `flags` holds only `AAR_SHAREDF_COHERENT` |
-| C-SHARED.3 | 4.2 | MUST | core | any | payload | todo | `shared_free` of an interior pointer, of NULL, of a block already freed is `AAR_E_INVAL`; of the base of a live block is `AAR_OK` |
-| C-SHARED.4 | 4.2 | MUST | core | any | payload | todo | at least 64 live blocks (`AAR_SHARED_MIN_BLOCKS`) can be held at once |
-| C-SHARED.5 | 4.2 | MUST | core | any | payload | todo | 64 live blocks are still possible after the runtime has made its own service buffers (console writes, a file read) |
-| C-SHARED.6 | 4.2 | MUST | core | any | payload | todo | allocate until failure: the failure is `AAR_E_NOMEM` and the total granted does not exceed `shared_limit` |
-| C-SHARED.7 | 4.2 | MUST | core | any | payload | todo | `shared_used` rises by at least the granted bytes with an allocation and falls back with the free |
-| C-SHARED.8 | 4.2 | MUST | core | any | payload | todo | variant `caps` (runner sets `AAR_TAG_SHARED_MIB`): `shared_limit` is that value and allocation past it, service buffers included, fails |
-| C-SHARED.9 | 4.2 | MUST | core | any | payload | todo | token round trip (runner peer): the app writes a pattern, publishes, sends `haddr` and length in a message; the client maps it with `AARSharedMap` and reads the same bytes |
-| C-SHARED.10 | 4.3 | MUST | core | any | payload | todo | the client writes a different pattern, publishes and posts a message; the app acquires and reads it intact (runner peer) |
-| C-SHARED.11 | 4.3 | MUST | core | any | payload | todo | counter and pattern test (runner peer): the app writes an increasing counter and a pattern into a shared buffer while the client reads it in a loop with the map the library gave and `AARSharedAcquire` before each pass; zero stale and zero torn reads |
-| C-SHARED.12 | 4.3 | MUST | core | any | payload | todo | the same test with a client map that is deliberately cacheable plus `AARSharedAcquire` (needs a way to ask for a cacheable map [spec question 7]) |
-| C-SHARED.13 | 4.3 | MUST | core | any | payload | todo | `aar_publish` and `aar_acquire` over a range inside a live block return `AAR_OK`; they return at once when the runtime is coherent |
-| C-SHARED.14 | 4.3 | MUST | core | any | payload | todo | granule ownership (runner peer): app and client write alternate adjacent granules between hand-offs and neither sees the other's bytes in its own granule |
+| C-SHARED.1 | 4.2 | MUST | core | any | payload | yes | `shared_alloc` with `flags` other than 0 is `AAR_E_INVAL` |
+| C-SHARED.2 | 4.2 | MUST | core | any | payload | yes | a granted block has `bytes` rounded up to `shared_granule`, `ptr` aligned to the requested alignment (rounded up to `shared_granule`) and writable over all `bytes`; `flags` holds only `AAR_SHAREDF_COHERENT` |
+| C-SHARED.3 | 4.2 | MUST | core | any | payload | yes | `shared_free` of an interior pointer, of NULL, of a block already freed is `AAR_E_INVAL`; of the base of a live block is `AAR_OK` |
+| C-SHARED.4 | 4.2 | MUST | core | any | payload | yes | at least 64 live blocks (`AAR_SHARED_MIN_BLOCKS`) can be held at once |
+| C-SHARED.5 | 4.2 | MUST | core | any | payload | yes | 64 live blocks are still possible after the runtime has made its own service buffers (console writes, a file read) |
+| C-SHARED.6 | 4.2 | MUST | core | any | payload | yes | allocate until failure: the failure is `AAR_E_NOMEM` and the total granted does not exceed `shared_limit` |
+| C-SHARED.7 | 4.2 | MUST | core | any | payload | yes | `shared_used` rises by at least the granted bytes with an allocation and falls back with the free |
+| C-SHARED.8 | 4.2 | MUST | core | any | payload | yes | variant `caps` (runner sets `AAR_TAG_SHARED_MIB`): `shared_limit` is that value and allocation past it, service buffers included, fails |
+| C-SHARED.9 | 4.2 | MUST | core | any | payload | yes | token round trip (runner peer): the app writes a pattern, publishes, sends `haddr` and length in a message; the client maps it with `AARSharedMap` and reads the same bytes |
+| C-SHARED.10 | 4.3 | MUST | core | any | payload | yes | the client writes a different pattern, publishes and posts a message; the app acquires and reads it intact (runner peer) |
+| C-SHARED.11 | 4.3 | MUST | core | any | payload | yes | counter and pattern test (runner peer): the app writes an increasing counter and a pattern into a shared buffer while the client reads it in a loop with the map the library gave and `AARSharedAcquire` before each pass; zero stale and zero torn reads |
+| C-SHARED.12 | 4.3 | MUST | core | any | none | todo | not tested: the same test with a client map that is deliberately cacheable plus `AARSharedAcquire` needs a way to ask for a cacheable map, which the API does not have [spec question 7]; C-SHARED.11 runs with the map the library gives |
+| C-SHARED.13 | 4.3 | MUST | core | any | payload | yes | `aar_publish` and `aar_acquire` over a range inside a live block return `AAR_OK`; they return at once when the runtime is coherent |
+| C-SHARED.14 | 4.3 | MUST | core | any | payload | yes | granule ownership (runner peer): app and client write alternate adjacent granules between hand-offs and neither sees the other's bytes in its own granule |
 | C-SHARED.15 | 9.5 | MUST | core | any | runner | todo | `AARSharedMap` of a range that leaves the block or the platform's aperture is `AAR_E_INVAL`; an unknown token is `AAR_E_INVAL` |
 | C-SHARED.16 | 9.5 | SHOULD | core | any | runner | todo | `AARSharedMap` after the app ended and its claim is gone is `AAR_E_STALE` (where the platform can tell) |
 | C-SHARED.17 | 9.5 | MUST | core | any | runner | todo | `AARSharedMap.flags` holds only `AAR_MAPF_UNCACHED` and `AAR_MAPF_COHERENT`; `granule` is a power of two; `base` is non-NULL |
