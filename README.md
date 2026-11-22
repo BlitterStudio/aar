@@ -41,6 +41,7 @@ pins the commit of this repository it builds against in `sdk/AAR_REF`.
 | `tools/aar-check` | Checks a finished ELF against the load contract |
 | `templates/` | Example apps; `templates/README.md` describes each one |
 | `host-runner/` | An SDL2 runner for apps on a PC; see `host-runner/README.md` |
+| `conformance/` | The conformance suite: the test catalogue (`TESTS.md`), the payload apps, the `aar-conf` runner for the Amiga, and the scripts that check them; see `conformance/README.md` |
 | `tests/` | Tests for the checker, the headers and the transport model, the link map check, FP code generation and mode switching. The client library's tests are in `client/tests/` |
 | `docs/` | The API reference, the developer guide, the transport contract, the zzapp mapping, and the script that checks the reference covers every public symbol |
 | `Makefile` | Builds every template and runs the checks (`make check`) |
