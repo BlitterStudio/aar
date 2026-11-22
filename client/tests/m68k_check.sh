@@ -127,6 +127,17 @@ check_source client/examples/aar-embed.c "."
 test -e "$OUT/aar-embed"
 echo "libaarserve.a builds and client/examples/aar-embed.c links against it, 0 warnings"
 
+# The conformance runner (conformance/runner/aar-conf.c): the program that runs
+# the suite on a platform. It uses only aar.library and libaarserve.a and is
+# built here like any other client program, no warning allowed.
+stack=4096
+check_source conformance/runner/aar-conf.c "."
+"$CC" -std=gnu11 -noixemul -m68030 -O2 -Wall -Wextra -Werror -Iclient/include -Iinclude \
+    conformance/runner/aar-conf.c -L"$OUT" -laarserve -lamiga -o "$OUT/aar-conf"
+test -e "$OUT/aar-conf"
+echo "aar-conf: links against libaarserve.a for m68k, 0 warnings, $(wc -c < "$OUT/aar-conf") bytes"
+stack=1024
+
 # The test defines AARBase itself; every call goes through it, so nothing
 # else may be undefined (no stub library, no helper function).
 "$NM" "$OUT/t.o" > "$OUT/t.nm"
