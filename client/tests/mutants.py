@@ -29,6 +29,7 @@ CC = os.environ.get("CC", "gcc")
 CORE = "client/src/aar_core.c"
 SHELL = "client/src/aar_shell.c"
 LEAK = "client/tests/amiga/aarleak.c"
+SCALE_FLAGS = ["-DREFPLAT_CLAIMS=240u", "-DREFPLAT_LOAD_STRIDE=0x1000u", "-DREFPLAT_BUF_STRIDE=0x1000u"]
 
 # (name, test, file, [(old, new, count)])  count None: exactly one occurrence
 M = []
@@ -62,8 +63,6 @@ mutant("no-lease-gate", "lease", CORE,
        ("    if ((uint32_t)(t - c->disp_alive) > AAR_CORE_STALL_TICKS)\n        return;\n", ""))
 mutant("lease-may-be-zero", "lease", CORE,
        ("    if (v == 0u)\n        v = 1u;\n    h->lease = v;", "    h->lease = v;"))
-mutant("lease-all-in-one-tick", "lease", CORE,
-       ("h->countdown = (uint8_t)(1u + c->opens % AAR_CORE_LEASE_PERIOD_TICKS);", "h->countdown = 1u;"))
 mutant("lease-pause-ignored", "lease", CORE,
        ("h->pause_until = t ? t : 1u;", "h->pause_until = 0u;"))
 mutant("renew-needs-owner-idle", "lease", CORE,
@@ -77,11 +76,11 @@ mutant("revoked-claim-not-released", "revoke", CORE,
        ("    if (h->claim.handle != 0u) {\n        if (h->started", "    if (h->claim.handle != 0u && !h->revoked) {\n        if (h->started"))
 # ---- core: reap ------------------------------------------------------------------
 mutant("tombstone-freed-too-early", "reap", CORE,
-       ("owner_state(user, &h->owner) == AAR_OWNER_ABSENT) {\n                gone = h;",
-        "owner_state(user, &h->owner) != AAR_OWNER_ALIVE) {\n                gone = h;"))
+       ("owner_look(&memo, owner_state, user, &h->owner) == AAR_OWNER_ABSENT) {\n                gone = h;",
+        "owner_look(&memo, owner_state, user, &h->owner) != AAR_OWNER_ALIVE) {\n                gone = h;"))
 mutant("changed-owner-not-reaped", "reap", CORE,
-       ("owner_state(user, &h->owner) != AAR_OWNER_ALIVE) {\n                victim = h;",
-        "owner_state(user, &h->owner) == AAR_OWNER_ABSENT) {\n                victim = h;"))
+       ("owner_look(&memo, owner_state, user, &h->owner) != AAR_OWNER_ALIVE) {\n                victim = h;",
+        "owner_look(&memo, owner_state, user, &h->owner) == AAR_OWNER_ABSENT) {\n                victim = h;"))
 mutant("reap-skips-stop", "reap", CORE,
        ("if (h->started && !h->revoked && o->stop)", "if (0 && h->started && !h->revoked && o->stop)"))
 # ---- core: tags, load, start ------------------------------------------------------------
@@ -205,7 +204,7 @@ mutant("signal-does-not-arm", "notify", CORE,
 mutant("signal-every-scan", "notify", CORE,
        ("(uint32_t)(ticks - h->last_signal_tick) >= AAR_CORE_NOTIFY_RESIGNAL_TICKS", "1"))
 mutant("end-reported-every-scan", "notify", CORE,
-       ("        if (carries_end && answer == AAR_CORE_NOTIFIED)\n            h->ended_notified = 1u;\n", ""))
+       ("            if (carries_end && answer == AAR_CORE_NOTIFIED)\n                h->ended_notified = 1u;\n", ""))
 mutant("fault-reported-as-complete", "notify", CORE,
        ("end_reason == AAR_END_STUCK_CALL || end_reason == AAR_END_LEASE) ?", "end_reason == AAR_END_STUCK_CALL) ?"))
 mutant("stale-after-open", "revoked_codes", SHELL,
@@ -263,8 +262,8 @@ mutant("request-map-ignores-revoke", "stale_platform", CORE,
        ("                if (claim_live(h) != AAR_OK) /* the claim is gone: nobody to refuse it to */\n                    return AAR_E_STALE;\n", ""))
 mutant("audio-map-ignores-revoke", "stale_platform", CORE,
        ("        if (claim_live(h) != AAR_OK) { /* its map found the claim gone */\n            leave(h);\n            return AAR_E_STALE;\n        }\n", ""))
-mutant("poll-after-revoke", "stale_platform", CORE,
-       ("            if (claim_live(h) == AAR_OK && c->plat->ops->poll)", "            if (c->plat->ops->poll)"))
+mutant("revoke-keeps-poll-needed", "stale_platform", CORE,
+       ("    h->kick_pending = 0u;\n    h->poll_needed = 0u;\n", "    h->kick_pending = 0u;\n"))
 mutant("stop-after-revoke", "stale_platform", CORE,
        ("        rc = claim_live(h);\n        if (rc == AAR_OK)\n            rc = plat_rc(h, ops_of(h)->stop(plat_of(h), &h->claim));", "        rc = plat_rc(h, ops_of(h)->stop(plat_of(h), &h->claim));"))
 # ---- admission is serialised with the final close and expunge ----------------------------
@@ -358,6 +357,91 @@ mutant("leak-dos-close-unchecked", "table", LEAK,
 mutant("leak-file-left-open", "table", LEAK,
        ("    if (!Close(f))\n        fail(\"Close\", 0);",
         "    (void)f;"))
+# ---- many handles: the table, the work list, the lease lists -----------------------------------
+mutant("table-lookup-walks-the-list", "validation", CORE,
+       ("    i = htab_slot(c->htab_shift, h);\n    while ((p = c->htab[i]) != NULL && p != h) {\n        i = (i + 1u) & (c->htab_cap - 1u);\n        steps++;\n    }\n    c->stat_lookup_steps += steps;\n    return p;",
+        "    (void)i;\n    for (p = c->handles; p && p != h; p = p->next)\n        steps++;\n    c->stat_lookup_steps += steps;\n    return p;"))
+mutant("table-delete-leaves-a-hole", "table", CORE,
+       ("        c->htab[i] = c->htab[j];\n        i = j;\n",
+        ""))
+mutant("table-kept-when-empty", "table", CORE,
+       ("    if (c->htab_count == 0u)\n        htab_drop(c);\n    env_unlock(c);",
+        "    env_unlock(c);"))
+mutant("table-entry-kept-after-close", "table", CORE,
+       ("    htab_delete(c, h);\n    work_remove_locked(c, h);",
+        "    work_remove_locked(c, h);"))
+mutant("table-grow-keeps-old-entries-out", "table", CORE,
+       ("    for (h = c->handles; h; h = h->next)\n        htab_put(table, cap, shift, h);",
+        "    for (h = c->handles; h && h->next; h = h->next)\n        htab_put(table, cap, shift, h);"))
+mutant("lease-all-on-one-list", "lease", CORE,
+       ("        if (c->lease_count[i] < c->lease_count[b])",
+        "        if (0)"))
+mutant("lease-phase-stuck", "lease", CORE,
+       ("    c->lease_phase = phase + 1u < AAR_CORE_LEASE_PERIOD_TICKS ? phase + 1u : 0u;",
+        "    c->lease_phase = phase;"))
+mutant("lease-unlink-keeps-count", "close_order", CORE,
+       ("        c->lease_count[b]--;\n",
+        ""))
+mutant("lease-unlink-keeps-slot", "close_order", CORE,
+       ("        h->lease_next = h->lease_prev = NULL;\n        h->lease_slot = 0u;",
+        "        h->lease_next = h->lease_prev = NULL;"))
+mutant("work-note-ignored", "pass", CORE,
+       ("    irq_off(c);\n    if (work_wanted(h))\n        work_add_locked(c, h);\n    irq_on(c);\n}\n\n/* The pass has finished",
+        "    (void)c;\n}\n\n/* The pass has finished"))
+mutant("work-retire-never", "pass", CORE,
+       ("    irq_off(c);\n    if (!work_wanted(h))\n        work_remove_locked(c, h);\n    irq_on(c);",
+        "    (void)c;\n    (void)h;"))
+mutant("work-retire-keeps-polling-handles", "pass", CORE,
+       ("(h->kick_pending | h->mouse_pending | h->poll_needed | h->armed) != 0u;",
+        "(h->kick_pending | h->mouse_pending | h->armed) != 0u;"))
+mutant("work-retire-forgets-mouse", "pass", CORE,
+       ("(h->kick_pending | h->mouse_pending | h->poll_needed | h->armed) != 0u;",
+        "(h->kick_pending | h->poll_needed | h->armed) != 0u;"))
+mutant("work-retire-forgets-kick", "pass", CORE,
+       ("(h->kick_pending | h->mouse_pending | h->poll_needed | h->armed) != 0u;",
+        "(h->mouse_pending | h->poll_needed | h->armed) != 0u;"))
+mutant("work-retire-forgets-armed", "pass", CORE,
+       ("(h->kick_pending | h->mouse_pending | h->poll_needed | h->armed) != 0u;",
+        "(h->kick_pending | h->mouse_pending | h->poll_needed) != 0u;"))
+mutant("work-poll-answer-ignored", "pass", CORE,
+       ("                h->poll_needed = c->plat->ops->poll(c->plat, &h->claim) != 0;",
+        "                h->poll_needed = (c->plat->ops->poll(c->plat, &h->claim), 0);"))
+mutant("work-kick-sets-no-poll", "pass", CORE,
+       ("        if (o->poll) /* the request may still be in flight: the pass retires it */\n            h->poll_needed = 1u;",
+        ""))
+mutant("work-poll-set-without-platform-poll", "work_list", CORE,
+       ("        if (o->poll) /* the request may still be in flight: the pass retires it */\n            h->poll_needed = 1u;",
+        "        h->poll_needed = 1u;"))
+mutant("work-close-leaves-entry", "pass", CORE,
+       ("    htab_delete(c, h);\n    work_remove_locked(c, h);",
+        "    htab_delete(c, h);"))
+mutant("work-dead-handle-stays", "work_list", CORE,
+       ("        if (h->state != AAR_H_LIVE) {\n            work_retire(c, h);\n            continue;\n        }",
+        "        if (h->state != AAR_H_LIVE)\n            continue;"))
+mutant("work-message-signal-not-added", "pass", CORE,
+       ("        mask = h->signal_mask;\n        if (work_wanted(h))\n            work_add_locked(c, h);",
+        "        mask = h->signal_mask;"))
+mutant("work-open-armed-not-added", "work_list", CORE,
+       ("    if (work_wanted(h))\n        work_add_locked(c, h); /* armed at open: a notify port was given */",
+        ""))
+mutant("work-full-sq-not-noted", "kick", CORE,
+       ("        h->kick_pending |= AAR_PLAT_KICK_SQ;\n        work_note(h);",
+        "        h->kick_pending |= AAR_PLAT_KICK_SQ;"))
+mutant("work-mouse-busy-not-noted", "pass", CORE,
+       ("    } else {\n        work_note(h); /* the CQ is full: the pass posts it when there is room */\n    }",
+        "    }"))
+mutant("work-kick-not-noted", "pass", CORE,
+       ("    kick_send(h);\n    work_note(h); /* a bell that was busy, or still in flight, is the pass's */",
+        "    kick_send(h);"))
+mutant("work-pass-takes-idle-bg", "pass", CORE,
+       ("        if ((h->kick_pending | h->mouse_pending | h->poll_needed) != 0u && bg_take(c, h)) {",
+        "        if (bg_take(c, h)) {"))
+mutant("reap-asks-per-handle", "reap", CORE,
+       ("    if (!m->have || m->stamp.id != o->id || m->stamp.name != o->name ||\n        m->stamp.number != o->number || m->stamp.kind != o->kind) {",
+        "    if (1) {"))
+mutant("reap-memo-ignores-owner", "reap", CORE,
+       ("    if (!m->have || m->stamp.id != o->id || m->stamp.name != o->name ||\n        m->stamp.number != o->number || m->stamp.kind != o->kind) {",
+        "    if (!m->have) {"))
 # ---- start needs a load that completed ---------------------------------------------------------
 mutant("start-accepts-unfinished-load", "load_failure", CORE,
        ("(h->load_state != AAR_LOAD_LOADED || h->started))\n        rc = AAR_E_INVAL;",
@@ -938,37 +1022,48 @@ def run_one(name, test, path, changes, tmp):
     # A core mutant is run against both test programs; the named test fails in one of them.
     programs = []
     if is_leak:
-        programs.append(("aarleak_test", ["client/tests/aarleak_test.c"], False))
+        programs.append(("aarleak_test", ["client/tests/aarleak_test.c"], False, []))
     elif is_shell:
-        programs.append(("shell_test", sources, True))
+        programs.append(("shell_test", sources, True, []))
     else:
-        programs.append(("core_test", sources, False))
+        programs.append(("core_test", sources, False, []))
         programs.append(("shell_test", ["client/src/aar_core.c", "client/src/refplat.c",
-                                        "client/src/aar_probe.c", "client/tests/shell_test.c"], True))
+                                        "client/src/aar_probe.c", "client/tests/shell_test.c"], True, []))
+        # The scale test has 240 claims and no staging areas (see run_host.sh).
+        programs.append(("scale_test", ["client/src/aar_core.c", "client/src/refplat.c",
+                                        "client/tests/scale_test.c"], False, SCALE_FLAGS))
     flags = ["-std=c11", "-Wall", "-Wextra", "-pedantic", "-Wno-unused-function", "-pthread", "-O1", "-g", "-no-pie", "-fno-pie",
              "-Iclient/tests", "-Iclient/tests/stubs", "-Iclient/include",
              "-I" + os.path.join(ROOT, "include")]
     good = os.path.join(tmp, "good.elf")
-    for prog, srcs, wants_image in programs:
+    stray = []  # programs that failed in tests other than the one named
+    for prog, srcs, wants_image, extra_flags in programs:
         exe = os.path.join(work, prog)
-        build = subprocess.run([CC] + flags + srcs + ["-o", exe], cwd=work,
+        build = subprocess.run([CC] + flags + extra_flags + srcs + ["-o", exe], cwd=work,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if build.returncode != 0:
             return "BAD", "does not build:\n" + build.stdout[-800:]
         cmd = [exe] + ([good] if wants_image else [])
-        run = subprocess.run(cmd, cwd=work, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, timeout=120)
-        out = run.stdout
-        if run.returncode == 0:
+        try:
+            run = subprocess.run(cmd, cwd=work, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, timeout=120)
+            out, code = run.stdout, run.returncode
+        except subprocess.TimeoutExpired as hung:
+            # A hang is a failure too: the test that was running is the one that caught it.
+            out = hung.stdout.decode(errors="replace") if isinstance(hung.stdout, bytes) else (hung.stdout or "")
+            code = 124
+        if code == 0:
             continue
         failed = set(re.findall(r"^FAIL \[([^\]]+)\]", out, re.M))
         last = re.findall(r"^== (\S+)", out, re.M)
-        if run.returncode not in (0, 1) and last:
+        if code not in (0, 1) and last:
             failed.add(last[-1])  # a crash: the test that was running
         if test in failed:
             extra = sorted(failed - {test})
             return "KILLED", prog + (" (also: %s)" % ", ".join(extra) if extra else "")
-        return "BAD", "%s failed in %s, not in %s" % (prog, sorted(failed), test)
+        stray.append("%s failed in %s" % (prog, sorted(failed)))
+    if stray:
+        return "BAD", "%s, not in %s" % ("; ".join(stray), test)
     return "SURVIVED", "every test passed"
 
 

@@ -19,6 +19,19 @@
 
 #define ROUND8(n) (((n) + 7u) & ~7u)
 
+/*
+ * The layout of the handle (aar_core.h): on a 32-bit machine the flags the
+ * dispatcher pass reads of an idle handle and its work list link lie in the
+ * first 16 bytes, one line of a 68060's data cache, and what the interrupt
+ * reads lies within 32 bytes. A field moved out of these breaks the build.
+ */
+#if UINTPTR_MAX == 0xffffffffu
+typedef char aar_handle_pass_in_one_line[
+    offsetof(AARHandle, work_next) + sizeof(void *) <= 16u ? 1 : -1];
+typedef char aar_handle_isr_in_two_lines[
+    offsetof(AARHandle, renew) + 1u - offsetof(AARHandle, cb) <= 32u ? 1 : -1];
+#endif
+
 /* AARExt functions take a handle and no core: they use this one. */
 static aar_core *g_ext_core;
 
@@ -144,30 +157,39 @@ static void cb_add(AARHandle *h, uint32_t off, uint32_t n)
         aar_put_be32(cb + off, aar_get_be32(cb + off) + n);
 }
 
-static int claim_live(const AARHandle *h)
+static inline int claim_live(const AARHandle *h)
 {
     return h->cb != NULL && !h->revoked ? AAR_OK : AAR_E_STALE;
 }
 
-/* ---- The lease list ------------------------------------------------------------------- */
+/* ---- The lease lists ------------------------------------------------------------------ */
+
+/*
+ * The claims are spread over AAR_CORE_LEASE_PERIOD_TICKS lists and a tick
+ * renews the claims of one list, so each claim is renewed once per period and
+ * a tick looks at one fifth of them, not at all. A claim goes on the list with
+ * the fewest, so a tick never has much more than its share. A list is doubly
+ * linked, so a claim leaves it in one step.
+ */
 
 static void lease_unlink(AARHandle *h)
 {
     aar_core *c = h->core;
-    AARHandle *p;
 
     irq_off(c);
-    if (c->lease_head == h) {
-        c->lease_head = h->lease_next;
-    } else {
-        for (p = c->lease_head; p; p = p->lease_next) {
-            if (p->lease_next == h) {
-                p->lease_next = h->lease_next;
-                break;
-            }
-        }
+    if (h->lease_slot != 0u) {
+        uint32_t b = (uint32_t)h->lease_slot - 1u;
+
+        if (h->lease_prev)
+            h->lease_prev->lease_next = h->lease_next;
+        else
+            c->lease_list[b] = h->lease_next;
+        if (h->lease_next)
+            h->lease_next->lease_prev = h->lease_prev;
+        c->lease_count[b]--;
+        h->lease_next = h->lease_prev = NULL;
+        h->lease_slot = 0u;
     }
-    h->lease_next = NULL;
     irq_on(c);
 }
 
@@ -185,74 +207,262 @@ static void lease_link(AARHandle *h)
 {
     aar_core *c = h->core;
     volatile uint8_t *cb = h->cb;
+    uint32_t b, i;
 
-    h->countdown = (uint8_t)(1u + c->opens % AAR_CORE_LEASE_PERIOD_TICKS);
-    c->opens++;
     if (cb)
         lease_store(h, cb);
     h->renew = 1u;
     irq_off(c);
-    h->lease_next = c->lease_head;
-    c->lease_head = h;
+    b = 0u;
+    for (i = 1u; i < AAR_CORE_LEASE_PERIOD_TICKS; i++) {
+        if (c->lease_count[i] < c->lease_count[b])
+            b = i;
+    }
+    h->lease_prev = NULL;
+    h->lease_next = c->lease_list[b];
+    if (h->lease_next)
+        h->lease_next->lease_prev = h;
+    c->lease_list[b] = h;
+    c->lease_count[b]++;
+    h->lease_slot = (uint8_t)(b + 1u);
     irq_on(c);
 }
 
 void aar_core_vblank(aar_core *c)
 {
     AARHandle *h;
-    uint32_t t = c->ticks + 1u;
+    uint32_t t = c->ticks + 1u, phase = c->lease_phase, visits = 0u;
 
     c->ticks = t;
+    c->lease_phase = phase + 1u < AAR_CORE_LEASE_PERIOD_TICKS ? phase + 1u : 0u;
     if ((uint32_t)(t - c->disp_alive) > AAR_CORE_STALL_TICKS)
         return;
-    for (h = c->lease_head; h; h = h->lease_next) {
+    for (h = c->lease_list[phase]; h; h = h->lease_next) {
         volatile uint8_t *cb = h->cb;
 
+        visits++;
         if (!h->renew || !cb)
             continue;
-        if (h->countdown > 1u) {
-            h->countdown--;
-            continue;
-        }
-        h->countdown = AAR_CORE_LEASE_PERIOD_TICKS;
         if (h->pause_until != 0u && (int32_t)(t - h->pause_until) < 0)
             continue;
         lease_store(h, cb);
     }
+    c->stat_lease_visits += visits;
 }
 
 /* ---- The registry --------------------------------------------------------------------- */
 
+/*
+ * A pointer is looked up in a hash table of every registered handle, so that a
+ * call costs one probe or two whatever the number of handles, and a pointer
+ * that is not in it (closed, never a handle) is never dereferenced. The table
+ * changes under env->lock (exclusive) and irq_off together, and a lookup holds
+ * irq_off. It grows at registration, off the interrupt lock: the new table is
+ * built while the old one is still the one that is read, and replaces it in one
+ * step.
+ */
+
+static uint32_t htab_slot(uint32_t shift, const AARHandle *h)
+{
+    return ((uint32_t)(uintptr_t)h * 2654435761u) >> shift;
+}
+
+static void htab_put(AARHandle **table, uint32_t cap, uint32_t shift, AARHandle *h)
+{
+    uint32_t i = htab_slot(shift, h);
+
+    while (table[i])
+        i = (i + 1u) & (cap - 1u);
+    table[i] = h;
+}
+
 /* Caller holds irq_off. */
 static AARHandle *registry_find(aar_core *c, const AARHandle *h)
 {
+    uint32_t i, steps = 1u;
     AARHandle *p;
 
-    for (p = c->handles; p; p = p->next) {
-        if (p == h)
-            return p;
+    if (!c->htab)
+        return NULL;
+    i = htab_slot(c->htab_shift, h);
+    while ((p = c->htab[i]) != NULL && p != h) {
+        i = (i + 1u) & (c->htab_cap - 1u);
+        steps++;
     }
-    return NULL;
+    c->stat_lookup_steps += steps;
+    return p;
+}
+
+/* Caller holds irq_off. The entries after the hole move back, so no probe
+ * sequence is cut and no tombstones pile up. */
+static void htab_delete(aar_core *c, const AARHandle *h)
+{
+    uint32_t mask = c->htab_cap - 1u, i, j, k;
+
+    i = htab_slot(c->htab_shift, h);
+    while (c->htab[i] != h) {
+        if (!c->htab[i])
+            return;
+        i = (i + 1u) & mask;
+    }
+    j = i;
+    for (;;) {
+        j = (j + 1u) & mask;
+        if (!c->htab[j])
+            break;
+        k = htab_slot(c->htab_shift, c->htab[j]);
+        /* The entry at j stays when its home k lies cyclically in (i, j]. */
+        if (i <= j ? (i < k && k <= j) : (i < k || k <= j))
+            continue;
+        c->htab[i] = c->htab[j];
+        i = j;
+    }
+    c->htab[i] = NULL;
+    c->htab_count--;
+}
+
+/* Room for one more entry, at most half full afterwards. Caller holds
+ * env->lock exclusively and not irq_off. */
+static int htab_reserve(aar_core *c)
+{
+    AARHandle **table, **old;
+    AARHandle *h;
+    uint32_t cap, shift, oldcap;
+
+    if (c->htab && (c->htab_count + 1u) * 2u <= c->htab_cap)
+        return AAR_OK;
+    cap = c->htab_cap ? c->htab_cap * 2u : 64u;
+    shift = c->htab_cap ? c->htab_shift - 1u : 26u;
+    table = (AARHandle **)c->env.alloc(c->env.user, cap * (uint32_t)sizeof(*table));
+    if (!table)
+        return AAR_E_NOMEM;
+    for (h = c->handles; h; h = h->next)
+        htab_put(table, cap, shift, h);
+    irq_off(c);
+    old = c->htab;
+    oldcap = c->htab_cap;
+    c->htab = table;
+    c->htab_cap = cap;
+    c->htab_shift = shift;
+    irq_on(c);
+    if (old)
+        c->env.release(c->env.user, old, oldcap * (uint32_t)sizeof(*old));
+    return AAR_OK;
+}
+
+/* ---- The work list -------------------------------------------------------------------- */
+
+/*
+ * What the dispatcher pass has to do for a handle: send a doorbell that was
+ * busy, post the mouse event that waits, retire a doorbell the platform may
+ * still hold, and, for an armed handle, scan for news. A handle with none of
+ * these is not on the list. The owner puts a handle on it after it sets one of
+ * the flags, and the pass takes it off when it finds the flags clear, both
+ * between irq_off and irq_on, so a flag set at any moment is seen by the next
+ * pass.
+ */
+
+static inline int work_wanted(const AARHandle *h)
+{
+    /* A revoked or released claim has no control block: `revoked` says it. */
+    return h->state == AAR_H_LIVE && !h->revoked &&
+           (h->kick_pending | h->mouse_pending | h->poll_needed | h->armed) != 0u;
+}
+
+/* Caller holds irq_off. */
+static void work_add_locked(aar_core *c, AARHandle *h)
+{
+    if (h->in_work)
+        return;
+    h->work_prev = NULL;
+    h->work_next = c->work_head;
+    if (c->work_head)
+        c->work_head->work_prev = h;
+    c->work_head = h;
+    h->in_work = 1u;
+}
+
+/* Caller holds irq_off. */
+static void work_remove_locked(aar_core *c, AARHandle *h)
+{
+    if (!h->in_work)
+        return;
+    if (h->work_prev)
+        h->work_prev->work_next = h->work_next;
+    else
+        c->work_head = h->work_next;
+    if (h->work_next)
+        h->work_next->work_prev = h->work_prev;
+    h->work_next = h->work_prev = NULL;
+    h->in_work = 0u;
+}
+
+/* After a flag has been set: the handle goes on the list when it has work. */
+static void work_note(AARHandle *h)
+{
+    aar_core *c = h->core;
+
+    irq_off(c);
+    if (work_wanted(h))
+        work_add_locked(c, h);
+    irq_on(c);
+}
+
+/* The pass has finished with a handle: off the list unless it still has work. */
+static void work_retire(aar_core *c, AARHandle *h)
+{
+    irq_off(c);
+    if (!work_wanted(h))
+        work_remove_locked(c, h);
+    irq_on(c);
+}
+
+static void registry_add(aar_core *c, AARHandle *h)
+{
+    /* Caller holds env->lock exclusively and irq_off, and htab_reserve has run. */
+    h->prev = NULL;
+    h->next = c->handles;
+    if (c->handles)
+        c->handles->prev = h;
+    c->handles = h;
+    htab_put(c->htab, c->htab_cap, c->htab_shift, h);
+    c->htab_count++;
+}
+
+/* Takes the table away when the last handle has gone: an idle library holds
+ * none. Caller holds env->lock exclusively and not irq_off. */
+static void htab_drop(aar_core *c)
+{
+    AARHandle **table;
+    uint32_t bytes;
+
+    if (!c->htab)
+        return;
+    table = c->htab;
+    bytes = c->htab_cap * (uint32_t)sizeof(*table);
+    irq_off(c);
+    c->htab = NULL;
+    c->htab_cap = c->htab_count = 0u;
+    irq_on(c);
+    c->env.release(c->env.user, table, bytes);
 }
 
 static void registry_remove(aar_core *c, AARHandle *h)
 {
-    AARHandle *p;
-
     env_lock(c, 1);
     irq_off(c);
-    if (c->handles == h) {
+    if (h->prev)
+        h->prev->next = h->next;
+    else if (c->handles == h)
         c->handles = h->next;
-    } else {
-        for (p = c->handles; p; p = p->next) {
-            if (p->next == h) {
-                p->next = h->next;
-                break;
-            }
-        }
-    }
-    h->next = NULL;
+    if (h->next)
+        h->next->prev = h->prev;
+    h->next = h->prev = NULL;
+    htab_delete(c, h);
+    work_remove_locked(c, h);
     irq_on(c);
+    if (c->htab_count == 0u)
+        htab_drop(c);
     env_unlock(c);
 }
 
@@ -336,6 +546,7 @@ static void drop_pointers(AARHandle *h)
     memset(h->out, 0, sizeof(h->out));
     h->mouse_pending = 0u;
     h->kick_pending = 0u;
+    h->poll_needed = 0u;
     h->sq_blocked = 0u;
     memset(&h->sq, 0, sizeof(h->sq));
     memset(&h->cq, 0, sizeof(h->cq));
@@ -625,10 +836,16 @@ int aar_core_open(aar_core *c, uint32_t signal_mask, void *notify, void *opener,
     aar_put_be32(h->cb + AAR_CB_CLIENT_PRESENT, 1u);
 
     env_lock(c, 1);
+    rc = htab_reserve(c);
+    if (rc != AAR_OK) {
+        env_unlock(c);
+        goto undo;
+    }
     irq_off(c);
-    h->next = c->handles;
-    c->handles = h;
+    registry_add(c, h);
     h->state = AAR_H_LIVE;
+    if (work_wanted(h))
+        work_add_locked(c, h); /* armed at open: a notify port was given */
     irq_on(c);
     env_unlock(c);
     lease_link(h);
@@ -735,6 +952,9 @@ void aar_core_shutdown(aar_core *c)
             handle_free(found);
         }
     }
+    env_lock(c, 1);
+    htab_drop(c); /* nothing is left to look up */
+    env_unlock(c);
 }
 
 /* ---- Tags --------------------------------------------------------------------------------- */
@@ -1019,6 +1239,8 @@ static void kick_send(AARHandle *h)
     if (rc == AAR_OK) {
         h->kick_pending = 0u;
         h->stats.kicks++;
+        if (o->poll) /* the request may still be in flight: the pass retires it */
+            h->poll_needed = 1u;
     } else {
         /* BUSY: the previous bell is still on its way; the bits stay for the
          * next pass. The kick is a hint, a lost one costs latency only. STALE
@@ -1035,6 +1257,7 @@ static void kick(AARHandle *h, uint32_t bits)
         h->stats.kicks_coalesced++;
     h->kick_pending |= bits;
     kick_send(h);
+    work_note(h); /* a bell that was busy, or still in flight, is the pass's */
 }
 
 static void note_event_drop(AARHandle *h)
@@ -1061,6 +1284,8 @@ static int mouse_post(AARHandle *h)
         h->mouse_pending = 0u;
         h->stats.events_posted++;
         kick(h, AAR_PLAT_KICK_CQ);
+    } else {
+        work_note(h); /* the CQ is full: the pass posts it when there is room */
     }
     return rc;
 }
@@ -1260,8 +1485,10 @@ static void sq_pop(AARHandle *h)
     uint32_t used;
 
     /* A full SQ means the app may be parked waiting for room. */
-    if (aar_queue_used(&h->sq, &used) == AAR_OK && used == h->sq.depth)
+    if (aar_queue_used(&h->sq, &used) == AAR_OK && used == h->sq.depth) {
         h->kick_pending |= AAR_PLAT_KICK_SQ;
+        work_note(h);
+    }
     aar_queue_pop(&h->sq, ops_of(h)->barrier_release);
 }
 
@@ -1599,6 +1826,8 @@ ULONG aar_core_message_signal(aar_core *c, AARHandle *h)
     if (registry_find(c, h) && h->state == AAR_H_LIVE) {
         h->armed = 1u;
         mask = h->signal_mask;
+        if (work_wanted(h))
+            work_add_locked(c, h);
     }
     irq_on(c);
     return mask;
@@ -1942,40 +2171,49 @@ static int bg_take(aar_core *c, AARHandle *h)
 
 void aar_core_dispatch(aar_core *c, aar_core_notify_fn notify, void *user)
 {
-    AARHandle *h;
-    uint32_t t = c->ticks;
+    AARHandle *h, *next;
+    uint32_t t = c->ticks, visits = 0u;
 
     c->disp_alive = t;
     env_lock(c, 0);
-    for (h = c->handles; h; h = h->next) {
+    /* Only the handles that have work: an idle handle is not on the list. A
+     * handle put on it during the pass is seen by the next one. */
+    for (h = c->work_head; h; h = next) {
         uint32_t type, tail = 0u;
         int carries_end, answer;
 
-        if (h->state != AAR_H_LIVE)
+        next = h->work_next;
+        visits++;
+        if (h->state != AAR_H_LIVE) {
+            work_retire(c, h);
             continue;
-        if (bg_take(c, h)) {
+        }
+        if ((h->kick_pending | h->mouse_pending | h->poll_needed) != 0u && bg_take(c, h)) {
             if (claim_live(h) == AAR_OK)
                 kick_send(h);
             if (claim_live(h) == AAR_OK) /* the bell may have found the claim gone */
                 (void)mouse_post(h);
-            if (claim_live(h) == AAR_OK && c->plat->ops->poll)
-                c->plat->ops->poll(c->plat, &h->claim);
+            if (claim_live(h) == AAR_OK && h->poll_needed)
+                h->poll_needed = c->plat->ops->poll(c->plat, &h->claim) != 0;
             h->bg = 0u;
         }
         type = notify_scan(h, t, &tail, &carries_end);
-        if (!type)
-            continue;
-        answer = notify ? notify(user, h, type) : AAR_CORE_NOTIFIED;
-        if (answer == AAR_CORE_NOTIFIED || answer == AAR_CORE_NOTIFY_BUSY) {
-            /* Work is announced again after a few ticks, and a new entry
-             * after the tail moved. */
-            h->last_signal_tick = t;
-            h->last_tail = tail;
+        if (type) {
+            answer = notify ? notify(user, h, type) : AAR_CORE_NOTIFIED;
+            if (answer == AAR_CORE_NOTIFIED || answer == AAR_CORE_NOTIFY_BUSY) {
+                /* Work is announced again after a few ticks, and a new entry
+                 * after the tail moved. */
+                h->last_signal_tick = t;
+                h->last_tail = tail;
+            }
+            /* The end is announced only by an event that carries it. */
+            if (carries_end && answer == AAR_CORE_NOTIFIED)
+                h->ended_notified = 1u;
         }
-        /* The end is announced only by an event that carries it. */
-        if (carries_end && answer == AAR_CORE_NOTIFIED)
-            h->ended_notified = 1u;
+        if (!work_wanted(h)) /* looked at again between irq_off and irq_on */
+            work_retire(c, h);
     }
+    c->stat_pass_visits += visits;
     env_unlock(c);
 }
 
@@ -1990,10 +2228,36 @@ void aar_core_event_fill(AARHandle *h, uint32_t type)
         h->event.status.size = (ULONG)sizeof(h->event.status);
 }
 
+/*
+ * How the owners look, with the answer for one owner kept across the walk: the
+ * handles of a task are next to each other, and asking the system about a task
+ * (a walk of its task lists under Disable) once per handle would cost more than
+ * everything else the pass does.
+ */
+struct owner_memo {
+    aar_owner_stamp stamp;
+    int state;
+    int have;
+};
+
+static int owner_look(struct owner_memo *m, aar_core_owner_fn owner_state, void *user,
+                      const aar_owner_stamp *o)
+{
+    if (!m->have || m->stamp.id != o->id || m->stamp.name != o->name ||
+        m->stamp.number != o->number || m->stamp.kind != o->kind) {
+        m->state = owner_state(user, o);
+        m->stamp = *o;
+        m->have = 1;
+    }
+    return m->state;
+}
+
 uint32_t aar_core_reap(aar_core *c, aar_core_owner_fn owner_state, void *user)
 {
     uint32_t n = 0u;
+    struct owner_memo memo; /* kept over the restarts: the dead owner is asked about once */
 
+    memo.have = 0;
     for (;;) {
         AARHandle *h, *victim = NULL;
 
@@ -2002,7 +2266,7 @@ uint32_t aar_core_reap(aar_core *c, aar_core_owner_fn owner_state, void *user)
             /* A handle left closing by an owner that died in AARClose is taken
              * like any other handle of a dead owner: teardown is idempotent. */
             if ((h->state == AAR_H_LIVE || h->state == AAR_H_CLOSING) &&
-                owner_state(user, &h->owner) != AAR_OWNER_ALIVE) {
+                owner_look(&memo, owner_state, user, &h->owner) != AAR_OWNER_ALIVE) {
                 victim = h;
                 break;
             }
@@ -2016,12 +2280,14 @@ uint32_t aar_core_reap(aar_core *c, aar_core_owner_fn owner_state, void *user)
         victim->state = AAR_H_DEAD;
         n++;
     }
+    memo.have = 0;
     for (;;) {
         AARHandle *h, *gone = NULL;
 
         env_lock(c, 0);
         for (h = c->handles; h; h = h->next) {
-            if (h->state == AAR_H_DEAD && owner_state(user, &h->owner) == AAR_OWNER_ABSENT) {
+            if (h->state == AAR_H_DEAD &&
+                owner_look(&memo, owner_state, user, &h->owner) == AAR_OWNER_ABSENT) {
                 gone = h;
                 break;
             }

@@ -155,10 +155,16 @@ status in an event is the one of the moment it was posted.
 
 Only handles that have been armed are watched: calling `AARMessageSignal` or
 giving a notify port arms one. A client that polls from its own timer (aar-run
-does, every millisecond by default) never arms and costs the library nothing. On the
-ZZ9000 the library looks at armed handles at each vertical blank, so a wake-up
-takes up to 20 ms on a PAL machine. A client that needs a faster response polls
-`AARServiceNext` itself.
+does, every millisecond by default) never arms and costs the library nothing:
+a handle that is not armed and has no doorbell or mouse event waiting is not
+visited at all by the library's dispatcher, so the cost of the library does not
+grow with the number of such handles. On the ZZ9000 the library looks at armed
+handles at each vertical blank, so a wake-up takes up to 20 ms on a PAL machine,
+and each armed handle costs three reads of its control block per blank. A client
+that needs a faster response polls `AARServiceNext` itself.
+
+A call that takes a handle finds it in a table in one or two steps, however many
+handles are open, and `AAROpen` and `AARClose` do not walk the handles either.
 
 ### The lease
 
@@ -169,7 +175,9 @@ is stuck for good but still exists keeps its app too, until someone kills the
 client, then the library releases it as for any dead owner. If the library's
 own dispatcher process dies or stalls for five seconds, the library stops
 renewing and the platform's lease expires, so a crashed library cannot hold an
-app for ever.
+app for ever. The interrupt renews one fifth of the claims at each vertical
+blank, so each claim is renewed once in five blanks (about 100 ms) and the
+interrupt's work is proportional to a fifth of the open handles.
 
 The dispatcher process starts with the first call that needs the platform
 (`AARQuery`, `AAROpen`, `AARExt`), and the last `CloseLibrary` stops it and

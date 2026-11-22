@@ -208,10 +208,15 @@ struct aar_plat_ops {
     int (*kick)(struct aar_plat *p, struct aar_plat_claim *c, uint32_t bits);
 
     /*
-     * Housekeeping for one claim, called by the dispatcher about every vertical
-     * blank: retire a completed doorbell request. May be NULL.
+     * Housekeeping for one claim: retire a completed doorbell request. The
+     * dispatcher calls it at each vertical blank for a claim whose doorbell
+     * went out (a successful `kick`) and has not been seen to finish, and for
+     * no other claim. It returns 1 while a doorbell request is still in flight,
+     * so that the dispatcher keeps polling, and 0 when there is nothing left to
+     * retire, after which the claim costs the dispatcher nothing until the next
+     * `kick`. May be NULL: a platform without it has nothing to retire.
      */
-    void (*poll)(struct aar_plat *p, struct aar_plat_claim *c);
+    int (*poll)(struct aar_plat *p, struct aar_plat_claim *c);
 
     /*
      * AARExt: the platform's extension table for `ext_id`, or NULL. L1 has

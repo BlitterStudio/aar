@@ -29,12 +29,20 @@
 extern "C" {
 #endif
 
+/* The claims and the two areas behind the control block may be changed by a build
+ * (-D) that never loads an image or serves a buffer: the scale test has 240 claims. */
+#ifndef REFPLAT_CLAIMS
 #define REFPLAT_CLAIMS      8u
+#endif
 #define REFPLAT_DEPTH       AAR_QUEUE_DEPTH_DEFAULT
 #define REFPLAT_PAIR_STRIDE 0x4000u  /* control block and both rings, padded to 16 KiB */
+#ifndef REFPLAT_LOAD_STRIDE
 #define REFPLAT_LOAD_STRIDE 0x12000u /* a 64 KiB staging area and the argument area */
+#endif
 #define REFPLAT_CHUNK_MAX   0x10000u
+#ifndef REFPLAT_BUF_STRIDE
 #define REFPLAT_BUF_STRIDE  0x10000u /* the service buffers of one claim */
+#endif
 #define REFPLAT_CLAIM_STRIDE (REFPLAT_PAIR_STRIDE + REFPLAT_LOAD_STRIDE + REFPLAT_BUF_STRIDE)
 #define REFPLAT_TOKEN_BASE  0x00100000u
 #define REFPLAT_ARENA_BYTES (REFPLAT_CLAIMS * REFPLAT_CLAIM_STRIDE)
@@ -74,6 +82,7 @@ struct refplat_state {
     uint32_t refuse_reason;       /* AAR_REASON_* of the refusal */
     int attach_rc;                /* what `attach` answers (default AAR_OK) */
     uint32_t kick_busy;           /* the next n kicks answer AAR_E_BUSY */
+    uint32_t poll_inflight;       /* the next n polls answer 1: a doorbell is still in flight */
     uint32_t map_mapf;            /* AAR_MAPF_* the map reports (default AAR_MAPF_UNCACHED) */
     int load_begin_rc;            /* what load_begin answers (default AAR_OK) */
     uint32_t load_begin_reason;   /* the reason with AAR_E_NORESOURCE */

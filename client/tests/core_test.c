@@ -145,8 +145,8 @@ static void on_release(void *user, uint32_t handle)
     rel_lock_depth = lock_depth;
     rel_irq_depth = irq_depth;
     rel_in_lease_list = 0;
-    for (h = core.lease_head; h; h = h->lease_next) {
-        if (h->claim.handle == handle)
+    for (h = core.handles; h; h = h->next) {
+        if (h->claim.handle == handle && h->lease_slot != 0u)
             rel_in_lease_list = 1;
     }
     if (rel_check_lease && slot >= 0) {
@@ -237,6 +237,17 @@ static uint32_t get_le(const volatile uint8_t *p)
 static void dispatch_once(void)
 {
     aar_core_dispatch(&core, NULL, NULL);
+}
+
+/* The claims on the lease lists. */
+static int lease_listed(void)
+{
+    uint32_t i;
+    int n = 0;
+
+    for (i = 0; i < AAR_CORE_LEASE_PERIOD_TICKS; i++)
+        n += (int)core.lease_count[i];
+    return n;
 }
 
 /* ---- Tests ------------------------------------------------------------------------------ */
@@ -915,8 +926,12 @@ static void test_kick(void)
 
         req.size = sizeof(req);
         refplat.claims[slot].kick_bits = 0;
+        dispatch_once();
+        dispatch_once();
+        CHECK(h->in_work == 0); /* idle */
         CHECK(aar_core_service_next(&core, h, &req) == AAR_OK && req.id == 100);
         CHECK(h->kick_pending & AAR_PLAT_KICK_SQ);
+        CHECK(h->in_work == 1); /* the bell is the pass's to send */
         CHECK(aar_core_service_next(&core, h, &req) == AAR_OK && req.id == 101);
         CHECK(refplat.claims[slot].kick_bits & AAR_PLAT_KICK_SQ);
     }
@@ -1473,7 +1488,7 @@ static void test_close_order(void)
     CHECK(rel_lock_depth == 0 && rel_irq_depth == 0); /* nothing held across the platform call */
     CHECK(rel_lease_after == rel_lease_before); /* the interrupt did not store into the claim */
     CHECK(aar_get_be32(refplat_cb(0) + AAR_CB_LEASE_COUNTER) == 0xAAAAAAAAu);
-    CHECK(core.lease_head == h2 && h2->lease_next == NULL);
+    CHECK(lease_listed() == 1 && h2->lease_slot != 0 && h2->lease_next == NULL && h2->lease_prev == NULL);
     /* The memory of a released claim is never written by the interrupt either. */
     {
         uint32_t w = aar_get_be32(refplat_cb(0) + AAR_CB_LEASE_COUNTER);
@@ -1534,7 +1549,7 @@ static void test_reap(void)
     CHECK(aar_core_start(&core, a1, argv, 1) == AAR_OK);
     dispatch_once();
     CHECK(aar_core_reap(&core, owner_fn, NULL) == 0);
-    CHECK(refplat_live() == 3 && pool_live == 3);
+    CHECK(refplat_live() == 3 && pool_live == 3 + 1); /* three handles and the handle table */
     /* The owner is replaced at its address (or renamed): the reap takes its handles. */
     ostate[0] = AAR_OWNER_CHANGED;
     rel_check_lease = 1;
@@ -1547,7 +1562,7 @@ static void test_reap(void)
     rel_check_lease = 0;
     CHECK(refplat_live() == 1);
     CHECK(a1->state == AAR_H_DEAD && a2->state == AAR_H_DEAD);
-    CHECK(pool_live == 3); /* the tombstones stay */
+    CHECK(pool_live == 3 + 1); /* the tombstones stay */
     CHECK(a1->claim.handle == 0 && a1->cb == NULL);
     /* A tombstone answers AAR_E_STALE, to the old owner and to anyone else. */
     CHECK(aar_core_status(&core, a1, &st) == AAR_E_STALE);
@@ -1570,11 +1585,11 @@ static void test_reap(void)
         CHECK(lease_of(b1) != before);
     }
     CHECK(aar_core_reap(&core, owner_fn, NULL) == 0);
-    CHECK(pool_live == 3);
+    CHECK(pool_live == 3 + 1);
     /* Once nothing is at the address any more, the next pass frees them. */
     ostate[0] = AAR_OWNER_ABSENT;
     CHECK(aar_core_reap(&core, owner_fn, NULL) == 0);
-    CHECK(pool_live == 1);
+    CHECK(pool_live == 1 + 1);
     cur = 1;
     CHECK(aar_core_close_owner(&core) == 1);
     finish();
@@ -1894,6 +1909,18 @@ static void test_notify(void)
     CHECK(refplat_app_request(s1, AAR_OP_CONSOLE_WRITE, 0, 1, arg, 0, 0, 0) == AAR_OK);
     scan();
     CHECK(nrec == 0);
+    /* ... also when it is on the dispatcher's work list for a doorbell. */
+    {
+        aar_event key;
+
+        memset(&key, 0, sizeof(key));
+        key.type = AAR_EV_KEY_DOWN;
+        refplat.kick_busy = 1;
+        CHECK(aar_core_post_event(&core, h1, &key) == AAR_OK);
+        CHECK(h1->in_work == 1 && h1->armed == 0);
+        scan();
+        CHECK(nrec == 0 && h1->kick_pending == 0); /* the bell went, nothing was reported */
+    }
     CHECK(aar_core_message_signal(&core, h1) == 1 && h1->armed == 1);
     scan();
     CHECK(nrec == 1 && rec[0].h == h1 && rec[0].type == AAR_NOTIFY_REQUEST);
@@ -2000,7 +2027,7 @@ static void test_revoke(void)
     dispatch_once();
     refplat_revoke(slot);
     CHECK(aar_core_stop(&core, h) == AAR_E_STALE); /* the platform's answer revokes the handle */
-    CHECK(h->revoked == 1 && h->cb == NULL && core.lease_head == NULL);
+    CHECK(h->revoked == 1 && h->cb == NULL && lease_listed() == 0);
     frozen = aar_get_be32(refplat_cb(slot) + AAR_CB_LEASE_COUNTER);
     for (i = 0; i < 30; i++)
         aar_core_vblank(&core);
@@ -2315,7 +2342,7 @@ static void expect_revoked(AARHandle *h)
 {
     uint32_t frozen = lease_word(h);
 
-    CHECK(h->revoked == 1 && h->cb == NULL && h->renew == 0);
+    CHECK(h->revoked == 1 && h->cb == NULL && h->renew == 0 && h->poll_needed == 0);
     run_lease();
     CHECK(lease_word(h) == frozen);
     CHECK(aar_core_status(&core, h, &(AARStatusInfo){ .size = 16 }) == AAR_E_STALE);
@@ -2365,8 +2392,16 @@ static void test_stale_platform(void)
     refplat_revoke(slot);
     polls = refplat.polls;
     dispatch_once();
-    CHECK(refplat.polls - polls == 1); /* the live claim only: the platform is not polled for the dead one */
+    CHECK(refplat.polls == polls); /* no poll: nothing is in flight, and not for the dead one */
     expect_revoked(h);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* 2b. kick, from the owner, on a claim whose earlier bell is still polled. */
+    h = open1(1);
+    slot = slot_of(h);
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK && h->poll_needed == 1);
+    refplat_revoke(slot);
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK);
+    expect_revoked(h); /* nothing is left to poll */
     CHECK(aar_core_close(&core, h) == AAR_OK);
     /* 3. kick, at the start of a service call: it goes no further. */
     h = open1(1);
@@ -2439,6 +2474,139 @@ static void test_stale_platform(void)
     finish();
 }
 
+/*
+ * The work list of the dispatcher: a handle is on it while it has something for
+ * the pass (a doorbell to send or retire, a mouse event that waits, a scan to
+ * make), and on nothing else.
+ */
+static int work_count(void)
+{
+    AARHandle *h;
+    int n = 0;
+
+    for (h = core.work_head; h && n < 64; h = h->work_next) {
+        CHECK(h->in_work == 1);
+        CHECK(h->work_next == NULL || h->work_next->work_prev == h);
+        CHECK(h->work_prev != NULL || core.work_head == h);
+        n++;
+    }
+    return n;
+}
+
+static void test_work_list(void)
+{
+    AARHandle *h, *a, *b;
+    struct aar_plat_ops noop;
+    aar_event ev;
+    ULONG reason;
+    int port, slot;
+
+    setup("work_list");
+    memset(&ev, 0, sizeof(ev));
+    ev.type = AAR_EV_KEY_DOWN;
+    /* An idle handle is on no list; one with a notify port, or armed by
+     * AARMessageSignal, is on it for good. */
+    a = open1(1);
+    CHECK(a->in_work == 0 && work_count() == 0);
+    reason = 0;
+    CHECK(aar_core_open(&core, 2, &port, NULL, &b, &reason) == AAR_OK);
+    CHECK(b->armed == 1 && b->in_work == 1 && work_count() == 1);
+    CHECK(aar_core_message_signal(&core, a) == 1u);
+    CHECK(a->in_work == 1 && work_count() == 2);
+    CHECK(aar_core_message_signal(&core, a) == 1u); /* once more: not twice */
+    CHECK(work_count() == 2);
+    dispatch_once();
+    dispatch_once();
+    CHECK(work_count() == 2); /* armed handles stay */
+    CHECK(aar_core_close(&core, a) == AAR_OK);
+    CHECK(work_count() == 1 && b->in_work == 1);
+    CHECK(aar_core_close(&core, b) == AAR_OK);
+    CHECK(core.work_head == NULL);
+    /* A bell that was busy is the pass's; a bell sent is polled until the platform
+     * has retired it; then the handle is off the list. */
+    h = open1(1);
+    slot = slot_of(h);
+    refplat.kick_busy = 1;
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK);
+    CHECK(h->kick_pending != 0 && h->in_work == 1 && work_count() == 1);
+    h->busy = 1; /* the owner is inside a call: the pass leaves it, and keeps it */
+    dispatch_once();
+    CHECK(h->kick_pending != 0 && h->in_work == 1);
+    h->busy = 0;
+    refplat.poll_inflight = 1;
+    dispatch_once();
+    CHECK(h->kick_pending == 0 && refplat.claims[slot].kicks == 1);
+    CHECK(h->poll_needed == 1 && h->in_work == 1); /* the platform still holds the request */
+    dispatch_once();
+    CHECK(h->poll_needed == 0 && h->in_work == 0 && core.work_head == NULL);
+    /* A bell sent from the owner's call is polled at the next pass. */
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK);
+    CHECK(h->poll_needed == 1 && h->in_work == 1);
+    dispatch_once();
+    CHECK(h->poll_needed == 0 && h->in_work == 0);
+    /* A platform with no poll has nothing to retire. */
+    noop = *refplat.plat.ops;
+    noop.poll = NULL;
+    {
+        const struct aar_plat_ops *saved = refplat.plat.ops;
+
+        refplat.plat.ops = &noop;
+        CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK);
+        CHECK(h->poll_needed == 0 && h->in_work == 0);
+        refplat.kick_busy = 1;
+        CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK);
+        CHECK(h->kick_pending != 0 && h->in_work == 1);
+        dispatch_once();
+        CHECK(h->kick_pending == 0 && h->poll_needed == 0 && h->in_work == 0);
+        refplat.plat.ops = saved;
+    }
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    /* Handles with work close in any order: the list stays whole. */
+    {
+        AARHandle *hs[5];
+        int i;
+
+        for (i = 0; i < 5; i++)
+            hs[i] = open1(1);
+        refplat.kick_busy = 5;
+        for (i = 0; i < 5; i++)
+            CHECK(aar_core_post_event(&core, hs[i], &ev) == AAR_OK);
+        CHECK(work_count() == 5);
+        CHECK(aar_core_close(&core, hs[2]) == AAR_OK); /* the middle */
+        CHECK(work_count() == 4);
+        CHECK(aar_core_close(&core, hs[4]) == AAR_OK); /* the head: the newest was put first */
+        CHECK(work_count() == 3);
+        CHECK(aar_core_close(&core, hs[0]) == AAR_OK); /* the tail */
+        CHECK(work_count() == 2);
+        dispatch_once();
+        CHECK(work_count() == 0 && core.work_head == NULL);
+        CHECK(aar_core_close(&core, hs[1]) == AAR_OK);
+        CHECK(aar_core_close(&core, hs[3]) == AAR_OK);
+    }
+    /* A revoked claim leaves the list; a reaped handle too. */
+    a = open1(1);
+    cur = 1;
+    b = open1(1);
+    cur = 0;
+    refplat.kick_busy = 2;
+    CHECK(aar_core_post_event(&core, a, &ev) == AAR_OK);
+    cur = 1;
+    CHECK(aar_core_post_event(&core, b, &ev) == AAR_OK);
+    cur = 0;
+    CHECK(work_count() == 2);
+    refplat_revoke(slot_of(a));
+    memset(ostate, 0, sizeof(ostate));
+    ostate[1] = AAR_OWNER_CHANGED;
+    CHECK(aar_core_reap(&core, owner_fn, NULL) == 1); /* b's owner is gone */
+    CHECK(b->state == AAR_H_DEAD);
+    dispatch_once();
+    CHECK(a->revoked == 1 && a->in_work == 0 && b->in_work == 0 && core.work_head == NULL);
+    CHECK(aar_core_close(&core, a) == AAR_OK);
+    ostate[1] = AAR_OWNER_ABSENT;
+    CHECK(aar_core_reap(&core, owner_fn, NULL) == 0);
+    finish();
+}
+
 int main(void)
 {
     test_open_close_many();
@@ -2464,6 +2632,7 @@ int main(void)
     test_notify_answers();
     test_revoke();
     test_stale_platform();
+    test_work_list();
     test_alloc_balance();
     test_open_failures();
     test_size_arithmetic();

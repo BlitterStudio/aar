@@ -344,11 +344,16 @@ static int op_kick(struct aar_plat *p, struct aar_plat_claim *c, uint32_t bits)
     return AAR_OK;
 }
 
-static void op_poll(struct aar_plat *p, struct aar_plat_claim *c)
+static int op_poll(struct aar_plat *p, struct aar_plat_claim *c)
 {
     (void)p;
     (void)c;
     refplat.polls++;
+    if (refplat.poll_inflight) {
+        refplat.poll_inflight--;
+        return 1;
+    }
+    return 0;
 }
 
 static void op_cache_publish(struct aar_plat *p, const volatile void *ptr, uint32_t len)
