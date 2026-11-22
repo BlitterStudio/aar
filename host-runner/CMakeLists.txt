@@ -119,6 +119,17 @@ aar_host_executable(msgflood SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/msgflood.
 aar_host_executable(conshort SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/conshort.c)
 aar_host_executable(mailbox SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/mailbox.c)
 
+# Conformance payloads (conformance/payloads) that make sense on the host. The
+# host runner is the reference for app semantics (spec 11.1): the core group
+# must pass. A test that needs a client or a platform prints "SKIP host: ..."
+# here. Add an area to the list when its payload builds for the host.
+set(AAR_CONF_DIR ${AAR_ROOT}/conformance)
+set(AAR_CONF_HOST_PAYLOADS time)
+foreach(area IN LISTS AAR_CONF_HOST_PAYLOADS)
+  aar_host_executable(conf_${area}
+    SOURCES ${AAR_CONF_DIR}/payloads/conf_${area}.c)
+endforeach()
+
 # Direct unit checks: they include the src file under test, so they do not
 # link the runner library.
 set(AAR_UNIT_INCLUDES
@@ -198,6 +209,30 @@ if(BUILD_TESTING)
   aar_host_test(nogl EXE mgl-conformance)
   aar_host_test(keys EXE hello ENV "AAR_HOST_SELFTEST=1")
   aar_host_test(contract)
+
+  # conf_<area> runs the payload and checks its AAR-CONF lines against
+  # conformance/TESTS.md; conf_catalogue checks the catalogue itself.
+  foreach(area IN LISTS AAR_CONF_HOST_PAYLOADS)
+    string(TOUPPER ${area} AREA_UPPER)
+    add_test(
+      NAME conf_${area}
+      COMMAND ${Python3_EXECUTABLE} ${AAR_CONF_DIR}/tools/check_results.py
+              payload --area C-${AREA_UPPER} --profile host --
+              $<TARGET_FILE:conf_${area}> --headless
+    )
+    set_tests_properties(conf_${area} PROPERTIES
+      TIMEOUT 120
+      ENVIRONMENT "${AAR_TEST_ENV}"
+    )
+  endforeach()
+  add_test(
+    NAME conf_catalogue
+    COMMAND ${Python3_EXECUTABLE} ${AAR_CONF_DIR}/tools/conf_catalogue.py check
+  )
+  add_test(
+    NAME conf_tools
+    COMMAND ${Python3_EXECUTABLE} ${AAR_CONF_DIR}/tests/tools_test.py
+  )
   add_test(NAME files_unit COMMAND files_unit)
   add_test(NAME memory_unit COMMAND memory_unit)
   add_test(NAME sleep_unit COMMAND sleep_unit)
