@@ -252,9 +252,10 @@ static void prep_show(struct conf_run *run)
 }
 
 static const struct conf_variant variants[] = {
-    { "std", prep_reset },
+    /* std ends in a stop (C-INPUT.2), so it runs last. */
     { "overfull", prep_reset },
     { "show", prep_show },
+    { "std", prep_reset },
 };
 
 /* C-INPUT.9: with the queue overfull the new events are dropped, never the old ones. */

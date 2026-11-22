@@ -23,7 +23,7 @@
 #define CD_K_FRAME   "CONF-DISPLAY-FRAME"
 /* The runner compares the palette it received with cd_pal and answers with a result message
  * (ok, count = entries it has, errors = entries that differ). */
-#define CD_K_PALETTE "CONF-DISPLAY-PALETTE"
+#define CD_K_PALETTE "CONF-DISPLAY-PAL"
 
 #define CD_PAT_BYTES 1u /* row bytes (cd_byte(b, i, y)); the padding is not looked at */
 #define CD_PAT_QUADS 2u /* four colours: red, green / blue, white, by the layout in c */
@@ -151,5 +151,8 @@ static inline void cd_quad_colour(uint32_t q, uint32_t *r, uint32_t *g, uint32_t
     *g = q == 1 || q == 3 ? 255u : 0u;
     *b = q == 2 || q == 3 ? 255u : 0u;
 }
+
+_Static_assert(sizeof CD_K_PAD <= 20 && sizeof CD_K_FRAME <= 20 && sizeof CD_K_PALETTE <= 20,
+               "a display keyword is longer than 19 characters");
 
 #endif

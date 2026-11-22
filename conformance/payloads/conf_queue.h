@@ -60,4 +60,8 @@ static inline int cq_is_spin(const uint8_t *m)
     return m[0] == 'S' && m[1] == 'P' && m[2] == 'I' && m[3] == 'N';
 }
 
+_Static_assert(sizeof CQ_K_HOLD <= 20 && sizeof CQ_K_LOGSTAT <= 20 && sizeof CQ_K_SLOW <= 20 &&
+                   sizeof CQ_K_CHECK <= 20,
+               "a queue keyword is longer than 19 characters");
+
 #endif

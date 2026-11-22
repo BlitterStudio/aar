@@ -140,4 +140,9 @@ static inline void cm_make_result(uint8_t *m, uint32_t ok, uint32_t count,
     cm_put32(m, 24, y);
 }
 
+_Static_assert(sizeof CM_K_BEGIN <= 20 && sizeof CM_K_END <= 20 && sizeof CM_K_SEND <= 20 &&
+                   sizeof CM_K_ECHO <= 20 && sizeof CM_K_STOPWAIT <= 20 &&
+                   sizeof CM_K_STOPMSG <= 20 && sizeof CM_K_FILL <= 20 && sizeof CM_K_GOT <= 20,
+               "a message keyword is longer than 19 characters");
+
 #endif

@@ -18,7 +18,7 @@
 #define CI_K_STOPEV    "CONF-INPUT-STOPEV"
 /* The runner posts the events of ci_keys, ci_mouse or ci_joy. */
 #define CI_K_KEYS      "CONF-INPUT-KEYS"
-#define CI_K_MOUSE     "CONF-INPUT-MOUSE"
+#define CI_K_MOUSE     "CONF-INPUT-MOUSESEQ"
 #define CI_K_JOY       "CONF-INPUT-JOY"
 /* a = AAR_BREAK_CTRL_D, _E or _F: the runner signals its own task Ctrl-D, Ctrl-E or Ctrl-F. */
 #define CI_K_BREAK     "CONF-INPUT-BREAK"
@@ -28,7 +28,7 @@
 /* The runner posts 100 key events and then 20 mouse events of dx 1, with no retry, and
  * answers with a result message (count = key posts refused, errors = mouse posts refused,
  * x = mouse posts accepted). */
-#define CI_K_MOUSEFULL "CONF-INPUT-MOUSEFULL"
+#define CI_K_MOUSEFULL "CONF-INPUT-MFULL"
 /* The runner answers with a result message: count = events dropped since MOUSEFULL that
  * were mouse events (the counter minus the refused key posts). */
 #define CI_K_DROPS     "CONF-INPUT-DROPS"
@@ -73,5 +73,12 @@ static const struct ci_ev ci_joy[] = {
 };
 
 #define CI_COUNT(a) ((uint32_t)(sizeof(a) / sizeof((a)[0])))
+
+/* A keyword is at most 19 characters (cm_keyword). */
+_Static_assert(sizeof CI_K_STOPEV <= 20 && sizeof CI_K_KEYS <= 20 && sizeof CI_K_MOUSE <= 20 &&
+                   sizeof CI_K_JOY <= 20 && sizeof CI_K_BREAK <= 20 && sizeof CI_K_FLOOD <= 20 &&
+                   sizeof CI_K_MOUSEFULL <= 20 && sizeof CI_K_DROPS <= 20 &&
+                   sizeof CI_K_OVERFULL <= 20 && sizeof CI_K_GOT <= 20 && sizeof CI_K_SHOWN <= 20,
+               "an input keyword is longer than 19 characters");
 
 #endif

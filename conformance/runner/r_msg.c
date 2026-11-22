@@ -280,13 +280,15 @@ static void prep_exitmsgs(struct conf_run *run)
 }
 
 static const struct conf_variant variants[] = {
+    /* The variants that stop the app come last: a run that ends in a stop may lose its end
+     * line, and the core does not run the later variants after a run without one. */
     { "std", prep_std },
     { "hold", prep_hold },
-    { "stopwait", prep_stopwait },
-    { "stopmsg", prep_stopmsg },
     { "park", prep_park },
     { "inbox", prep_inbox },
     { "exitmsgs", prep_exitmsgs },
+    { "stopwait", prep_stopwait },
+    { "stopmsg", prep_stopmsg },
 };
 
 /* ---- Rows the runner judges ------------------------------------------------------------- */

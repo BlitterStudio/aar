@@ -55,4 +55,6 @@ static inline int ca_is_hold_marker(const uint8_t *m)
     return m[0] == 'A' && m[1] == 'H' && m[2] == 'L' && m[3] == 'D';
 }
 
+_Static_assert(sizeof CA_K_MORE <= 20, "an audio keyword is longer than 19 characters");
+
 #endif
