@@ -322,15 +322,15 @@ path) and checks the files the payload leaves behind.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-CON.1 | 7.2 | MUST | core | any | payload | todo | `console_write` of 200 KiB returns `AAR_OK` with `*n` equal to the length and the runner's capture holds every byte in order (pattern checked) |
-| C-CON.2 | 7.2 | MUST | core | any | payload | todo | with the client's output held back for 500 ms the write parks and then completes without losing a byte |
-| C-CON.3 | 7.2 | MUST | core | any | payload | todo | `console_read` parks until the client has input and returns the bytes the runner feeds (runner peer feeds after 300 ms) |
-| C-CON.4 | 7.2 | MUST | core | any | payload | todo | `console_read` returns `AAR_OK` with `*n == 0` at the end of input |
-| C-CON.5 | 7.2 | MUST | core | any | payload | todo | a stop request ends a console wait with `AAR_E_IO` (runner peer holds the input and stops the app) |
-| C-CON.6 | 3.8 | MUST | core | any | payload | todo | libc flavour: `write(1, ...)` and `write(2, ...)` reach the console, `read(0, ...)` reads its input, `isatty(0)`, `isatty(1)`, `isatty(2)` return 0 (host build: `SKIP host:`) |
-| C-CON.7 | 7.2 | MUST | core | any | payload | todo | an `aar_log` record reaches the client's log hook intact and does not appear in the console stream |
-| C-CON.8 | 7.2 | MUST | core | any | payload | todo | an `aar_log` record of 2000 bytes arrives truncated to at most `AAR_LOG_MAX` (1024) bytes, the first bytes intact, in one piece |
-| C-CON.9 | 10.4 | MUST | core | any | payload | todo | `aar_log` records over 1024 bytes are never wrapped or split: every record the client receives is a prefix of a record the app sent |
+| C-CON.1 | 7.2 | MUST | core | any | payload | yes | `console_write` of 200 KiB returns `AAR_OK` with `*n` equal to the length and the runner's capture holds every byte in order (pattern checked) |
+| C-CON.2 | 7.2 | MUST | core | any | payload | yes | with the client's output held back for 500 ms the write parks and then completes without losing a byte |
+| C-CON.3 | 7.2 | MUST | core | any | payload | yes | `console_read` parks until the client has input and returns the bytes the runner feeds (runner peer feeds after 300 ms) |
+| C-CON.4 | 7.2 | MUST | core | any | payload | yes | `console_read` returns `AAR_OK` with `*n == 0` at the end of input |
+| C-CON.5 | 7.2 | MUST | core | any | payload | yes | a stop request ends a console wait with `AAR_E_IO` (runner peer holds the input and stops the app) |
+| C-CON.6 | 3.8 | MUST | core | any | payload | yes | libc flavour: `write(1, ...)` and `write(2, ...)` reach the console, `read(0, ...)` reads its input, `isatty(0)`, `isatty(1)`, `isatty(2)` return 0 (host build: `SKIP host:`) |
+| C-CON.7 | 7.2 | MUST | core | any | payload | yes | an `aar_log` record reaches the client's log hook intact and does not appear in the console stream |
+| C-CON.8 | 7.2 | MUST | core | any | payload | yes | an `aar_log` record of 2000 bytes arrives truncated to at most `AAR_LOG_MAX` (1024) bytes, the first bytes intact, in one piece |
+| C-CON.9 | 10.4 | MUST | core | any | payload | yes | `aar_log` records over 1024 bytes are never wrapped or split: every record the client receives is a prefix of a record the app sent |
 | C-CON.10 | 7.2 | MAY | core | any | none | todo | not tested: the platform MAY rate-limit `aar_log` (ZZ9000: 32 per second to the client, 8 per second to its UART) |
 | C-CON.11 | 7.2 | MUST | core | any | none | todo | not tested: the client decides what the console is (Shell streams or a window); Ctrl-\ behaviour is the client's |
 | C-CON.12 | 7.2 | MUST | core | any | none | todo | not tested: `aar_log` is "lossy, separate from stdout, for the platform's debug output"; the platform's UART path is not visible to a client |
