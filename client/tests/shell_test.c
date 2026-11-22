@@ -803,7 +803,7 @@ static void test_reap(void)
     T(1)->listed = 0;
     vblanks(50);
     shell_pass(&base);
-    CHECK(hx_live_blocks == 3); /* b1's handle and the opener records of tasks 0 and 2 */
+    CHECK(hx_live_blocks == 4); /* b1's handle, the handle table and the opener records of tasks 0 and 2 */
     USE(2);
     lib_close();
     USE(0);
@@ -840,7 +840,7 @@ static void test_rename(void)
     CHECK(v_status(h, &st) == AAR_E_STALE);
     /* Its last close frees the tombstone. */
     T(0)->name = &names[0];
-    CHECK(hx_live_blocks == 2); /* the tombstone and task 1's record; the reap dropped task 0's */
+    CHECK(hx_live_blocks == 3); /* the tombstone, the handle table and task 1's record; the reap dropped task 0's */
     lib_close();
     CHECK(hx_live_blocks == 1); /* the task's last close freed the tombstone */
     USE(1);

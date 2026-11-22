@@ -14,13 +14,15 @@
  * bit, the notify port, files, the dispatcher process) around it.
  *
  * Rules the core keeps:
- *   - A call that takes a handle first looks the pointer up in the registry,
- *     so a pointer that was closed returns AAR_E_STALE and is never
- *     dereferenced; then it compares the calling task (env->self) with the
- *     owner recorded at aar_core_open, AAR_E_OWNER on a mismatch.
- *   - The lease list is walked by the vertical-blank interrupt. It is changed
- *     only between env->irq_off and env->irq_on, and a claim leaves it before
- *     the platform releases it (unlink, release, drop pointers, free).
+ *   - A call that takes a handle first looks the pointer up in the registry's
+ *     hash table (a probe or two, whatever the number of handles), so a
+ *     pointer that was closed returns AAR_E_STALE and is never dereferenced;
+ *     then it compares the calling task (env->self) with the owner recorded at
+ *     aar_core_open, AAR_E_OWNER on a mismatch.
+ *   - The lease lists are walked by the vertical-blank interrupt, one of them
+ *     per tick. They are changed only between env->irq_off and env->irq_on, and
+ *     a claim leaves them before the platform releases it (unlink, release,
+ *     drop pointers, free).
  *   - The interrupt (aar_core_vblank) only stores words. It calls no platform
  *     operation and takes no lock.
  *   - A handle belongs to one task. Its state needs no lock, except the part
@@ -144,34 +146,43 @@ enum {
  * One open app instance. Private: use the functions. It is plain storage
  * (about 3.5 KiB) that aar_core_open allocates together with the platform's
  * claim state (aar_plat_ops.claim_priv_bytes).
+ *
+ * What the dispatcher pass and the interrupt read every tick comes first, so
+ * that an idle handle costs a cache line or two on a 68060 and not a dozen.
  */
 struct AARHandle {
+    /* ---- the dispatcher pass: everything it reads of an idle handle is in the first 16 bytes ---- */
+    volatile uint8_t state;       /* AAR_H_* */
+    volatile uint8_t busy;        /* the owner is inside a call (a count: the log sink may call back) */
+    volatile uint8_t bg;          /* the dispatcher is inside housekeeping */
+    uint8_t revoked;              /* the platform answered AAR_E_STALE; release still owed */
+    volatile uint8_t armed;       /* the dispatcher scans it for work (a notify port or AARMessageSignal) */
+    volatile uint8_t in_work;     /* on the work list */
+    uint8_t poll_needed;          /* a doorbell went out and the platform may still hold its request */
+    uint8_t mouse_pending;
+    uint8_t kick_pending;         /* AAR_PLAT_KICK_* bits not yet sent */
+    uint8_t lease_slot;           /* 1 + the lease list it is on, 0: on none */
+    struct AARHandle *work_next, *work_prev; /* the work list (under env->irq_off) */
+
+    /* ---- the vertical-blank interrupt: the lease list of one phase ---- */
+    volatile uint8_t *volatile cb;/* control block; NULL once dropped */
+    struct AARHandle *lease_next, *lease_prev; /* under env->irq_off */
+    volatile uint32_t lease;      /* last value stored in AAR_CB_LEASE_COUNTER */
+    volatile uint32_t pause_until;/* lease_pause: no renewal while ticks < this (0: none) */
+    volatile uint8_t renew;       /* 1: the interrupt renews this claim */
+
     /* ---- registry (changed under env->lock and env->irq_off) ---- */
-    struct AARHandle *next;
+    struct AARHandle *next, *prev;
     struct aar_core *core;
-    volatile uint32_t state;      /* AAR_H_* */
     aar_owner_stamp owner;
     uint32_t signal_mask;         /* the owner task's signal bit, from L2 */
     void *notify;                 /* the notify port (opaque to the core) */
     void *opener;                 /* L2's per-task record (opaque) */
     uint32_t alloc_bytes;
 
-    /* ---- the vertical-blank interrupt reads these ---- */
-    struct AARHandle *lease_next; /* the lease list (under env->irq_off) */
-    volatile uint8_t *volatile cb;/* control block; NULL once dropped */
-    volatile uint32_t lease;      /* last value stored in AAR_CB_LEASE_COUNTER */
-    volatile uint8_t renew;       /* 1: the interrupt renews this claim */
-    uint8_t countdown;            /* ticks to the next store; starts at the phase, spreads the stores */
-    volatile uint32_t pause_until;/* lease_pause: no renewal while ticks < this (0: none) */
-
-    /* ---- owner against dispatcher handshake ---- */
-    volatile uint8_t busy;        /* the owner is inside a call (a count: the log sink may call back) */
-    volatile uint8_t bg;          /* the dispatcher is inside housekeeping */
-
     /* ---- the claim ---- */
     struct aar_plat_claim claim;
     uint32_t reason;              /* last AAR_REASON_* of a refusal */
-    uint8_t revoked;              /* the platform answered AAR_E_STALE; release still owed */
     aar_queue sq, cq;
     uint32_t msg_posted;
     aar_map_slot maps[AAR_CORE_MAPS];
@@ -196,15 +207,12 @@ struct AARHandle {
 
     /* ---- events and the doorbell ---- */
     aar_event mouse;
-    uint8_t mouse_pending;
-    uint32_t kick_pending;
 
     /* ---- audio ---- */
     volatile uint8_t *audio;
     uint32_t audio_frames, audio_channels;
 
     /* ---- notification (the dispatcher reads and writes these) ---- */
-    volatile uint8_t armed;
     uint8_t ended_notified;
     uint32_t last_tail;
     uint32_t last_signal_tick;
@@ -219,11 +227,34 @@ typedef struct aar_core {
     struct aar_plat *plat;
     struct aar_core_env env;
     int attach_rc;                /* AAR_OK once the platform is attached, else why not */
-    struct AARHandle *handles;    /* the registry: every state */
-    struct AARHandle *volatile lease_head;
+
+    /* The registry: every handle, in every state. A list for the walks that must
+     * see all of them (the dead-owner pass, the closes of a task), and a hash
+     * table of the pointers so that a call finds its handle in one probe or two,
+     * whatever the number of handles. */
+    struct AARHandle *handles;
+    struct AARHandle **htab;      /* open addressing; load at most one half */
+    uint32_t htab_cap, htab_shift, htab_count;
+
+    /* The lease: the claims are on AAR_CORE_LEASE_PERIOD_TICKS lists, and a tick
+     * renews the claims of one of them, so that every claim is renewed once per
+     * period and a tick does not look at the others. */
+    struct AARHandle *volatile lease_list[AAR_CORE_LEASE_PERIOD_TICKS];
+    uint32_t lease_count[AAR_CORE_LEASE_PERIOD_TICKS];
+    uint32_t lease_phase;         /* the list the next tick renews */
+
+    /* The dispatcher's work: the handles that have something for it (a doorbell
+     * to send or retire, a mouse event to post, a scan to make). A handle with
+     * nothing is not on it and costs the pass nothing. */
+    struct AARHandle *work_head;
+
     volatile uint32_t ticks;      /* vertical blanks, counted by aar_core_vblank */
     volatile uint32_t disp_alive; /* `ticks` at the dispatcher's last pass */
-    uint32_t opens;               /* counts claims, for the phase */
+
+    /* Counters for the tests: what the calls cost in steps. */
+    uint32_t stat_lookup_steps;   /* probes of the handle table */
+    uint32_t stat_pass_visits;    /* handles the dispatcher passes looked at */
+    uint32_t stat_lease_visits;   /* claims the interrupt looked at */
 } aar_core;
 
 /* Sets up `c`. Nothing is attached yet: attach_rc is AAR_E_NOSYS. */
@@ -356,7 +387,8 @@ LONG aar_core_ext_lease_pause(AARHandle *h, ULONG ms);
 /*
  * The vertical-blank interrupt body: counts the tick, and while the
  * dispatcher is alive (it stamped disp_alive less than AAR_CORE_STALL_TICKS
- * ago) stores the lease counter of every claim whose phase it is. Stores only.
+ * ago) stores the lease counter of the claims on one of the
+ * AAR_CORE_LEASE_PERIOD_TICKS lease lists, the next one each tick. Stores only.
  */
 void aar_core_vblank(aar_core *c);
 
@@ -381,11 +413,13 @@ typedef int (*aar_core_owner_fn)(void *user, const aar_owner_stamp *owner);
 
 /*
  * One dispatcher pass (each vertical blank): stamps disp_alive, then for every
- * live handle whose owner is not inside a call: retries the doorbell, posts
- * the pending mouse event, lets the platform retire its doorbell request
- * (aar_plat_ops.poll), and, for an armed handle, scans for work. `notify` is
- * called once per handle that has news, with an AAR_NOTIFY_* type, and L2
- * signals the owner and posts the event.
+ * handle on the work list (one that has a doorbell to send, a mouse event
+ * waiting, a doorbell the platform may still hold, or that is armed) whose
+ * owner is not inside a call: retries the doorbell, posts the pending mouse
+ * event, lets the platform retire its doorbell request (aar_plat_ops.poll),
+ * and, for an armed handle, scans for work. A handle with none of these is not
+ * looked at. `notify` is called once per handle that has news, with an
+ * AAR_NOTIFY_* type, and L2 signals the owner and posts the event.
  */
 void aar_core_dispatch(aar_core *c, aar_core_notify_fn notify, void *user);
 

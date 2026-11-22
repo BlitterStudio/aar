@@ -117,6 +117,10 @@ lib_tests() {
     run_tail 1 "$OUT/core_test_$tag"
     "$CC" $LIB_CFLAGS "$@" $SHELL_SRC -o "$OUT/shell_test_$tag"
     run_tail 1 "$OUT/shell_test_$tag" "$OUT/good.elf"
+    # What the library costs with many handles: 240 claims with no staging areas.
+    "$CC" $LIB_CFLAGS -DREFPLAT_CLAIMS=240u -DREFPLAT_LOAD_STRIDE=0x1000u -DREFPLAT_BUF_STRIDE=0x1000u "$@" \
+        client/tests/scale_test.c client/src/aar_core.c client/src/refplat.c -o "$OUT/scale_test_$tag"
+    run_tail 1 "$OUT/scale_test_$tag"
     # The process handling of the leak probe, on a model of the calls it makes.
     "$CC" $LIB_CFLAGS -Wno-unused-function -pthread "$@" client/tests/aarleak_test.c -o "$OUT/aarleak_test_$tag"
     run_tail 1 "$OUT/aarleak_test_$tag"
