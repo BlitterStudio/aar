@@ -541,16 +541,16 @@ matrix cases map onto C-GL.6.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-FREE.1 | 3.8 | MUST | core | any | payload | todo | the freestanding payload `conf_free` (built with `AAR_FREESTANDING=1`, linked without libc) runs and hashes a 3 MiB buffer to the known FNV-1a value using only `heap_range` and `heap_grow` |
-| C-FREE.2 | 3.8 | MUST | core | any | payload | todo | in the freestanding flavour the weak `memcpy`, `memmove`, `memset` and `memcmp` that the compiler calls work (a struct copy, an overlapping move, a large fill, a compare) |
+| C-FREE.1 | 3.8 | MUST | core | any | payload | yes | the freestanding payload `conf_free` (built with `AAR_FREESTANDING=1`, linked without libc) runs and hashes a 3 MiB buffer to the known FNV-1a value using only `heap_range` and `heap_grow` |
+| C-FREE.2 | 3.8 | MUST | core | any | payload | yes | in the freestanding flavour the weak `memcpy`, `memmove`, `memset` and `memcmp` that the compiler calls work (a struct copy, an overlapping move, a large fill, a compare) |
 | C-FREE.3 | 3.8 | MUST | core | any | none | todo | not tested: the freestanding link contains no archive but `libaar.a` and `libgcc.a`; checked at build time by `tools/aar-check --no-libc` and `make check-freestanding-guard` |
-| C-FREE.4 | 5.6 | MUST | core | any | runner | todo | heap: a payload that takes the largest heap it can get and exits without freeing runs 20 times; the last run gets as much as the first |
-| C-FREE.5 | 5.6 | MUST | core | any | runner | todo | shared memory: the same for shared blocks (with console and file service buffers in use) |
-| C-FREE.6 | 5.6 | MUST | core | any | runner | todo | claims: 200 rounds of open, load, start, exit, close never end in `AAR_E_NORESOURCE` or `AAR_E_NOMEM` |
-| C-FREE.7 | 10.2 | MUST | core | any | runner | todo | after the whole negative corpus of C-ELF (every refusal path), the number of claims, the heap and the shared memory a payload can get are the same as before |
-| C-FREE.8 | 8.6 | MUST | services | any | runner | todo | a payload that exits with decode sessions open, 20 times: the last run can still open four sessions of each kind |
-| C-FREE.9 | 4.2 | MUST | display | any | runner | todo | a payload that exits with the display open, 20 times: each run opens it again |
-| C-FREE.10 | 8.4 | MUST | audio | any | runner | todo | a payload that exits with the audio stream open, 20 times: each run opens it again |
+| C-FREE.4 | 5.6 | MUST | core | any | runner | yes | heap: a payload that takes the largest heap it can get and exits without freeing runs 20 times; every run gets as much as the first, within one granule of rounding |
+| C-FREE.5 | 5.6 | MUST | core | any | runner | yes | shared memory: the same for shared blocks (with console and file service buffers in use, a file left open), within 1 MiB |
+| C-FREE.6 | 5.6 | MUST | core | any | runner | yes | claims: 200 rounds of open, load, start, exit, close never end in `AAR_E_NORESOURCE` or `AAR_E_NOMEM` |
+| C-FREE.7 | 10.2 | MUST | core | any | runner | yes | after load refusals on every path (images the runner makes from `conf_free.elf` by damaging the header, the note and the segments, and every file under `negative/` next to the payload directories when there is one), the number of claims that can be open, the heap and the shared memory a payload can get are the same as before |
+| C-FREE.8 | 8.6 | MUST | services | any | runner | yes | a payload that exits with four image and four audio decode sessions open, 20 times: every run opens four of each kind that has a codec (a kind whose every codec answers `AAR_E_NOSYS` is not counted) |
+| C-FREE.9 | 4.2 | MUST | display | any | runner | yes | a payload that exits with the display open, 20 times: each run opens it again |
+| C-FREE.10 | 8.4 | MUST | audio | any | runner | yes | a payload that exits with the audio stream open, 20 times: each run opens it again |
 | C-FREE.11 | 7.1 | MUST | core | any | none | todo | not tested here: the release of files and lists that an exiting app left open is C-FILE.31 |
 
 ## Spec questions for review

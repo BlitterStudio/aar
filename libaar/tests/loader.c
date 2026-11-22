@@ -669,10 +669,20 @@ static int stub_shared_free(void *p)
     return AAR_E_INVAL;
 }
 
+/* The loader has no client: a message is printed (the keyword, then the four
+ * little-endian words from byte 16) and taken. */
 static int stub_msg_send(const void *msg)
 {
-    (void)msg;
-    return AAR_E_BUSY;
+    const uint8_t *b = (const uint8_t *)msg;
+    uint32_t w[4];
+    int i;
+
+    for (i = 0; i < 4; i++)
+        w[i] = (uint32_t)b[16 + 4 * i] | ((uint32_t)b[17 + 4 * i] << 8) |
+               ((uint32_t)b[18 + 4 * i] << 16) | ((uint32_t)b[19 + 4 * i] << 24);
+    fprintf(stderr, "[loader] message %.16s %u %u %u %u\n", (const char *)msg, w[0], w[1],
+            w[2], w[3]);
+    return AAR_OK;
 }
 
 static int stub_msg_poll(void *msg)
