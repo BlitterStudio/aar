@@ -217,23 +217,23 @@ messages as the payload asks for.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-MSG.1 | 6 | MUST | core | any | payload | todo | 32 bytes in, the same 32 bytes out, in both directions (all 256 byte values, no word swapped) |
-| C-MSG.2 | 6 | MUST | core | any | payload | todo | app to client: `msg_capacity` numbered messages arrive in order, none lost or repeated |
-| C-MSG.3 | 6 | MUST | core | any | payload | todo | client to app: `msg_capacity` numbered messages arrive in order through `msg_poll`, none lost or repeated |
-| C-MSG.4 | 6 | MUST | core | any | payload | todo | with the client not draining, `msg_send` returns `AAR_E_BUSY` after at least `msg_capacity` messages and never blocks (each call returns within 100 ms); then the client drains and gets the accepted messages intact and in order |
-| C-MSG.5 | 6 | MUST | core | any | runner | todo | with the app not polling, `AARSendMessage` returns `AAR_E_BUSY` after at least `msg_capacity` messages; the app then polls them all intact and in order |
-| C-MSG.6 | 6 | MUST | core | any | payload | todo | `msg_poll` returns 0 when empty, 1 with a copy when a message is queued |
-| C-MSG.7 | 6 | MUST | core | any | runner | todo | `AARGetMessage` returns `AAR_E_BUSY` when no message from the app is queued |
-| C-MSG.8 | 6 | MUST | core | any | payload | todo | `msg_wait` returns `AAR_OK` with the message still queued (a following `msg_poll` returns it) |
-| C-MSG.9 | 6 | MUST | core | any | payload | todo | `msg_wait` with nothing queued returns `AAR_E_TIMEDOUT` after at least the timeout |
-| C-MSG.10 | 6 | MUST | core | any | payload | todo | `msg_wait(0)` only tests: returns at once, `AAR_OK` with a message queued, `AAR_E_TIMEDOUT` without |
-| C-MSG.11 | 6 | MUST | core | any | payload | todo | a stop request ends `msg_wait` with `AAR_E_IO` (runner peer stops the app while it waits) |
-| C-MSG.12 | 6 | MUST | core | any | payload | todo | a message queued before the stop is reported first: `msg_wait` returns `AAR_OK` for it, then `AAR_E_IO` |
-| C-MSG.13 | 5.4 | MUST | core | any | payload | todo | an app parked in `msg_wait` for 12 seconds is not ended by the watchdog |
-| C-MSG.14 | 6 | MUST | core | any | runner | todo | messages the app sent remain readable by the client after the app exited, until `AARClose` (up to `msg_capacity`) |
-| C-MSG.15 | 10.4 | MUST | core | any | runner | todo | `AARInfo.msg_capacity` equals `queue_depth` minus 1 (`AAR_MSG_RESERVE`), and a platform with the default depth reports 63 |
-| C-MSG.16 | 10.4 | MUST | core | any | payload | todo | a request behind a message that the full client inbox holds back waits until the client drains: a console write completes after the client resumes draining (runner peer holds draining for 300 ms) |
-| C-MSG.17 | 9.6 | MUST | core | any | payload | todo | a burst of messages in both directions with a slow receiver loses none and reorders none (the `msgflood` pattern, 2000 messages) |
+| C-MSG.1 | 6 | MUST | core | any | payload | yes | 32 bytes in, the same 32 bytes out, in both directions (all 256 byte values, no word swapped) |
+| C-MSG.2 | 6 | MUST | core | any | payload | yes | app to client: `msg_capacity` numbered messages arrive in order, none lost or repeated |
+| C-MSG.3 | 6 | MUST | core | any | payload | yes | client to app: `msg_capacity` numbered messages arrive in order through `msg_poll`, none lost or repeated |
+| C-MSG.4 | 6 | MUST | core | any | payload | yes | with the client not draining, `msg_send` returns `AAR_E_BUSY` after at least `msg_capacity` messages and never blocks (each call returns within 100 ms); then the client drains and gets the accepted messages intact and in order |
+| C-MSG.5 | 6 | MUST | core | any | runner | yes | with the app not polling, `AARSendMessage` returns `AAR_E_BUSY` after at least `msg_capacity` messages; the app then polls them all intact and in order |
+| C-MSG.6 | 6 | MUST | core | any | payload | yes | `msg_poll` returns 0 when empty, 1 with a copy when a message is queued |
+| C-MSG.7 | 6 | MUST | core | any | runner | yes | `AARGetMessage` returns `AAR_E_BUSY` when no message from the app is queued |
+| C-MSG.8 | 6 | MUST | core | any | payload | yes | `msg_wait` returns `AAR_OK` with the message still queued (a following `msg_poll` returns it) |
+| C-MSG.9 | 6 | MUST | core | any | payload | yes | `msg_wait` with nothing queued returns `AAR_E_TIMEDOUT` after at least the timeout |
+| C-MSG.10 | 6 | MUST | core | any | payload | yes | `msg_wait(0)` only tests: returns at once, `AAR_OK` with a message queued, `AAR_E_TIMEDOUT` without |
+| C-MSG.11 | 6 | MUST | core | any | payload | yes | a stop request ends `msg_wait` with `AAR_E_IO` (runner peer stops the app while it waits) |
+| C-MSG.12 | 6 | MUST | core | any | payload | yes | a message queued before the stop is reported first: `msg_wait` returns `AAR_OK` for it, then `AAR_E_IO` |
+| C-MSG.13 | 5.4 | MUST | core | any | payload | yes | an app parked in `msg_wait` for 12 seconds is not ended by the watchdog |
+| C-MSG.14 | 6 | MUST | core | any | runner | yes | messages the app sent remain readable by the client after the app exited, until `AARClose` (up to `msg_capacity`) |
+| C-MSG.15 | 10.4 | MUST | core | any | runner | yes | `AARInfo.msg_capacity` equals `queue_depth` minus 1 (`AAR_MSG_RESERVE`), and a platform with the default depth reports 63 |
+| C-MSG.16 | 10.4 | MUST | core | any | payload | yes | a request behind a message that the full client inbox holds back waits until the client drains: a console write completes after the client resumes draining (runner peer holds draining for 300 ms) |
+| C-MSG.17 | 9.6 | MUST | core | any | payload | yes | a burst of messages in both directions with a slow receiver loses none and reorders none (the `msgflood` pattern, 2000 messages) |
 | C-MSG.18 | 9.6 | MUST | core | any | none | todo | not tested: app service calls park the app and become requests, payloads are shared buffers named by token; internal, shown indirectly by C-FILE and C-CON |
 | C-MSG.19 | 6 | MUST | core | any | none | todo | not tested: a runtime without wait support "may implement it as sleep-and-poll"; permitted, indistinguishable |
 | C-MSG.20 | 6 | MAY | core | any | none | todo | not tested: message content convention is recommended, not required |

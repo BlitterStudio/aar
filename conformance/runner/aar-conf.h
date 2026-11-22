@@ -107,6 +107,9 @@ struct conf_run {
     ULONG timeout_s;                 /* 0: the default (180 s) */
     ULONG serve_flags;               /* ORed into aar_serve_config.flags */
     ULONG serve_groups;              /* aar_serve_config.groups, 0: all */
+    ULONG serve_flags_off;           /* cleared from aar_serve_config.flags after the
+                                        core's own (NO_INPUT_WINDOW) and serve_flags */
+    const struct aar_serve_display_ops *display; /* replaces the P96 display, or NULL */
     /* Console modes. The console is a capture; these shape it. Slow output: a
      * write completes write_hold_ticks (1/50 s) after it started. Scripted
      * input: console_read gets input[] in pieces; after the script it gets the
@@ -124,6 +127,9 @@ struct conf_run {
     void (*on_message)(struct conf_run *run, const AARMessage *m); /* not a keyword */
     void (*on_log)(struct conf_run *run, const void *data, ULONG len);
     void *user;                      /* for the area's callbacks */
+    /* The app has ended and the serving loop returned; the handle is still open
+     * (the status and the messages are readable), AARClose follows. */
+    void (*on_finished)(struct conf_run *run);
     int norelay;                     /* do not take AAR-CONF lines into results */
 
     /* state, read by the area */
