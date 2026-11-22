@@ -161,19 +161,19 @@ because the registers differ.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-MEM.1 | 4.1 | MUST | core | any | payload | todo | `heap_range` returns a base and a length; the length equals `heap_info.committed` |
-| C-MEM.2 | 4.1 | MUST | core | any | payload | todo | `heap_grow` of one granule returns `AAR_OK` and an old break equal to the previous end (base plus length) |
-| C-MEM.3 | 4.1 | MUST | core | any | payload | todo | successive grows are contiguous: each old break equals the previous end |
-| C-MEM.4 | 4.1 | MUST | core | any | payload | todo | new heap memory is zeroed, also after a shrink and a grow of the same range |
-| C-MEM.5 | 4.1 | MUST | core | any | payload | todo | existing pointers never move: data written before a grow is intact after it |
-| C-MEM.6 | 4.1 | MUST | core | any | payload | todo | `heap_shrink` returns whole granules at the top: the new break is the old end minus the request and `heap_range` shrinks by it |
-| C-MEM.7 | 4.1 | MUST | core | any | payload | todo | a grow or shrink that is not a whole number of granules is `AAR_E_INVAL` and changes nothing |
-| C-MEM.8 | 4.1 | MUST | core | any | payload | todo | grow until failure: the failure is `AAR_E_NOMEM`, the committed size never exceeds `heap_info.limit` |
-| C-MEM.9 | 4.1 | MUST | core | any | payload | todo | variant `caps` (runner sets `AAR_TAG_PRIVATE_MIB`): `heap_info.limit` is the smaller of the platform's cap and the client's value, and a grow past it is `AAR_E_NOMEM` |
-| C-MEM.10 | 4.1 | MUST | core | any | payload | todo | `min_heap_mib` of the note is committed at load: the heap is at least that long at entry (payload note: 2 MiB) |
-| C-MEM.11 | 4.1 | MUST | core | any | payload | todo | `heap_info.pool_free` falls when the heap grows and rises when it shrinks |
-| C-MEM.12 | 4.1 | MUST | core | any | payload | todo | exhausting the pool produces one `AAR_EV_LOW_MEMORY` event per low-water crossing; its fields other than `type` are 0; no second event arrives until the pool has risen above the high-water mark [spec question 5] |
-| C-MEM.13 | 4.4 | MUST | core | any | payload | todo | when `AAR_INFOF_ISOLATED` is set, a call given a bad pointer returns `AAR_E_FAULT` and the app keeps running (passes with detail `not isolated` when the flag is clear) |
+| C-MEM.1 | 4.1 | MUST | core | any | payload | yes | `heap_range` returns a base and a length; the length equals `heap_info.committed` |
+| C-MEM.2 | 4.1 | MUST | core | any | payload | yes | `heap_grow` of one granule returns `AAR_OK` and an old break equal to the previous end (base plus length) |
+| C-MEM.3 | 4.1 | MUST | core | any | payload | yes | successive grows are contiguous: each old break equals the previous end |
+| C-MEM.4 | 4.1 | MUST | core | any | payload | yes | new heap memory is zeroed, also after a shrink and a grow of the same range |
+| C-MEM.5 | 4.1 | MUST | core | any | payload | yes | existing pointers never move: data written before a grow is intact after it |
+| C-MEM.6 | 4.1 | MUST | core | any | payload | yes | `heap_shrink` returns whole granules at the top: the new break is the old end minus the request and `heap_range` shrinks by it |
+| C-MEM.7 | 4.1 | MUST | core | any | payload | yes | a grow or shrink that is not a whole number of granules is `AAR_E_INVAL` and changes nothing |
+| C-MEM.8 | 4.1 | MUST | core | any | payload | yes | grow until failure: the failure is `AAR_E_NOMEM`, the committed size never exceeds `heap_info.limit` |
+| C-MEM.9 | 4.1 | MUST | core | any | payload | yes | variant `caps` (runner sets `AAR_TAG_PRIVATE_MIB`): `heap_info.limit` is the smaller of the platform's cap and the client's value, and a grow past it is `AAR_E_NOMEM` |
+| C-MEM.10 | 4.1 | MUST | core | any | payload | yes | `min_heap_mib` of the note is committed at load: the heap is at least that long at entry (payload note: 2 MiB) |
+| C-MEM.11 | 4.1 | MUST | core | any | payload | yes | `heap_info.pool_free` falls when the heap grows and rises when it shrinks |
+| C-MEM.12 | 4.1 | MUST | core | any | payload | yes | exhausting the pool produces one `AAR_EV_LOW_MEMORY` event per low-water crossing; its fields other than `type` are 0; no second event arrives until the pool has risen above the high-water mark [spec question 5] |
+| C-MEM.13 | 4.4 | MUST | core | any | payload | yes | when `AAR_INFOF_ISOLATED` is set, a call given a bad pointer returns `AAR_E_FAULT` and the app keeps running (passes with detail `not isolated` when the flag is clear) |
 | C-MEM.14 | 4.4 | MUST | core | any | none | todo | not tested: "the platform MUST document" the behaviour of a bad pointer on a non-isolated runtime; documentation |
 | C-MEM.15 | 4.1 | MUST | core | any | none | todo | not tested: the heap starts at the end of the image and apps must not assume an address; platform internals and an obligation of the app |
 | C-MEM.16 | 4.4 | MUST | core | any | none | todo | not tested: apps cannot reach firmware, other apps or host memory except through granted buffers; an isolation proof, not black-box [spec question 6] |
