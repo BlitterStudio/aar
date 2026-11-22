@@ -247,22 +247,22 @@ or misaddresses completions.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-QUEUE.1 | 10.4 | MUST | core | any | runner | todo | `AARInfo.queue_depth` is a power of two from 64 to 4096 |
-| C-QUEUE.2 | 9.6 | MUST | core | any | runner | todo | `AARServiceNext` returns `AAR_OK` with a request, or `AAR_E_BUSY` when none is waiting |
-| C-QUEUE.3 | 9.6 | MUST | core | any | runner | todo | a reply with a wrong `id` does not resume the parked app or release its storage; the app continues only after the right reply |
-| C-QUEUE.4 | 9.6 | MUST | core | any | runner | todo | a reply with a wrong `op`, and a duplicate reply, do the same as C-QUEUE.3 |
-| C-QUEUE.5 | 9.6 | MUST | core | any | runner | todo | `AARServiceReply` resumes the app only if it is parked for that request: a reply to a non-parking request (console write) leaves a later parked request parked |
-| C-QUEUE.6 | 9.6 | MUST | core | any | payload | todo | a request whose client withholds the reply past the 30 s file timeout returns `AAR_E_TIMEDOUT` and a timeout is not a completion: the next call that needs the storage returns `AAR_E_BUSY` until the late completion is consumed (runner peer) |
-| C-QUEUE.7 | 9.6 | MUST | core | any | payload | todo | after the late completion of C-QUEUE.6 is consumed, the app can use the storage again |
-| C-QUEUE.8 | 10.4 | MUST | core | any | runner | todo | after `AAR_E_BUSY` for a full SQ the status counter `sq_full` has increased |
-| C-QUEUE.9 | 10.4 | MUST | core | any | payload | todo | `aar_log` flood with the client not serving never blocks the app; the status counter `log_dropped` increases when records were lost |
-| C-QUEUE.10 | 10.6 | MUST | core | any | payload | todo | a missed or merged doorbell does not lose an entry: 5000 console requests with the client serving only on a 50 ms timer (no wakeups) complete with every byte present |
-| C-QUEUE.11 | 10.4 | MUST | core | any | runner | todo | an unsolicited entry (event or log) that arrives while a request is pending does not complete or disturb that request |
-| C-QUEUE.12 | 5.6 | MUST | core | any | runner | todo | open claims until `AAR_E_NORESOURCE` (or until `max_apps`): the refusal carries a reason from 1 to 4 (`AAR_REASON_*`); a platform with a ceiling reports `max_apps` |
-| C-QUEUE.13 | 5.6 | MUST | core | any | runner | todo | a refused open leaves nothing allocated: after 100 further refused opens and closing every claim, the same number of claims can be opened again |
-| C-QUEUE.14 | 5.6 | MUST | core | any | runner | todo | releasing every claim returns every resource: open to the limit, close all, open to the limit again, the same count |
-| C-QUEUE.15 | 5.6 | SHOULD | core | any | runner | todo | with two compute-bound apps of weights 1 and 3 and `AAR_TAG_WEIGHT` accepted, the work done is within 30 percent of 1 to 3 (`AAR_E_NOSYS` for the tag skips with that reason) |
-| C-QUEUE.16 | 5.6 | MUST | core | any | runner | todo | an app parked in a wait uses no CPU: a parked app beside a compute-bound app leaves the compute-bound app at least 90 percent of the work it does alone |
+| C-QUEUE.1 | 10.4 | MUST | core | any | runner | yes | `AARInfo.queue_depth` is a power of two from 64 to 4096 |
+| C-QUEUE.2 | 9.6 | MUST | core | any | runner | yes | `AARServiceNext` returns `AAR_OK` with a request, or `AAR_E_BUSY` when none is waiting |
+| C-QUEUE.3 | 9.6 | MUST | core | any | runner | yes | a reply with a wrong `id` does not resume the parked app or release its storage; the app continues only after the right reply |
+| C-QUEUE.4 | 9.6 | MUST | core | any | runner | yes | a reply with a wrong `op`, and a duplicate reply, do the same as C-QUEUE.3 |
+| C-QUEUE.5 | 9.6 | MUST | core | any | runner | yes | `AARServiceReply` resumes the app only if it is parked for that request: a reply to a non-parking request (console write) leaves a later parked request parked |
+| C-QUEUE.6 | 9.6 | MUST | core | any | payload | yes | a request whose client withholds the reply past the 30 s file timeout returns `AAR_E_TIMEDOUT` and a timeout is not a completion: the next call that needs the storage returns `AAR_E_BUSY` until the late completion is consumed (runner peer) |
+| C-QUEUE.7 | 9.6 | MUST | core | any | payload | yes | after the late completion of C-QUEUE.6 is consumed, the app can use the storage again |
+| C-QUEUE.8 | 10.4 | MUST | core | any | runner | yes | after `AAR_E_BUSY` for a full SQ the status counter `sq_full` has increased |
+| C-QUEUE.9 | 10.4 | MUST | core | any | payload | yes | `aar_log` flood with the client not serving never blocks the app; the status counter `log_dropped` increases when records were lost |
+| C-QUEUE.10 | 10.6 | MUST | core | any | payload | yes | a missed or merged doorbell does not lose an entry: 5000 console requests with the client serving only on a 50 ms timer (no wakeups) complete with every byte present |
+| C-QUEUE.11 | 10.4 | MUST | core | any | runner | yes | an unsolicited entry (event or log) that arrives while a request is pending does not complete or disturb that request |
+| C-QUEUE.12 | 5.6 | MUST | core | any | runner | yes | open claims until `AAR_E_NORESOURCE` (or until `max_apps`): the refusal carries a reason from 1 to 4 (`AAR_REASON_*`); a platform with a ceiling reports `max_apps` |
+| C-QUEUE.13 | 5.6 | MUST | core | any | runner | yes | a refused open leaves nothing allocated: after 100 further refused opens and closing every claim, the same number of claims can be opened again |
+| C-QUEUE.14 | 5.6 | MUST | core | any | runner | yes | releasing every claim returns every resource: open to the limit, close all, open to the limit again, the same count |
+| C-QUEUE.15 | 5.6 | SHOULD | core | any | runner | yes | with two compute-bound apps of weights 1 and 3 and `AAR_TAG_WEIGHT` accepted, the work done is within 30 percent of 1 to 3 (`AAR_E_NOSYS` for the tag skips with that reason) |
+| C-QUEUE.16 | 5.6 | MUST | core | any | runner | yes | an app parked in a wait uses no CPU: a parked app beside a compute-bound app leaves the compute-bound app at least 90 percent of the work it does alone |
 | C-QUEUE.17 | 5.6 | MUST | core | any | none | todo | not tested: "keeps its own service work ahead of apps" is a platform scheduling policy |
 | C-QUEUE.18 | 10.4 | MUST | core | any | none | todo | not tested: entry layout, big-endian fields, slot clearing, reserved bytes, op codes in the entry, default pair geometry (`0x3000` bytes), release and acquire barriers and the head and tail writer rules are not visible to an `aar.library` client; covered by `tests/transport_model_test.c` and the platform's tests |
 | C-QUEUE.19 | 10.4 | MUST | core | any | none | todo | not tested: an index count above `depth` marks the block corrupt (`AAR_E_IO`); needs write access to the shared control block, which the client API does not give [spec question 8] |
