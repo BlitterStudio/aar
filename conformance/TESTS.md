@@ -358,29 +358,29 @@ runner and under qemu user mode.
 | C-LIFE.1 | 5.1 | MUST | core | any | runner | yes | after `AAROpen` the state is `AAR_STATE_CLAIMED` and the generation is non-zero |
 | C-LIFE.2 | 5.1 | MUST | core | any | runner | yes | after a payload returned from `aar_main` the state is `AAR_STATE_IDLE`, the end reason `AAR_END_EXIT` and the fault class `AAR_FAULT_NONE`, and the status stays readable until `AARClose` |
 | C-LIFE.3 | 5.2 | MUST | core | any | runner | yes | the exit code the client reads equals the value `aar_main` returned (0 when every payload test passed, 10 otherwise, as the payload's end line says) |
-| C-LIFE.4 | 5.2 | MUST | core | any | runner | todo | exit codes 0, 5, 10, 20 and 255 returned by `aar_main` and passed to `aar_exit` arrive unchanged in `AARStatus` |
-| C-LIFE.5 | 5.1 | MUST | core | any | runner | todo | state while running is `RUNNING`; `AARStop` moves it to `STOPPING` and then `IDLE` |
-| C-LIFE.6 | 5.2 | MUST | core | any | runner | todo | a stop sets `aar_should_stop` and queues `AAR_EV_STOP`; an app that leaves within the grace period ends with `AAR_END_EXIT` and its own exit code |
-| C-LIFE.7 | 5.2 | MUST | core | any | runner | todo | an app that ignores a stop is ended by force after `stop_grace_ms`: end reason `AAR_END_FORCED`, no earlier than the grace period and no later than the grace period plus 2 s |
-| C-LIFE.8 | 5.3 | MUST | core | any | runner | todo | a data abort in the app (write to an unmapped address) ends only that app: a second app that waits in `msg_wait` keeps running and exits normally afterwards (needs two claims) |
-| C-LIFE.9 | 5.3 | MUST | core | any | runner | todo | data abort: end reason `AAR_END_USER_FAULT`, fault class `AAR_FAULT_DATA`, `fault_addr` equals the address the app touched, `fault_pc` equals the address of the faulting instruction |
-| C-LIFE.10 | 5.3 | MUST | core | any | runner | todo | instruction fetch from an unmapped address: class `AAR_FAULT_FETCH`, `fault_pc` equals the target |
-| C-LIFE.11 | 5.3 | MUST | core | any | runner | todo | an undefined instruction: class `AAR_FAULT_ILLEGAL`, `fault_pc` equals the instruction |
-| C-LIFE.12 | 5.3 | MUST | core | any | runner | todo | an alignment fault (a misaligned exclusive access): class `AAR_FAULT_ALIGN` [spec question 11] |
-| C-LIFE.13 | 5.3 | MUST | core | any | runner | todo | `fault_sp` and `fault_lr` equal the values the app had at the faulting instruction (the app reports them in a message first); addresses are app virtual addresses: `fault_pc` minus `load_base` is the offset in the image |
-| C-LIFE.14 | 5.3 | MUST | core | any | runner | todo | `fault_syndrome` is non-zero for a data abort; `fault_pstate` shows user mode (A32 low five bits 0x10, A64 EL0); the profile reported in the status equals the image's |
-| C-LIFE.15 | 5.4 | MUST | core | any | runner | todo | an app that computes for 10 seconds without a table call is not stopped (`stall_limit_ms` is at least 10000) |
-| C-LIFE.16 | 5.4 | MUST | core | any | runner | todo | an app parked in `sleep_us` for 12 seconds is not stopped (a parked call does not count toward the stall limit) |
-| C-LIFE.17 | 5.4 | MUST | core | any | runner | todo | each of `yield`, `should_stop`, `time_us`, `msg_wait` with a timeout, a file call and a console call, issued every 4 seconds by an otherwise silent app for 11 seconds, keeps it alive |
-| C-LIFE.18 | 5.4 | SHOULD | core | any | runner | todo | an app that computes for 90 percent of the advertised `stall_limit_ms` without a call (at most 60 s) is not stopped |
-| C-LIFE.19 | 5.5 | MUST | core | any | runner | todo | the client task blocking for 15 seconds without calling the library does not stop the app (the lease renews from interrupt or timer context) |
-| C-LIFE.20 | 5.5 | MUST | core | any | runner | todo | a client task that exits without `AARClose` (a child process) releases its handle: the app it started stops running (its heartbeat file stops) within 10 s and a new claim succeeds |
-| C-LIFE.21 | 5.5 | MUST | core | any | runner | todo | a client task that closes its last `aar.library` base without `AARClose` releases its handles and stops the app |
-| C-LIFE.22 | 5.5 | MUST | zz9000 | any | runner | todo | after the claim is revoked (`aar-run RELEASE` through `AARExt`), calls with the old handle return `AAR_E_STALE` and change nothing |
-| C-LIFE.23 | 5.5 | MUST | zz9000 | any | runner | todo | late writes: after revocation, a second app allocates the freed shared memory and fills it with a pattern while the old client writes garbage through its stale map; the pattern is intact |
-| C-LIFE.24 | 5.5 | MUST | core | any | operator | todo | reset: with apps live, the operator resets the platform; afterwards a new run of the suite starts and passes and no claim of the old apps remains (`AAR_END_PLATFORM_RESET` is seen by the clients that survive) |
-| C-LIFE.25 | 5.2 | MUST | core | any | runner | todo | relaunch: the same payload started 20 times one after the other behaves identically each time (same output, same exit code) |
-| C-LIFE.26 | 5.1 | MUST | core | any | runner | todo | `AARClose` of a running app stops it, releases the claim and the signal and returns `AAR_OK`; the app's heartbeat stops |
+| C-LIFE.4 | 5.2 | MUST | core | any | runner | yes | exit codes 0, 5, 10, 20 and 255 returned by `aar_main` and passed to `aar_exit` arrive unchanged in `AARStatus` |
+| C-LIFE.5 | 5.1 | MUST | core | any | runner | yes | state while running is `RUNNING`; `AARStop` moves it to `STOPPING` and then `IDLE` (the app takes 200 ms to clean up, so `STOPPING` can be seen) |
+| C-LIFE.6 | 5.2 | MUST | core | any | runner | yes | a stop sets `aar_should_stop` and queues `AAR_EV_STOP`; an app that leaves within the grace period ends with `AAR_END_EXIT` and its own exit code |
+| C-LIFE.7 | 5.2 | MUST | core | any | runner | yes | an app that ignores a stop is ended by force after `stop_grace_ms`: end reason `AAR_END_FORCED`, no earlier than the grace period and no later than the grace period plus 2 s (the clock has a 20 ms step: 60 ms of slack below) |
+| C-LIFE.8 | 5.3 | MUST | core | any | runner | yes | a data abort in the app (write to an unmapped address) ends only that app: a second app that waits in `msg_wait` keeps running and exits normally afterwards (needs two claims) |
+| C-LIFE.9 | 5.3 | MUST | core | any | runner | yes | data abort: end reason `AAR_END_USER_FAULT`, fault class `AAR_FAULT_DATA`, `fault_addr` equals the address the app touched, `fault_pc` equals the address of the faulting instruction (the app reports both first; the address is `0xDEAD0000`, or `0xDEAD00000000` on A64 [spec question 32]) |
+| C-LIFE.10 | 5.3 | MUST | core | any | runner | yes | instruction fetch from an unmapped address: class `AAR_FAULT_FETCH`, `fault_pc` equals the target |
+| C-LIFE.11 | 5.3 | MUST | core | any | runner | yes | an undefined instruction: class `AAR_FAULT_ILLEGAL`, `fault_pc` equals the instruction |
+| C-LIFE.12 | 5.3 | MUST | core | any | runner | yes | an alignment fault (a misaligned exclusive access): class `AAR_FAULT_ALIGN` [spec question 11] |
+| C-LIFE.13 | 5.3 | MUST | core | any | runner | yes | `fault_sp` and `fault_lr` equal the values the app had at the faulting instruction (the app reports them in a message first); addresses are app virtual addresses: `fault_pc` minus `load_base` is the offset in the image (the app reports the address of `aar_start`, offset 0 of the image) |
+| C-LIFE.14 | 5.3 | MUST | core | any | runner | yes | `fault_syndrome` is non-zero for a data abort; `fault_pstate` shows user mode (A32 low five bits 0x10, A64 EL0); the profile reported in the status equals the image's |
+| C-LIFE.15 | 5.4 | MUST | core | any | runner | yes | an app that computes for 10 seconds without a table call is not stopped (`stall_limit_ms` is at least 10000): it computes for 9.8 s and has to measure at least 9 s of silence |
+| C-LIFE.16 | 5.4 | MUST | core | any | runner | yes | an app parked in `sleep_us` for 12 seconds is not stopped (a parked call does not count toward the stall limit) |
+| C-LIFE.17 | 5.4 | MUST | core | any | runner | yes | each of `yield`, `should_stop`, `time_us`, `msg_wait` with a timeout, a file call and a console call, issued every 4 seconds by an otherwise silent app for 11 seconds, keeps it alive (three rounds of 4 s of silence and one call, for each kind: 12 s) |
+| C-LIFE.18 | 5.4 | SHOULD | core | any | runner | yes | an app that computes for 90 percent of the advertised `stall_limit_ms` without a call (at most 60 s) is not stopped (it has to measure at least 85 percent) |
+| C-LIFE.19 | 5.5 | MUST | core | any | runner | yes | the client task blocking for 15 seconds without calling the library does not stop the app (the lease renews from interrupt or timer context) |
+| C-LIFE.20 | 5.5 | MUST | core | any | runner | yes | a client task that exits without `AARClose` (a child process) releases its handle: within 10 s a call on that handle returns `AAR_E_STALE` and no longer `AAR_E_OWNER`, and a new claim succeeds (a client cannot see the app stop [spec question 33]) |
+| C-LIFE.21 | 5.5 | MUST | core | any | runner | yes | a client task that closes its last `aar.library` base without `AARClose` releases its handles and stops the app: a call on the handle returns `AAR_E_STALE` and a new claim succeeds [spec question 33] |
+| C-LIFE.22 | 5.5 | MUST | zz9000 | any | runner | yes | after the claim is revoked (`aar-run RELEASE` through `AARExt`), calls with the old handle return `AAR_E_STALE` and change nothing |
+| C-LIFE.23 | 5.5 | MUST | zz9000 | any | runner | yes | late writes: after the claim is revoked (the client's lease paused through `AARExt` until the platform ends it), a second app allocates shared memory and fills it with a pattern while the old client writes garbage through its stale map; the pattern is intact |
+| C-LIFE.24 | 5.5 | MUST | core | any | operator | yes | reset: start two apps with `aar-run` (for example a long-running payload of the suite) and, with them live, reset the machine; after the boot the suite starts and passes, `aar-run STATUS` or the platform's own listing shows no claim of the old apps, and a client that survived the reset (a platform that resets only the ARM side) saw `AAR_END_PLATFORM_RESET` |
+| C-LIFE.25 | 5.2 | MUST | core | any | runner | yes | relaunch: the same payload started 20 times one after the other behaves identically each time (same output, same exit code) |
+| C-LIFE.26 | 5.1 | MUST | core | any | runner | yes | `AARClose` of a running app stops it, releases the claim and the signal and returns `AAR_OK`; the app's heartbeat stops (seen as messages before the close, and as a stale handle and the signal bit back after it) |
 | C-LIFE.27 | 5.3 | MUST | core | any | none | todo | not tested: a fault in runtime code ends every app and restarts the runtime (`AAR_END_RUNTIME_RESTART`); needs fault injection into the platform |
 | C-LIFE.28 | 5.4 | MUST | core | any | none | todo | not tested: `AAR_END_STUCK_CALL` needs a table call that runs for 10 seconds inside the runtime, which no honest call does; the 10 s floor is [spec question 12] |
 | C-LIFE.29 | 5.4 | MAY | core | any | none | todo | not tested: the runtime MAY stop an app that goes longer than the stall limit with `AAR_END_STALL` |
@@ -676,3 +676,14 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     and assumes no platform has that much private memory. A platform with more
     needs an image built for its size; say whether the standard wants a defined
     maximum.
+32. **An address that no app can map** (5.3): the fault tests need an address that is
+    unmapped in every app's address space. The standard does not say what the
+    address space of an app holds beyond the image, heap and stack. C-LIFE.9 uses
+    `0xDEAD0000` (A32) and `0xDEAD00000000` (A64); a platform that maps it fails
+    the test through no fault of its own. Say which part of the space is never
+    mapped.
+33. **Seeing a dead client's release** (5.5): the client API has no call that shows
+    from outside that the runtime stopped an app whose owner is gone. C-LIFE.20 and
+    C-LIFE.21 show that the handle is released (a call returns `AAR_E_STALE`, not
+    `AAR_E_OWNER`) and that a new claim works, and cannot show that the app stopped
+    running; a platform with a ceiling (`max_apps`) shows the slot coming back.
