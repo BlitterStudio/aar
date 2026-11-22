@@ -486,18 +486,18 @@ from it; with a real screen the picture is judged by the operator.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-AUDIO.1 | 8.4 | MUST | audio | any | payload | todo | `audio_open(22050, 2)` succeeds; the grant has `channels` 2, `rate` one of 22050, 44100, 48000, `frames` a power of two, `flags` 0, `samples`, `read_frame` and `write_frame` non-NULL |
-| C-AUDIO.2 | 8.4 | MUST | audio | any | payload | todo | the ring header is where the standard puts it: `read_frame` is `write_frame` plus 0x40 bytes, `samples` is `write_frame` plus 0x80 bytes, the little-endian words at +4 (rate), +8 (channels), +0xC (format `AAR_AUDIO_FORMAT_S16LE`) agree with the grant [spec question 18] |
-| C-AUDIO.3 | 8.4 | MUST | audio | any | payload | todo | `audio_open` of 44100 and 48000 stereo returns `AAR_OK` with a supported pair or a refusal of `AAR_E_INVAL`; a granted pair is written into `out` |
-| C-AUDIO.4 | 8.4 | MUST | audio | any | payload | todo | an unsupported rate (8000, 96000) or channel count (1, 0, 6) is `AAR_E_INVAL`; `channels` is always 2 in a grant |
-| C-AUDIO.5 | 8.4 | MUST | audio | any | payload | todo | the app writes 1 second of samples ahead of `*read_frame` (never more than `frames` ahead); the runtime advances `*read_frame` at the granted rate within 25 percent over 1 second, and `read_frame` never passes `write_frame` (route PLATFORM) |
-| C-AUDIO.6 | 8.4 | MUST | audio | any | payload | todo | when the app stops writing, underruns are counted: `audio_get_stats` (when present) shows more than before and equals the ring's word at +0x44 |
-| C-AUDIO.7 | 8.4 | MUST | audio | any | payload | todo | `audio_get_stats` honours `size` (8 fills `size` and `underruns` only); a NULL slot returns `AAR_E_NOSYS` |
-| C-AUDIO.8 | 8.4 | MUST | audio | any | payload | todo | `audio_close` detaches the stream, returns `AAR_OK`, a new open works, a second close is negative |
-| C-AUDIO.9 | 8.4 | SHOULD | audio | any | payload | todo | a second `audio_open` in the same app is `AAR_E_BUSY`; opens in more apps than the platform has streams are `AAR_E_BUSY` (the runner opens apps until the first refusal) |
-| C-AUDIO.10 | 9.6 | MUST | audio | any | runner | todo | route `AHI` (`AAR_TAG_AUDIO_ROUTE`): `AARAudioRead` with `frames` 0 returns the frames available |
-| C-AUDIO.11 | 9.6 | MUST | audio | any | runner | todo | route `AHI`: the PCM `AARAudioRead` returns is exactly what the app wrote, in order (a ramp of 48000 frames) |
-| C-AUDIO.12 | 8.4 | SHOULD | audio | any | operator | todo | sound: the operator hears the 440 Hz tone the payload plays for two seconds and confirms |
+| C-AUDIO.1 | 8.4 | MUST | audio | any | payload | yes | `audio_open(22050, 2)` succeeds; the grant has `channels` 2, `rate` one of 22050, 44100, 48000, `frames` a power of two, `flags` 0, `samples`, `read_frame` and `write_frame` non-NULL |
+| C-AUDIO.2 | 8.4 | MUST | audio | any | payload | yes | the ring header is where the standard puts it: `read_frame` is `write_frame` plus 0x40 bytes, `samples` is `write_frame` plus 0x80 bytes, the little-endian words at +4 (rate), +8 (channels), +0xC (format `AAR_AUDIO_FORMAT_S16LE`) agree with the grant [spec question 18] |
+| C-AUDIO.3 | 8.4 | MUST | audio | any | payload | yes | `audio_open` of 44100 and 48000 stereo returns `AAR_OK` with a supported pair or a refusal of `AAR_E_INVAL`; a granted pair is written into `out` |
+| C-AUDIO.4 | 8.4 | MUST | audio | any | payload | yes | an unsupported rate (8000, 96000) or channel count (1, 0, 6) is `AAR_E_INVAL`; `channels` is always 2 in a grant |
+| C-AUDIO.5 | 8.4 | MUST | audio | any | payload | yes | the app writes 1 second of samples ahead of `*read_frame` (never more than `frames` ahead); the runtime advances `*read_frame` at the granted rate within 25 percent over 1 second, and `read_frame` never passes `write_frame` (route PLATFORM) |
+| C-AUDIO.6 | 8.4 | MUST | audio | any | payload | yes | when the app stops writing, underruns are counted: `audio_get_stats` (when present) shows more than before and equals the ring's word at +0x44 |
+| C-AUDIO.7 | 8.4 | MUST | audio | any | payload | yes | `audio_get_stats` honours `size` (8 fills `size` and `underruns` only); a NULL slot returns `AAR_E_NOSYS` |
+| C-AUDIO.8 | 8.4 | MUST | audio | any | payload | yes | `audio_close` detaches the stream, returns `AAR_OK`, a new open works, a second close is negative |
+| C-AUDIO.9 | 8.4 | SHOULD | audio | any | payload | yes | a second `audio_open` in the same app is `AAR_E_BUSY`; opens in more apps than the platform has streams are `AAR_E_BUSY` (the runner opens apps until the first refusal) |
+| C-AUDIO.10 | 9.6 | MUST | audio | any | runner | yes | route `AHI` (`AAR_TAG_AUDIO_ROUTE`): `AARAudioRead` with `frames` 0 returns the frames available |
+| C-AUDIO.11 | 9.6 | MUST | audio | any | runner | yes | route `AHI`: the PCM `AARAudioRead` returns is exactly what the app wrote, in order (a ramp of 48000 frames) |
+| C-AUDIO.12 | 8.4 | SHOULD | audio | any | operator | yes | sound: the operator hears the 440 Hz tone the payload plays for two seconds and confirms |
 | C-AUDIO.13 | 9.6 | MUST | audio | any | none | todo | not tested: a failed `AUDIO_CLOSE` retains the ring while a consumer can access it; needs failure injection |
 | C-AUDIO.14 | 8.4 | MUST | audio | any | none | todo | not tested: each ring index has its own cache line and one writer, indices are free-running `uint32_t` counters that wrap (a wrap needs 2^32 frames, about 54 hours) |
 | C-AUDIO.15 | 8.4 | MUST | audio | any | none | todo | not tested: the ring is little-endian and the library swaps the words it reads; the effect is C-AUDIO.11 |
