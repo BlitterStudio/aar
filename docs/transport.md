@@ -548,6 +548,35 @@ of the control block.
 The ARM-to-client direction is a vertical-blank poll of the queue indices today;
 an interrupt is possible.
 
+## Event counts (optional)
+
+A platform MAY publish **event counts**: monotonically increasing 32-bit
+counts that a client reads as a hint, to avoid reading the control block of
+every armed handle at every poll. There is one global count and one count per
+group of 32 process records (record index = the handle's low 16 bits). Each time
+the runtime makes something new visible to a client for a record (it publishes a
+submission entry, or writes a non-zero end reason), it orders that store before
+the increments (a barrier), then increments the count of the record's group and
+then the global count, each by one with an atomic read-modify-write, as the
+runtime may post from more than one core. A record that has no group (its group
+would lie beyond the block) increments the global count only; a client treats
+such a record as changed whenever the global count changed. Counts wrap around;
+a client compares them for difference only. The counts only go up, so a client
+needs nothing to clear and races with nothing.
+
+A client that reads the global count and finds it equal to the one it saw last
+knows that nothing was posted in between and skips the queues of its handles;
+when it differs, the client reads the group counts and looks at the handles of the
+groups that changed. A client that ignores the counts is still correct: they
+carry no data and the indices stay authoritative.
+
+**ZZ9000.** The block is 64 bytes from the host-visible heap, written with the
+normal write-back shareable mapping and zero-filled at start: big-endian word 0
+is the global count and words 1 to 15 the counts of groups 0 to 14 (records 0 to
+479). The QUERY reply carries its board offset at offset 48 (0 when absent); a
+reply shorter than 52 bytes has no such word, and the client then does not use
+counts.
+
 ## Lease and stale handles
 
 The client keeps the app alive with a lease. The platform stops an app whose
@@ -577,6 +606,7 @@ so that a port can reuse the shared library code above it:
 | `cache_publish`, `cache_acquire` | 68k data cache maintenance, or a no-op. |
 | `lease_renew` | One store into `AAR_CB_LEASE_COUNTER`, from the timer or interrupt context. The reference library core does it, so a platform supplies nothing. |
 | `doorbell_ring`, `doorbell_arm` | The doorbell, where the platform can raise an interrupt or a signal. |
+| `events_sample`, `claim_news` | Optional event counts: the sample reads the global count once per pass (and the group counts if it changed); `claim_news` says, with no card access, whether a claim's group changed. A platform without them leaves both NULL. |
 
 In the library's source the platform interface is `client/src/aar_plat.h`: a
 table of operations (attach, query, claim, release, the three load steps, start,

@@ -200,7 +200,7 @@ mutant("publish-always", "shared_map", CORE,
 mutant("scan-ignores-armed", "notify", CORE,
        ("if (!h->armed || !cb || h->revoked)", "if (!cb || h->revoked)"))
 mutant("signal-does-not-arm", "notify", CORE,
-       ("        h->armed = 1u;\n        mask = h->signal_mask;", "        mask = h->signal_mask;"))
+       ("        h->armed = 1u;\n        h->scan = 1u;\n        mask = h->signal_mask;", "        h->scan = 1u;\n        mask = h->signal_mask;"))
 mutant("signal-every-scan", "notify", CORE,
        ("(uint32_t)(ticks - h->last_signal_tick) >= AAR_CORE_NOTIFY_RESIGNAL_TICKS", "1"))
 mutant("end-reported-every-scan", "notify", CORE,
@@ -392,16 +392,16 @@ mutant("work-retire-never", "pass", CORE,
        ("    irq_off(c);\n    if (!work_wanted(h))\n        work_remove_locked(c, h);\n    irq_on(c);",
         "    (void)c;\n    (void)h;"))
 mutant("work-retire-keeps-polling-handles", "pass", CORE,
-       ("(h->kick_pending | h->mouse_pending | h->poll_needed | h->armed) != 0u;",
-        "(h->kick_pending | h->mouse_pending | h->armed) != 0u;"))
+       ("(h->kick_pending | h->mouse_pending | h->poll_needed | (h->armed & h->scan)) != 0u;",
+        "(h->kick_pending | h->mouse_pending | (h->armed & h->scan)) != 0u;"))
 mutant("work-retire-forgets-mouse", "pass", CORE,
-       ("(h->kick_pending | h->mouse_pending | h->poll_needed | h->armed) != 0u;",
-        "(h->kick_pending | h->poll_needed | h->armed) != 0u;"))
+       ("(h->kick_pending | h->mouse_pending | h->poll_needed | (h->armed & h->scan)) != 0u;",
+        "(h->kick_pending | h->poll_needed | (h->armed & h->scan)) != 0u;"))
 mutant("work-retire-forgets-kick", "pass", CORE,
-       ("(h->kick_pending | h->mouse_pending | h->poll_needed | h->armed) != 0u;",
-        "(h->mouse_pending | h->poll_needed | h->armed) != 0u;"))
+       ("(h->kick_pending | h->mouse_pending | h->poll_needed | (h->armed & h->scan)) != 0u;",
+        "(h->mouse_pending | h->poll_needed | (h->armed & h->scan)) != 0u;"))
 mutant("work-retire-forgets-armed", "pass", CORE,
-       ("(h->kick_pending | h->mouse_pending | h->poll_needed | h->armed) != 0u;",
+       ("(h->kick_pending | h->mouse_pending | h->poll_needed | (h->armed & h->scan)) != 0u;",
         "(h->kick_pending | h->mouse_pending | h->poll_needed) != 0u;"))
 mutant("work-poll-answer-ignored", "pass", CORE,
        ("                h->poll_needed = c->plat->ops->poll(c->plat, &h->claim) != 0;",
@@ -436,6 +436,38 @@ mutant("work-kick-not-noted", "pass", CORE,
 mutant("work-pass-takes-idle-bg", "pass", CORE,
        ("        if ((h->kick_pending | h->mouse_pending | h->poll_needed) != 0u && bg_take(c, h)) {",
         "        if (bg_take(c, h)) {"))
+# ---- event counts: armed handles that have nothing to do leave the work list ---------------------
+mutant("events-idle-armed-stays-listed", "events", CORE,
+       ("            h->scan = 0u;\n            if (h->armed && !h->revoked", "            if (h->armed && !h->revoked"))
+mutant("events-pending-not-kept", "events", CORE,
+       ("        if (events == AAR_PLAT_EVENTS_NONE || (left & SCAN_PENDING) ||", "        if (events == AAR_PLAT_EVENTS_NONE ||"))
+mutant("events-undelivered-end-forgotten", "events", CORE,
+       ("            ((left & SCAN_ENDED) && !h->ended_notified))\n            h->scan = 1u;", "            0)\n            h->scan = 1u;"))
+mutant("events-announced-end-kept", "events", CORE,
+       ("((left & SCAN_ENDED) && !h->ended_notified))\n            h->scan = 1u;", "(left & SCAN_ENDED))\n            h->scan = 1u;"))
+mutant("events-news-never-scans", "events", CORE,
+       ("        if (o->claim_news(c->plat, &h->claim))\n            scan_next(c, h);", "        (void)o->claim_news(c->plat, &h->claim);"))
+mutant("events-news-scans-every-handle", "events", CORE,
+       ("        if (o->claim_news(c->plat, &h->claim))\n            scan_next(c, h);", "        (void)o->claim_news(c->plat, &h->claim);\n        scan_next(c, h);"))
+mutant("events-claim-not-asked-before-scan", "events", CORE,
+       ("                c->stat_pass_news++;\n                (void)o->claim_news(c->plat, &h->claim);\n", ""))
+mutant("events-quiet-sample-walks", "events", CORE,
+       ("        if (events != AAR_PLAT_EVENTS_NONE && events != AAR_PLAT_EVENTS_QUIET)\n            events = AAR_PLAT_EVENTS_NEWS;",
+        "        if (events != AAR_PLAT_EVENTS_NONE)\n            events = AAR_PLAT_EVENTS_NEWS;"))
+mutant("events-lost-not-rearmed", "events", CORE,
+       ("    if (events == AAR_PLAT_EVENTS_NONE && c->events != AAR_PLAT_EVENTS_NONE)\n        events_off(c);\n", ""))
+mutant("events-signal-not-scanned", "events", CORE,
+       ("        h->armed = 1u;\n        h->scan = 1u;", "        h->armed = 1u;"))
+mutant("events-open-not-scanned", "events", CORE,
+       ("    h->scan = 1u; /* opened or armed: scanned at least once */\n", ""))
+mutant("events-claim-news-unchecked", "events", CORE,
+       ("o->events_sample && o->claim_news) {", "o->events_sample) {"))
+mutant("events-sampled-before-attach", "events", CORE,
+       ("    if (c->attach_rc == AAR_OK && o->events_sample && o->claim_news) {", "    if (o->events_sample && o->claim_news) {"))
+mutant("events-wrapped-count-is-no-change", "events", "client/src/refplat.c",
+       ("if (rc->ev_asked && rc->ev_seen == now)", "if (rc->ev_asked && rc->ev_seen >= now)"))
+mutant("events-unknown-group-ignores-global", "events", "client/src/refplat.c",
+       ("refplat.ev_sample[1u + group] : refplat.ev_sample[0];", "refplat.ev_sample[1u + group] : 0u;"))
 mutant("reap-asks-per-handle", "reap", CORE,
        ("    if (!m->have || m->stamp.id != o->id || m->stamp.name != o->name ||\n        m->stamp.number != o->number || m->stamp.kind != o->kind) {",
         "    if (1) {"))

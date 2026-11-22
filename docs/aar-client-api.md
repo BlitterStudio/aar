@@ -159,9 +159,18 @@ does, every millisecond by default) never arms and costs the library nothing:
 a handle that is not armed and has no doorbell or mouse event waiting is not
 visited at all by the library's dispatcher, so the cost of the library does not
 grow with the number of such handles. On the ZZ9000 the library looks at armed
-handles at each vertical blank, so a wake-up takes up to 20 ms on a PAL machine,
-and each armed handle costs three reads of its control block per blank. A client
-that needs a faster response polls `AARServiceNext` itself.
+handles at each vertical blank, so a wake-up takes up to 20 ms on a PAL machine.
+A client that needs a faster response polls `AARServiceNext` itself.
+
+On a platform that publishes event counts (the ZZ9000 with a firmware that has
+them) an armed handle that has nothing pending costs one read per vertical blank
+for all such handles together: the library reads one word, the platform's global
+event count, and reads the control block of an armed handle (three reads, each
+slow on a 68060) only when the count of its group changed, while it has a request
+or message waiting, or until its end has been announced. On a platform without
+event counts each armed handle costs three reads of its control block per blank.
+The counts are only a hint; the queues stay authoritative, so nothing about
+notification differs for the client.
 
 A call that takes a handle finds it in a table in one or two steps, however many
 handles are open, and `AAROpen` and `AARClose` do not walk the handles either.

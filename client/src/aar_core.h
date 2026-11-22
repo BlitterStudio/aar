@@ -162,6 +162,7 @@ struct AARHandle {
     uint8_t mouse_pending;
     uint8_t kick_pending;         /* AAR_PLAT_KICK_* bits not yet sent */
     uint8_t lease_slot;           /* 1 + the lease list it is on, 0: on none */
+    volatile uint8_t scan;        /* an armed handle is scanned at the next pass (always, on a platform without events) */
     struct AARHandle *work_next, *work_prev; /* the work list (under env->irq_off) */
 
     /* ---- the vertical-blank interrupt: the lease list of one phase ---- */
@@ -247,6 +248,7 @@ typedef struct aar_core {
      * to send or retire, a mouse event to post, a scan to make). A handle with
      * nothing is not on it and costs the pass nothing. */
     struct AARHandle *work_head;
+    uint8_t events;               /* AAR_PLAT_EVENTS_*: what the platform's last sample said */
 
     volatile uint32_t ticks;      /* vertical blanks, counted by aar_core_vblank */
     volatile uint32_t disp_alive; /* `ticks` at the dispatcher's last pass */
@@ -254,6 +256,8 @@ typedef struct aar_core {
     /* Counters for the tests: what the calls cost in steps. */
     uint32_t stat_lookup_steps;   /* probes of the handle table */
     uint32_t stat_pass_visits;    /* handles the dispatcher passes looked at */
+    uint32_t stat_pass_scans;     /* notify_scan runs: the control block reads of armed handles */
+    uint32_t stat_pass_news;      /* claim_news calls */
     uint32_t stat_lease_visits;   /* claims the interrupt looked at */
 } aar_core;
 
@@ -412,14 +416,20 @@ typedef int (*aar_core_notify_fn)(void *user, AARHandle *h, uint32_t type);
 typedef int (*aar_core_owner_fn)(void *user, const aar_owner_stamp *owner);
 
 /*
- * One dispatcher pass (each vertical blank): stamps disp_alive, then for every
- * handle on the work list (one that has a doorbell to send, a mouse event
- * waiting, a doorbell the platform may still hold, or that is armed) whose
+ * One dispatcher pass (each vertical blank): stamps disp_alive, samples the
+ * platform's event counts if it has any, then for every handle on the work
+ * list (one that has a doorbell to send, a mouse event waiting, a doorbell the
+ * platform may still hold, or that is armed and has to be scanned) whose
  * owner is not inside a call: retries the doorbell, posts the pending mouse
  * event, lets the platform retire its doorbell request (aar_plat_ops.poll),
  * and, for an armed handle, scans for work. A handle with none of these is not
- * looked at. `notify` is called once per handle that has news, with an
- * AAR_NOTIFY_* type, and L2 signals the owner and posts the event.
+ * looked at. On a platform without events an armed handle is always on the
+ * list. On one with events an armed handle is on it only while it has work
+ * pending (a request or message on the SQ or in the inbox, an end not yet
+ * announced) and for one scan after it is opened or armed; otherwise it is
+ * put on it when the platform's counts say that something was posted for it.
+ * `notify` is called once per handle that has news, with an AAR_NOTIFY_* type,
+ * and L2 signals the owner and posts the event.
  */
 void aar_core_dispatch(aar_core *c, aar_core_notify_fn notify, void *user);
 
