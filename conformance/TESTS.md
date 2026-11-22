@@ -281,37 +281,37 @@ path) and checks the files the payload leaves behind.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-FILE.1 | 7.1 | MUST | core | any | payload | todo | a path of 255 bytes opens; the first file id is at least `AAR_FD_BASE` (3) and below 64 |
-| C-FILE.2 | 7.1 | MUST | core | any | payload | todo | a path of 256 bytes is refused with a negative code [spec question 9] |
-| C-FILE.3 | 7.1 | MUST | core | any | payload | todo | a relative path resolves under the client's root: a file the app creates is found there by the runner, and a fixture the runner placed there reads back |
-| C-FILE.4 | 7.1 | SHOULD | core | any | payload | todo | `..` and a leading `/` are refused with `AAR_E_ACCES` by the recommended default policy (`aar_serve`) |
-| C-FILE.5 | 7.1 | SHOULD | core | any | payload | todo | a path with a volume or assign prefix is refused with `AAR_E_ACCES` unless `AAR_SERVEF_ABS_PATHS` is set; with the flag set a prefixed path to the root's own volume opens |
-| C-FILE.6 | 7.1 | MUST | core | any | payload | todo | once the client has asked the app to stop, a create, a truncate and a write are refused (negative code) while a read still works (runner peer stops the app) |
-| C-FILE.7 | 7.1 | MUST | core | any | payload | todo | 16 files and, separately, 16 directory lists can be open at once; closing the lists leaves the files open |
-| C-FILE.8 | 7.1 | MUST | core | any | payload | todo | a bad id (-1, 0, 1, 2, 999, a closed id) is `AAR_E_BADF` from close, read, write, seek and list next |
-| C-FILE.9 | 7.1 | MUST | core | any | payload | todo | `AAR_FILE_READ` opens an existing file; `AAR_FILE_WRITE` writes; a write through a read-only id and a read through a write-only id fail with a negative code [spec question 10] |
-| C-FILE.10 | 7.1 | MUST | core | any | payload | todo | `CREATE` and `TRUNCATE` together create a missing file and empty an existing one |
-| C-FILE.11 | 7.1 | MUST | core | any | payload | todo | `CREATE` alone keeps the contents of an existing file |
-| C-FILE.12 | 7.1 | MUST | core | any | payload | todo | `TRUNCATE` alone empties an existing file and does not create a missing one (`AAR_E_NOENT`) |
-| C-FILE.13 | 7.1 | MUST | core | any | payload | todo | `CREATE` with `EXCL`: `AAR_E_EXIST` for an existing file, which stays untouched; creates a missing file |
-| C-FILE.14 | 7.1 | MUST | core | any | payload | todo | flags 0 (neither read nor write) is `AAR_E_INVAL` |
-| C-FILE.15 | 7.1 | MUST | core | any | payload | todo | `CREATE` without `WRITE` and `TRUNCATE` without `WRITE` are `AAR_E_INVAL` |
-| C-FILE.16 | 7.1 | MUST | core | any | payload | todo | `EXCL` without `CREATE` is `AAR_E_INVAL` |
-| C-FILE.17 | 7.1 | MUST | core | any | payload | todo | an unknown flag bit is `AAR_E_INVAL` |
-| C-FILE.18 | 7.1 | MUST | core | any | payload | todo | a missing file without `CREATE` is `AAR_E_NOENT` |
-| C-FILE.19 | 7.1 | MUST | core | any | payload | todo | seek with `AAR_SEEK_SET`, `CUR` and `END` returns the new position; a position before the start is `AAR_E_INVAL`; a seek past the end then a read returns `AAR_OK` and 0 bytes |
-| C-FILE.20 | 7.1 | MUST | core | any | payload | todo | `file_read` sets `*out_n` to the bytes obtained; a read of more than the file holds returns what is left; a read at the end returns `AAR_OK` and 0 |
-| C-FILE.21 | 7.1 | MUST | core | any | payload | todo | one `file_read` of the 1 MiB fixture returns all of it (chunking is the platform's business, a short read means end of file) |
-| C-FILE.22 | 7.1 | MUST | core | any | payload | todo | one `file_write` of 1 MiB returns a count of 1 MiB and the runner finds the exact bytes in the file |
-| C-FILE.23 | 7.1 | MUST | core | any | payload | todo | `file_stat` gives size and mode (1 file, 2 directory) of the fixtures; a missing path is `AAR_E_NOENT` |
-| C-FILE.24 | 7.1 | MUST | core | any | payload | todo | `mtime` of the dated fixture equals its date in Unix seconds, or is 0 when the filesystem has none |
-| C-FILE.25 | 7.1 | MUST | core | any | payload | todo | a directory list returns every entry of the fixture directory once, names of at most 255 bytes, mode per entry, then `AAR_E_NOENT`; a missing directory is `AAR_E_NOENT` |
-| C-FILE.26 | 7.1 | MUST | core | any | payload | todo | a call waits at most 30 seconds for the client and then returns `AAR_E_TIMEDOUT` (runner peer withholds the reply; the test takes 31 seconds) |
-| C-FILE.27 | 7.1 | MUST | core | any | payload | todo | after a timeout the file id is not reused for the rest of the app's life: ids the runtime hands out later differ from the timed-out one (runner peer reports the ids it saw) |
-| C-FILE.28 | 7.1 | MUST | core | any | payload | todo | a stop request ends a file wait with `AAR_E_IO` (runner peer withholds the reply, then stops the app) |
-| C-FILE.29 | 7.1 | MUST | core | any | payload | todo | `aar_map_file`, when present, returns the exact contents of the 1 MiB fixture and the buffer stays valid until `aar_unmap_file`; `AAR_E_NOSYS` is allowed |
-| C-FILE.30 | 7.1 | MUST | zz9000 | any | payload | todo | `aar_map_file` is present, `shared_used` rises by the file size while mapped, and a file over 16 MiB is `AAR_E_NOSPC` |
-| C-FILE.31 | 7.1 | MUST | core | any | runner | todo | after the app exited with files and lists still open, the runner can delete and rename those files (the client released every lock and handle) |
+| C-FILE.1 | 7.1 | MUST | core | any | payload | yes | a path of 255 bytes opens; the first file id is at least `AAR_FD_BASE` (3) and below 64 |
+| C-FILE.2 | 7.1 | MUST | core | any | payload | yes | a path of 256 bytes is refused with a negative code [spec question 9] |
+| C-FILE.3 | 7.1 | MUST | core | any | payload | yes | a relative path resolves under the client's root: a file the app creates is found there by the runner, and a fixture the runner placed there reads back |
+| C-FILE.4 | 7.1 | SHOULD | core | any | payload | yes | `..` and a leading `/` are refused with `AAR_E_ACCES` by the recommended default policy (`aar_serve`) |
+| C-FILE.5 | 7.1 | SHOULD | core | any | payload | yes | a path with a volume or assign prefix is refused with `AAR_E_ACCES` unless `AAR_SERVEF_ABS_PATHS` is set; with the flag set a prefixed path to the root's own volume opens |
+| C-FILE.6 | 7.1 | MUST | core | any | payload | yes | once the client has asked the app to stop, a create, a truncate and a write are refused (negative code) while a read still works (runner peer stops the app) |
+| C-FILE.7 | 7.1 | MUST | core | any | payload | yes | 16 files and, separately, 16 directory lists can be open at once; closing the lists leaves the files open |
+| C-FILE.8 | 7.1 | MUST | core | any | payload | yes | a bad id (-1, 0, 1, 2, 999, a closed id) is `AAR_E_BADF` from close, read, write, seek and list next |
+| C-FILE.9 | 7.1 | MUST | core | any | payload | yes | `AAR_FILE_READ` opens an existing file; `AAR_FILE_WRITE` writes in place; a write through a read-only id transfers no byte (a negative code or a count of 0); a read through a write-only id is not tested [spec question 31] |
+| C-FILE.10 | 7.1 | MUST | core | any | payload | yes | `CREATE` and `TRUNCATE` together create a missing file and empty an existing one |
+| C-FILE.11 | 7.1 | MUST | core | any | payload | yes | `CREATE` alone keeps the contents of an existing file |
+| C-FILE.12 | 7.1 | MUST | core | any | payload | yes | `TRUNCATE` alone empties an existing file and does not create a missing one (`AAR_E_NOENT`) |
+| C-FILE.13 | 7.1 | MUST | core | any | payload | yes | `CREATE` with `EXCL`: `AAR_E_EXIST` for an existing file, which stays untouched; creates a missing file |
+| C-FILE.14 | 7.1 | MUST | core | any | payload | yes | flags 0 (neither read nor write) is `AAR_E_INVAL` |
+| C-FILE.15 | 7.1 | MUST | core | any | payload | yes | `CREATE` without `WRITE` and `TRUNCATE` without `WRITE` are `AAR_E_INVAL` |
+| C-FILE.16 | 7.1 | MUST | core | any | payload | yes | `EXCL` without `CREATE` is `AAR_E_INVAL` |
+| C-FILE.17 | 7.1 | MUST | core | any | payload | yes | an unknown flag bit is `AAR_E_INVAL` |
+| C-FILE.18 | 7.1 | MUST | core | any | payload | yes | a missing file without `CREATE` is `AAR_E_NOENT` |
+| C-FILE.19 | 7.1 | MUST | core | any | payload | yes | seek with `AAR_SEEK_SET`, `CUR` and `END` returns the new position; a position before the start is `AAR_E_INVAL`; a seek past the end then a read returns `AAR_OK` and 0 bytes |
+| C-FILE.20 | 7.1 | MUST | core | any | payload | yes | `file_read` sets `*out_n` to the bytes obtained; a read of more than the file holds returns what is left; a read at the end returns `AAR_OK` and 0 |
+| C-FILE.21 | 7.1 | MUST | core | any | payload | yes | one `file_read` of the 1 MiB fixture returns all of it (chunking is the platform's business, a short read means end of file) |
+| C-FILE.22 | 7.1 | MUST | core | any | payload | yes | one `file_write` of 1 MiB returns a count of 1 MiB and the runner finds the exact bytes in the file |
+| C-FILE.23 | 7.1 | MUST | core | any | payload | yes | `file_stat` gives size and mode (1 file, 2 directory) of the fixtures; a missing path is `AAR_E_NOENT` |
+| C-FILE.24 | 7.1 | MUST | core | any | payload | yes | `mtime` of the dated fixture equals its date in Unix seconds, or is 0 when the filesystem has none |
+| C-FILE.25 | 7.1 | MUST | core | any | payload | yes | a directory list returns every entry of the fixture directory once, names of at most 255 bytes, mode per entry, then `AAR_E_NOENT`; a missing directory is `AAR_E_NOENT` |
+| C-FILE.26 | 7.1 | MUST | core | any | runner | yes | a call waits for the client and then returns `AAR_E_TIMEDOUT` after 29 to 36 seconds as the app measures it [spec question 30] (the runner serves the app by hand and withholds the reply; the test takes 31 seconds) |
+| C-FILE.27 | 7.1 | MUST | core | any | runner | yes | after a timeout the file id is not reused for the rest of the app's life: 20 later opens, after the runner completed the late request, all succeed and none is given the timed-out id (the runner reads the id from the request) |
+| C-FILE.28 | 7.1 | MUST | core | any | runner | yes | a stop request ends a file wait with `AAR_E_IO` (the runner withholds the reply, waits one second, then stops the app; the call ends with that code after at least 0.5 s) |
+| C-FILE.29 | 7.1 | MUST | core | any | payload | yes | `aar_map_file`, when present, returns the exact contents of the 1 MiB fixture and the buffer stays valid until `aar_unmap_file`; `AAR_E_NOSYS` is allowed |
+| C-FILE.30 | 7.1 | MUST | zz9000 | any | payload | yes | `aar_map_file` is present, `shared_used` rises by the file size while mapped, and a file over 16 MiB is `AAR_E_NOSPC` |
+| C-FILE.31 | 7.1 | MUST | core | any | runner | yes | after the app exited with files and lists still open, the runner can delete and rename those files (the client released every lock and handle) |
 | C-FILE.32 | 7.1 | MAY | core | any | none | todo | not tested: a platform MAY return `AAR_E_NOSYS` from `aar_map_file` (accepted by C-FILE.29) |
 | C-FILE.33 | 7.1 | MUST | core | any | none | todo | not tested: AmigaDOS has no atomic exclusive create; the check-then-create in the serving loop is only exclusive among the apps one client serves; C-FILE.13 tests what the standard promises |
 | C-FILE.34 | 7.1 | MUST | zz9000 | any | none | todo | not tested: the mapping of `READ`, `WRITE`, `CREATE` and `TRUNCATE` onto `MODE_OLDFILE`, `MODE_READWRITE`, `MODE_NEWFILE` is an implementation detail of the ZZ9000 client; its effects are C-FILE.9 to C-FILE.13 |
@@ -662,3 +662,15 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     fails the load (`AAR_E_NOMEM`)" does not say when a limit is unsatisfiable
     (`shared_max_mib` is the nearest figure) or whether `AARSetTagList` may
     refuse it first (9.2 gives `AAR_E_INVAL` above 4095 MiB only).
+30. **How long a file wait lasts** (7.1): "a call waits at most 30 seconds for the
+    client (`AAR_E_TIMEDOUT`)". "At most" gives only an upper bound, and no
+    tolerance is stated for the timer that measures it. C-FILE.26 accepts
+    29 to 36 seconds as the app measures it; the spec should say whether a
+    shorter wait (a runtime that gives up after 10 s) conforms and how exact
+    the 30 seconds is.
+31. **Reading through a write-only file id** (7.1): the spec says nothing
+    about it, the host runner reads through such an id, and the ZZ9000 client
+    opens `AAR_FILE_WRITE` with `MODE_READWRITE`, which cannot refuse a read.
+    C-FILE.9 therefore tests only the write through a read-only id (no byte
+    moves, a negative code or a count of 0). Say whether a runtime has to refuse
+    the read and, if so, with which code (question 10).
