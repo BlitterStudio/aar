@@ -96,7 +96,7 @@ because the registers differ.
 | C-ENTRY.1 | 3.2 | MUST | core | any | payload | yes | the table pointer in `r0`/`x0` is non-NULL, equals `aar_api_ptr` and its `size` covers the core slots |
 | C-ENTRY.2 | 3.2 | MUST | core | any | payload | yes | `argc` in `r1`/`w1` and `argv` in `r2`/`x2` equal the arguments the runner started the app with (name, `alpha`, `beta gamma`, `info:` and `conf:` words) |
 | C-ENTRY.3 | 3.2 | MUST | core | any | payload | yes | `argv[0]` is the program name: its last path component is the payload's file name or the host executable's name |
-| C-ENTRY.4 | 3.2 | MUST | core | any | payload | yes | a second run with 16 arguments of 127 bytes each (runner peer, `AARInfo.max_args` and `max_arg_bytes` permitting) delivers every byte intact |
+| C-ENTRY.4 | 3.2 | MUST | core | any | payload | yes | a second run (variant `long`) with 16 arguments of 127 bytes each, `argv[0]` included (a 127-byte path that ends in the file name), delivers every byte intact; a platform whose `AARInfo.max_args` or `max_arg_bytes` is below 16 and 128 fails here [spec question 31] |
 | C-ENTRY.5 | 3.2 | MUST | core | a32 | payload | yes | `sp` at entry is 8-byte aligned |
 | C-ENTRY.6 | 3.2 | MUST | core | a64 | payload | yes | `sp` at entry is 16-byte aligned |
 | C-ENTRY.7 | 3.2 | MUST | core | a32 | payload | yes | `lr` is 0 at entry |
@@ -125,30 +125,30 @@ because the registers differ.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-TABLE.1 | 3.3 | MUST | core | any | payload | todo | the table `size` covers every core slot (`exit` to `msg_wait`) and every core slot is non-NULL |
-| C-TABLE.2 | 3.3 | MUST | core | any | payload | todo | `version` names API major `AAR_API_MAJOR` in its high 16 bits and equals the minor `AARInfo.api_minor` in its low 16 bits (the runner passes the client value) |
-| C-TABLE.3 | 3.3 | MUST | core | any | payload | todo | the table `groups` word equals `aar_info.groups` and the runner's `AARInfo.groups` |
-| C-TABLE.4 | 3.3 | MUST | display | any | payload | todo | with the display group declared the table covers the nine display slots and none is NULL |
-| C-TABLE.5 | 3.3 | MUST | audio | any | payload | todo | with the audio group declared the table covers `audio_open` and `audio_close` and they are non-NULL (`audio_stats` may be NULL) |
-| C-TABLE.6 | 3.3 | MUST | gl | any | payload | todo | with the GL group declared the table covers and fills `gl_bind`, `gl_swap`, `gl_unbind` |
-| C-TABLE.7 | 3.3 | MUST | services | any | payload | todo | with the services group declared the table covers and fills the eight services slots |
-| C-TABLE.8 | 3.3 | MUST | core | any | payload | todo | for each group whose bit is clear, the group's wrappers return `AAR_E_NOSYS` (or 0, NULL, nothing) and never fault |
-| C-TABLE.9 | 3.3 | MUST | core | any | payload | todo | `aar_map_file` and `aar_unmap_file` and `aar_ext` are either absent or work; an absent one gives `AAR_E_NOSYS` from the wrapper |
-| C-TABLE.10 | 3.3 | MUST | core | any | payload | todo | `platform_id` in the table equals `aar_info.platform_id` and the runner's `AARInfo.platform_id` |
-| C-TABLE.11 | 3.4 | MUST | core | any | payload | todo | `aar_get_info` with a `size` of 16 changes only the first 16 bytes of the caller's structure |
-| C-TABLE.12 | 3.4 | MUST | core | any | payload | todo | `aar_get_info` with a `size` larger than `sizeof(aar_info)` zeroes the bytes past the fields it knows, up to `size`, and writes nothing beyond |
-| C-TABLE.13 | 3.4 | MUST | core | any | payload | todo | `aar_info.profile` equals the profile the app was built for |
-| C-TABLE.14 | 3.4 | MUST | core | any | payload | todo | `heap_granule` is 1 MiB; `shared_granule` is a power of two of at least 64 |
-| C-TABLE.15 | 3.4 | MUST | core | any | payload | todo | `msg_capacity` is at least 32 and equals the runner's `AARInfo.msg_capacity` |
-| C-TABLE.16 | 3.4 | MUST | core | any | payload | todo | `stall_limit_ms` is at least 10000 and equals the runner's value; `stop_grace_ms` equals the runner's value |
-| C-TABLE.17 | 3.4 | MUST | core | any | payload | todo | `max_files` is at least 16 |
-| C-TABLE.18 | 3.4 | MUST | core | any | payload | todo | `shared_limit` is `shared_default_mib` MiB (16 MiB, `AAR_SHARED_DEFAULT_MIB`) when the client set none, and `shared_used` does not exceed it |
-| C-TABLE.19 | 3.4 | MUST | core | any | payload | todo | `aar_heap_info` fills `committed`, `limit` and `pool_free`; `committed` does not exceed `limit` |
-| C-TABLE.20 | 8.7 | MUST | core | a32 | payload | todo | every `AAR_CPU_A32_*` bit that is set in `cpu_features` is honest: the app executes a VFPv4 fused multiply-add, an integer divide, a half-precision convert as advertised without a fault |
-| C-TABLE.21 | 8.7 | MUST | core | a64 | payload | todo | every `AAR_CPU_A64_*` bit that is set is honest: CRC32, LSE atomics, AES, SHA, dot product, FP16 execute without a fault |
-| C-TABLE.22 | 8.8 | MUST | core | any | payload | todo | `aar_ext` with an unknown platform id or extension id returns NULL |
-| C-TABLE.23 | 8.8 | MUST | zz9000 | any | payload | todo | `aar_ext(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_MAIN)` returns a table whose `size` covers `build_id`; `gl_bind_flags` is NULL when the GL group is absent |
-| C-TABLE.24 | 3.5 | MUST | core | any | payload | todo | the error codes a call returns are the ones of section 3.5 (checked over every failing call of the payloads: no code outside -1 to -17) |
+| C-TABLE.1 | 3.3 | MUST | core | any | payload | yes | the table `size` covers every core slot (`exit` to `msg_wait`) and every core slot is non-NULL |
+| C-TABLE.2 | 3.3 | MUST | core | any | payload | yes | `version` names API major `AAR_API_MAJOR` in its high 16 bits and equals the minor `AARInfo.api_minor` in its low 16 bits (the runner passes the client value) |
+| C-TABLE.3 | 3.3 | MUST | core | any | payload | yes | the table `groups` word equals `aar_info.groups` and the runner's `AARInfo.groups` |
+| C-TABLE.4 | 3.3 | MUST | display | any | payload | yes | with the display group declared the table covers the nine display slots and none is NULL |
+| C-TABLE.5 | 3.3 | MUST | audio | any | payload | yes | with the audio group declared the table covers `audio_open` and `audio_close` and they are non-NULL (`audio_stats` may be NULL) |
+| C-TABLE.6 | 3.3 | MUST | gl | any | payload | yes | with the GL group declared the table covers and fills `gl_bind`, `gl_swap`, `gl_unbind` |
+| C-TABLE.7 | 3.3 | MUST | services | any | payload | yes | with the services group declared the table covers and fills the eight services slots |
+| C-TABLE.8 | 3.3 | MUST | core | any | payload | yes | for each group whose bit is clear, the group's wrappers over an absent or NULL slot return `AAR_E_NOSYS` (or 0, NULL, nothing) and never fault; a slot that is present although the bit is clear is not called [spec question 30] |
+| C-TABLE.9 | 3.3 | MUST | core | any | payload | yes | `aar_map_file`, `aar_unmap_file` and `aar_ext` are either absent (the wrapper gives `AAR_E_NOSYS`, `ext` gives NULL) or work: a 16-byte file the payload writes maps with the right bytes, and `AAR_E_NOSYS` from a present `map_file` is accepted (7.1: a platform MAY) |
+| C-TABLE.10 | 3.3 | MUST | core | any | payload | yes | `platform_id` in the table equals `aar_info.platform_id` and the runner's `AARInfo.platform_id` |
+| C-TABLE.11 | 3.4 | MUST | core | any | payload | yes | `aar_get_info` with a `size` of 16 changes only the first 16 bytes of the caller's structure |
+| C-TABLE.12 | 3.4 | MUST | core | any | payload | yes | `aar_get_info` with a `size` larger than `sizeof(aar_info)` zeroes the bytes past the fields it knows, up to `size`, and writes nothing beyond |
+| C-TABLE.13 | 3.4 | MUST | core | any | payload | yes | `aar_info.profile` equals the profile the app was built for |
+| C-TABLE.14 | 3.4 | MUST | core | any | payload | yes | `heap_granule` is 1 MiB; `shared_granule` is a power of two of at least 64 |
+| C-TABLE.15 | 3.4 | MUST | core | any | payload | yes | `msg_capacity` is at least 32 and equals the runner's `AARInfo.msg_capacity` [spec question 33] |
+| C-TABLE.16 | 3.4 | MUST | core | any | payload | yes | `stall_limit_ms` is at least 10000 and equals the runner's value; `stop_grace_ms` equals the runner's value [spec question 33] |
+| C-TABLE.17 | 3.4 | MUST | core | any | payload | yes | `max_files` is at least 16 |
+| C-TABLE.18 | 3.4 | MUST | core | any | payload | yes | `shared_limit` is `shared_default_mib` MiB (16 MiB, `AAR_SHARED_DEFAULT_MIB`) when the client set none, and `shared_used` does not exceed it |
+| C-TABLE.19 | 3.4 | MUST | core | any | payload | yes | `aar_heap_info` fills `committed`, `limit` and `pool_free`; `committed` does not exceed `limit` |
+| C-TABLE.20 | 8.7 | MUST | core | a32 | payload | yes | every `AAR_CPU_A32_*` bit that is set in `cpu_features` is honest: the app executes a VFPv4 fused multiply-add, an integer divide, a half-precision convert as advertised without a fault |
+| C-TABLE.21 | 8.7 | MUST | core | a64 | payload | yes | every `AAR_CPU_A64_*` bit that is set is honest: CRC32, LSE atomics, AES, SHA, dot product, FP16 execute without a fault |
+| C-TABLE.22 | 8.8 | MUST | core | any | payload | yes | `aar_ext` with an unknown platform id or extension id returns NULL |
+| C-TABLE.23 | 8.8 | MUST | zz9000 | any | payload | yes | `aar_ext(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_MAIN)` returns a table whose `size` covers `build_id`; `gl_bind_flags` is NULL when the GL group is absent |
+| C-TABLE.24 | 3.5 | MUST | core | any | payload | yes | the error codes a call returns are the ones of section 3.5: over a battery of failing calls the payload makes (files, heap, shared buffers, groups, absent slots), no code is outside -1 to -17 |
 | C-TABLE.25 | 3.6 | MUST | core | any | none | todo | not tested here: the major and minor check on the client's view is C-CLIENT.3 |
 | C-TABLE.26 | 3.3 | MUST | core | any | none | todo | not tested: the slot order, offsets and the 56 slots are pinned by the header's `_Static_assert`s and `tests/abi_check.sh` in CI |
 | C-TABLE.27 | 3.3 | MUST | core | any | none | todo | not tested: apps MUST NOT gate on `version`; an obligation of the app |
@@ -169,10 +169,10 @@ because the registers differ.
 | C-MEM.6 | 4.1 | MUST | core | any | payload | yes | `heap_shrink` returns whole granules at the top: the new break is the old end minus the request and `heap_range` shrinks by it |
 | C-MEM.7 | 4.1 | MUST | core | any | payload | yes | a grow or shrink that is not a whole number of granules is `AAR_E_INVAL` and changes nothing |
 | C-MEM.8 | 4.1 | MUST | core | any | payload | yes | grow until failure: the failure is `AAR_E_NOMEM`, the committed size never exceeds `heap_info.limit` |
-| C-MEM.9 | 4.1 | MUST | core | any | payload | yes | variant `caps` (runner sets `AAR_TAG_PRIVATE_MIB`): `heap_info.limit` is the smaller of the platform's cap and the client's value, and a grow past it is `AAR_E_NOMEM` |
+| C-MEM.9 | 4.1 | MUST | core | any | payload | yes | variant `caps` (runner sets `AAR_TAG_PRIVATE_MIB` to 4): `heap_info.limit` is the smaller of the platform's cap (the limit `main` reported) and the client's value, a grow past it is `AAR_E_NOMEM` and the heap never grows past it [spec question 32] |
 | C-MEM.10 | 4.1 | MUST | core | any | payload | yes | `min_heap_mib` of the note is committed at load: the heap is at least that long at entry (payload note: 2 MiB) |
 | C-MEM.11 | 4.1 | MUST | core | any | payload | yes | `heap_info.pool_free` falls when the heap grows and rises when it shrinks |
-| C-MEM.12 | 4.1 | MUST | core | any | payload | yes | exhausting the pool produces one `AAR_EV_LOW_MEMORY` event per low-water crossing; its fields other than `type` are 0; no second event arrives until the pool has risen above the high-water mark [spec question 5] |
+| C-MEM.12 | 4.1 | MUST | core | any | payload | yes | variant `lowmem`: exhausting the pool twice (the second time after releasing it) produces one `AAR_EV_LOW_MEMORY` event per low-water crossing, none while the pool stays exhausted; its fields other than `type` are 0 [spec questions 5 and 32] |
 | C-MEM.13 | 4.4 | MUST | core | any | payload | yes | when `AAR_INFOF_ISOLATED` is set, a call given a bad pointer returns `AAR_E_FAULT` and the app keeps running (passes with detail `not isolated` when the flag is clear) |
 | C-MEM.14 | 4.4 | MUST | core | any | none | todo | not tested: "the platform MUST document" the behaviour of a bad pointer on a non-isolated runtime; documentation |
 | C-MEM.15 | 4.1 | MUST | core | any | none | todo | not tested: the heap starts at the end of the image and apps must not assume an address; platform internals and an obligation of the app |
@@ -662,3 +662,24 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     fails the load (`AAR_E_NOMEM`)" does not say when a limit is unsatisfiable
     (`shared_max_mib` is the nearest figure) or whether `AARSetTagList` may
     refuse it first (9.2 gives `AAR_E_INVAL` above 4095 MiB only).
+30. **Slots of a group that is not declared** (3.3 rule 2): the text says that a set
+    group bit means every slot the table covers is non-NULL, not the converse. A
+    platform that leaves a slot non-NULL while the bit is clear is not said to be
+    wrong, and the wrapper would then run the real call. C-TABLE.8 calls the wrappers
+    of an undeclared group only over absent or NULL slots (`AAR_E_NOSYS`) and does
+    not call a present one. Say whether a clear bit requires absent or NULL slots.
+31. **Argument limits** (3.2, 9.2): "at least 16 arguments of up to 127 bytes each"
+    does not say whether `argv[0]` is one of the 16, and `AARInfo.max_args` and
+    `max_arg_bytes` (the latter with the NUL, 128) do not say it either. C-ENTRY.4
+    passes 16 strings including `argv[0]`, each of 127 bytes, which is the strictest
+    reading; a platform that counts `argv[0]` apart fails it. State which.
+32. **The platform's own cap and the pool** (4.1): the limit is "the smaller of the
+    platform's cap and the client's `AAR_TAG_PRIVATE_MIB`", but nothing says what the
+    platform's cap is, or whether it equals the pool the app can exhaust. C-MEM.9
+    compares the capped limit with the limit the same platform reports without a
+    cap; C-MEM.12 assumes that without a cap the limit is the pool, so that a
+    `heap_grow` loop reaches the low-water mark.
+33. **App and client report the same platform** (3.4, 9.2): `msg_capacity`,
+    `stall_limit_ms`, `stop_grace_ms`, the groups and the platform id appear in
+    `aar_info` (the app) and in `AARInfo` (the client), and nothing says they must be
+    equal. C-TABLE.3, .10, .15 and .16 require it. Say so, or say which may differ.

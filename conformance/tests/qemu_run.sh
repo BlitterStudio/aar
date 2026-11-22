@@ -40,11 +40,18 @@ cd "$SDK"
   "$SDK/libaar/tests/loader.c" -o "$WORK/loader"
 
 # The loader enters the image as the runtime would (ENTRY_CONTRACT: fresh stack,
-# zeroed registers, link register 0) and commits the 2 MiB that the payloads'
-# notes ask for (HEAP_INIT_MIB); neither changes what the other payloads see.
+# zeroed registers, link register 0, a table with every core slot and a complete
+# aar_info) and commits the 2 MiB that the payloads' notes ask for
+# (HEAP_INIT_MIB). It reports every optional CPU feature of spec 8.7 as present
+# (CPU_FEATURES; qemu's CPU has them), so C-TABLE.20 and C-TABLE.21 execute the
+# instructions. None of it changes what the other payloads see.
 ENTRY_CONTRACT=1
 HEAP_INIT_MIB=2
-export ENTRY_CONTRACT HEAP_INIT_MIB
+case "$PROFILE" in
+  a32) CPU_FEATURES=7 ;;
+  a64) CPU_FEATURES=63 ;;
+esac
+export ENTRY_CONTRACT HEAP_INIT_MIB CPU_FEATURES
 
 for area in "$@"; do
   # conf_<area>.ldlibs: extra linker words; conf_<area>.freestanding: no libc
