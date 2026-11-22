@@ -346,7 +346,7 @@ runner and under qemu user mode.
 | C-TIME.2 | 7.3 | SHOULD | core | any | payload | yes | the smallest step between two different readings is 1 ms or finer (checked over 50 ms) |
 | C-TIME.3 | 7.3 | MUST | core | any | payload | yes | `aar_sleep_us(us)` parks for at least `us`, measured by `aar_time_us`, for 1 ms, 10 ms and 50 ms |
 | C-TIME.4 | 7.3 | SHOULD | core | any | payload | yes | a sleep takes no more than `us` plus four sleep granules (at least 1 ms each) plus 10 ms |
-| C-TIME.5 | 3.7 | MUST | core | any | payload | yes | a stop request ends a long sleep early (runner peer stops the app 100 ms into a 10 s sleep); `aar_should_stop` is 1 afterwards. Host build: `SKIP host:` |
+| C-TIME.5 | 3.7 | MUST | core | any | payload | yes | a stop request ends a long sleep early: the payload asks the runner (peer) to stop it, then sleeps 10 s; the sleep must end well before 9 s and `aar_should_stop` must be 1 afterwards. An app that does not leave within `stop_grace_ms` is ended by force and cannot report, so the runner fails the id with end reason `FORCED` [spec question 30]. Host build: `SKIP host:` |
 | C-TIME.6 | 7.3 | MUST | core | any | none | todo | not tested: "from an epoch the platform chooses (not wall-clock)" cannot be told from a wall clock that happens to start at zero |
 | C-TIME.7 | 7.3 | MUST | core | any | none | todo | not tested: no wall-clock call is defined in API 0.5; an absence |
 | C-TIME.8 | 5.4 | MUST | core | any | none | todo | not tested here: `time_us` and `sleep_us` as watchdog activity or declared waits are C-LIFE.15 and C-LIFE.16 |
@@ -662,3 +662,19 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     fails the load (`AAR_E_NOMEM`)" does not say when a limit is unsatisfiable
     (`shared_max_mib` is the nearest figure) or whether `AARSetTagList` may
     refuse it first (9.2 gives `AAR_E_INVAL` above 4095 MiB only).
+30. **Sleep against stop** (3.7, 7.3): 3.7 lists sleep among the calls that park and
+    return "on stop", while 7.3 says `aar_sleep_us(us)` "parks for at least
+    `us`". The two cannot both hold when a stop arrives during a sleep. C-TIME.5
+    follows 3.7 (a stop ends the sleep early, which is also how the host runner
+    behaves) and C-TIME.3 follows 7.3 (without a stop). State the exception in 7.3,
+    and say whether `aar_sleep_us` has to look at the stop request when it is
+    entered with one already pending.
+31. **`max_apps` of 0** (5.6, 9.2): the spec says `AARInfo.max_apps` is 0 when the
+    number of loaded apps is bounded only by platform resources, "the ZZ9000", and
+    the platform's own ceiling otherwise. A platform whose claims come from a fixed
+    table of process records (231 records, for example) has a ceiling even though
+    the number of apps is also limited by memory. The text does not say which side
+    a fixed record table is on, so 0 and 231 are both defensible. Say that a fixed
+    table is a ceiling and must be reported, or say that 0 may also mean "no
+    ceiling the platform wants to name". C-QUEUE.12 accepts either (it opens claims
+    until the first refusal).

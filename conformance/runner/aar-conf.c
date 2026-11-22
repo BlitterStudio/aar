@@ -724,6 +724,10 @@ static void run_area(int area)
             conf_detailf(why, "payload did not finish in %lu s",
                          (unsigned long)(run.timeout_s ? run.timeout_s
                                                        : PAYLOAD_TIMEOUT_S));
+        else if (!pr.have_end && out.end_reason == AAR_END_FORCED)
+            conf_detailf(why, "app ended by force (end reason FORCED, exit %ld) before its end line%s",
+                         (long)out.exit_code,
+                         run.stops ? ": it did not leave within the grace period after the stop it asked for" : "");
         else if (!pr.have_end)
             conf_detailf(why, "payload ended without its end line (exit %ld, end reason %lu)",
                          (long)out.exit_code, (unsigned long)out.end_reason);

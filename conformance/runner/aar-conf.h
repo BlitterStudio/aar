@@ -25,7 +25,7 @@
 #include "conf_catalogue.h"
 #include "../payloads/conf_proto.h"
 
-#define CONF_DETAIL_MAX 112
+#define CONF_DETAIL_MAX 200
 #define CONF_CAPTURE_MAX (256UL * 1024UL)
 #define CONF_MAX_EXTRA_ARGS 8
 #define CONF_TICKS_PER_SECOND 50UL

@@ -93,31 +93,58 @@ static void test_resolution(void)
 static const uint32_t sleeps_us[] = { 1000u, 10000u, 50000u };
 #define SLEEP_COUNT (sizeof sleeps_us / sizeof sleeps_us[0])
 
-/* C-TIME.3: a sleep lasts at least the time asked for. */
+/* C-TIME.3: a sleep lasts at least the time asked for. Both readings come from
+ * aar_time_us, taken before and after the call, so the time spent entering and
+ * leaving the call only adds to the measurement. The detail lists, for each
+ * duration, the shortest and longest of the rounds and how many were short. */
+#define SLEEP_ROUNDS 5u
+
 static void test_sleep_floor(void)
 {
     struct conf_test t;
     uint32_t i;
     uint32_t round;
+    uint32_t total_short = 0;
+    struct conf_buf stats;
 
     conf_begin(&t, "C-TIME.3");
+    conf_buf_clear(&stats);
     for (i = 0; i < SLEEP_COUNT; i++) {
-        for (round = 0; round < 5u; round++) {
+        uint64_t min = ~(uint64_t)0;
+        uint64_t max = 0;
+        uint32_t short_rounds = 0;
+
+        for (round = 0; round < SLEEP_ROUNDS; round++) {
             uint64_t t0 = aar_time_us();
             uint64_t elapsed;
 
             aar_sleep_us(sleeps_us[i]);
             elapsed = aar_time_us() - t0;
-            if (elapsed < sleeps_us[i] && conf_fail_first(&t)) {
-                conf_buf_str(&t.why, "sleep of ");
-                conf_buf_u64(&t.why, sleeps_us[i]);
-                conf_buf_str(&t.why, " us lasted ");
-                conf_buf_u64(&t.why, elapsed);
-                conf_buf_str(&t.why, " us");
-            }
+            if (elapsed < min)
+                min = elapsed;
+            if (elapsed > max)
+                max = elapsed;
+            if (elapsed < sleeps_us[i])
+                short_rounds++;
         }
+        total_short += short_rounds;
+        if (i)
+            conf_buf_str(&stats, "; ");
+        conf_buf_u64(&stats, sleeps_us[i]);
+        conf_buf_str(&stats, " us: min ");
+        conf_buf_u64(&stats, min);
+        conf_buf_str(&stats, " max ");
+        conf_buf_u64(&stats, max);
+        conf_buf_str(&stats, " short ");
+        conf_buf_u64(&stats, short_rounds);
+        conf_buf_chr(&stats, '/');
+        conf_buf_u64(&stats, SLEEP_ROUNDS);
     }
-    conf_buf_str(&t.note, "1 ms, 10 ms and 50 ms, 5 rounds each");
+    if (total_short && conf_fail_first(&t)) {
+        conf_buf_str(&t.why, "a sleep returned early: ");
+        conf_buf_str(&t.why, stats.b);
+    }
+    conf_buf_str(&t.note, stats.b);
     conf_end(&t);
 }
 
@@ -184,6 +211,15 @@ static void test_sleep_stop(int argc, char **argv)
         conf_check(&t, 0, "the stop request message was not accepted");
         conf_end(&t);
         return;
+    }
+    {
+        struct conf_buf c;
+
+        /* A forced end cannot report, so say where the app was. The runner shows
+         * text that is not a result line as a comment. */
+        conf_buf_clear(&c);
+        conf_buf_str(&c, "C-TIME.5: stop requested, entering a 10 s sleep");
+        conf_emit(&c);
     }
     t0 = aar_time_us();
     aar_sleep_us(10000000u);
