@@ -40,48 +40,48 @@ checks that the handle can be closed and that a new claim succeeds.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-ELF.1 | 2.2.1 | MUST | core | any | runner | todo | `e_type` ET_EXEC refused |
-| C-ELF.2 | 2.2.2 | MUST | core | any | runner | todo | wrong `EI_CLASS` for the profile refused |
-| C-ELF.3 | 2.2.2 | MUST | core | any | runner | todo | `ELFDATA2MSB` refused |
-| C-ELF.4 | 2.2.2 | MUST | core | any | runner | todo | wrong `e_machine` refused |
-| C-ELF.5 | 2.2.2 | MUST | core | a32 | runner | todo | `EF_ARM_ABI_FLOAT_HARD` clear (soft-float or no float flag) refused |
-| C-ELF.6 | 2.2.2 | MUST | core | a32 | runner | todo | EABI version other than 5 refused |
-| C-ELF.7 | 2.2.2 | MUST | core | a64 | runner | todo | non-zero `e_flags` refused |
-| C-ELF.8 | 2.2.3 | MUST | core | any | runner | todo | image with `PT_INTERP` refused |
-| C-ELF.9 | 2.2.3 | MUST | core | any | runner | todo | image with `DT_NEEDED` refused |
-| C-ELF.10 | 2.2.3 | MUST | core | any | runner | todo | five `PT_LOAD` segments refused |
-| C-ELF.11 | 2.2.3 | MUST | core | any | runner | todo | a segment that is writable and executable refused |
-| C-ELF.12 | 2.2.3 | MUST | core | any | runner | todo | `p_memsz` smaller than `p_filesz` refused |
-| C-ELF.13 | 2.2.3 | MUST | core | any | runner | todo | overlapping `PT_LOAD` segments refused |
-| C-ELF.14 | 2.2.3 | MUST | core | any | runner | todo | a segment larger than any memory the runtime offers refused (`AAR_E_NOMEM` is also accepted) |
-| C-ELF.15 | 2.2.4 | MUST | core | any | runner | todo | image with no `PT_DYNAMIC` refused |
-| C-ELF.16 | 2.2.4 | MUST | core | any | runner | todo | image with no section headers loads and runs (relocations come from `PT_DYNAMIC`) |
-| C-ELF.17 | 2.2.5 | MUST | core | a32 | runner | todo | a `REL` table loads and runs |
-| C-ELF.18 | 2.2.5 | MUST | core | a32 | runner | todo | a `RELA` table loads and runs |
-| C-ELF.19 | 2.2.5 | MUST | core | any | runner | todo | a relocation type other than `RELATIVE` refused |
-| C-ELF.20 | 2.2.5 | MUST | core | any | runner | todo | `DT_RELR` refused |
-| C-ELF.21 | 2.2.5 | MUST | core | any | runner | todo | a relocation with symbol index other than 0 refused |
-| C-ELF.22 | 2.2.5 | MUST | core | any | runner | todo | a relocation with a misaligned target refused |
-| C-ELF.23 | 2.2.5 | MUST | core | any | runner | todo | a relocation target outside the image refused |
-| C-ELF.24 | 2.2.6 | MUST | core | any | runner | todo | entry point outside an executable segment refused |
-| C-ELF.25 | 2.2.6 | MUST | core | a32 | runner | todo | entry point with bit 0 set refused |
-| C-ELF.26 | 2.2.7 | MUST | core | any | runner | todo | image with no AAR note refused |
-| C-ELF.27 | 2.2.7 | MUST | core | any | runner | todo | image with two AAR notes refused |
-| C-ELF.28 | 2.3 | MUST | core | any | runner | todo | note with a wrong `magic` refused |
-| C-ELF.29 | 2.3 | MUST | core | any | runner | todo | `note_version` other than 1 refused |
-| C-ELF.30 | 2.3 | MUST | core | any | runner | todo | note `profile` that differs from the ELF class refused with `AAR_E_PROFILE` |
-| C-ELF.31 | 2.3 | MUST | core | any | runner | todo | an image of a profile that `AARInfo.profiles` does not list is refused with `AAR_E_PROFILE` (passes with detail `all profiles supported` when the platform lists every defined profile) |
-| C-ELF.32 | 2.3 | MUST | core | any | runner | todo | `api_major` other than the platform's refused with `AAR_E_INVAL` |
-| C-ELF.33 | 2.3 | MUST | core | any | runner | todo | `api_minor_required` above the platform's minor refused with `AAR_E_INVAL` |
-| C-ELF.34 | 2.3 | MUST | core | any | runner | todo | `stack_bytes` below 64 KiB refused |
-| C-ELF.35 | 2.3 | MUST | core | any | runner | todo | `stack_bytes` that is not a multiple of 16 refused |
-| C-ELF.36 | 2.3 | MUST | core | any | runner | todo | `stack_bytes` 0, 64 KiB and 1 MiB all load and run |
-| C-ELF.37 | 2.3 | MUST | core | any | runner | todo | `groups_required` with a reserved experimental bit (bit 28) refused with `AAR_E_NOGROUP` |
-| C-ELF.38 | 2.3 | MUST | core | any | runner | todo | a note with wrong name or descriptor padding is not an AAR note: refused |
-| C-ELF.39 | 5.2 | MUST | core | any | runner | todo | `AARInfo.max_image_bytes` is at least 16 MiB |
-| C-ELF.40 | 4.1 | MUST | core | any | runner | todo | `min_heap_mib` above anything the platform can commit: `AAR_E_NOMEM` from the load call |
-| C-ELF.41 | 5.2 | MUST | core | any | runner | todo | every load refusal is one of `AAR_E_PROFILE`, `AAR_E_NOGROUP`, `AAR_E_INVAL`, `AAR_E_NOMEM` (checked over the whole corpus) |
-| C-ELF.42 | 2.2 | MUST | core | any | runner | todo | the same image loaded with `AARLoadMemory` gives the same result as `AARLoadFile` (accept and refuse alike) |
+| C-ELF.1 | 2.2.1 | MUST | core | any | runner | yes | `e_type` ET_EXEC refused |
+| C-ELF.2 | 2.2.2 | MUST | core | any | runner | yes | wrong `EI_CLASS` for the profile refused |
+| C-ELF.3 | 2.2.2 | MUST | core | any | runner | yes | `ELFDATA2MSB` refused |
+| C-ELF.4 | 2.2.2 | MUST | core | any | runner | yes | wrong `e_machine` refused |
+| C-ELF.5 | 2.2.2 | MUST | core | a32 | runner | yes | `EF_ARM_ABI_FLOAT_HARD` clear (soft-float or no float flag) refused |
+| C-ELF.6 | 2.2.2 | MUST | core | a32 | runner | yes | EABI version other than 5 refused |
+| C-ELF.7 | 2.2.2 | MUST | core | a64 | runner | yes | non-zero `e_flags` refused |
+| C-ELF.8 | 2.2.3 | MUST | core | any | runner | yes | image with `PT_INTERP` refused |
+| C-ELF.9 | 2.2.3 | MUST | core | any | runner | yes | image with `DT_NEEDED` refused |
+| C-ELF.10 | 2.2.3 | MUST | core | any | runner | yes | five `PT_LOAD` segments refused |
+| C-ELF.11 | 2.2.3 | MUST | core | any | runner | yes | a segment that is writable and executable refused |
+| C-ELF.12 | 2.2.3 | MUST | core | any | runner | yes | `p_memsz` smaller than `p_filesz` refused |
+| C-ELF.13 | 2.2.3 | MUST | core | any | runner | yes | overlapping `PT_LOAD` segments refused |
+| C-ELF.14 | 2.2.3 | MUST | core | any | runner | yes | a segment larger than any memory the runtime offers refused (`AAR_E_NOMEM` is also accepted) |
+| C-ELF.15 | 2.2.4 | MUST | core | any | runner | yes | image with no `PT_DYNAMIC` refused |
+| C-ELF.16 | 2.2.4 | MUST | core | any | runner | yes | image with no section headers loads and runs (relocations come from `PT_DYNAMIC`); `AARProbeFile` may refuse it [spec question 30] |
+| C-ELF.17 | 2.2.5 | MUST | core | a32 | runner | yes | a `REL` table loads and runs |
+| C-ELF.18 | 2.2.5 | MUST | core | a32 | runner | yes | a `RELA` table loads and runs |
+| C-ELF.19 | 2.2.5 | MUST | core | any | runner | yes | a relocation type other than `RELATIVE` refused |
+| C-ELF.20 | 2.2.5 | MUST | core | any | runner | yes | `DT_RELR` refused |
+| C-ELF.21 | 2.2.5 | MUST | core | any | runner | yes | a relocation with symbol index other than 0 refused |
+| C-ELF.22 | 2.2.5 | MUST | core | any | runner | yes | a relocation with a misaligned target refused |
+| C-ELF.23 | 2.2.5 | MUST | core | any | runner | yes | a relocation target outside the image refused |
+| C-ELF.24 | 2.2.6 | MUST | core | any | runner | yes | entry point outside an executable segment refused |
+| C-ELF.25 | 2.2.6 | MUST | core | a32 | runner | yes | entry point with bit 0 set refused |
+| C-ELF.26 | 2.2.7 | MUST | core | any | runner | yes | image with no AAR note refused |
+| C-ELF.27 | 2.2.7 | MUST | core | any | runner | yes | image with two AAR notes refused |
+| C-ELF.28 | 2.3 | MUST | core | any | runner | yes | note with a wrong `magic` refused |
+| C-ELF.29 | 2.3 | MUST | core | any | runner | yes | `note_version` other than 1 refused |
+| C-ELF.30 | 2.3 | MUST | core | any | runner | yes | note `profile` that differs from the ELF class refused with `AAR_E_PROFILE` |
+| C-ELF.31 | 2.3 | MUST | core | any | runner | yes | an image of a profile that `AARInfo.profiles` does not list is refused with `AAR_E_PROFILE` (passes with detail `all profiles supported` when the platform lists every defined profile) |
+| C-ELF.32 | 2.3 | MUST | core | any | runner | yes | `api_major` other than the platform's refused with `AAR_E_INVAL` |
+| C-ELF.33 | 2.3 | MUST | core | any | runner | yes | `api_minor_required` above the platform's minor refused with `AAR_E_INVAL` |
+| C-ELF.34 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` below 64 KiB refused |
+| C-ELF.35 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` that is not a multiple of 16 refused |
+| C-ELF.36 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` 0, 64 KiB and 1 MiB all load and run |
+| C-ELF.37 | 2.3 | MUST | core | any | runner | yes | `groups_required` with a reserved experimental bit (bit 28) refused with `AAR_E_NOGROUP` |
+| C-ELF.38 | 2.3 | MUST | core | any | runner | yes | a note with wrong name or descriptor padding is not an AAR note: refused |
+| C-ELF.39 | 5.2 | MUST | core | any | runner | yes | `AARInfo.max_image_bytes` is at least 16 MiB |
+| C-ELF.40 | 4.1 | MUST | core | any | runner | yes | `min_heap_mib` above anything the platform can commit: `AAR_E_NOMEM` from the load call (the image asks for 4095 MiB) [spec question 31] |
+| C-ELF.41 | 5.2 | MUST | core | any | runner | yes | every load refusal is one of `AAR_E_PROFILE`, `AAR_E_NOGROUP`, `AAR_E_INVAL`, `AAR_E_NOMEM` (checked over the whole corpus) |
+| C-ELF.42 | 2.2 | MUST | core | any | runner | yes | the same image loaded with `AARLoadMemory` gives the same result as `AARLoadFile` (accept and refuse alike) |
 | C-ELF.43 | 2.4 | MUST | core | any | none | todo | not tested: `tools/aar-check` is a tool of this repository, tested by `tests/aar_check_test.py` in CI |
 | C-ELF.44 | 2.1 | SHOULD | core | any | none | todo | not tested: a launcher picks `.a32` or `.a64` with `AARProbeFile`; probe behaviour is C-CLIENT |
 
@@ -662,3 +662,17 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     fails the load (`AAR_E_NOMEM`)" does not say when a limit is unsatisfiable
     (`shared_max_mib` is the nearest figure) or whether `AARSetTagList` may
     refuse it first (9.2 gives `AAR_E_INVAL` above 4095 MiB only).
+30. **What the probe refuses** (9.2, 2.2): `AARProbeFile` "reads the note without
+    loading", and says nothing about an image that breaks a rule of 2.2 or 2.3.
+    The reference library applies every rule of `tools/aar-check`, which also
+    demands section headers, while 2.2.4 says section headers MAY be absent: the
+    probe refuses an image that loads. C-ELF takes "a negative code for an image
+    that breaks a rule" as the probe's duty, accepts either answer for an image
+    without section headers, and does not judge the probe against the platform
+    (profile, groups, memory).
+31. **An unsatisfiable heap** (4.1, 2.3): `min_heap_mib` "committed at load" has no
+    limit in the text, and a platform that converts MiB to bytes in 32 bits wraps
+    at 4096. C-ELF.40 asks for 4095 MiB, the largest value that does not wrap,
+    and assumes no platform has that much private memory. A platform with more
+    needs an image built for its size; say whether the standard wants a defined
+    maximum.

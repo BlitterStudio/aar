@@ -9,6 +9,7 @@ AAR standard (specification section 11). Version 0.1 of the suite tests API 0.5.
 | `payloads/` | The payloads: ARM apps (`conf_<area>.c`) that judge one area from the inside. `conf.h` is the protocol they print their results with |
 | `runner/` | The runner `aar-conf`: an AmigaOS m68k program that uses only `aar.library` and the serving loop (`libaarserve.a`). `aar-conf.c` is the core (options, verdict, payload runs); each area has its file `r_<area>.c` for its runner-judged tests. It runs the payloads, judges the client-side tests, and writes the report. `conf_catalogue.h` is generated from `TESTS.md` at build time and is not in git |
 | `tools/` | `conf_catalogue.py` reads `TESTS.md`, generates the runner's header and checks the ids against the sources; `check_results.py` checks one payload's output or a whole report |
+| `negative/` | The image corpus of C-ELF: malformed and accepted images (`<profile>/<name>.aarimg`) and the `MANIFEST` the runner reads, all made by `gen_negative.py` from the builder of `tests/aar_check_test.py`. Copy the directory next to the payload directories (`<DIR>/negative`) |
 | `tests/qemu_run.sh` | Runs payloads under qemu user mode with the loader of `libaar/tests/loader.c` |
 
 ## What passing means
@@ -77,6 +78,10 @@ aar-conf
 a32/conf_time.elf
 a32/conf_...elf
 a64/...
+negative/MANIFEST
+negative/a32/ok-stack0.aarimg
+negative/a32/...
+negative/a64/...
 ```
 
 (`build/` has exactly this layout.) Then, from a Shell with at least 32 KiB of
