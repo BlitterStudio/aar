@@ -196,19 +196,19 @@ because the registers differ.
 | C-SHARED.12 | 4.3 | MUST | core | any | payload | todo | the same test with a client map that is deliberately cacheable plus `AARSharedAcquire` (needs a way to ask for a cacheable map [spec question 7]) |
 | C-SHARED.13 | 4.3 | MUST | core | any | payload | todo | `aar_publish` and `aar_acquire` over a range inside a live block return `AAR_OK`; they return at once when the runtime is coherent |
 | C-SHARED.14 | 4.3 | MUST | core | any | payload | todo | granule ownership (runner peer): app and client write alternate adjacent granules between hand-offs and neither sees the other's bytes in its own granule |
-| C-SHARED.15 | 9.5 | MUST | core | any | runner | todo | `AARSharedMap` of a range that leaves the block or the platform's aperture is `AAR_E_INVAL`; an unknown token is `AAR_E_INVAL` |
-| C-SHARED.16 | 9.5 | SHOULD | core | any | runner | todo | `AARSharedMap` after the app ended and its claim is gone is `AAR_E_STALE` (where the platform can tell) |
-| C-SHARED.17 | 9.5 | MUST | core | any | runner | todo | `AARSharedMap.flags` holds only `AAR_MAPF_UNCACHED` and `AAR_MAPF_COHERENT`; `granule` is a power of two; `base` is non-NULL |
-| C-SHARED.18 | 9.5 | MUST | core | any | runner | todo | `AARSharedMap` with a non-zero `flags` argument is `AAR_E_INVAL` |
-| C-SHARED.19 | 9.5 | MUST | core | any | runner | todo | `AARSharedUnmap` of a live map returns `AAR_OK`; the map is valid until then, until `AARClose` or the end of the app |
-| C-SHARED.20 | 9.5 | MUST | core | any | runner | todo | `AARSharedPublish` and `AARSharedAcquire` on a valid range return `AAR_OK` and round to the map's granule; they are no-ops on an uncached or coherent map |
+| C-SHARED.15 | 9.5 | MUST | core | any | runner | yes | `AARSharedMap` of a range that leaves the platform's aperture is `AAR_E_INVAL`; an unknown token is `AAR_E_INVAL` (judged while the runner serves the app's `CONF-SHARED-MAP` message, with the app's block live; a range that leaves the block but not the aperture cannot be told by the library [spec question 34]) |
+| C-SHARED.16 | 9.5 | SHOULD | core | any | runner | yes | `AARSharedMap` after the app ended and its claim is gone is `AAR_E_STALE` (where the platform can tell; the claim is gone after `AARClose`; `AAR_E_INVAL` or `AAR_E_NOSYS` skips) |
+| C-SHARED.17 | 9.5 | MUST | core | any | runner | yes | `AARSharedMap.flags` holds only `AAR_MAPF_UNCACHED` and `AAR_MAPF_COHERENT`; `granule` is a power of two; `base` is non-NULL |
+| C-SHARED.18 | 9.5 | MUST | core | any | runner | yes | `AARSharedMap` with a non-zero `flags` argument is `AAR_E_INVAL` |
+| C-SHARED.19 | 9.5 | MUST | core | any | runner | yes | `AARSharedUnmap` of a live map returns `AAR_OK`; the map is valid until then, until `AARClose` or the end of the app |
+| C-SHARED.20 | 9.5 | MUST | core | any | runner | yes | `AARSharedPublish` and `AARSharedAcquire` on a valid range return `AAR_OK` and round to the map's granule (ranges of one byte at the start and at the end of the map are given); they are no-ops on an uncached or coherent map |
 | C-SHARED.21 | 9.5 | MUST | core | any | none | todo | not tested: after an end state the client MUST unmap and MUST NOT write through a map; an obligation of the client (the runner follows it) |
 | C-SHARED.22 | 9.5 | SHOULD | core | any | none | todo | not tested: the library SHOULD revoke maps where the platform allows; no observable difference without writing through a stale map, see C-LIFE.23 |
 | C-SHARED.23 | 4.3 | MUST | core | any | none | todo | not tested: after writing data for the client the app MUST call `aar_publish` before sending the message; an obligation of the app, exercised by C-SHARED.9 to C-SHARED.12 |
 | C-SHARED.24 | 10.3 | MUST | core | any | none | todo | not tested: control block layout, one writer per word, 64-byte lines, big-endian words and magic last are not visible to a client of `aar.library`; covered by `tests/transport_model_test.c` and the platform's own tests |
 | C-SHARED.25 | 10.5 | MUST | core | any | none | todo | not tested: non-coherent platforms map control structures non-cacheable or use publish and acquire internally; visible only as stale or torn reads, which C-SHARED.11 and C-SHARED.12 would find |
 | C-SHARED.26 | 4.3 | MUST | display | any | none | todo | not tested here: "flip publishes the surface" is C-DISPLAY.12 |
-| C-SHARED.27 | 4.2 | MUST | core | any | runner | todo | a request the platform could never satisfy fails the load: a shared limit above `AARInfo.shared_max_mib` (and at most 4095) gives `AAR_E_NOMEM` from `AARLoadFile`, or `AAR_E_INVAL` or `AAR_E_NOSYS` from `AARSetTagList` where that is the call's documented answer [spec question 29] |
+| C-SHARED.27 | 4.2 | MUST | core | any | runner | yes | a request the platform could never satisfy fails the load: a shared limit above `AARInfo.shared_max_mib` (and at most 4095) gives `AAR_E_NOMEM` from `AARLoadFile`, or `AAR_E_INVAL` or `AAR_E_NOSYS` from `AARSetTagList` where that is the call's documented answer; passes when `shared_max_mib` is 4095 [spec question 29] |
 
 ## C-MSG: messages and waiting (sections 6, 9.4, 9.6, 10.4)
 
@@ -687,3 +687,10 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     C-LIFE.21 show that the handle is released (a call returns `AAR_E_STALE`, not
     `AAR_E_OWNER`) and that a new claim works, and cannot show that the app stopped
     running; a platform with a ceiling (`max_apps`) shows the slot coming back.
+34. **Range check of AARSharedMap** (9.5): the library "MUST check the range against
+    the platform's shared aperture", which says nothing about the block the token
+    names: a range that leaves the app's block but stays inside the aperture is
+    accepted, and C-SHARED.15 cannot test it. The test uses tokens outside the
+    aperture (0 and 0xFFFFFFF0) and a range of 2 GiB and of 4 GiB minus 16 bytes,
+    and assumes the aperture is smaller than that. Say whether the block is part of
+    the check.
