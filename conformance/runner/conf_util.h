@@ -52,6 +52,11 @@ LONG conf_util_start_file(AARHandle **h, const char *path,
  * The argument strings live in static buffers until the next call. */
 LONG conf_util_start_payload(AARHandle **h, const char *file, const char *variant,
                              ULONG ms);
+/* The same with a notify port for AAROpen. */
+LONG conf_util_start_file_port(AARHandle **h, struct MsgPort *port, const char *path,
+                               const char *const *argv, ULONG argc);
+LONG conf_util_start_payload_port(AARHandle **h, struct MsgPort *port, const char *file,
+                                  const char *variant, ULONG ms);
 
 /* The number of signal bits this task can still allocate. */
 int conf_util_free_signals(void);

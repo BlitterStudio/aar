@@ -100,11 +100,11 @@ void conf_util_wait_end(AARHandle *h, ULONG timeout_ticks, struct conf_util_end 
     e->exit_code = e->st.exit_code;
 }
 
-LONG conf_util_start_file(AARHandle **h, const char *path,
-                          const char *const *argv, ULONG argc)
+LONG conf_util_start_file_port(AARHandle **h, struct MsgPort *port, const char *path,
+                               const char *const *argv, ULONG argc)
 {
     ULONG reason = 0;
-    LONG rc = AAROpen(h, NULL, &reason);
+    LONG rc = AAROpen(h, port, &reason);
 
     if (rc != AAR_OK) {
         *h = NULL;
@@ -120,12 +120,18 @@ LONG conf_util_start_file(AARHandle **h, const char *path,
     return rc;
 }
 
+LONG conf_util_start_file(AARHandle **h, const char *path,
+                          const char *const *argv, ULONG argc)
+{
+    return conf_util_start_file_port(h, NULL, path, argv, argc);
+}
+
 static char arg_name[48];
 static char arg_variant[64];
 static char arg_ms[32];
 
-LONG conf_util_start_payload(AARHandle **h, const char *file, const char *variant,
-                             ULONG ms)
+LONG conf_util_start_payload_port(AARHandle **h, struct MsgPort *port, const char *file,
+                                  const char *variant, ULONG ms)
 {
     char path[256];
     const char *argv[3];
@@ -142,7 +148,13 @@ LONG conf_util_start_payload(AARHandle **h, const char *file, const char *varian
         snprintf(arg_ms, sizeof arg_ms, "conf:ms=%lu", (unsigned long)ms);
         argv[argc++] = arg_ms;
     }
-    return conf_util_start_file(h, path, argv, argc);
+    return conf_util_start_file_port(h, port, path, argv, argc);
+}
+
+LONG conf_util_start_payload(AARHandle **h, const char *file, const char *variant,
+                             ULONG ms)
+{
+    return conf_util_start_payload_port(h, NULL, file, variant, ms);
 }
 
 int conf_util_free_signals(void)

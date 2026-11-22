@@ -403,29 +403,29 @@ runner and under qemu user mode.
 | C-CLIENT.6 | 5.2 | MUST | core | any | runner | yes | `max_image_bytes` is at least 16 MiB, `max_args` at least 16 and `max_arg_bytes` at least 128 (127 bytes plus the NUL) |
 | C-CLIENT.7 | 9.2 | MUST | core | any | runner | yes | `shared_granule` is a power of two of at least 64; `msg_capacity` is at least 32; `stall_limit_ms` is at least 10000; `shared_default_mib` is 16; `shared_max_mib` is at least `shared_default_mib` |
 | C-CLIENT.8 | 10.4 | MUST | core | any | runner | yes | `queue_depth` is a power of two from 64 to 4096 and `msg_capacity` equals `queue_depth` minus 1 |
-| C-CLIENT.9 | 9.2 | MUST | core | any | runner | todo | `AARProbeFile` and `AARProbeMemory` return the note fields of a conformance payload (profile, major, minor, stack, heap, groups) without loading it and without a handle |
-| C-CLIENT.10 | 9.2 | MUST | core | any | runner | todo | `AARProbeFile` of a file that is not an ELF, of a truncated ELF and of a missing file fails with a code of section 3.5 and changes nothing |
-| C-CLIENT.11 | 9.2 | MUST | core | any | runner | todo | `AAROpen` with a NULL notify port and a NULL `reason` succeeds; two claims have different handles |
-| C-CLIENT.12 | 9.2 | MUST | core | any | runner | todo | `AARSetTagList` before the load accepts `AAR_TAG_PRIVATE_MIB`, `AAR_TAG_SHARED_MIB`, `AAR_TAG_AUDIO_ROUTE`, `AAR_TAG_LEASE_EXTENDED`, `AAR_TAG_CLIENT_CAPS`; `AAR_TAG_WEIGHT` gives `AAR_OK` or `AAR_E_NOSYS` |
-| C-CLIENT.13 | 9.2 | MUST | core | any | runner | todo | `AARSetTagList` after the load began returns `AAR_E_BUSY`; a limit above 4095 MiB is `AAR_E_INVAL` |
-| C-CLIENT.14 | 9.2 | MUST | core | any | runner | todo | `AAR_TAG_WEIGHT` above `AARInfo.weight_max` is `AAR_E_INVAL` where weighting exists; `weight_max` 0 means `AAR_E_NOSYS` for the tag |
-| C-CLIENT.15 | 9.2 | MUST | core | any | runner | todo | `AARLoadMemory` of a payload and `AARLoadFile` of the same file produce the same run (= C-ELF.42 for accepted images) |
-| C-CLIENT.16 | 9.2 | MUST | core | any | runner | todo | `AARStart` with `max_args` strings of `max_arg_bytes` each is accepted; the first string is the program name |
-| C-CLIENT.17 | 9.2 | MUST | core | any | runner | todo | `AARStatus` with `size` 16 fills state, generation and end reason only; `generation` is non-zero; `load_base` is non-zero after the load; `profile` equals the image's |
-| C-CLIENT.18 | 9.2 | MUST | core | any | runner | todo | `AARMessageSignal` returns a non-zero mask, the same mask for two handles of one task, and 0 for an invalid handle |
-| C-CLIENT.19 | 9.4 | MUST | core | any | runner | todo | the signal is set when the app sends a message, when it exits and when it queues a service request |
-| C-CLIENT.20 | 9.4 | SHOULD | core | any | runner | todo | the owner wakes within 250 ms of an app message (measured over 20 messages) |
-| C-CLIENT.21 | 9.4 | MUST | core | any | runner | todo | a notify port receives one `AAREvent` at a time: the next is not posted until the previous is taken; its `handle` names the handle; the message needs no reply |
-| C-CLIENT.22 | 9.4 | MUST | core | any | runner | todo | event types coalesce in the order `MESSAGE`, then `COMPLETE` or `FAULT` when the app has ended, else `REQUEST` |
-| C-CLIENT.23 | 9.4 | MUST | core | any | runner | todo | a signal bit is allocated at a task's first open and freed at its last close: the number of free signal bits is the same before the first open and after the last close, with three handles in between |
-| C-CLIENT.24 | 9.3 | MUST | core | any | runner | todo | a call with a handle from a task that does not own it returns `AAR_E_OWNER` (status, stop, send, close; the handle stays usable by its owner) |
-| C-CLIENT.25 | 9.3 | MUST | core | any | runner | todo | one task can hold at least 20 handles when admission allows (the per-task signal bit is shared) |
-| C-CLIENT.26 | 10.2 | MUST | core | any | runner | todo | a NULL handle is refused with `AAR_E_INVAL` and changes nothing |
-| C-CLIENT.27 | 9.2 | MUST | core | any | runner | todo | `AARExt` needs no handle and returns NULL for an unknown platform id or extension id |
-| C-CLIENT.28 | 9.2 | MUST | zz9000 | any | runner | todo | `AARExt(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_CLIENT)` returns a size-first table |
-| C-CLIENT.29 | 9.2 | MUST | core | any | runner | todo | `AARSharedToken` returns `AAR_OK` with a token or `AAR_E_NOSYS`; no other code for a valid buffer |
-| C-CLIENT.30 | 9.6 | MUST | core | any | runner | todo | a serving loop that serves only some groups (`aar_serve_config.groups`) completes a request of an unserved group with `AAR_E_NOSYS` (the display open of a payload) |
-| C-CLIENT.31 | 9.6 | MUST | core | any | runner | todo | `aar_serve` serves every request op of the groups it serves (files, console, log, messages, display, audio, input); the suite's payloads complete through it |
+| C-CLIENT.9 | 9.2 | MUST | core | any | runner | yes | `AARProbeFile` and `AARProbeMemory` return the note fields of a conformance image (`negative/<profile>/probe-note.aarimg`: profile, major, minor, stack 128 KiB, heap 3 MiB, groups) without loading it and without a handle |
+| C-CLIENT.10 | 9.2 | MUST | core | any | runner | yes | `AARProbeFile` and `AARProbeMemory` of a file that is not an ELF and of a truncated ELF, and `AARProbeFile` of a missing file, fail with a code of section 3.5 and change nothing [spec question 23] |
+| C-CLIENT.11 | 9.2 | MUST | core | any | runner | yes | `AAROpen` with a NULL notify port and a NULL `reason` succeeds; two claims have different handles |
+| C-CLIENT.12 | 9.2 | MUST | core | any | runner | yes | `AARSetTagList` before the load accepts `AAR_TAG_PRIVATE_MIB`, `AAR_TAG_SHARED_MIB`, `AAR_TAG_AUDIO_ROUTE`, `AAR_TAG_LEASE_EXTENDED`, `AAR_TAG_CLIENT_CAPS`; `AAR_TAG_WEIGHT` gives `AAR_OK` or `AAR_E_NOSYS` |
+| C-CLIENT.13 | 9.2 | MUST | core | any | runner | yes | `AARSetTagList` after the load began returns `AAR_E_BUSY`; a limit above 4095 MiB is `AAR_E_INVAL` |
+| C-CLIENT.14 | 9.2 | MUST | core | any | runner | yes | `AAR_TAG_WEIGHT` above `AARInfo.weight_max` is `AAR_E_INVAL` where weighting exists; `weight_max` 0 means `AAR_E_NOSYS` for the tag |
+| C-CLIENT.15 | 9.2 | MUST | core | any | runner | yes | `AARLoadMemory` of an image and `AARLoadFile` of the same file produce the same run (= C-ELF.42 for accepted images) |
+| C-CLIENT.16 | 9.2 | MUST | core | any | runner | yes | `AARStart` with `max_args` strings of `max_arg_bytes` each is accepted; the first string is the program name |
+| C-CLIENT.17 | 9.2 | MUST | core | any | runner | yes | `AARStatus` with `size` 16 fills state, generation and end reason only; `generation` is non-zero; `load_base` is non-zero after the load; `profile` equals the image's |
+| C-CLIENT.18 | 9.2 | MUST | core | any | runner | yes | `AARMessageSignal` returns a non-zero mask, the same mask for two handles of one task, and 0 for an invalid handle (NULL and a closed handle) |
+| C-CLIENT.19 | 9.4 | MUST | core | any | runner | yes | the signal is set when the app sends a message, when it exits and when it queues a service request |
+| C-CLIENT.20 | 9.4 | SHOULD | core | any | runner | yes | the owner wakes within 250 ms of an app message (measured over 20 messages: the runner pings the app, which answers at once; the clock has a 20 ms step, so 290 ms are allowed) |
+| C-CLIENT.21 | 9.4 | MUST | core | any | runner | yes | a notify port receives one `AAREvent` at a time: the next is not posted until the previous is taken; its `handle` names the handle; the message needs no reply |
+| C-CLIENT.22 | 9.4 | MUST | core | any | runner | yes | event types coalesce in the order `MESSAGE`, then `COMPLETE` or `FAULT` when the app has ended, else `REQUEST` |
+| C-CLIENT.23 | 9.4 | MUST | core | any | runner | yes | a signal bit is allocated at a task's first open and freed at its last close: the number of free signal bits is the same before the first open and after the last close, with three handles in between |
+| C-CLIENT.24 | 9.3 | MUST | core | any | runner | yes | a call with a handle from a task that does not own it returns `AAR_E_OWNER` (status, stop, send, close; the handle stays usable by its owner) |
+| C-CLIENT.25 | 9.3 | MUST | core | any | runner | yes | one task can hold at least 20 handles when admission allows (the per-task signal bit is shared); a platform that refuses earlier with `AAR_E_NORESOURCE` passes when that is its `max_apps` |
+| C-CLIENT.26 | 10.2 | MUST | core | any | runner | yes | a NULL handle is refused with a negative code (`AAR_E_INVAL`, or `AAR_E_STALE` as the reference library) and changes nothing [spec question 24] |
+| C-CLIENT.27 | 9.2 | MUST | core | any | runner | yes | `AARExt` needs no handle and returns NULL for an unknown platform id or extension id |
+| C-CLIENT.28 | 9.2 | MUST | zz9000 | any | runner | yes | `AARExt(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_CLIENT)` returns a size-first table |
+| C-CLIENT.29 | 9.2 | MUST | core | any | runner | yes | `AARSharedToken` returns `AAR_OK` with a token or `AAR_E_NOSYS`; no other code for a valid buffer (the buffer is one the app shared and the library mapped; `AAR_OK` gives the token of that buffer) [spec question 25] |
+| C-CLIENT.30 | 9.6 | MUST | core | any | runner | yes | a serving loop that serves only some groups (`aar_serve_config.groups`) completes a request of an unserved group with `AAR_E_NOSYS` (the display open of a payload; passes with detail `no display group declared` when the platform has none) [spec question 22] |
+| C-CLIENT.31 | 9.6 | MUST | core | any | runner | yes | `aar_serve` serves every request op of the groups it serves: files, directory lists, console, log and messages here (a payload, then the file under the root and the console text); display, audio and input by C-DISPLAY, C-AUDIO and C-INPUT |
 | C-CLIENT.32 | 9.1 | MUST | core | any | none | todo | not tested: calls return `LONG` in `d0`; seen in every call the runner makes |
 | C-CLIENT.33 | 9.2 | SHOULD | core | any | none | todo | not tested: where section 9.2 and the `.fd` and `.h` files differ, the files are right; documentation rule |
 | C-CLIENT.34 | 9.7 | MUST | core | any | none | todo | not tested: structure sizes (136, 164, 32, 128, 48) are checked by the header's `_Static_assert`s and `client/tests/m68k_check.sh` |
