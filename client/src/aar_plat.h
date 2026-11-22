@@ -112,6 +112,11 @@ struct aar_plat_load_opts {
 #define AAR_PLAT_KICK_CQ (1u << 0) /* completions or events were posted on the CQ */
 #define AAR_PLAT_KICK_SQ (1u << 1) /* entries were freed on the SQ */
 
+/* Answers of `events_sample`. */
+#define AAR_PLAT_EVENTS_NONE  0 /* the platform has no event block */
+#define AAR_PLAT_EVENTS_NEWS  1 /* it has one, and the global count changed since the previous sample (or this is the first) */
+#define AAR_PLAT_EVENTS_QUIET 2 /* it has one, and nothing changed since the previous sample */
+
 /* ---- The operations --------------------------------------------------------------- */
 
 struct aar_plat_ops {
@@ -233,6 +238,29 @@ struct aar_plat_ops {
     aar_barrier_fn barrier_release;
     void (*cache_publish)(struct aar_plat *p, const volatile void *ptr, uint32_t len);
     void (*cache_acquire)(struct aar_plat *p, const volatile void *ptr, uint32_t len);
+
+    /*
+     * Event counts (spec 10.6, optional; both NULL: the platform has none and
+     * the dispatcher scans every armed handle at every pass). A platform that
+     * publishes monotonically increasing counts of what the other side made
+     * visible lets L1 read one word per pass while nothing happened. The
+     * counts are a hint: the queues stay authoritative.
+     *
+     * `events_sample` runs once per dispatcher pass. It reads the global
+     * count; only if that changed since the previous sample does it read the
+     * group counts. It returns AAR_PLAT_EVENTS_NONE, _NEWS or _QUIET. A
+     * platform that cannot tell NEWS from QUIET may answer NEWS at every pass:
+     * L1 then asks `claim_news` for each armed handle, which costs no card
+     * access.
+     *
+     * `claim_news` makes no card access. It answers 1 when the claim's group
+     * count (the global count, for a claim that has no group) differs from the
+     * value this claim saw at its previous `claim_news` that answered 1, or when
+     * the claim has never been asked, and then records the current value as
+     * seen. It answers 0 otherwise. Wrap-around of a 32-bit count is a change.
+     */
+    int (*events_sample)(struct aar_plat *p);
+    int (*claim_news)(struct aar_plat *p, struct aar_plat_claim *c);
 };
 
 /* The platform object. L3 defines one. */

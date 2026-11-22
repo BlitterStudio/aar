@@ -364,9 +364,11 @@ static int htab_reserve(aar_core *c)
 
 static inline int work_wanted(const AARHandle *h)
 {
-    /* A revoked or released claim has no control block: `revoked` says it. */
+    /* A revoked or released claim has no control block: `revoked` says it. An
+     * armed handle is wanted while `scan` says so: always, on a platform
+     * without events (the pass never clears it there). */
     return h->state == AAR_H_LIVE && !h->revoked &&
-           (h->kick_pending | h->mouse_pending | h->poll_needed | h->armed) != 0u;
+           (h->kick_pending | h->mouse_pending | h->poll_needed | (h->armed & h->scan)) != 0u;
 }
 
 /* Caller holds irq_off. */
@@ -801,6 +803,7 @@ int aar_core_open(aar_core *c, uint32_t signal_mask, void *notify, void *opener,
     h->notify = notify;
     h->opener = opener;
     h->armed = notify != NULL;
+    h->scan = 1u; /* opened or armed: scanned at least once */
     h->opts.lease_extended = 1u;
     h->stats.size = (ULONG)sizeof(h->stats);
     h->claim.priv = o->claim_priv_bytes ?
@@ -1825,6 +1828,7 @@ ULONG aar_core_message_signal(aar_core *c, AARHandle *h)
     irq_off(c);
     if (registry_find(c, h) && h->state == AAR_H_LIVE) {
         h->armed = 1u;
+        h->scan = 1u;
         mask = h->signal_mask;
         if (work_wanted(h))
             work_add_locked(c, h);
@@ -2109,17 +2113,26 @@ LONG aar_core_ext_lease_pause(AARHandle *h, ULONG ms)
  * What the owner should hear about, or 0. Reads the control block and the head
  * entry of the SQ; writes only the dispatcher's own scan state. Work that is
  * still pending is signalled again every few ticks, so a lost wake cannot
- * stick; an end is reported once.
+ * stick; an end is reported once. *left gets SCAN_PENDING when work is still
+ * waiting (the handle has to be scanned again whatever the platform's counts
+ * say), and SCAN_ENDED when the app has ended (it has to be scanned again
+ * until that is announced).
  */
-static uint32_t notify_scan(AARHandle *h, uint32_t ticks, uint32_t *tail_seen, int *carries_end)
+#define SCAN_PENDING 1u
+#define SCAN_ENDED   2u
+
+static uint32_t notify_scan(AARHandle *h, uint32_t ticks, uint32_t *tail_seen, int *carries_end,
+                            uint32_t *left)
 {
     volatile uint8_t *cb = h->cb;
     uint32_t head, tail, end_reason, used;
     int pending, inbox, ended, fire = 0, msg;
 
     *carries_end = 0;
+    *left = 0u;
     if (!h->armed || !cb || h->revoked)
         return 0u;
+    h->core->stat_pass_scans++;
     tail = aar_get_be32(cb + AAR_CB_SQ_TAIL);
     head = aar_get_be32(cb + AAR_CB_SQ_HEAD);
     end_reason = aar_get_be32(cb + AAR_CB_END_REASON);
@@ -2128,6 +2141,7 @@ static uint32_t notify_scan(AARHandle *h, uint32_t ticks, uint32_t *tail_seen, i
         h->ended_notified = 0u;
     inbox = h->inbox_tail != h->inbox_head;
     pending = tail != head || inbox;
+    *left = (pending ? SCAN_PENDING : 0u) | (ended ? SCAN_ENDED : 0u);
     if (pending && (tail != h->last_tail ||
                     (uint32_t)(ticks - h->last_signal_tick) >= AAR_CORE_NOTIFY_RESIGNAL_TICKS))
         fire = 1;
@@ -2169,17 +2183,69 @@ static int bg_take(aar_core *c, AARHandle *h)
     return got;
 }
 
+/* An armed handle is scanned at the next pass. Caller holds env->lock. */
+static void scan_next(aar_core *c, AARHandle *h)
+{
+    irq_off(c);
+    h->scan = 1u;
+    if (work_wanted(h))
+        work_add_locked(c, h);
+    irq_on(c);
+}
+
+/*
+ * The global count changed: the armed handles that are not scanned anyway are
+ * asked, with no card access, whether their group changed. A handle that is
+ * scanned anyway (its `scan` is set) is asked by the pass, just before the scan.
+ */
+static void events_walk(aar_core *c)
+{
+    const struct aar_plat_ops *o = c->plat->ops;
+    AARHandle *h;
+
+    for (h = c->handles; h; h = h->next) {
+        if (h->scan || !h->armed || h->state != AAR_H_LIVE || h->revoked || h->claim.handle == 0u)
+            continue;
+        c->stat_pass_news++;
+        if (o->claim_news(c->plat, &h->claim))
+            scan_next(c, h);
+    }
+}
+
+/* The platform has no (more) events: every armed handle is scanned at every pass again. */
+static void events_off(aar_core *c)
+{
+    AARHandle *h;
+
+    for (h = c->handles; h; h = h->next)
+        if (h->armed && !h->scan && h->state == AAR_H_LIVE)
+            scan_next(c, h);
+}
+
 void aar_core_dispatch(aar_core *c, aar_core_notify_fn notify, void *user)
 {
+    const struct aar_plat_ops *o = c->plat->ops;
     AARHandle *h, *next;
     uint32_t t = c->ticks, visits = 0u;
+    int events = AAR_PLAT_EVENTS_NONE;
 
     c->disp_alive = t;
+    /* The one card read of a pass in which nothing was posted. */
+    if (c->attach_rc == AAR_OK && o->events_sample && o->claim_news) {
+        events = o->events_sample(c->plat);
+        if (events != AAR_PLAT_EVENTS_NONE && events != AAR_PLAT_EVENTS_QUIET)
+            events = AAR_PLAT_EVENTS_NEWS;
+    }
     env_lock(c, 0);
+    if (events == AAR_PLAT_EVENTS_NONE && c->events != AAR_PLAT_EVENTS_NONE)
+        events_off(c);
+    c->events = (uint8_t)events;
+    if (events == AAR_PLAT_EVENTS_NEWS)
+        events_walk(c);
     /* Only the handles that have work: an idle handle is not on the list. A
      * handle put on it during the pass is seen by the next one. */
     for (h = c->work_head; h; h = next) {
-        uint32_t type, tail = 0u;
+        uint32_t type, tail = 0u, left;
         int carries_end, answer;
 
         next = h->work_next;
@@ -2197,7 +2263,18 @@ void aar_core_dispatch(aar_core *c, aar_core_notify_fn notify, void *user)
                 h->poll_needed = c->plat->ops->poll(c->plat, &h->claim) != 0;
             h->bg = 0u;
         }
-        type = notify_scan(h, t, &tail, &carries_end);
+        if (events != AAR_PLAT_EVENTS_NONE) {
+            /* Cleared before the scan, so that an arming during it is not lost;
+             * set again below if work is left. The claim is asked before the
+             * scan, so that what it saw is what the scan reads (a post after the
+             * sample shows in the next pass). */
+            h->scan = 0u;
+            if (h->armed && !h->revoked && h->claim.handle != 0u) {
+                c->stat_pass_news++;
+                (void)o->claim_news(c->plat, &h->claim);
+            }
+        }
+        type = notify_scan(h, t, &tail, &carries_end, &left);
         if (type) {
             answer = notify ? notify(user, h, type) : AAR_CORE_NOTIFIED;
             if (answer == AAR_CORE_NOTIFIED || answer == AAR_CORE_NOTIFY_BUSY) {
@@ -2210,6 +2287,12 @@ void aar_core_dispatch(aar_core *c, aar_core_notify_fn notify, void *user)
             if (carries_end && answer == AAR_CORE_NOTIFIED)
                 h->ended_notified = 1u;
         }
+        /* Work that is left keeps the handle on the list: a request or message
+         * that waits (it is signalled again), an end that was not announced.
+         * Without events every armed handle stays. */
+        if (events == AAR_PLAT_EVENTS_NONE || (left & SCAN_PENDING) ||
+            ((left & SCAN_ENDED) && !h->ended_notified))
+            h->scan = 1u;
         if (!work_wanted(h)) /* looked at again between irq_off and irq_on */
             work_retire(c, h);
     }

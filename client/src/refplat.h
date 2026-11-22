@@ -47,6 +47,11 @@ extern "C" {
 #define REFPLAT_TOKEN_BASE  0x00100000u
 #define REFPLAT_ARENA_BYTES (REFPLAT_CLAIMS * REFPLAT_CLAIM_STRIDE)
 
+/* The event block: 64 bytes, a global count and 15 group counts of 32 records each. */
+#define REFPLAT_EVENT_BYTES 64u
+#define REFPLAT_EVENT_WORDS 16u
+#define REFPLAT_EVENT_GROUPS 15u
+
 /* Entries of the operation trace (refplat.trace). */
 #define REFPLAT_T_CLAIM    1u
 #define REFPLAT_T_RELEASE  2u
@@ -70,6 +75,8 @@ struct refplat_claim {
     uint32_t argc;
     char argv[4][32];
     uint32_t kicks, kick_bits;    /* doorbells received and the bits ORed */
+    uint8_t ev_asked;             /* claim_news has answered 1 for this claim */
+    uint32_t ev_seen;             /* the count it saw then */
     uint32_t releases;
     struct aar_plat_load_opts opts; /* what load_begin received */
 };
@@ -95,7 +102,18 @@ struct refplat_state {
     struct aar_plat_info info;    /* the constants; a test may change them */
     uint32_t fail_map_token;      /* a map of this token answers AAR_E_NOMEM (0: none) */
     uint32_t stale_map_token;     /* a map of this token answers AAR_E_STALE (0: none) */
+    /* Event block (spec 10.6). Off by default: the platform has no events and
+     * leaves the two operations NULL in effect (events_sample answers 0). */
+    uint32_t events_on;           /* publish the event block: the app side posts after each visible store */
+    uint32_t events_always_news;  /* events_sample answers NEWS at every pass, as a platform that cannot tell */
+    uint32_t events_record_bias;  /* added to the record index of a claim: a test reaches records >= 480 */
+    uint8_t ev_block[REFPLAT_EVENT_BYTES]; /* big-endian words: global, then 15 group counts */
+    uint32_t ev_sample[REFPLAT_EVENT_WORDS]; /* the counts the last sample read */
+    uint32_t ev_have_sample;
     /* observations */
+    uint32_t event_samples;       /* calls of events_sample */
+    uint32_t event_reads;         /* reads of the event block: 1 per sample, 15 more when the global changed */
+    uint32_t event_news_calls;    /* calls of claim_news */
     uint32_t attaches, detaches;
     uint32_t polls;
     uint32_t stale_calls;         /* kicks and stops that reached a claim the platform had revoked */
@@ -111,6 +129,12 @@ struct refplat_state {
 };
 
 extern struct refplat_state refplat;
+
+/* The card posts for the record: group count (record / 32, when it is below 15), then the
+ * global count, each by one. A test calls it for a record no claim has. */
+void refplat_events_post(uint32_t record);
+/* Writes word `word` (0: global, 1..15: groups) of the event block: a test sets a count close to wrap. */
+void refplat_events_set(uint32_t word, uint32_t value);
 
 /* Back to a clean platform: no claims, default knobs, arena zeroed. */
 void refplat_reset(void);

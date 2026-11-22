@@ -66,10 +66,41 @@ static void trace(uint32_t what, uint32_t slot)
         refplat.trace[refplat.trace_len++] = (what << 8) | slot;
 }
 
+static void event_add(uint32_t word)
+{
+    aar_put_be32(refplat.ev_block + word * 4u, aar_get_be32(refplat.ev_block + word * 4u) + 1u);
+}
+
+void refplat_events_post(uint32_t record)
+{
+    if (record / 32u < REFPLAT_EVENT_GROUPS)
+        event_add(1u + record / 32u);
+    event_add(0u);
+}
+
+void refplat_events_set(uint32_t word, uint32_t value)
+{
+    aar_put_be32(refplat.ev_block + word * 4u, value);
+}
+
+static uint32_t record_of(const struct refplat_claim *rc)
+{
+    return aar_handle_index(rc->handle) + refplat.events_record_bias;
+}
+
+/* The card made something visible to the client of this claim. */
+static void event_post_claim(const struct refplat_claim *rc)
+{
+    if (refplat.events_on)
+        refplat_events_post(record_of(rc));
+}
+
 static void put_state(struct refplat_claim *rc, uint32_t state, uint32_t end_reason)
 {
     aar_put_be32(rc->cb + AAR_CB_STATE, state);
     aar_put_be32(rc->cb + AAR_CB_END_REASON, end_reason);
+    if (end_reason != AAR_END_NONE)
+        event_post_claim(rc);
 }
 
 static void release_slot(uint32_t slot)
@@ -163,6 +194,8 @@ static int op_claim(struct aar_plat *p, struct aar_plat_claim *c, uint32_t *reas
     rc->image_len = rc->image_sum = rc->image_first = rc->chunks = 0u;
     rc->argc = 0u;
     rc->kicks = rc->kick_bits = 0u;
+    rc->ev_asked = 0u;
+    rc->ev_seen = 0u;
     (void)aar_cb_init(rc->cb, rc->handle, AAR_PROFILE_A32, REFPLAT_DEPTH,
                       rc->token, 0x1000u, rc->token, 0x2000u);
     aar_put_be32(rc->cb + AAR_CB_LEASE_PERIOD_MS, 2000u);
@@ -356,6 +389,48 @@ static int op_poll(struct aar_plat *p, struct aar_plat_claim *c)
     return 0;
 }
 
+/* events_sample: the global count is one read; the group counts are read only when it changed. */
+static int op_events_sample(struct aar_plat *p)
+{
+    uint32_t g, i;
+
+    (void)p;
+    if (!refplat.events_on)
+        return AAR_PLAT_EVENTS_NONE;
+    refplat.event_samples++;
+    refplat.event_reads++;
+    g = aar_get_be32(refplat.ev_block);
+    if (refplat.ev_have_sample && g == refplat.ev_sample[0])
+        return refplat.events_always_news ? AAR_PLAT_EVENTS_NEWS : AAR_PLAT_EVENTS_QUIET;
+    refplat.ev_sample[0] = g;
+    for (i = 1u; i < REFPLAT_EVENT_WORDS; i++)
+        refplat.ev_sample[i] = aar_get_be32(refplat.ev_block + i * 4u);
+    refplat.event_reads += REFPLAT_EVENT_WORDS - 1u;
+    refplat.ev_have_sample = 1u;
+    return AAR_PLAT_EVENTS_NEWS;
+}
+
+/* claim_news: from the sampled counts, no access to the block. */
+static int op_claim_news(struct aar_plat *p, struct aar_plat_claim *c)
+{
+    int slot = slot_of(c);
+    struct refplat_claim *rc;
+    uint32_t group, now;
+
+    (void)p;
+    refplat.event_news_calls++;
+    if (slot < 0 || !refplat.ev_have_sample)
+        return 1;
+    rc = &refplat.claims[slot];
+    group = record_of(rc) / 32u;
+    now = group < REFPLAT_EVENT_GROUPS ? refplat.ev_sample[1u + group] : refplat.ev_sample[0];
+    if (rc->ev_asked && rc->ev_seen == now)
+        return 0;
+    rc->ev_asked = 1u;
+    rc->ev_seen = now;
+    return 1;
+}
+
 static void op_cache_publish(struct aar_plat *p, const volatile void *ptr, uint32_t len)
 {
     (void)p;
@@ -443,7 +518,9 @@ static const struct aar_plat_ops ops = {
     NULL,
     NULL,
     op_cache_publish,
-    op_cache_acquire
+    op_cache_acquire,
+    op_events_sample,
+    op_claim_news
 };
 
 struct aar_plat *aar_plat_get(void)
@@ -521,6 +598,7 @@ int refplat_app_request(int slot, uint32_t op, uint32_t flags, uint32_t id,
     aar_queue sq;
     aar_request r;
     uint32_t i;
+    int rc;
 
     sq_view(slot, &sq);
     memset(&r, 0, sizeof(r));
@@ -532,15 +610,22 @@ int refplat_app_request(int slot, uint32_t op, uint32_t flags, uint32_t id,
     r.buf = buf;
     r.buf_off = buf_off;
     r.buf_len = buf_len;
-    return aar_queue_post_request(&sq, &r, NULL, NULL);
+    rc = aar_queue_post_request(&sq, &r, NULL, NULL);
+    if (rc == AAR_OK)
+        event_post_claim(&refplat.claims[slot]);
+    return rc;
 }
 
 int refplat_app_message(int slot, const uint8_t msg[AAR_MSG_BYTES])
 {
     aar_queue sq;
+    int rc;
 
     sq_view(slot, &sq);
-    return aar_queue_post_msg(&sq, msg, NULL, NULL);
+    rc = aar_queue_post_msg(&sq, msg, NULL, NULL);
+    if (rc == AAR_OK)
+        event_post_claim(&refplat.claims[slot]);
+    return rc;
 }
 
 int refplat_app_log(int slot, uint32_t buf, uint32_t off, uint32_t len)
@@ -559,6 +644,7 @@ int refplat_app_log(int slot, uint32_t buf, uint32_t off, uint32_t len)
     aar_put_be32(s + AAR_ENTRY_BUF_OFF, off);
     aar_put_be32(s + AAR_ENTRY_BUF_LEN, len);
     aar_queue_commit(&sq, NULL);
+    event_post_claim(&refplat.claims[slot]);
     return AAR_OK;
 }
 

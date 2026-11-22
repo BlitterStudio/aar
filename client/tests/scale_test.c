@@ -10,6 +10,10 @@
  *     that is not armed costs it nothing, and a handle that has work still gets
  *     it done (a doorbell that was busy, a poll that is still in flight, a mouse
  *     event that waits for room, an armed handle's scan);
+ *   - on a platform with event counts, an idle armed handle costs the pass
+ *     nothing either: one read of the platform's global count per pass while
+ *     nothing was posted, and a scan (three control block reads) only for a
+ *     handle in a group that changed or that has work pending;
  *   - the vertical-blank interrupt looks at a fifth of the claims per tick, and
  *     every claim is renewed once per period, with up to 230 handles.
  *
@@ -417,6 +421,259 @@ static void test_pass(void)
     finish();
 }
 
+/* ---- Event counts (spec 10.6) ------------------------------------------------------ */
+
+static unsigned notified;
+static AARHandle *noted;
+static uint32_t noted_type;
+static int n_answer = AAR_CORE_NOTIFIED;
+
+static int ncb(void *user, AARHandle *h, uint32_t type)
+{
+    (void)user;
+    notified++;
+    noted = h;
+    noted_type = type;
+    return n_answer;
+}
+
+/* One pass; the scans it made (notify_scan runs, three control block reads each). */
+static uint32_t pass_scans(void)
+{
+    uint32_t before = core.stat_pass_scans;
+
+    notified = 0u;
+    aar_core_dispatch(&core, ncb, NULL);
+    return core.stat_pass_scans - before;
+}
+
+static void arm_n(AARHandle **hs, unsigned n)
+{
+    unsigned i;
+
+    open_n(hs, n);
+    for (i = 0; i < n; i++)
+        CHECK(aar_core_message_signal(&core, hs[i]) == 1u);
+}
+
+/* A pass that finds nothing: its cost in card reads and platform questions. */
+static void check_quiet_pass(void)
+{
+    uint32_t reads = refplat.event_reads, asked = refplat.event_news_calls;
+    uint32_t visits = core.stat_pass_visits;
+
+    CHECK(pass_scans() == 0u && notified == 0u);
+    CHECK(refplat.event_reads - reads == 1u);          /* the global count */
+    CHECK(refplat.event_news_calls == asked);          /* nobody was asked */
+    CHECK(core.stat_pass_visits == visits);            /* nobody was visited */
+    CHECK(core.work_head == NULL);
+}
+
+static void test_events(void)
+{
+    static AARHandle *hs[MAXH];
+    unsigned i;
+    uint32_t reads, asked, k;
+    uint8_t raw[AAR_MSG_BYTES] = { 7 };
+    AARMessage m;
+    static int port;
+    AARHandle *hp = NULL;
+    ULONG reason;
+
+    n_answer = AAR_CORE_NOTIFIED;
+
+    /* An idle armed handle is not scanned; a post in its group scans it once, a
+     * post in another group does not; the card is read once per quiet pass. */
+    setup("events");
+    refplat.events_on = 1u;
+    arm_n(hs, 100u);
+    reads = refplat.event_reads;
+    CHECK(pass_scans() == 100u);                       /* armed at open or by signal: one scan */
+    CHECK(refplat.event_reads - reads == 16u);         /* the first sample: global and 15 groups */
+    CHECK(core.work_head == NULL);
+    for (i = 0; i < 3; i++)
+        check_quiet_pass();
+    /* hs[70] is record 71, group 2: records 64..95, 32 handles. Its end is posted. */
+    reads = refplat.event_reads;
+    refplat_app_set_state(slot_of(hs[70]), AAR_STATE_IDLE, AAR_END_EXIT);
+    CHECK(pass_scans() == 32u);
+    CHECK(refplat.event_reads - reads == 16u);         /* the global changed: and the 15 groups */
+    CHECK(notified == 1u && noted == hs[70] && noted_type == AAR_NOTIFY_COMPLETE);
+    check_quiet_pass();                                /* announced once; nothing left */
+    /* A post for a group that no handle has: the global changed, nobody is scanned. */
+    reads = refplat.event_reads;
+    asked = refplat.event_news_calls;
+    refplat_events_post(300u);
+    CHECK(pass_scans() == 0u && notified == 0u);
+    CHECK(refplat.event_reads - reads == 16u);
+    CHECK(refplat.event_news_calls - asked == 100u);   /* every armed handle was asked, none read */
+    check_quiet_pass();
+    /* Records 96..100 are group 3: five handles; the others are not scanned. */
+    refplat_events_post(98u);
+    CHECK(pass_scans() == 5u);
+    check_quiet_pass();
+    /* A post in a group again (the handle's own last scan was long ago). */
+    refplat_events_post(40u);
+    CHECK(pass_scans() == 32u);
+    check_quiet_pass();
+    close_n(hs, 100u);
+    finish();
+
+    /* A record the block has no group for (480 and up): any change of the global
+     * count scans it. */
+    setup("events");
+    refplat.events_on = 1u;
+    refplat.events_record_bias = 480u;
+    arm_n(hs, 10u);
+    CHECK(pass_scans() == 10u);
+    check_quiet_pass();
+    refplat_events_post(5000u);                        /* a group beyond the block: only the global */
+    CHECK(pass_scans() == 10u);
+    check_quiet_pass();
+    refplat_events_post(0u);                           /* another group: still a change of the global */
+    CHECK(pass_scans() == 10u);
+    check_quiet_pass();
+    close_n(hs, 10u);
+    finish();
+
+    /* A count that wraps is a change. Groups 0 and 1 hold records 1..31 and 32..40. */
+    setup("events");
+    refplat.events_on = 1u;
+    arm_n(hs, 40u);
+    CHECK(pass_scans() == 40u);
+    refplat_events_set(0u, 0xffffffffu);
+    refplat_events_set(2u, 0xffffffffu);               /* group 1 */
+    CHECK(pass_scans() == 9u);
+    check_quiet_pass();
+    refplat_events_post(40u);                          /* group 1 and the global wrap to 0 */
+    CHECK(aar_get_be32(refplat.ev_block) == 0u && aar_get_be32(refplat.ev_block + 8u) == 0u);
+    CHECK(pass_scans() == 9u);
+    check_quiet_pass();
+    close_n(hs, 40u);
+    finish();
+
+    /* Work that is pending keeps the handle scanned at every pass, and it is
+     * signalled again after 5 ticks, as without events. */
+    setup("events");
+    refplat.events_on = 1u;
+    arm_n(hs, 70u);
+    CHECK(pass_scans() == 70u);
+    refplat_app_message(slot_of(hs[65]), raw);         /* record 66, group 2: records 64..70 */
+    CHECK(pass_scans() == 7u);
+    CHECK(notified == 1u && noted == hs[65] && noted_type == AAR_NOTIFY_MESSAGE);
+    reads = refplat.event_reads;
+    asked = refplat.event_news_calls;
+    for (i = 0; i < 4; i++) {
+        CHECK(pass_scans() == 1u && notified == 0u);   /* only it, every pass; no new signal yet */
+    }
+    CHECK(refplat.event_reads - reads == 4u);          /* one read per pass, as ever */
+    for (k = 0; k < 5u; k++)
+        aar_core_vblank(&core);
+    CHECK(pass_scans() == 1u && notified == 1u && noted == hs[65]); /* signalled again */
+    CHECK(aar_core_get_message(&core, hs[65], &m) == AAR_OK && m.bytes[0] == 7);
+    CHECK(pass_scans() == 1u && notified == 0u);       /* it finds the queue drained */
+    check_quiet_pass();                                /* and is idle again */
+    /* An end that was not delivered is scanned until it is, then once. */
+    n_answer = 0;
+    refplat_app_set_state(slot_of(hs[65]), AAR_STATE_IDLE, AAR_END_EXIT);
+    CHECK(pass_scans() == 7u && notified == 1u && noted_type == AAR_NOTIFY_COMPLETE);
+    CHECK(pass_scans() == 1u && notified == 1u);       /* again: the owner was not reached */
+    CHECK(pass_scans() == 1u && notified == 1u);
+    n_answer = AAR_CORE_NOTIFIED;
+    CHECK(pass_scans() == 1u && notified == 1u && noted_type == AAR_NOTIFY_COMPLETE);
+    check_quiet_pass();                                /* announced: done, no repeat */
+    close_n(hs, 70u);
+    finish();
+
+    /* Arming, signalling and opening with a port each cost one scan. */
+    setup("events");
+    refplat.events_on = 1u;
+    hs[0] = open_one(1);
+    CHECK(pass_scans() == 0u);                         /* not armed: no scan */
+    check_quiet_pass();
+    CHECK(aar_core_message_signal(&core, hs[0]) == 1u);
+    CHECK(pass_scans() == 1u);
+    check_quiet_pass();
+    CHECK(aar_core_message_signal(&core, hs[0]) == 1u); /* again: it is looked at once more */
+    CHECK(pass_scans() == 1u);
+    check_quiet_pass();
+    CHECK(aar_core_open(&core, 1, &port, NULL, &hp, &reason) == AAR_OK);
+    CHECK(pass_scans() == 1u);
+    check_quiet_pass();
+    CHECK(aar_core_close(&core, hp) == AAR_OK);
+    CHECK(aar_core_close(&core, hs[0]) == AAR_OK);
+    finish();
+
+    /* A platform that cannot tell NEWS from QUIET answers NEWS at every pass: the
+     * handles are asked, not scanned, and the card is still read once. */
+    setup("events");
+    refplat.events_on = 1u;
+    refplat.events_always_news = 1u;
+    arm_n(hs, 30u);
+    CHECK(pass_scans() == 30u);
+    reads = refplat.event_reads;
+    asked = refplat.event_news_calls;
+    CHECK(pass_scans() == 0u && pass_scans() == 0u);
+    CHECK(refplat.event_news_calls - asked == 60u);    /* 30 handles, 2 passes */
+    CHECK(refplat.event_reads - reads == 2u);
+    refplat_events_post(35u);                          /* nobody has record 35 */
+    CHECK(pass_scans() == 0u);
+    refplat_events_post(3u);                           /* group 0: records 1..30 */
+    CHECK(pass_scans() == 30u);
+    close_n(hs, 30u);
+    finish();
+
+    /* No events: the platform answers none, or has one operation only, or none:
+     * every armed handle is scanned at every pass, as before. */
+    for (i = 0; i < 3; i++) {
+        static struct aar_plat_ops partial;
+
+        setup("events");
+        refplat.events_on = i != 0u;
+        if (i != 0u) {
+            partial = *refplat.plat.ops;
+            if (i == 1u)
+                partial.events_sample = NULL;
+            else
+                partial.claim_news = NULL;
+            refplat.plat.ops = &partial;
+        }
+        arm_n(hs, 30u);
+        for (k = 0; k < 3u; k++) {
+            CHECK(pass_scans() == 30u);
+            CHECK(notified == 0u);
+        }
+        CHECK(refplat.event_reads == 0u && refplat.event_news_calls == 0u);
+        refplat_app_set_state(slot_of(hs[5]), AAR_STATE_IDLE, AAR_END_EXIT);
+        CHECK(pass_scans() == 30u && notified == 1u && noted == hs[5]);
+        CHECK(pass_scans() == 30u && notified == 0u);
+        close_n(hs, 30u);
+        finish();
+    }
+
+    /* A platform that stops having events: the handles that had left the list
+     * come back. */
+    setup("events");
+    refplat.events_on = 1u;
+    arm_n(hs, 30u);
+    CHECK(pass_scans() == 30u);
+    check_quiet_pass();
+    refplat.events_on = 0u;
+    CHECK(pass_scans() == 30u);
+    CHECK(pass_scans() == 30u);
+    close_n(hs, 30u);
+    finish();
+
+    /* A platform that is not attached is not asked. */
+    setup("events");
+    refplat.events_on = 1u;
+    core.attach_rc = AAR_E_NOSYS;
+    CHECK(pass_scans() == 0u);
+    CHECK(refplat.event_samples == 0u && refplat.event_reads == 0u);
+    core.attach_rc = AAR_OK;
+    finish();
+}
+
 /* The interrupt renews every claim once per period and looks at a fifth of them
  * per tick. */
 static void test_lease(void)
@@ -509,6 +766,7 @@ int main(void)
     test_reap();
     test_table();
     test_pass();
+    test_events();
     test_lease();
     printf("scale_test: %lu checks, %lu failures\n", checks, failures);
     return failures ? 1 : 0;
