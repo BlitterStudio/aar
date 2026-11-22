@@ -70,7 +70,8 @@
 #define CONF_CON_BEGIN "@@CON-BEGIN@@\n"
 #define CONF_CON_END   "@@CON-END@@\n"
 #define CONF_CON_BIG_BYTES  (200u * 1024u)   /* C-CON.1 */
-#define CONF_CON_SLOW_BYTES 4096u            /* C-CON.2 */
+/* C-CON.2: more than any console buffer holds, so that the write has to park. */
+#define CONF_CON_SLOW_BYTES (64u * 1024u)
 #define CONF_CON_SLOW_HOLD_TICKS 25u         /* 500 ms at 50 ticks a second */
 #define CONF_CON_SLOW_MIN_US 450000u
 
