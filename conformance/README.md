@@ -7,7 +7,7 @@ AAR standard (specification section 11). Version 0.1 of the suite tests API 0.5.
 |---|---|
 | `TESTS.md` | The catalogue: one row for every test id, with the specification section, MUST or SHOULD, group, profile, who judges it and what it checks. It also lists what is not tested and why, and the questions this work raised about the specification |
 | `payloads/` | The payloads: ARM apps (`conf_<area>.c`) that judge one area from the inside. `conf.h` is the protocol they print their results with |
-| `runner/aar-conf.c` | The runner: an AmigaOS m68k program that uses only `aar.library` and the serving loop (`libaarserve.a`). It runs the payloads, judges the client-side tests, and writes the report. `conf_catalogue.h` is generated from `TESTS.md` |
+| `runner/` | The runner `aar-conf`: an AmigaOS m68k program that uses only `aar.library` and the serving loop (`libaarserve.a`). `aar-conf.c` is the core (options, verdict, payload runs); each area has its file `r_<area>.c` for its runner-judged tests. It runs the payloads, judges the client-side tests, and writes the report. `conf_catalogue.h` is generated from `TESTS.md` at build time and is not in git |
 | `tools/` | `conf_catalogue.py` reads `TESTS.md`, generates the runner's header and checks the ids against the sources; `check_results.py` checks one payload's output or a whole report |
 | `tests/qemu_run.sh` | Runs payloads under qemu user mode with the loader of `libaar/tests/loader.c` |
 
@@ -167,20 +167,10 @@ loader), it prints `SKIP host: <reason>`.
 
 ## Adding tests
 
-1. Add or change the row in `TESTS.md`. Keep the table format (the tools read it)
-   and put no `|` in a cell. Set `impl` to `yes` only when the test is written.
-2. For a payload test, print the id in `payloads/conf_<area>.c` (the file name is
-   the area in lower case). For a runner test, add it to `runner_tests` in
-   `aar-conf.c`, or to the code that feeds it. For an operator test nothing is
-   needed in the runner: it asks the question from the check text.
-3. Run `python3 conformance/tools/conf_catalogue.py gen` to regenerate
-   `runner/conf_catalogue.h`, then `... check`. The check fails when an id is
-   printed that the catalogue does not list, when an `impl yes` id is printed by
-   nothing, and when an `impl todo` id already is.
-4. A payload that builds for the host goes into `AAR_CONF_HOST_PAYLOADS` in
-   `host-runner/CMakeLists.txt`; one that the qemu loader can run goes into
-   `CONF_AREAS` and `CONF_QEMU_AREAS` in the `Makefile` (every payload goes into
-   `CONF_AREAS`).
-5. The runner is built by `client/tests/m68k_check.sh` with warnings as errors.
-
-`python3 conformance/tools/conf_catalogue.py summary` prints the counts per area.
+`CONTRIBUTING.md` is the guide for the author of an area: which files the area
+owns, how to mark rows `impl yes`, how to add peer keywords, payload variants and
+console modes to the runner, what to do about gaps in the spec, and how to run the
+host, qemu and m68k checks. In short: the rows are in `TESTS.md`; a payload test is
+printed by `payloads/conf_<area>.c`; a runner test is listed in
+`runner/r_<area>.c`; `python3 conformance/tools/conf_catalogue.py check` keeps the
+catalogue and the sources in step.

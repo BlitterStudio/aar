@@ -122,9 +122,17 @@ aar_host_executable(mailbox SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/mailbox.c)
 # Conformance payloads (conformance/payloads) that make sense on the host. The
 # host runner is the reference for app semantics (spec 11.1): the core group
 # must pass. A test that needs a client or a platform prints "SKIP host: ..."
-# here. Add an area to the list when its payload builds for the host.
+# here. There is no list to edit: a payload builds for the host when the file
+# conformance/payloads/conf_<area>.host exists.
 set(AAR_CONF_DIR ${AAR_ROOT}/conformance)
-set(AAR_CONF_HOST_PAYLOADS time)
+file(GLOB AAR_CONF_HOST_MARKERS CONFIGURE_DEPENDS
+  ${AAR_CONF_DIR}/payloads/conf_*.host)
+set(AAR_CONF_HOST_PAYLOADS "")
+foreach(marker IN LISTS AAR_CONF_HOST_MARKERS)
+  get_filename_component(marker_name ${marker} NAME_WE)
+  string(REGEX REPLACE "^conf_" "" marker_area ${marker_name})
+  list(APPEND AAR_CONF_HOST_PAYLOADS ${marker_area})
+endforeach()
 foreach(area IN LISTS AAR_CONF_HOST_PAYLOADS)
   aar_host_executable(conf_${area}
     SOURCES ${AAR_CONF_DIR}/payloads/conf_${area}.c)

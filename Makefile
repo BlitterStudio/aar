@@ -54,10 +54,13 @@ sbrk_smoke_SRCS := templates/sbrk_smoke.c
 
 # The conformance payloads (conformance/): apps that judge one area of the
 # standard from the inside, built per profile as build/<profile>/conf_<area>.elf.
-# CONF_QEMU_AREAS are the ones the qemu loader of libaar can run (its table is
-# partial); add an area when the loader grows what that payload needs.
-CONF_AREAS := time
-CONF_QEMU_AREAS := time
+# There is no list to edit: an area is a file conformance/payloads/conf_<area>.c,
+# and it runs under qemu when conformance/payloads/conf_<area>.qemu exists (the
+# loader of libaar has a partial table; add the marker when it grows what the
+# payload needs).
+CONF_DIR := $(AAR_SDK)/conformance/payloads
+CONF_AREAS := $(sort $(patsubst $(CONF_DIR)/conf_%.c,%,$(wildcard $(CONF_DIR)/conf_*.c)))
+CONF_QEMU_AREAS := $(sort $(patsubst $(CONF_DIR)/conf_%.qemu,%,$(wildcard $(CONF_DIR)/conf_*.qemu)))
 CONF_APPS := $(addprefix conf_,$(CONF_AREAS))
 $(foreach a,$(CONF_AREAS),$(eval conf_$(a)_SRCS := conformance/payloads/conf_$(a).c))
 

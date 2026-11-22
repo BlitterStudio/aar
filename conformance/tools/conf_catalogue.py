@@ -132,6 +132,11 @@ def payload_sources():
                   if f.startswith("conf_") and f.endswith(".c"))
 
 
+def runner_sources():
+    d = os.path.join(ROOT, "runner")
+    return sorted(os.path.join(d, f) for f in os.listdir(d) if f.endswith(".c"))
+
+
 def c_string(text):
     text = text.replace("`", "")
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -180,14 +185,21 @@ def generate(version, tests):
     out.append("};")
     out.append("")
     out.append("/* Area names; the payload of area C-X is conf_x.elf. */")
-    out.append("static const char *const conf_areas[] = {")
+    out.append("extern const char *const conf_areas[];")
+    out.append("#define CONF_AREA_COUNT %d" % len(areas))
+    out.append("/* Every row of TESTS.md, in order. */")
+    out.append("extern const struct conf_test conf_tests[];")
+    out.append("#define CONF_TEST_COUNT %d" % len(tests))
+    out.append("")
+    out.append("/* The data is defined in one translation unit, the one that defines")
+    out.append("   CONF_CATALOGUE_DEFINE before it includes this file. */")
+    out.append("#ifdef CONF_CATALOGUE_DEFINE")
+    out.append("const char *const conf_areas[] = {")
     for a in areas:
         out.append("    %s," % c_string(a))
     out.append("};")
-    out.append("#define CONF_AREA_COUNT %d" % len(areas))
     out.append("")
-    out.append("/* Every row of TESTS.md, in order. */")
-    out.append("static const struct conf_test conf_tests[] = {")
+    out.append("const struct conf_test conf_tests[] = {")
     for t in tests:
         prompt = t.check if t.judge == "operator" else ""
         out.append("    { %s, %d, CONF_%s, CONF_J_%s, %d, %d, 0x%03xu, %s }," % (
@@ -195,7 +207,7 @@ def generate(version, tests):
             PROFILES[t.profile], 1 if t.impl == "yes" else 0, GROUPS[t.group],
             c_string(prompt)))
     out.append("};")
-    out.append("#define CONF_TEST_COUNT %d" % len(tests))
+    out.append("#endif")
     out.append("")
     out.append("#endif")
     out.append("")
@@ -212,7 +224,7 @@ def cmd_gen(version, tests):
 def cmd_check(version, tests, errors):
     by_id = {t.id: t for t in tests}
     payload_found = printed_ids(payload_sources())
-    runner_found = printed_ids([RUNNER_SRC]) if os.path.exists(RUNNER_SRC) else {}
+    runner_found = printed_ids(runner_sources())
 
     for pid, files in sorted(payload_found.items()):
         t = by_id.get(pid)
@@ -232,31 +244,49 @@ def cmd_check(version, tests, errors):
                               % (pid, want, ", ".join(sorted(files))))
     for rid, files in sorted(runner_found.items()):
         t = by_id.get(rid)
+        for f in sorted(files):
+            if f == "aar-conf.c":
+                errors.append("%s is in aar-conf.c: the core prints no test ids;"
+                              " put it in r_%s.c" % (rid, rid[2:].split(".")[0].lower()))
+            elif t is not None and f != "r_%s.c" % t.area[2:].lower():
+                errors.append("%s belongs to area %s but is in %s (want r_%s.c)"
+                              % (rid, t.area, f, t.area[2:].lower()))
         if t is None:
-            errors.append("%s is in aar-conf.c but not in TESTS.md" % rid)
-        elif t.judge not in ("runner", "operator"):
-            errors.append("%s is in aar-conf.c but TESTS.md says judged by %s"
-                          % (rid, t.judge))
+            errors.append("%s is in the runner sources but not in TESTS.md" % rid)
+        elif t.judge != "runner":
+            errors.append("%s is in the runner sources but TESTS.md says judged"
+                          " by %s" % (rid, t.judge))
         elif t.impl != "yes":
-            errors.append("%s is in aar-conf.c but its impl is todo" % rid)
+            errors.append("%s is in the runner sources but its impl is todo" % rid)
     for t in tests:
         if t.impl != "yes":
             continue
         if t.judge == "payload" and t.id not in payload_found:
             errors.append("%s is impl yes but no payload prints it" % t.id)
         if t.judge == "runner" and t.id not in runner_found:
-            errors.append("%s is impl yes but aar-conf.c does not print it"
-                          % t.id)
+            errors.append("%s is impl yes but no r_<area>.c prints it" % t.id)
 
-    if os.path.exists(HEADER):
-        with open(HEADER, encoding="utf-8", newline="") as fh:
-            have = fh.read()
-        if have != generate(version, tests):
-            errors.append("runner/conf_catalogue.h is out of date;"
-                          " run conf_catalogue.py gen")
-    else:
-        errors.append("runner/conf_catalogue.h is missing; run"
-                      " conf_catalogue.py gen")
+    # Markers: conf_<area>.host and conf_<area>.qemu need their payload.
+    for suffix in (".host", ".qemu"):
+        for f in sorted(os.listdir(PAYLOAD_DIR)):
+            if f.startswith("conf_") and f.endswith(suffix):
+                if not os.path.exists(os.path.join(PAYLOAD_DIR, f[:-len(suffix)] + ".c")):
+                    errors.append("%s has no payload %s.c" % (f, f[:-len(suffix)]))
+
+    # Every area with tests has its runner file and its line in r_areas.h.
+    areas = sorted({t.area[2:].lower() for t in tests})
+    listed = sorted(re.findall(r"CONF_R_AREA\((\w+)\)", open(
+        os.path.join(ROOT, "runner", "r_areas.h"), encoding="utf-8").read()))
+    if areas != listed:
+        errors.append("runner/r_areas.h lists %s, the catalogue has areas %s"
+                      % (listed, areas))
+    for a in areas:
+        if not os.path.exists(os.path.join(ROOT, "runner", "r_%s.c" % a)):
+            errors.append("runner/r_%s.c is missing" % a)
+    try:
+        generate(version, tests)
+    except Exception as exc:  # noqa: BLE001
+        errors.append("the runner header cannot be generated: %s" % exc)
 
     if errors:
         for e in errors:
