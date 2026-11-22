@@ -442,23 +442,23 @@ from it; with a real screen the picture is judged by the operator.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-DISPLAY.1 | 8.2 | MUST | display | any | payload | todo | `display_open` of 320x200, 640x480 and 4096x1 in RGB565 and BGRA8888 succeeds with width, height and format as asked, `pitch` at least width times bytes per pixel, `reserved` 0, `caps` only defined bits |
-| C-DISPLAY.2 | 8.2 | MUST | display | any | payload | todo | `layout` is consistent with the format (RGB565: layouts 1 to 4; BGRA8888: 5 or 6; CLUT8: 7) and `back` is non-NULL and writable; `front` is NULL or writable |
-| C-DISPLAY.3 | 8.2 | MUST | display | any | payload | todo | width 0 or height 0 is refused with a negative code; an unknown format is refused with `AAR_E_INVAL` or `AAR_E_NOSYS` [spec question 15] |
-| C-DISPLAY.4 | 8.2 | MUST | display | any | payload | todo | one display per app: a second `display_open` while one is open fails with a negative code |
-| C-DISPLAY.5 | 8.2 | MUST | display | any | payload | todo | `display_close` returns `AAR_OK`; a second close and a flip after close are negative; a new open works again |
-| C-DISPLAY.6 | 8.2 | MUST | display | any | payload | todo | `flip` of the open id returns `AAR_OK`; a flip of any other id is `AAR_E_INVAL` |
-| C-DISPLAY.7 | 8.2 | MUST | display | any | payload | todo | write `back`, `flip`, `refresh`: after the refresh `back` can be written again and `front` (when non-NULL) holds the frame just presented [spec question 16] |
-| C-DISPLAY.8 | 8.2 | MUST | display | any | payload | todo | `AAR_DISPCAP_ASYNC` granted: `flip_async` then `flip_idle` reaches 1 within 1 s; a second async flip while one is pending is `AAR_E_BUSY` or completes (no frame is lost); without the cap `flip_async` is negative |
-| C-DISPLAY.9 | 8.2 | MUST | display | any | payload | todo | `AAR_DISPLAY_LATEST` requested: the open succeeds with or without `AAR_DISPCAP_LATEST`; without the cap `display_latest_dropped` returns 0 |
-| C-DISPLAY.10 | 8.2 | MUST | display | any | payload | todo | with `AAR_DISPCAP_LATEST` granted, 100 quick flips leave `display_latest_dropped` non-decreasing and not above 99 |
-| C-DISPLAY.11 | 8.2 | MUST | display | any | payload | todo | `vsync` returns `AAR_OK`; ten vsyncs take at least 100 ms and at most 2 s |
-| C-DISPLAY.12 | 8.2 | MUST | display | any | payload | todo | flip publishes the surface (runner peer): the frame the app flips without calling `aar_publish` is read by the client's display table byte for byte |
-| C-DISPLAY.13 | 8.2 | MUST | display | any | payload | todo | pixel layout (runner peer): a four-colour test frame stored by the reported `layout` decodes in the client's table to the four colours, for each format the platform grants |
-| C-DISPLAY.14 | 8.2 | MUST | display | any | payload | todo | `pitch` larger than the row bytes is honoured: rows stored by `pitch` arrive in the right rows (a surface whose pitch equals the row bytes is also accepted) |
-| C-DISPLAY.15 | 8.2 | MUST | display | any | payload | todo | CLUT8 with `AAR_DISPCAP_CLUT8` granted: `set_palette` of 256 colours returns `AAR_OK`; first plus count above 256 is `AAR_E_INVAL`; the client's table received the colours |
-| C-DISPLAY.16 | 8.2 | MUST | display | any | payload | todo | `set_palette` on a surface without the CLUT8 cap is negative |
-| C-DISPLAY.17 | 8.2 | SHOULD | display | any | operator | todo | the picture: the operator sees the test pattern the payload shows in the colours named on the console |
+| C-DISPLAY.1 | 8.2 | MUST | display | any | payload | yes | `display_open` of 320x200, 640x480 and 4096x1 in RGB565 and BGRA8888 succeeds with width, height and format as asked, `pitch` at least width times bytes per pixel, `reserved` 0, `caps` only defined bits |
+| C-DISPLAY.2 | 8.2 | MUST | display | any | payload | yes | `layout` is consistent with the format (RGB565: layouts 1 to 4; BGRA8888: 5 or 6; CLUT8: 7) and `back` is non-NULL and writable; `front` is NULL or writable |
+| C-DISPLAY.3 | 8.2 | MUST | display | any | payload | yes | width 0 or height 0 is refused with a negative code; an unknown format is refused with `AAR_E_INVAL` or `AAR_E_NOSYS` [spec question 15] |
+| C-DISPLAY.4 | 8.2 | MUST | display | any | payload | yes | one display per app: a second `display_open` while one is open fails with a negative code |
+| C-DISPLAY.5 | 8.2 | MUST | display | any | payload | yes | `display_close` returns `AAR_OK`; a second close and a flip after close are negative; a new open works again |
+| C-DISPLAY.6 | 8.2 | MUST | display | any | payload | yes | `flip` of the open id returns `AAR_OK`; a flip of any other id is `AAR_E_INVAL` |
+| C-DISPLAY.7 | 8.2 | MUST | display | any | payload | yes | write `back`, `flip`, `refresh`: after the refresh `back` can be written again and `front` (when non-NULL) holds the frame just presented [spec question 16] |
+| C-DISPLAY.8 | 8.2 | MUST | display | any | payload | yes | `AAR_DISPCAP_ASYNC` granted: `flip_async` then `flip_idle` reaches 1 within 1 s; a second async flip while one is pending is `AAR_E_BUSY` or completes (no frame is lost); without the cap `flip_async` is negative |
+| C-DISPLAY.9 | 8.2 | MUST | display | any | payload | yes | `AAR_DISPLAY_LATEST` requested: the open succeeds with or without `AAR_DISPCAP_LATEST`; without the cap `display_latest_dropped` returns 0 |
+| C-DISPLAY.10 | 8.2 | MUST | display | any | payload | yes | with `AAR_DISPCAP_LATEST` granted, 100 quick flips leave `display_latest_dropped` non-decreasing and not above 99 |
+| C-DISPLAY.11 | 8.2 | MUST | display | any | payload | yes | `vsync` returns `AAR_OK`; ten vsyncs take at least 100 ms and at most 2 s |
+| C-DISPLAY.12 | 8.2 | MUST | display | any | payload | yes | flip publishes the surface (runner peer): the frame the app flips without calling `aar_publish` is read by the client's display table byte for byte |
+| C-DISPLAY.13 | 8.2 | MUST | display | any | payload | yes | pixel layout (runner peer): a four-colour test frame stored by the reported `layout` decodes in the client's table to the four colours, for each format the platform grants |
+| C-DISPLAY.14 | 8.2 | MUST | display | any | payload | yes | `pitch` larger than the row bytes is honoured: rows stored by `pitch` arrive in the right rows (a surface whose pitch equals the row bytes is also accepted) |
+| C-DISPLAY.15 | 8.2 | MUST | display | any | payload | yes | CLUT8 with `AAR_DISPCAP_CLUT8` granted: `set_palette` of 256 colours returns `AAR_OK`; first plus count above 256 is `AAR_E_INVAL`; the client's table received the colours |
+| C-DISPLAY.16 | 8.2 | MUST | display | any | payload | yes | `set_palette` on a surface without the CLUT8 cap is negative |
+| C-DISPLAY.17 | 8.2 | SHOULD | display | any | operator | yes | the picture: the operator sees the test pattern the payload shows in the colours named on the console |
 | C-DISPLAY.18 | 8.2 | MAY | display | any | none | todo | not tested: a platform MAY allow more than 4096 in width or height |
 | C-DISPLAY.19 | 9.6 | MUST | display | any | none | todo | not tested: a platform that owns the display buffers may complete a flip itself, so no flip entry is promised; no test may assume one (C-DISPLAY.6 to C-DISPLAY.12 allow both) |
 | C-DISPLAY.20 | 8.2 | MUST | display | any | none | todo | not tested: the app MUST write `back`, flip, then `refresh` before writing again; an obligation of the app |
