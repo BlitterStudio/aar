@@ -410,7 +410,8 @@ static uint8_t *load_image(const uint8_t *img, size_t *mapped, int *relocs)
         if (ph[i].p_type == PT_LOAD && ph[i].p_vaddr + ph[i].p_memsz > top)
             top = ph[i].p_vaddr + ph[i].p_memsz;
     top = (top + 0xfffu) & ~(uintptr_t)0xfffu;
-    base = mmap(NULL, top, PROT_READ | PROT_WRITE | PROT_EXEC,
+    /* One spare page after the image: the A64 entry stub of ENTRY_CONTRACT. */
+    base = mmap(NULL, top + 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (base == MAP_FAILED) {
         perror("mmap");
@@ -454,6 +455,123 @@ static uint8_t *load_image(const uint8_t *img, size_t *mapped, int *relocs)
     return base;
 }
 
+/* ---- ENTRY_CONTRACT=1: enter the image as spec 3.2 says ----------------------
+ *
+ * The plain entry above is a C call: link register, scratch registers and
+ * floating-point state are whatever the loader had. With ENTRY_CONTRACT set the
+ * image is entered with r0/x0 the table, r1/w1 argc, r2/x2 argv, a fresh 1 MiB
+ * stack (8-byte aligned on A32, 16 on A64), every other general and vector
+ * register 0, lr 0 (and x29 0), FPSCR 0 (FPCR and FPSR 0). argv is the file name
+ * of the image (last path component), "alpha" and "beta gamma", the first
+ * words of the runner's arguments (conformance/payloads/conf.h). The conformance
+ * payload conf_entry judges this state.
+ *
+ * A32 jumps through the stack (ldr pc), A64 through a copy of the stub in a page
+ * next to the image whose last instruction is a branch patched to the entry, so
+ * that no register carries the entry address.
+ */
+#define APP_STACK_BYTES (1u << 20)
+
+#if defined(__aarch64__)
+__asm__(
+    ".text\n"
+    ".balign 4\n"
+    "loader_enter_start:\n"
+    "    hint #34\n"
+    "    mov  sp, x3\n"
+    "    mov  w1, w1\n"
+    "    .irp r, 3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30\n"
+    "    mov  x\\r, xzr\n"
+    "    .endr\n"
+    "    .irp r, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31\n"
+    "    movi v\\r\\().2d, #0\n"
+    "    .endr\n"
+    "    msr  fpcr, xzr\n"
+    "    msr  fpsr, xzr\n"
+    "    b    .\n"
+    "loader_enter_end:\n"
+    ".pushsection .rodata\n"
+    ".balign 4\n"
+    "loader_enter_bytes:\n"
+    ".word loader_enter_end - loader_enter_start\n"
+    ".popsection\n");
+extern const uint32_t loader_enter_start[], loader_enter_bytes;
+
+static void enter_contract(uintptr_t entry, uint8_t *near_img, size_t near_bytes,
+                           const aar_api *api, int argc, char **argv,
+                           uint8_t *stack_top)
+{
+    size_t bytes = loader_enter_bytes;
+    uint32_t *stub = (uint32_t *)(void *)(near_img + near_bytes);
+    uint32_t *last;
+    int64_t delta;
+
+    memcpy(stub, loader_enter_start, bytes);
+    last = stub + bytes / 4 - 1;
+    delta = ((int64_t)entry - (int64_t)(uintptr_t)last) / 4;
+    if (delta < -(1 << 25) || delta >= (1 << 25)) {
+        fprintf(stderr, "[loader] the entry is out of branch range of the stub\n");
+        _exit(2);
+    }
+    *last = 0x14000000u | ((uint32_t)delta & 0x03ffffffu);
+    __builtin___clear_cache((char *)stub, (char *)stub + bytes);
+    ((void (*)(const aar_api *, int, char **, uint8_t *))(void *)stub)(
+        api, argc, argv, stack_top);
+    _exit(99);
+}
+#else
+__asm__(
+    ".text\n"
+    ".arm\n"
+    ".balign 4\n"
+    ".fpu neon\n"
+    ".global loader_enter_a32\n"
+    "loader_enter_a32:\n"
+    "    ldr  r12, [sp]\n"
+    "    mov  sp, r3\n"
+    "    sub  sp, sp, #8\n"
+    "    str  r12, [sp]\n"
+    "    .irp r, 3,4,5,6,7,8,9,10,11,12\n"
+    "    mov  r\\r, #0\n"
+    "    .endr\n"
+    "    mov  lr, #0\n"
+    "    .irp r, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15\n"
+    "    vmov.i32 q\\r, #0\n"
+    "    .endr\n"
+    "    vmsr fpscr, r3\n"
+    "    ldr  pc, [sp], #8\n");
+extern void loader_enter_a32(const aar_api *api, int argc, char **argv,
+                             uint8_t *stack_top, uintptr_t entry);
+
+static void enter_contract(uintptr_t entry, uint8_t *near_img, size_t near_bytes,
+                           const aar_api *api, int argc, char **argv,
+                           uint8_t *stack_top)
+{
+    (void)near_img;
+    (void)near_bytes;
+    loader_enter_a32(api, argc, argv, stack_top, entry);
+    _exit(99);
+}
+#endif
+
+/* The image path's last component, "alpha", "beta gamma". */
+static void run_contract(uintptr_t entry, uint8_t *base, size_t mapped,
+                         const aar_api *api, const char *elf)
+{
+    static char *contract_argv[] = { NULL, "alpha", "beta gamma", NULL };
+    const char *slash = strrchr(elf, '/');
+    uint8_t *stack = mmap(NULL, APP_STACK_BYTES, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    if (stack == MAP_FAILED) {
+        perror("mmap stack");
+        _exit(2);
+    }
+    contract_argv[0] = (char *)(slash ? slash + 1 : elf);
+    enter_contract(entry, base, mapped, api, 3, contract_argv,
+                   stack + APP_STACK_BYTES);
+}
+
 int main(int argc, char **argv)
 {
     static aar_api api;
@@ -488,6 +606,8 @@ int main(int argc, char **argv)
             (base + ((const Ehdr *)img)->e_entry);
     fprintf(stderr, "[loader] %d relocations applied, entry offset %#lx\n",
             relocs, (unsigned long)((const Ehdr *)img)->e_entry);
+    if (getenv("ENTRY_CONTRACT"))
+        run_contract((uintptr_t)entry, base, mapped, &api, argv[1]);
     rc = entry(&api, 2, app_argv);
     fprintf(stderr, "[loader] entry returned %d\n", rc);
     return 99;

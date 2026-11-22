@@ -44,6 +44,12 @@ def run_payload(args):
                 if t.area == args.area and t.judge == "payload"
                 and t.impl == "yes" and t.group == "core"
                 and applies(t, args.profile)}
+    # A payload may also print the ids of a group that the host runner or the
+    # loader declares (C-TABLE.4 with the display group); those are allowed, not
+    # required: the standalone run has no say over what the environment declares.
+    allowed = {t.id for t in tests
+               if t.area == args.area and t.judge == "payload"
+               and t.impl == "yes" and applies(t, args.profile)}
     if not expected:
         print("%s: the catalogue has no implemented core payload test for"
               " profile %s" % (args.area, args.profile), file=sys.stderr)
@@ -73,7 +79,7 @@ def run_payload(args):
             if id_ in seen:
                 problems.append("%s reported twice" % id_)
             seen[id_] = (verdict, detail)
-            if id_ not in expected:
+            if id_ not in allowed:
                 problems.append("%s is not an id of this payload" % id_)
             elif verdict == "FAIL":
                 problems.append("%s FAIL %s" % (id_, detail))

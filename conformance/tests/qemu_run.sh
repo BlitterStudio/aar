@@ -39,10 +39,27 @@ cd "$SDK"
 "$HOSTCC" -static $LOADER_FLAGS -O1 -Wall -Wextra -Werror -I"$SDK/include" \
   "$SDK/libaar/tests/loader.c" -o "$WORK/loader"
 
+# The loader enters the image as the runtime would (ENTRY_CONTRACT: fresh stack,
+# zeroed registers, link register 0) and commits the 2 MiB that the payloads'
+# notes ask for (HEAP_INIT_MIB); neither changes what the other payloads see.
+ENTRY_CONTRACT=1
+HEAP_INIT_MIB=2
+export ENTRY_CONTRACT HEAP_INIT_MIB
+
 for area in "$@"; do
+  # conf_<area>.ldlibs: extra linker words; conf_<area>.freestanding: no libc
+  # (the Makefile reads the same markers).
+  LDLIBS_AREA=
+  if [ -f "$SDK/conformance/payloads/conf_$area.ldlibs" ]; then
+    LDLIBS_AREA=$(cat "$SDK/conformance/payloads/conf_$area.ldlibs")
+  fi
+  FREESTANDING=0
+  if [ -f "$SDK/conformance/payloads/conf_$area.freestanding" ]; then
+    FREESTANDING=1
+  fi
   make -s -f "$SDK/mk/aar.mk" AAR_SDK="$SDK" AAR_PROFILE="$PROFILE" \
     CROSS="$CROSS" APP="conf_$area" SRCS="conformance/payloads/conf_$area.c" \
-    BUILD="$WORK/build" AAR_FREESTANDING=0 all
+    BUILD="$WORK/build" LDLIBS="$LDLIBS_AREA" AAR_FREESTANDING="$FREESTANDING" all
   AREA_ID="C-$(echo "$area" | tr '[:lower:]' '[:upper:]')"
   python3 "$SDK/conformance/tools/check_results.py" payload --area "$AREA_ID" \
     --profile "$PROFILE" -- "$QEMU" "$WORK/loader" "$WORK/build/conf_$area.elf"

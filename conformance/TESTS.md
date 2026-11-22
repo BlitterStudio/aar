@@ -93,28 +93,28 @@ because the registers differ.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-ENTRY.1 | 3.2 | MUST | core | any | payload | todo | the table pointer in `r0`/`x0` is non-NULL, equals `aar_api_ptr` and its `size` covers the core slots |
-| C-ENTRY.2 | 3.2 | MUST | core | any | payload | todo | `argc` in `r1`/`w1` and `argv` in `r2`/`x2` equal the arguments the runner started the app with (name, `alpha`, `beta gamma`, `info:` and `conf:` words) |
-| C-ENTRY.3 | 3.2 | MUST | core | any | payload | todo | `argv[0]` is the program name: its last path component is the payload's file name or the host executable's name |
-| C-ENTRY.4 | 3.2 | MUST | core | any | payload | todo | a second run with 16 arguments of 127 bytes each (runner peer, `AARInfo.max_args` and `max_arg_bytes` permitting) delivers every byte intact |
-| C-ENTRY.5 | 3.2 | MUST | core | a32 | payload | todo | `sp` at entry is 8-byte aligned |
-| C-ENTRY.6 | 3.2 | MUST | core | a64 | payload | todo | `sp` at entry is 16-byte aligned |
-| C-ENTRY.7 | 3.2 | MUST | core | a32 | payload | todo | `lr` is 0 at entry |
-| C-ENTRY.8 | 3.2 | MUST | core | a64 | payload | todo | `x30` and `x29` are 0 at entry |
-| C-ENTRY.9 | 3.2 | MUST | core | a32 | payload | todo | `r3` to `r12` are 0 at entry |
-| C-ENTRY.10 | 3.2 | MUST | core | a64 | payload | todo | `x3` to `x28` are 0 at entry |
-| C-ENTRY.11 | 3.2 | MUST | core | a32 | payload | todo | `FPSCR` is 0 at entry |
-| C-ENTRY.12 | 3.2 | MUST | core | a64 | payload | todo | `FPCR` and `FPSR` are 0 at entry |
-| C-ENTRY.13 | 3.2 | MUST | core | a32 | payload | todo | `d0` to `d31` are 0 at entry |
-| C-ENTRY.14 | 3.2 | MUST | core | a64 | payload | todo | `v0` to `v31` are 0 at entry |
-| C-ENTRY.15 | 3.2 | MUST | core | any | payload | todo | VFP and NEON (A32) or FP and ASIMD (A64) instructions execute without a fault |
-| C-ENTRY.16 | 3.2 | MUST | core | any | payload | todo | the app runs little-endian: a stored 32-bit word reads back low byte first |
-| C-ENTRY.17 | 3.2 | MUST | core | any | payload | todo | the image is loaded and relocated: a table of pointers to functions, strings and data works |
-| C-ENTRY.18 | 3.2 | MUST | core | any | payload | todo | BSS is zero: a 64 KiB static array is all zero at entry |
-| C-ENTRY.19 | 3.2 | MUST | core | any | payload | todo | the `argv` strings are in memory the app can read, each NUL-terminated |
-| C-ENTRY.20 | 3.2 | MUST | core | any | payload | todo | constructors run exactly once, before `aar_main` (the runtime does not run them in addition to crt0) |
-| C-ENTRY.21 | 3.2 | MUST | core | any | payload | todo | `.preinit_array` entries run before `.init_array` entries, and `aar_api_ptr` is set before either |
-| C-ENTRY.22 | 3.2 | MUST | core | any | payload | todo | an `init_array` entry with a priority (`constructor(101)`) runs before one without |
+| C-ENTRY.1 | 3.2 | MUST | core | any | payload | yes | the table pointer in `r0`/`x0` is non-NULL, equals `aar_api_ptr` and its `size` covers the core slots |
+| C-ENTRY.2 | 3.2 | MUST | core | any | payload | yes | `argc` in `r1`/`w1` and `argv` in `r2`/`x2` equal the arguments the runner started the app with (name, `alpha`, `beta gamma`, `info:` and `conf:` words) |
+| C-ENTRY.3 | 3.2 | MUST | core | any | payload | yes | `argv[0]` is the program name: its last path component is the payload's file name or the host executable's name |
+| C-ENTRY.4 | 3.2 | MUST | core | any | payload | yes | a second run with 16 arguments of 127 bytes each (runner peer, `AARInfo.max_args` and `max_arg_bytes` permitting) delivers every byte intact |
+| C-ENTRY.5 | 3.2 | MUST | core | a32 | payload | yes | `sp` at entry is 8-byte aligned |
+| C-ENTRY.6 | 3.2 | MUST | core | a64 | payload | yes | `sp` at entry is 16-byte aligned |
+| C-ENTRY.7 | 3.2 | MUST | core | a32 | payload | yes | `lr` is 0 at entry |
+| C-ENTRY.8 | 3.2 | MUST | core | a64 | payload | yes | `x30` and `x29` are 0 at entry |
+| C-ENTRY.9 | 3.2 | MUST | core | a32 | payload | yes | `r3` to `r12` are 0 at entry |
+| C-ENTRY.10 | 3.2 | MUST | core | a64 | payload | yes | `x3` to `x28` are 0 at entry |
+| C-ENTRY.11 | 3.2 | MUST | core | a32 | payload | yes | `FPSCR` is 0 at entry |
+| C-ENTRY.12 | 3.2 | MUST | core | a64 | payload | yes | `FPCR` and `FPSR` are 0 at entry |
+| C-ENTRY.13 | 3.2 | MUST | core | a32 | payload | yes | `d0` to `d31` are 0 at entry |
+| C-ENTRY.14 | 3.2 | MUST | core | a64 | payload | yes | `v0` to `v31` are 0 at entry |
+| C-ENTRY.15 | 3.2 | MUST | core | any | payload | yes | VFP and NEON (A32) or FP and ASIMD (A64) instructions execute without a fault |
+| C-ENTRY.16 | 3.2 | MUST | core | any | payload | yes | the app runs little-endian: a stored 32-bit word reads back low byte first |
+| C-ENTRY.17 | 3.2 | MUST | core | any | payload | yes | the image is loaded and relocated: a table of pointers to functions, strings and data works |
+| C-ENTRY.18 | 3.2 | MUST | core | any | payload | yes | BSS is zero: a 64 KiB static array is all zero at entry |
+| C-ENTRY.19 | 3.2 | MUST | core | any | payload | yes | the `argv` strings are in memory the app can read, each NUL-terminated |
+| C-ENTRY.20 | 3.2 | MUST | core | any | payload | yes | constructors run exactly once, before `aar_main` (the runtime does not run them in addition to crt0) |
+| C-ENTRY.21 | 3.2 | MUST | core | any | payload | yes | `.preinit_array` entries run before `.init_array` entries, and `aar_api_ptr` is set before either |
+| C-ENTRY.22 | 3.2 | MUST | core | any | payload | yes | an `init_array` entry with a priority (`constructor(101)`) runs before one without |
 | C-ENTRY.23 | 3.2 | MUST | core | a32 | none | todo | not tested: user mode, A32 state and interrupts enabled are not architecturally readable from user mode [spec question 3]; running at all proves A32 state |
 | C-ENTRY.24 | 3.2 | MUST | core | a64 | none | todo | not tested: EL0 and DAIF are not readable from EL0; running at all proves AArch64 |
 | C-ENTRY.25 | 3.2 | MUST | core | any | none | todo | not tested: "sp points one past the last usable byte" cannot be observed without a second stack bound; covered by C-ENTRY.5 and C-ENTRY.6 for alignment |
