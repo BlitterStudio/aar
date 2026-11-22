@@ -467,17 +467,17 @@ from it; with a real screen the picture is judged by the operator.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-INPUT.1 | 8.3 | MUST | core | any | payload | todo | `event_poll` never blocks: 1000 calls with nothing pending return `AAR_OK` with 0 events within 100 ms |
-| C-INPUT.2 | 8.3 | MUST | core | any | payload | todo | a stop (`AARStop` and an `AAR_EV_STOP` posted with `AARPostEvent`) reaches `event_poll` as type 5 even without the input group |
-| C-INPUT.3 | 8.3 | MUST | input | any | payload | todo | key down and key up events posted with `AARPostEvent` arrive in order with `code`, `buttons` and `time_ms` intact (types 1 and 2) |
-| C-INPUT.4 | 8.3 | MUST | input | any | payload | todo | mouse events arrive in order with `dx`, `dy` and button bits intact (type 3) |
-| C-INPUT.5 | 8.3 | MUST | input | any | payload | todo | joystick events arrive with axes in -1, 0, 1 and fire in bit 0 (type 4) |
-| C-INPUT.6 | 8.3 | MUST | input | any | payload | todo | Ctrl-D, Ctrl-E and Ctrl-F signalled to the runner task arrive as `AAR_EV_BREAK` with codes 4, 5 and 6 (the serving loop's break mask) |
-| C-INPUT.7 | 8.3 | MUST | input | any | payload | todo | `AAR_EV_RESIZE` (6) is never delivered during the whole input test |
-| C-INPUT.8 | 8.3 | MUST | input | any | payload | todo | the runtime retains at least 64 events: 64 key events posted while the app does not poll all arrive in order |
-| C-INPUT.9 | 8.3 | MUST | input | any | runner | todo | with the queue overfull the client drops the new events, never the old ones: the app finds the first events in order, and `AARStatusInfo.events_dropped` equals the number posted minus the number received |
-| C-INPUT.10 | 9.6 | MUST | input | any | payload | todo | mouse motion posted while the queue is full: the sum of `dx` received plus `events_dropped` equals the sum posted (merged or counted as dropped, never lost silently) [spec question 17] |
-| C-INPUT.11 | 8.3 | SHOULD | input | any | operator | todo | real keyboard, mouse and joystick events reach the app with the up bit removed from keys: the operator presses keys and moves the mouse and confirms the codes the payload prints |
+| C-INPUT.1 | 8.3 | MUST | core | any | payload | yes | `event_poll` never blocks: 1000 calls with nothing pending return `AAR_OK` with 0 events within 100 ms |
+| C-INPUT.2 | 8.3 | MUST | core | any | payload | yes | a stop (`AARStop` and an `AAR_EV_STOP` posted with `AARPostEvent`) reaches `event_poll` as type 5 even without the input group |
+| C-INPUT.3 | 8.3 | MUST | input | any | payload | yes | key down and key up events posted with `AARPostEvent` arrive in order with `code`, `buttons` and `time_ms` intact (types 1 and 2) |
+| C-INPUT.4 | 8.3 | MUST | input | any | payload | yes | mouse events arrive in order with `dx`, `dy` and button bits intact (type 3) |
+| C-INPUT.5 | 8.3 | MUST | input | any | payload | yes | joystick events arrive with axes in -1, 0, 1 and fire in bit 0 (type 4) |
+| C-INPUT.6 | 8.3 | MUST | input | any | payload | yes | Ctrl-D, Ctrl-E and Ctrl-F signalled to the runner task arrive as `AAR_EV_BREAK` with codes 4, 5 and 6 (the serving loop's break mask) |
+| C-INPUT.7 | 8.3 | MUST | input | any | payload | yes | `AAR_EV_RESIZE` (6) is never delivered during the whole input test |
+| C-INPUT.8 | 8.3 | MUST | input | any | payload | yes | the runtime retains at least 64 events: 64 key events posted while the app does not poll all arrive in order |
+| C-INPUT.9 | 8.3 | MUST | input | any | runner | yes | with the queue overfull the client drops the new events, never the old ones: the app finds the first events in order, and `AARStatusInfo.events_dropped` equals the number posted minus the number received |
+| C-INPUT.10 | 9.6 | MUST | input | any | payload | yes | mouse motion posted while the queue is full: the sum of `dx` received plus `events_dropped` equals the sum posted (merged or counted as dropped, never lost silently) [spec question 17] |
+| C-INPUT.11 | 8.3 | SHOULD | input | any | operator | yes | real keyboard, mouse and joystick events reach the app with the up bit removed from keys: the operator presses keys and moves the mouse and confirms the codes the payload prints |
 | C-INPUT.12 | 8.3 | MAY | input | any | none | todo | not tested: the client MAY coalesce mouse motion when the queue is full (C-INPUT.10 allows both) |
 | C-INPUT.13 | 8.3 | MUST | input | any | none | todo | not tested: "the runtime keeps at least 64 events" beyond the completion queue's own 64 entries is internal; the outcome is C-INPUT.8 |
 | C-INPUT.14 | 8.3 | MUST | core | any | none | todo | not tested: an idle app uses `msg_wait`, `sleep_us` or `yield` and not a spin; advice to apps |
