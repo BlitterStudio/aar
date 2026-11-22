@@ -525,15 +525,15 @@ matrix cases map onto C-GL.6.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-SERVICES.1 | 8.6 | MUST | services | any | payload | todo | `aar_sha256` gives the known digests of the empty message, `abc`, a 1 MiB pattern, and an unaligned buffer of 1000 bytes |
-| C-SERVICES.2 | 8.6 | MUST | services | any | payload | todo | `aar_decompress` for each of the ten algorithms either returns `AAR_E_NOSYS` or the exact bytes of a known stream; `bytes_consumed` and `bytes_written` are right |
-| C-SERVICES.3 | 8.6 | MUST | services | any | payload | todo | `AAR_COMPRESS_NONE` and an unknown algorithm number are refused (`AAR_E_INVAL`) |
-| C-SERVICES.4 | 8.6 | MUST | services | any | payload | todo | a destination that is too small gives an error and writes nothing beyond `dst_bytes` (guard bytes intact); a truncated stream gives an error |
-| C-SERVICES.5 | 8.6 | MUST | services | any | payload | todo | PNG decode through an image session is exact (BGRA8888 tiles of a known image); a codec that is not implemented gives `AAR_E_NOSYS` from `image_open` |
-| C-SERVICES.6 | 8.6 | MUST | services | any | payload | todo | JPEG and WebP decode of known images stay within 3 per channel of the reference pixels (decoders differ in rounding) |
-| C-SERVICES.7 | 8.6 | MUST | services | any | payload | todo | FLAC decode is exact; MP3 and Vorbis decode stay within a root-mean-square error of 64 of the reference PCM; a codec that is not implemented gives `AAR_E_NOSYS` |
-| C-SERVICES.8 | 8.6 | MUST | services | any | payload | todo | at least four image sessions and four audio sessions can be open at once (`AAR_MIN_DECODE_SESSIONS`); the first refusal beyond is `AAR_E_NOMEM` |
-| C-SERVICES.9 | 8.6 | MUST | services | any | payload | todo | session calls with an unknown session id are `AAR_E_INVAL`; a closed session id is refused |
+| C-SERVICES.1 | 8.6 | MUST | services | any | payload | yes | `aar_sha256` gives the known digests of the empty message, `abc`, a 1 MiB pattern, and an unaligned buffer of 1000 bytes |
+| C-SERVICES.2 | 8.6 | MUST | services | any | payload | yes | `aar_decompress` for each of the ten algorithms either returns `AAR_E_NOSYS` or the exact bytes of a known stream; `bytes_written` is the plain length and `bytes_consumed` the stream length (an LHA stream: at most that) [spec question 32] |
+| C-SERVICES.3 | 8.6 | MUST | services | any | payload | yes | `AAR_COMPRESS_NONE` and unknown algorithm numbers (11, 99, 0xFFFFFFFF) are refused with `AAR_E_INVAL`; `AAR_E_NOSYS` is also accepted, as the call description of `aar_decompress` allows |
+| C-SERVICES.4 | 8.6 | MUST | services | any | payload | yes | for each implemented algorithm whose stream ends itself (not LHA, which has no end marker [spec question 32]): a destination that is too small gives an error and writes nothing beyond `dst_bytes` (guard bytes intact); a truncated stream gives an error |
+| C-SERVICES.5 | 8.6 | MUST | services | any | payload | yes | PNG decode through an image session is exact (a 24x16 image in one BGRA8888 tile, fed whole, then drained with the end-of-input flag 1 [spec question 32]); a codec that is not implemented gives `AAR_E_NOSYS` from `image_open` |
+| C-SERVICES.6 | 8.6 | MUST | services | any | payload | yes | JPEG and WebP decode of known images stay within 3 per channel of the reference pixels (decoders differ in rounding) |
+| C-SERVICES.7 | 8.6 | MUST | services | any | payload | yes | FLAC decode is exact; MP3 and Vorbis decode stay within a root-mean-square error of 64 of the reference PCM; a codec that is not implemented gives `AAR_E_NOSYS` |
+| C-SERVICES.8 | 8.6 | MUST | services | any | payload | yes | at least four image sessions and four audio sessions can be open at once (`AAR_MIN_DECODE_SESSIONS`), with the first implemented codec of each kind; the first refusal beyond is `AAR_E_NOMEM` |
+| C-SERVICES.9 | 8.6 | MUST | services | any | payload | yes | session calls with an unknown session id are `AAR_E_INVAL` (`AAR_E_NOSYS` where the kind has no codec); a closed session id is refused |
 | C-SERVICES.10 | 8.6 | MUST | services | any | none | todo | not tested: byte counts of whole buffers are `uint64_t`; a test would need buffers of 4 GiB or more |
 | C-SERVICES.11 | 8.6 | MAY | services | any | none | todo | not tested: a platform MAY implement any subset of algorithms and codecs (C-SERVICES.2, 5 and 7 accept `AAR_E_NOSYS`) |
 
@@ -674,3 +674,14 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     C-FILE.9 therefore tests only the write through a read-only id (no byte
     moves, a negative code or a count of 0). Say whether a runtime has to refuse
     the read and, if so, with which code (question 10).
+32. **Stream and session details of the services group** (8.6) that the text does
+    not give: the framing of an LZMA2 stream (the zzapp 0.x calls take one byte of
+    properties before the raw stream), the LHA streams (no end marker, so the
+    destination size is the decode length and a destination that is too small
+    ends the decode without an error; `bytes_consumed` is not defined), whether a
+    destination larger than the output is allowed for the other algorithms, and
+    the whole image-session protocol: what `aar_image_decode` `flags` mean (bit 0
+    ends the input in zzapp 0.x), when a tile is complete, how a drain with no new
+    input is made, what `bytes_written` counts, the result flags. C-SERVICES.2 to
+    C-SERVICES.5 follow zzapp 0.x; a platform with another framing fails them
+    until the standard says what is meant.
