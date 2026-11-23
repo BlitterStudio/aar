@@ -207,7 +207,8 @@ def check_report(args):
         if verdict == "SKIP":
             if not detail:
                 problems.append("%s SKIP without a reason" % t.id)
-            if t.level == "MUST" and declared(t) and not detail.startswith(MUST_SKIP_OK):
+            if t.level == "MUST" and declared(t) and not (
+                    t.route_skip and detail.startswith(MUST_SKIP_OK)):
                 must_skip += 1
     conforms = must_fail == 0 and must_skip == 0
     if summary is None:

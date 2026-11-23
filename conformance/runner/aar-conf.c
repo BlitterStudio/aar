@@ -364,7 +364,8 @@ static void relay_line(const char *area, const char *line, int *relayed)
         /* 11.1: a SKIP is for an undeclared group or a SHOULD test, with a
          * reason. The runner has already skipped the undeclared groups. A MUST test
          * may also skip for an optional route (conf_must_skip_ok). */
-        if (conf_tests[idx].level == CONF_MUST && !conf_must_skip_ok(p)) {
+        if (conf_tests[idx].level == CONF_MUST &&
+            !conf_must_skip_ok(conf_tests[idx].route_skip, p)) {
             char d[CONF_DETAIL_MAX];
 
             conf_detailf(d, "SKIP of a MUST test: %.80s", p);
@@ -1136,7 +1137,7 @@ static int report(void)
             /* 11.1: only an undeclared group or a SHOULD test may be skipped, and a MUST
              * test the catalogue lets skip for an optional route (conf_must_skip_ok). */
             if (t->level == CONF_MUST && conf_group_declared(t->group) &&
-                !conf_must_skip_ok(results[i].detail))
+                !conf_must_skip_ok(t->route_skip, results[i].detail))
                 must_skip++;
             break;
         }

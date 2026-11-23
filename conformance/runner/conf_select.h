@@ -38,13 +38,16 @@ static inline int conf_variant_runs(int normal, int pending, int solo)
     return pending || (normal && !solo);
 }
 
-/* May a MUST test end in a SKIP? Only with the reason that the catalogue allows for an
- * optional route (CONF_SKIP_NO_PLATFORM_ROUTE: C-AUDIO.1 to C-AUDIO.9, spec 8.4). A SKIP of
- * a MUST test with any other reason fails the test. */
-static inline int conf_must_skip_ok(const char *reason)
+/* May a MUST test end in a SKIP? Only a row that the catalogue marks (route_skip: C-AUDIO.1
+ * to C-AUDIO.9, spec 8.4) and only with the reason of the optional route
+ * (CONF_SKIP_NO_PLATFORM_ROUTE). A SKIP of any other MUST test, or with any other reason,
+ * fails the test. */
+static inline int conf_must_skip_ok(int route_skip, const char *reason)
 {
     const char *want = CONF_SKIP_NO_PLATFORM_ROUTE;
 
+    if (!route_skip)
+        return 0;
     while (*want) {
         if (*reason++ != *want++)
             return 0;
