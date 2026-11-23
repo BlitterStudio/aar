@@ -33,6 +33,8 @@
 #define LC_NOMEM   (1UL << 3)
 #define LC_OK      (1UL << 4)
 #define LC_ANY     (1UL << 5)
+#define LC_NORESOURCE (1UL << 6) /* AAR_E_NORESOURCE with a reason */
+#define LC_MAYBE   (1UL << 7)    /* the image may also load (it is not started) */
 #define LC_REFUSALS (LC_PROFILE | LC_INVAL | LC_NOGROUP | LC_NOMEM)
 
 struct acc {
@@ -69,6 +71,13 @@ static int is_refusal_code(LONG rc)
            rc == AAR_E_NOMEM;
 }
 
+/* A refusal for lack of memory that the client API documents for a load: AAR_E_NORESOURCE
+ * with an AAR_REASON_* in the status [spec question 57]. */
+static int no_resource(LONG rc, ULONG reason)
+{
+    return rc == AAR_E_NORESOURCE && reason >= AAR_REASON_MEMORY && reason <= AAR_REASON_LIMIT;
+}
+
 static int is_library_code(LONG rc)
 {
     return rc <= AAR_OK && rc >= AAR_E_OWNER;
@@ -81,6 +90,7 @@ static ULONG code_mask(LONG rc)
     case AAR_E_INVAL: return LC_INVAL;
     case AAR_E_NOGROUP: return LC_NOGROUP;
     case AAR_E_NOMEM: return LC_NOMEM;
+    case AAR_E_NORESOURCE: return LC_NORESOURCE;
     default: return 0;
     }
 }
@@ -106,6 +116,12 @@ static ULONG parse_load(const char *s)
         } else if (strncmp(s, "OK", 2) == 0) {
             m |= LC_OK;
             s += 2;
+        } else if (strncmp(s, "NORESOURCE", 10) == 0) {
+            m |= LC_NORESOURCE;
+            s += 10;
+        } else if (strncmp(s, "MAYBE", 5) == 0) {
+            m |= LC_MAYBE;
+            s += 5;
         } else if (strncmp(s, "ANY", 3) == 0) {
             m |= LC_ANY;
             s += 3;
@@ -127,6 +143,8 @@ static const char *mask_text(ULONG m, char *buf, ULONG size)
         snprintf(buf + strlen(buf), size - strlen(buf), "NOGROUP ");
     if (m & LC_NOMEM)
         snprintf(buf + strlen(buf), size - strlen(buf), "NOMEM ");
+    if (m & LC_NORESOURCE)
+        snprintf(buf + strlen(buf), size - strlen(buf), "NORESOURCE ");
     if (m & LC_OK)
         snprintf(buf + strlen(buf), size - strlen(buf), "OK ");
     return buf;
@@ -143,6 +161,7 @@ struct attempt {
     LONG exit_code;
     ULONG end_reason, state;
     LONG start_rc;
+    ULONG reason;            /* AARStatusInfo.reason after a refused load */
 };
 
 static const char *const run_argv[] = { "conf_elf" };
@@ -174,6 +193,14 @@ static void attempt(const char *path, const UBYTE *data, ULONG len, int run,
             if (!e.ended)
                 (void)AARStop(h);
         }
+    }
+    if (a->load_rc != AAR_OK) {
+        AARStatusInfo st;
+
+        memset(&st, 0, sizeof st);
+        st.size = sizeof st;
+        if (AARStatus(h, &st) == AAR_OK)
+            a->reason = st.reason;
     }
     a->close_rc = AARClose(h);
 }
@@ -291,9 +318,18 @@ static void do_image(const char *name, const char *prof, const char *ids,
             ok = 0;
         }
     } else if (af.load_rc == AAR_OK) {
-        if (ok)
-            conf_detailf(d, "%.30s: AARLoadFile accepted it", name);
-        ok = 0;
+        if (!(want_mask & LC_MAYBE)) {
+            if (ok)
+                conf_detailf(d, "%.30s: AARLoadFile accepted it", name);
+            ok = 0;
+        }
+    } else if (af.load_rc == AAR_E_NORESOURCE && (want_mask & LC_NORESOURCE)) {
+        if (!no_resource(af.load_rc, af.reason)) {
+            if (ok)
+                conf_detailf(d, "%.30s: AAR_E_NORESOURCE without a reason (%lu)", name,
+                             (unsigned long)af.reason);
+            ok = 0;
+        }
     } else if (!(want_mask & code_mask(af.load_rc))) {
         if (ok)
             conf_detailf(d, "%.30s: AARLoadFile returned %ld, want %s", name,
@@ -312,7 +348,7 @@ static void do_image(const char *name, const char *prof, const char *ids,
         char e[CONF_DETAIL_MAX];
 
         conf_detailf(e, "%.30s refused with %ld", name, (long)af.load_rc);
-        note(41, is_refusal_code(af.load_rc), e);
+        note(41, is_refusal_code(af.load_rc) || no_resource(af.load_rc, af.reason), e);
     }
 
     /* C-ELF.42: AARLoadMemory gives the same answer. */

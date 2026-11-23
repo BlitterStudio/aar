@@ -80,6 +80,7 @@ CODE = {
 OTHER = {"a32": "a64", "a64": "a32"}
 PN = {"a32": 1, "a64": 2}
 REFUSE = "PROFILE|INVAL"
+MAYBE = "PROFILE|INVAL|MAYBE"  # refused, or loaded (the spec states no rule: question 58)
 
 
 def img(profile, **o):
@@ -117,7 +118,7 @@ def corpus(p):
     if not a64:
         add("ok-rel", img(p, reloc_kind="rel"), ["C-ELF.17"], "OK", "ok")
         add("ok-rela", img(p, reloc_kind="rela"), ["C-ELF.18"], "OK", "ok")
-    add("unlisted-profile", base, ["C-ELF.31"], "PROFILE", "ok")
+    add("unlisted-profile", base, ["C-ELF.31"], "PROFILE|INVAL", "ok")
     # What C-CLIENT.9 and C-CLIENT.17 read: stack 128 KiB, heap 3 MiB, groups
     # required display and input, optional audio and services.
     add("probe-note", img(p, note=note(stack=128 << 10, heap=3, req=0x3, opt=0x14)),
@@ -152,7 +153,7 @@ def corpus(p):
     huge = 0x4000000000 if a64 else 0xE0000000
     add("segment-huge", img(p, load1_memsz=huge), ["C-ELF.14"],
         "PROFILE|INVAL|NOMEM", "any")
-    add("no-dynamic", img(p, no_dynamic=True), ["C-ELF.15"])
+    add("no-dynamic", img(p, no_dynamic=True), ["C-ELF.15"], MAYBE)
 
     # ---- C-ELF.19 to C-ELF.23: relocations
     odd = {"a32": [2, 21, 0, 1027], "a64": [257, 1025, 0, 23]}[p]
@@ -162,7 +163,7 @@ def corpus(p):
     add("reloc-symbol", img(p, reloc_sym=3), ["C-ELF.21"])
     add("reloc-misaligned-2", img(p, reloc_target=2), ["C-ELF.22"])
     add("reloc-misaligned-4", img(p, reloc_target=4 if a64 else 2), ["C-ELF.22"])
-    add("reloc-outside", img(p, reloc_target=0x10000), ["C-ELF.23"])
+    add("reloc-outside", img(p, reloc_target=0x10000), ["C-ELF.23"], MAYBE)
 
     # ---- C-ELF.24 and C-ELF.25: the entry point
     add("entry-outside", img(p, entry=0x40000), ["C-ELF.24"])
@@ -209,7 +210,7 @@ def corpus(p):
     add("note-desc-41", img(p, note=note(descsz=41)), ["C-ELF.38"])
 
     # ---- C-ELF.40: more heap than any platform commits
-    add("heap-4095", img(p, note=note(heap=4095)), ["C-ELF.40"], "NOMEM", "ok")
+    add("heap-4095", img(p, note=note(heap=4095)), ["C-ELF.40"], "NOMEM|NORESOURCE", "ok")
 
     # ---- C-ELF.41 only: files that are not images at all
     add("not-elf", b"not an elf at all", [], REFUSE)
@@ -292,7 +293,8 @@ def check():
             for name, blob, ids, load, probe in corpus(p):
                 if load != "OK" and load != "ANY":
                     for code in load.split("|"):
-                        if code not in ("PROFILE", "INVAL", "NOGROUP", "NOMEM"):
+                        if code not in ("PROFILE", "INVAL", "NOGROUP", "NOMEM", "NORESOURCE",
+                                        "MAYBE"):
                             errors.append("%s/%s: unknown load code %s" % (p, name, code))
                 for i in ids:
                     if i not in rows:

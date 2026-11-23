@@ -6,7 +6,7 @@ ok-stack-1m a32 C-ELF.36 OK ok
 ok-nosections a32 C-ELF.16 OK any
 ok-rel a32 C-ELF.17 OK ok
 ok-rela a32 C-ELF.18 OK ok
-unlisted-profile a32 C-ELF.31 PROFILE ok
+unlisted-profile a32 C-ELF.31 PROFILE|INVAL ok
 probe-note a32 - ANY ok
 etype-exec a32 C-ELF.1 PROFILE|INVAL refuse
 etype-rel a32 C-ELF.1 PROFILE|INVAL refuse
@@ -28,7 +28,7 @@ wx-segment a32 C-ELF.11 PROFILE|INVAL refuse
 memsz-below-filesz a32 C-ELF.12 PROFILE|INVAL refuse
 overlap a32 C-ELF.13 PROFILE|INVAL refuse
 segment-huge a32 C-ELF.14 PROFILE|INVAL|NOMEM any
-no-dynamic a32 C-ELF.15 PROFILE|INVAL refuse
+no-dynamic a32 C-ELF.15 PROFILE|INVAL|MAYBE refuse
 reloc-type-abs a32 C-ELF.19 PROFILE|INVAL refuse
 reloc-type-glob-dat a32 C-ELF.19 PROFILE|INVAL refuse
 reloc-type-none a32 C-ELF.19 PROFILE|INVAL refuse
@@ -37,7 +37,7 @@ relr a32 C-ELF.20 PROFILE|INVAL refuse
 reloc-symbol a32 C-ELF.21 PROFILE|INVAL refuse
 reloc-misaligned-2 a32 C-ELF.22 PROFILE|INVAL refuse
 reloc-misaligned-4 a32 C-ELF.22 PROFILE|INVAL refuse
-reloc-outside a32 C-ELF.23 PROFILE|INVAL refuse
+reloc-outside a32 C-ELF.23 PROFILE|INVAL|MAYBE refuse
 entry-outside a32 C-ELF.24 PROFILE|INVAL refuse
 entry-in-data a32 C-ELF.24 PROFILE|INVAL refuse
 entry-thumb a32 C-ELF.25 PROFILE|INVAL refuse
@@ -68,7 +68,7 @@ note-name-no-nul a32 C-ELF.38 PROFILE|INVAL refuse
 note-name-lower a32 C-ELF.38 PROFILE|INVAL refuse
 note-desc-36 a32 C-ELF.38 PROFILE|INVAL refuse
 note-desc-41 a32 C-ELF.38 PROFILE|INVAL refuse
-heap-4095 a32 C-ELF.40 NOMEM ok
+heap-4095 a32 C-ELF.40 NOMEM|NORESOURCE ok
 not-elf a32 - PROFILE|INVAL refuse
 empty a32 - PROFILE|INVAL refuse
 truncated-20 a32 - PROFILE|INVAL refuse
@@ -78,7 +78,7 @@ ok-stack0 a64 C-ELF.36 OK ok
 ok-stack-64k a64 C-ELF.36 OK ok
 ok-stack-1m a64 C-ELF.36 OK ok
 ok-nosections a64 C-ELF.16 OK any
-unlisted-profile a64 C-ELF.31 PROFILE ok
+unlisted-profile a64 C-ELF.31 PROFILE|INVAL ok
 probe-note a64 - ANY ok
 etype-exec a64 C-ELF.1 PROFILE|INVAL refuse
 etype-rel a64 C-ELF.1 PROFILE|INVAL refuse
@@ -98,7 +98,7 @@ wx-segment a64 C-ELF.11 PROFILE|INVAL refuse
 memsz-below-filesz a64 C-ELF.12 PROFILE|INVAL refuse
 overlap a64 C-ELF.13 PROFILE|INVAL refuse
 segment-huge a64 C-ELF.14 PROFILE|INVAL|NOMEM any
-no-dynamic a64 C-ELF.15 PROFILE|INVAL refuse
+no-dynamic a64 C-ELF.15 PROFILE|INVAL|MAYBE refuse
 reloc-type-abs a64 C-ELF.19 PROFILE|INVAL refuse
 reloc-type-glob-dat a64 C-ELF.19 PROFILE|INVAL refuse
 reloc-type-none a64 C-ELF.19 PROFILE|INVAL refuse
@@ -107,7 +107,7 @@ relr a64 C-ELF.20 PROFILE|INVAL refuse
 reloc-symbol a64 C-ELF.21 PROFILE|INVAL refuse
 reloc-misaligned-2 a64 C-ELF.22 PROFILE|INVAL refuse
 reloc-misaligned-4 a64 C-ELF.22 PROFILE|INVAL refuse
-reloc-outside a64 C-ELF.23 PROFILE|INVAL refuse
+reloc-outside a64 C-ELF.23 PROFILE|INVAL|MAYBE refuse
 entry-outside a64 C-ELF.24 PROFILE|INVAL refuse
 entry-in-data a64 C-ELF.24 PROFILE|INVAL refuse
 no-note a64 C-ELF.26 PROFILE|INVAL refuse
@@ -137,7 +137,7 @@ note-name-no-nul a64 C-ELF.38 PROFILE|INVAL refuse
 note-name-lower a64 C-ELF.38 PROFILE|INVAL refuse
 note-desc-36 a64 C-ELF.38 PROFILE|INVAL refuse
 note-desc-41 a64 C-ELF.38 PROFILE|INVAL refuse
-heap-4095 a64 C-ELF.40 NOMEM ok
+heap-4095 a64 C-ELF.40 NOMEM|NORESOURCE ok
 not-elf a64 - PROFILE|INVAL refuse
 empty a64 - PROFILE|INVAL refuse
 truncated-20 a64 - PROFILE|INVAL refuse

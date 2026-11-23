@@ -35,6 +35,8 @@
 #define CONF_LIFE_V_FAULT_FETCH "fault-fetch"
 #define CONF_LIFE_V_FAULT_ILLEGAL "fault-illegal"
 #define CONF_LIFE_V_FAULT_ALIGN "fault-align"
+/* Sleeps 500 ms and then writes to the unmapped address, sending no message. */
+#define CONF_LIFE_V_FAULT_QUIET "fault-quiet"
 /* Waits in aar_msg_wait for a message, returns 0 when one arrives (5 on a stop). */
 #define CONF_LIFE_V_WAIT_MSG "wait-msg"
 /* Computes without any table call for conf:ms milliseconds (calibrated), then
