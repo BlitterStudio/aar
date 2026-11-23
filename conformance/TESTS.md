@@ -286,10 +286,10 @@ path) and checks the files the payload leaves behind.
 | C-FILE.3 | 7.1 | MUST | core | any | payload | yes | a relative path resolves under the client's root: a file the app creates is found there by the runner, and a fixture the runner placed there reads back |
 | C-FILE.4 | 7.1 | SHOULD | core | any | payload | yes | `..` and a leading `/` are refused with `AAR_E_ACCES` by the recommended default policy (`aar_serve`) |
 | C-FILE.5 | 7.1 | SHOULD | core | any | payload | yes | a path with a volume or assign prefix is refused with `AAR_E_ACCES` unless `AAR_SERVEF_ABS_PATHS` is set; with the flag set a prefixed path to the root's own volume opens |
-| C-FILE.6 | 7.1 | MUST | core | any | payload | yes | once the client has asked the app to stop, a create, a truncate and a write are refused (negative code) while a read still works (runner peer stops the app) |
+| C-FILE.6 | 7.1 | MUST | core | any | payload | yes | once the client has asked the app to stop, a create, a truncate and a write after the stop give a negative code and the runner finds, when the app has ended, no new file, the kept file unchanged and the written file empty; a read is served or ended by the stop [spec question 57] (runner peer stops the app) |
 | C-FILE.7 | 7.1 | MUST | core | any | payload | yes | 16 files and, separately, 16 directory lists can be open at once; closing the lists leaves the files open |
 | C-FILE.8 | 7.1 | MUST | core | any | payload | yes | a bad id (-1, 0, 1, 2, 999, a closed id) is `AAR_E_BADF` from close, read, write, seek and list next |
-| C-FILE.9 | 7.1 | MUST | core | any | payload | yes | `AAR_FILE_READ` opens an existing file; `AAR_FILE_WRITE` writes in place; a write through a read-only id transfers no byte (a negative code or a count of 0); a read through a write-only id is not tested [spec question 37] |
+| C-FILE.9 | 7.1 | MUST | core | any | payload | yes | `AAR_FILE_READ` opens an existing file; `AAR_FILE_WRITE` writes in place; a write through a read-only id and a read through a write-only id are not tested [spec question 37] |
 | C-FILE.10 | 7.1 | MUST | core | any | payload | yes | `CREATE` and `TRUNCATE` together create a missing file and empty an existing one |
 | C-FILE.11 | 7.1 | MUST | core | any | payload | yes | `CREATE` alone keeps the contents of an existing file |
 | C-FILE.12 | 7.1 | MUST | core | any | payload | yes | `TRUNCATE` alone empties an existing file and does not create a missing one (`AAR_E_NOENT`) |
@@ -299,7 +299,7 @@ path) and checks the files the payload leaves behind.
 | C-FILE.16 | 7.1 | MUST | core | any | payload | yes | `EXCL` without `CREATE` is `AAR_E_INVAL` |
 | C-FILE.17 | 7.1 | MUST | core | any | payload | yes | an unknown flag bit is `AAR_E_INVAL` |
 | C-FILE.18 | 7.1 | MUST | core | any | payload | yes | a missing file without `CREATE` is `AAR_E_NOENT` |
-| C-FILE.19 | 7.1 | MUST | core | any | payload | yes | seek with `AAR_SEEK_SET`, `CUR` and `END` returns the new position; a position before the start is `AAR_E_INVAL`; a seek past the end then a read returns `AAR_OK` and 0 bytes |
+| C-FILE.19 | 7.1 | MUST | core | any | payload | yes | seek with `AAR_SEEK_SET`, `CUR` and `END` returns the new position; a position before the start is `AAR_E_INVAL`; a seek past the end is either accepted (then a read there returns `AAR_OK` and 0 bytes) or `AAR_E_INVAL` [spec question 56] |
 | C-FILE.20 | 7.1 | MUST | core | any | payload | yes | `file_read` sets `*out_n` to the bytes obtained; a read of more than the file holds returns what is left; a read at the end returns `AAR_OK` and 0 |
 | C-FILE.21 | 7.1 | MUST | core | any | payload | yes | one `file_read` of the 1 MiB fixture returns all of it (chunking is the platform's business, a short read means end of file) |
 | C-FILE.22 | 7.1 | MUST | core | any | payload | yes | one `file_write` of 1 MiB returns a count of 1 MiB and the runner finds the exact bytes in the file |
@@ -705,12 +705,13 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     29 to 36 seconds as the app measures it; the spec should say whether a
     shorter wait (a runtime that gives up after 10 s) conforms and how exact
     the 30 seconds is.
-37. **Reading through a write-only file id** (7.1): the spec says nothing
-    about it, the host runner reads through such an id, and the ZZ9000 client
-    opens `AAR_FILE_WRITE` with `MODE_READWRITE`, which cannot refuse a read.
-    C-FILE.9 therefore tests only the write through a read-only id (no byte
-    moves, a negative code or a count of 0). Say whether a runtime has to refuse
-    the read and, if so, with which code (question 10).
+37. **Reading through a write-only file id, writing through a read-only one**
+    (7.1): the spec says nothing about either. The host runner reads through a
+    write-only id, the ZZ9000 client opens `AAR_FILE_WRITE` with `MODE_READWRITE`,
+    which cannot refuse a read, and (first card run) a write through an id opened
+    `AAR_FILE_READ` took bytes, because `aar_serve` does not keep the open mode
+    of an id. C-FILE.9 tests neither. Say whether a runtime has to refuse them
+    and, if so, with which code (question 10).
 38. **Stream and session details of the services group** (8.6) that the text does
     not give: the framing of an LZMA2 stream (the zzapp 0.x calls take one byte of
     properties before the raw stream), the LHA streams (no end marker, so the
@@ -809,3 +810,18 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     reports the whole of it (4 MiB for an app with 3 MiB of heap, image and a 1 MiB
     stack frame). C-MEM.1 requires only that the heap is not larger than `committed`;
     C-MEM.2, .6 and .8 judge `committed` by how it changes. Say which figure it is.
+56. **Seek past the end of a file** (7.1): `aar_file_seek` has no rule for a
+    position beyond the end. POSIX allows it; AmigaDOS refuses it on a handle
+    that cannot grow the file (the ZZ9000 client answers `AAR_E_INVAL` for a
+    `AAR_FILE_READ` id). C-FILE.19 accepts `AAR_E_INVAL`, or success followed by
+    a read of 0 bytes. Say which is meant.
+57. **Calls after a stop request** (3.7, 7.1): 3.7 says a stop ends parked calls
+    with `AAR_E_IO`, and 7.1 says the client refuses requests that create,
+    truncate or write once it has asked the app to stop. On the ZZ9000 a call
+    that the client does not answer within a few polls is ended by the stop and
+    abandoned, and the next call on that entry is `AAR_E_BUSY` until the client's
+    late completion arrives, so after a stop the app cannot tell a refusal from a
+    cancelled wait, and a read need not work. C-FILE.6 asks only for negative
+    codes from the mutating calls and judges what the client did from the files.
+    Say whether a call after a stop request is expected to complete when the
+    client answers at once.

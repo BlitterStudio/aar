@@ -373,6 +373,7 @@ static int image_run(uint32_t codec, const uint8_t *src, uint32_t len, uint32_t 
     uint32_t idle = 0;
     uint32_t worst = 0;
     int done = 0;
+    int written_all = 0;
     int rc;
     uint32_t i;
 
@@ -397,7 +398,7 @@ static int image_run(uint32_t codec, const uint8_t *src, uint32_t len, uint32_t 
         seen_w = res.image_width;
     if (res.image_height)
         seen_h = res.image_height;
-    for (iter = 0; iter < 32u && !done; iter++) {
+    for (iter = 0; iter < 32u && !done && !written_all; iter++) {
         if (pos < len)
             rc = aar_image_decode(session, src + pos, len - pos, 0, &res);
         else
@@ -423,6 +424,8 @@ static int image_run(uint32_t codec, const uint8_t *src, uint32_t len, uint32_t 
             seen_w = res.image_width;
         if (res.image_height)
             seen_h = res.image_height;
+        if (res.bytes_written >= w * h * 4u)
+            written_all = 1;
         /* Is the tile the image yet? */
         worst = 0;
         done = 1;
@@ -510,13 +513,26 @@ static void test_jpeg_webp(void)
         conf_buf_str(&t.why, why.b);
     }
     impl += r == 0;
+    conf_buf_str(&t.note, r == 0 ? "JPEG: " : "");
+    if (r == 0)
+        conf_buf_str(&t.note, why.b);
     conf_buf_clear(&why);
     r = image_run(AAR_IMAGE_WEBP, vec_webp, sizeof vec_webp, VEC_SMOOTH, VEC_SMOOTH, vec_webp_ref, 3, &why);
-    if (r == 2 && conf_fail_first(&t)) {
-        conf_buf_str(&t.why, "WebP: ");
-        conf_buf_str(&t.why, why.b);
+    if (r == 2) {
+        /* Both codecs are reported, not only the first failure. */
+        if (conf_fail_first(&t)) {
+            conf_buf_str(&t.why, "WebP: ");
+            conf_buf_str(&t.why, why.b);
+        } else {
+            conf_buf_str(&t.why, "; WebP: ");
+            conf_buf_str(&t.why, why.b);
+        }
     }
     impl += r == 0;
+    conf_buf_str(&t.note, r == 0 ? "; WebP: " : "");
+    if (r == 0)
+        conf_buf_str(&t.note, why.b);
+    conf_buf_str(&t.note, "; ");
     conf_buf_u64(&t.note, (uint64_t)impl);
     conf_buf_str(&t.note, " of JPEG and WebP decode within 3 per channel, the rest not implemented");
     conf_end(&t);
@@ -895,37 +911,44 @@ static void test_session_count(void)
     conf_end(&t);
 }
 
+/* The first failure names the call, the rest are counted. */
+static void bad_call(struct conf_test *t, uint32_t *more, const char *what, uint32_t id, int rc)
+{
+    if (!conf_fail_first(t)) {
+        (*more)++;
+        return;
+    }
+    conf_buf_str(&t->why, what);
+    conf_buf_str(&t->why, " of session ");
+    conf_buf_u64(&t->why, id);
+    conf_buf_str(&t->why, " gave ");
+    text_rc(&t->why, rc);
+}
+
 static void test_session_ids(void)
 {
     static const uint32_t unknown[] = { 0u, 0xDEADBEEFu, 0x7FFFFFFFu };
     struct conf_test t;
     aar_image_result ires = { 0, 0, 0, 0, 0 };
     aar_audio_decode_result ares = { 0, 0, 0, 0 };
+    uint32_t more = 0;
     uint32_t i;
     int rc;
 
     conf_begin(&t, "C-SERVICES.9");
     for (i = 0; i < sizeof unknown / sizeof unknown[0]; i++) {
         rc = aar_image_decode(unknown[i], vec_png, 4, 0, &ires);
-        if (rc != AAR_E_INVAL && !(rc == AAR_E_NOSYS && !image_impl) && conf_fail_first(&t)) {
-            conf_buf_str(&t.why, "image_decode of an unknown session gave ");
-            text_rc(&t.why, rc);
-        }
+        if (rc != AAR_E_INVAL && !(rc == AAR_E_NOSYS && !image_impl))
+            bad_call(&t, &more, "image_decode", unknown[i], rc);
         rc = aar_image_close(unknown[i]);
-        if (rc != AAR_E_INVAL && !(rc == AAR_E_NOSYS && !image_impl) && conf_fail_first(&t)) {
-            conf_buf_str(&t.why, "image_close of an unknown session gave ");
-            text_rc(&t.why, rc);
-        }
+        if (rc != AAR_E_INVAL && !(rc == AAR_E_NOSYS && !image_impl))
+            bad_call(&t, &more, "image_close", unknown[i], rc);
         rc = aar_audio_decode(unknown[i], vec_flac, 4, 0, pcm_call, 2048, &ares);
-        if (rc != AAR_E_INVAL && !(rc == AAR_E_NOSYS && !audio_impl) && conf_fail_first(&t)) {
-            conf_buf_str(&t.why, "audio_decode of an unknown session gave ");
-            text_rc(&t.why, rc);
-        }
+        if (rc != AAR_E_INVAL && !(rc == AAR_E_NOSYS && !audio_impl))
+            bad_call(&t, &more, "audio_decode", unknown[i], rc);
         rc = aar_audio_decode_close(unknown[i]);
-        if (rc != AAR_E_INVAL && !(rc == AAR_E_NOSYS && !audio_impl) && conf_fail_first(&t)) {
-            conf_buf_str(&t.why, "audio_decode_close of an unknown session gave ");
-            text_rc(&t.why, rc);
-        }
+        if (rc != AAR_E_INVAL && !(rc == AAR_E_NOSYS && !audio_impl))
+            bad_call(&t, &more, "audio_decode_close", unknown[i], rc);
     }
     if (image_codec) {
         aar_image_params p;
@@ -941,11 +964,11 @@ static void test_session_ids(void)
         if (aar_image_open(&p, &s, &ires) == AAR_OK) {
             (void)aar_image_close(s);
             rc = aar_image_decode(s, vec_png, 4, 0, &ires);
-            if (rc >= 0 && conf_fail_first(&t))
-                conf_buf_str(&t.why, "image_decode of a closed session was accepted");
+            if (rc >= 0)
+                bad_call(&t, &more, "image_decode (closed)", s, rc);
             rc = aar_image_close(s);
-            if (rc >= 0 && conf_fail_first(&t))
-                conf_buf_str(&t.why, "a second image_close was accepted");
+            if (rc >= 0)
+                bad_call(&t, &more, "a second image_close (closed)", s, rc);
         }
     }
     if (audio_codec) {
@@ -954,12 +977,17 @@ static void test_session_ids(void)
         if (aar_audio_decode_open(audio_codec, &s) == AAR_OK) {
             (void)aar_audio_decode_close(s);
             rc = aar_audio_decode(s, vec_flac, 4, 0, pcm_call, 2048, &ares);
-            if (rc >= 0 && conf_fail_first(&t))
-                conf_buf_str(&t.why, "audio_decode of a closed session was accepted");
+            if (rc >= 0)
+                bad_call(&t, &more, "audio_decode (closed)", s, rc);
             rc = aar_audio_decode_close(s);
-            if (rc >= 0 && conf_fail_first(&t))
-                conf_buf_str(&t.why, "a second audio_decode_close was accepted");
+            if (rc >= 0)
+                bad_call(&t, &more, "a second audio_decode_close (closed)", s, rc);
         }
+    }
+    if (more && t.failed) {
+        conf_buf_str(&t.why, " and ");
+        conf_buf_u64(&t.why, more);
+        conf_buf_str(&t.why, " more");
     }
     conf_buf_str(&t.note, "unknown ids are AAR_E_INVAL, closed ids are refused");
     conf_end(&t);
