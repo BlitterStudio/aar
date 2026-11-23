@@ -594,29 +594,40 @@ static void g_fault_align(void)
 
 /* An app that computes (spin) or sleeps for ms and reports the silent time it
  * measured: it has to be alive at the end and have been silent for at least
- * least_ms. */
+ * least_ms. The calibration of a computing app is not exact (the share of the CPU
+ * it gets changes with what else runs): when it was alive but measured too little,
+ * a second run asks for the time that makes up the difference. */
 static void gap_run(const char *variant, ULONG ms, ULONG least_ms, ULONG timeout_s,
                     const char *id, const char *what)
 {
     struct conf_outcome out;
     char d[CONF_DETAIL_MAX];
-    unsigned long long gap;
+    unsigned long long gap = 0;
+    ULONG ask = ms;
+    int attempt;
 
-    life_run(variant, ms, timeout_s, NULL, &out);
-    life_free();
-    if (!out.ran) {
-        not_ran(id, &out);
-        return;
+    for (attempt = 0; attempt < 2; attempt++) {
+        life_run(variant, ask, timeout_s, NULL, &out);
+        life_free();
+        if (!out.ran) {
+            not_ran(id, &out);
+            return;
+        }
+        gap = (unsigned long long)(rep.gap_lo / 1000UL); /* below 4294 s: the high word is 0 */
+        if (out.end_reason != AAR_END_EXIT || out.exit_code != 0 || !rep.have_gap)
+            break;
+        if (gap >= least_ms || gap < 1000ULL || attempt == 1)
+            break;
+        ask = (ULONG)((unsigned long long)ask * (unsigned long long)ms / gap);
     }
-    gap = (unsigned long long)(rep.gap_lo / 1000UL); /* below 4294 s: the high word is 0 */
     if (out.end_reason != AAR_END_EXIT || out.exit_code != 0) {
         conf_detailf(d, "%s: ended with reason %lu (exit %ld) after %lu ms of %lu",
                      what, (unsigned long)out.end_reason, (long)out.exit_code,
-                     (unsigned long)gap, (unsigned long)ms);
+                     (unsigned long)gap, (unsigned long)ask);
         life_note(id, 0, d);
     } else if (!rep.have_gap || gap < least_ms) {
         conf_detailf(d, "%s: the app measured only %lu ms of %lu", what, (unsigned long)gap,
-                     (unsigned long)ms);
+                     (unsigned long)ask);
         life_note(id, 0, d);
     } else {
         conf_detailf(d, "%s for %lu ms, stall limit %lu ms: not stopped", what,
@@ -627,7 +638,7 @@ static void gap_run(const char *variant, ULONG ms, ULONG least_ms, ULONG timeout
 
 static void g_spin10(void)
 {
-    gap_run(CONF_LIFE_V_SPIN, 9800UL, 9000UL, 90, "C-LIFE.15", "computed without a call");
+    gap_run(CONF_LIFE_V_SPIN, 9800UL, 9500UL, 90, "C-LIFE.15", "computed without a call");
 }
 
 static void g_sleep(void)
@@ -883,6 +894,7 @@ static void g_revoke(void)
     char path[256];
     char d[CONF_DETAIL_MAX];
     LONG rc;
+    LONG status_before;
 
     x = zz_ext(d);
     if (!x) {
@@ -917,10 +929,14 @@ static void g_revoke(void)
     memset(&st, 0, sizeof st);
     st.size = sizeof st;
     memset(&msg, 0, sizeof msg);
-    if (AARStatus(h, &st) != AAR_E_STALE) {
-        life_note("C-LIFE.22", 0, "AARStatus on a revoked handle is not AAR_E_STALE");
-    } else if (AARStop(h) != AAR_E_STALE) {
+    /* The first call that reaches the platform (AARStop) learns that the claim is gone;
+     * a read of the control block (AARStatus) cannot [spec question 58]. What the
+     * status says before that is noted, not judged. */
+    status_before = AARStatus(h, &st);
+    if (AARStop(h) != AAR_E_STALE) {
         life_note("C-LIFE.22", 0, "AARStop on a revoked handle is not AAR_E_STALE");
+    } else if (AARStatus(h, &st) != AAR_E_STALE) {
+        life_note("C-LIFE.22", 0, "AARStatus after AARStop on a revoked handle is not AAR_E_STALE");
     } else if (AARSendMessage(h, &msg) != AAR_E_STALE) {
         life_note("C-LIFE.22", 0, "AARSendMessage on a revoked handle is not AAR_E_STALE");
     } else if (AARGetMessage(h, &msg) != AAR_E_STALE) {
@@ -928,7 +944,9 @@ static void g_revoke(void)
     } else if (AARClose(h) != AAR_OK) {
         life_note("C-LIFE.22", 0, "AARClose of a revoked handle is not AAR_OK");
     } else {
-        life_note("C-LIFE.22", 1, "released through the card: AAR_E_STALE for every call, close AAR_OK");
+        conf_detailf(d, "released through the card: AAR_E_STALE for every call, close AAR_OK "
+                        "(AARStatus before the first platform call: %ld)", (long)status_before);
+        life_note("C-LIFE.22", 1, d);
         return;
     }
     (void)AARClose(h);
@@ -1111,21 +1129,16 @@ static void g_close_running(void)
     AARStatusInfo st;
     AARMessage msg;
     char d[CONF_DETAIL_MAX];
-    int before;
-    int during;
-    int after;
     ULONG beats = 0;
     ULONG t0;
     LONG rc;
 
-    before = conf_util_free_signals();
     rc = conf_util_start_payload(&h, "conf_life.elf", CONF_LIFE_V_BEAT, 0);
     if (rc != AAR_OK) {
         conf_detailf(d, "the app did not start: %ld", (long)rc);
         life_note("C-LIFE.26", 0, d);
         return;
     }
-    during = conf_util_free_signals();
     /* The heartbeat: messages every 50 ms. */
     t0 = conf_ticks();
     while (beats < 3 && conf_ticks() - t0 < 5UL * CONF_TICKS_PER_SECOND) {
@@ -1145,18 +1158,15 @@ static void g_close_running(void)
         return;
     }
     rc = AARClose(h);
-    after = conf_util_free_signals();
     if (rc != AAR_OK) {
         conf_detailf(d, "AARClose of a running app returned %ld", (long)rc);
         life_note("C-LIFE.26", 0, d);
     } else if (AARStatus(h, &st) != AAR_E_STALE) {
         life_note("C-LIFE.26", 0, "the handle is still usable after AARClose");
-    } else if (during != before - 1 || after != before) {
-        conf_detailf(d, "free signal bits: %d before, %d while open, %d after the close",
-                     before, during, after);
+    } else if (!claims_available(d)) {
         life_note("C-LIFE.26", 0, d);
     } else {
-        life_note("C-LIFE.26", 1, "closed while running: AAR_OK, handle stale, signal bit returned");
+        life_note("C-LIFE.26", 1, "closed while running: AAR_OK, handle stale, a new claim works");
     }
 }
 

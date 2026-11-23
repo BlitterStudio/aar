@@ -718,8 +718,9 @@ static void clear_signal(ULONG mask)
     (void)SetSignal(0, mask);
 }
 
-/* The next request of the app (a console write) and its completion. */
-static int serve_one(AARHandle *h, ULONG ticks, char *d)
+/* The next request of the app (a console write) and its completion. clear_mask: the
+ * signal bits to clear between taking the request and replying to it. */
+static int serve_one(AARHandle *h, ULONG ticks, char *d, ULONG clear_mask)
 {
     AARServiceReq req;
     ULONG t0 = conf_ticks();
@@ -741,6 +742,10 @@ static int serve_one(AARHandle *h, ULONG ticks, char *d)
         conf_detailf(d, "the request is op 0x%lx, a console write is due", (unsigned long)req.op);
         return 0;
     }
+    /* The signal for the end of the app can come as soon as the reply is posted:
+     * clear what is pending before it, not after. */
+    if (clear_mask)
+        clear_signal(clear_mask);
     req.result = AAR_OK;
     req.out[AAR_R_CONSOLE_COUNT] = req.buf_len;
     rc = AARServiceReply(h, &req);
@@ -796,7 +801,7 @@ static void t_signal_events(int idx)
     clear_signal(mask);
     rc = send_go(h);
     sig_req = rc == AAR_OK && wait_signal(mask, 5UL * CONF_TICKS_PER_SECOND);
-    if (!sig_req || !serve_one(h, 5UL * CONF_TICKS_PER_SECOND, d)) {
+    if (!sig_req || !serve_one(h, 5UL * CONF_TICKS_PER_SECOND, d, mask)) {
         if (!sig_req)
             conf_detailf(d, "no signal for the request (send %ld)", (long)rc);
         (void)AARStop(h);
@@ -804,7 +809,6 @@ static void t_signal_events(int idx)
         pass_fail(idx, 0, sig_msg ? d : "no signal for the app's message");
         return;
     }
-    clear_signal(mask);
     sig_exit = wait_signal(mask, 5UL * CONF_TICKS_PER_SECOND);
     conf_util_wait_end(h, 5UL * CONF_TICKS_PER_SECOND, &e);
     (void)AARClose(h);
@@ -871,6 +875,7 @@ struct evinfo {
     APTR handle;
     APTR reply;
     ULONG length;
+    ULONG end_reason; /* of the status the event carries */
 };
 
 /* Takes the next event off the port, waiting for it for ticks. */
@@ -886,6 +891,7 @@ static int next_event(struct MsgPort *port, ULONG ticks, struct evinfo *ev)
             ev->handle = e->handle;
             ev->reply = e->message.mn_ReplyPort;
             ev->length = e->message.mn_Length;
+            ev->end_reason = e->status.end_reason;
             return 1;
         }
         if (conf_ticks() - t0 > ticks)
@@ -971,13 +977,14 @@ static int expect_event(struct MsgPort *port, AARHandle *h, ULONG want, const ch
     return 1;
 }
 
-/* Three messages, the app goes on and ends while they are unread: MESSAGE until they
- * are taken, then COMPLETE. Also C-CLIENT.21: one event at a time. */
+/* Three messages that stay unread while the app goes on and ends. C-CLIENT.21: one event
+ * on the port at a time. C-CLIENT.22: while a message waits every event is MESSAGE. */
 static int events_messages(struct MsgPort *port, char *d, int *one_at_a_time)
 {
     AARHandle *h = NULL;
     struct conf_util_end e;
     struct evinfo ev;
+    int i;
     LONG rc = conf_util_start_payload_port(&h, port, "conf_life.elf", CONF_LIFE_V_BURST, 3UL);
     int ok = 0;
 
@@ -1006,23 +1013,33 @@ static int events_messages(struct MsgPort *port, char *d, int *one_at_a_time)
         conf_detailf(d, "AARSendMessage returned %ld", (long)rc);
         goto done;
     }
-    if (!serve_one(h, 5UL * CONF_TICKS_PER_SECOND, d))
+    if (!serve_one(h, 5UL * CONF_TICKS_PER_SECOND, d, 0UL))
         goto done;
     conf_util_wait_end(h, 5UL * CONF_TICKS_PER_SECOND, &e);
     if (!e.ended) {
         conf_detailf(d, "the app did not end after its request was served");
         goto done;
     }
-    /* A message is waiting and the app has ended: MESSAGE, not COMPLETE. */
-    if (!expect_event(port, h, AAR_NOTIFY_MESSAGE, "while messages wait", d))
-        goto done;
-    if (!expect_event(port, h, AAR_NOTIFY_MESSAGE, "after the end, with messages waiting", d))
-        goto done;
-    /* Take the messages while that event is posted; the next one is COMPLETE. */
-    (void)drain_messages(h);
-    if (!expect_event(port, h, AAR_NOTIFY_MESSAGE, "posted before the messages were taken", d))
-        goto done;
-    ok = expect_event(port, h, AAR_NOTIFY_COMPLETE, "after the messages were taken", d);
+    /* A message is waiting: every event is MESSAGE, also after the app has ended, until
+     * one of them carries the end (its status). COMPLETE is due only when nothing
+     * waits. */
+    for (i = 0; i < 6; i++) {
+        if (!next_event(port, 2UL * CONF_TICKS_PER_SECOND, &ev)) {
+            conf_detailf(d, "no event after the app ended (the end is due in a MESSAGE event)");
+            goto done;
+        }
+        if (ev.type != AAR_NOTIFY_MESSAGE) {
+            conf_detailf(d, "an event while messages wait is %s, MESSAGE is due",
+                         type_name(ev.type));
+            goto done;
+        }
+        if (ev.end_reason != AAR_END_NONE) {
+            ok = 1;
+            break;
+        }
+    }
+    if (!ok)
+        conf_detailf(d, "no event carried the end of the app");
 done:
     drain_port(port);
     (void)AARClose(h);
@@ -1056,7 +1073,7 @@ static int events_request(struct MsgPort *port, char *d)
     }
     if (!expect_event(port, h, AAR_NOTIFY_REQUEST, "for the request, no message waiting", d))
         goto done;
-    if (!serve_one(h, 5UL * CONF_TICKS_PER_SECOND, d))
+    if (!serve_one(h, 5UL * CONF_TICKS_PER_SECOND, d, 0UL))
         goto done;
     conf_util_wait_end(h, 5UL * CONF_TICKS_PER_SECOND, &e);
     ok = expect_event(port, h, AAR_NOTIFY_COMPLETE, "after the app exited", d);
@@ -1066,15 +1083,13 @@ done:
     return ok;
 }
 
-/* A fault ends the app: FAULT once the messages are taken. */
+/* A fault ends an app that sent nothing: FAULT. */
 static int events_fault(struct MsgPort *port, char *d)
 {
     AARHandle *h = NULL;
     struct conf_util_end e;
-    struct evinfo ev;
-    LONG rc = conf_util_start_payload_port(&h, port, "conf_life.elf", CONF_LIFE_V_FAULT_DATA, 0);
+    LONG rc = conf_util_start_payload_port(&h, port, "conf_life.elf", CONF_LIFE_V_FAULT_QUIET, 0);
     int ok = 0;
-    int i;
 
     if (rc != AAR_OK) {
         conf_detailf(d, "the app did not start: %ld", (long)rc);
@@ -1085,21 +1100,7 @@ static int events_fault(struct MsgPort *port, char *d)
         conf_detailf(d, "the app did not fault: end reason %lu", (unsigned long)e.end_reason);
         goto done;
     }
-    (void)drain_messages(h);
-    /* Events posted before the messages were taken may still say MESSAGE. */
-    for (i = 0; i < 6; i++) {
-        if (!next_event(port, 2UL * CONF_TICKS_PER_SECOND, &ev)) {
-            conf_detailf(d, "no event of type FAULT after the messages were taken");
-            goto done;
-        }
-        if (ev.type == AAR_NOTIFY_MESSAGE)
-            continue;
-        ok = ev.type == AAR_NOTIFY_FAULT;
-        if (!ok)
-            conf_detailf(d, "the event after a fault is %s, FAULT is due", type_name(ev.type));
-        goto done;
-    }
-    conf_detailf(d, "only MESSAGE events after the messages were taken");
+    ok = expect_event(port, h, AAR_NOTIFY_FAULT, "after a fault, nothing waiting", d);
 done:
     drain_port(port);
     (void)AARClose(h);
@@ -1119,8 +1120,8 @@ static void g_events(void)
         return;
     }
     ok = events_messages(port, d, &one);
-    conf_record("C-CLIENT.21", ok || one, one ? "one event on the port at a time, naming the handle, no reply port"
-                                              : d);
+    conf_record("C-CLIENT.21", one, one ? "one event on the port at a time, naming the handle, no reply port"
+                                        : d);
     if (ok)
         ok = events_request(port, d);
     if (ok)
@@ -1143,27 +1144,59 @@ static void t_events(int idx)
 
 /* ---- C-CLIENT.23 to C-CLIENT.26: signals, owners, handles --------------------------------------- */
 
+/* The signal bit is the library's: allocated at the owner task's first AAROpen and
+ * returned when the task has no handle left, by its last AARClose or at the latest by
+ * its last CloseLibrary [spec question 59]. The runner's own task keeps its base open
+ * for the whole run, so a child task that opens the library itself does the count. */
+static struct sigctl {
+    volatile LONG done;
+    LONG open_rc;
+    int n0, n1, n2, n3;
+} sigc;
+
+static void signal_child(void)
+{
+    struct Library *own = OpenLibrary((CONST_STRPTR)AAR_LIB_NAME, AAR_LIB_VERSION);
+    struct Library *saved = AARBase;
+    AARHandle *hs[3];
+    ULONG reason = 0;
+    int n = 0;
+
+    if (!own) {
+        sigc.open_rc = AAR_E_NOSYS;
+        sigc.done = 1;
+        return;
+    }
+    AARBase = own; /* the parent is waiting and calls nothing meanwhile */
+    sigc.n0 = conf_util_free_signals();
+    while (n < 3 && (sigc.open_rc = AAROpen(&hs[n], NULL, &reason)) == AAR_OK)
+        n++;
+    sigc.n1 = conf_util_free_signals();
+    while (n > 0)
+        (void)AARClose(hs[--n]);
+    sigc.n2 = conf_util_free_signals();
+    AARBase = saved;
+    CloseLibrary(own);
+    sigc.n3 = conf_util_free_signals();
+    sigc.done = 1;
+}
+
 /* C-CLIENT.23 */
 static void t_signal_bit(int idx)
 {
-    AARHandle *hs[3];
-    ULONG reason = 0;
     char d[CONF_DETAIL_MAX];
-    int before;
-    int during;
-    int after;
-    int n = 0;
+    int ok;
 
-    before = conf_util_free_signals();
-    while (n < 3 && AAROpen(&hs[n], NULL, &reason) == AAR_OK)
-        n++;
-    during = conf_util_free_signals();
-    while (n > 0)
-        (void)AARClose(hs[--n]);
-    after = conf_util_free_signals();
-    conf_detailf(d, "free signal bits: %d before, %d with three handles, %d after", before,
-                 during, after);
-    pass_fail(idx, before > 0 && during == before - 1 && after == before, d);
+    memset(&sigc, 0, sizeof sigc);
+    if (!conf_util_spawn("aar-conf-child", signal_child) || !conf_util_wait_flag(&sigc.done, 20)) {
+        pass_fail(idx, 0, "the child task did not run");
+        return;
+    }
+    conf_detailf(d, "child task, free signal bits: %d before, %d with three handles, %d after "
+                    "AARClose, %d after CloseLibrary", sigc.n0, sigc.n1, sigc.n2, sigc.n3);
+    ok = sigc.open_rc == AAR_OK && sigc.n0 > 0 && sigc.n1 == sigc.n0 - 1 &&
+         (sigc.n2 == sigc.n0 - 1 || sigc.n2 == sigc.n0) && sigc.n3 == sigc.n0;
+    pass_fail(idx, ok, d);
 }
 
 static struct owner_ctl {

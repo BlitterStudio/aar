@@ -91,7 +91,8 @@ static void spin_loops(uint64_t n)
         spin_sink = (uint32_t)i;
 }
 
-/* Loops per microsecond, measured over at least 100 ms, times 1024. */
+/* Loops per microsecond, measured over at least 500 ms (the share of the CPU
+ * that the app gets settles after the first 100 ms), times 1024. */
 static uint64_t spin_rate(void)
 {
     uint64_t n = 400000u;
@@ -102,7 +103,7 @@ static uint64_t spin_rate(void)
 
         spin_loops(n);
         dt = aar_time_us() - t0;
-        if (dt >= 100000u)
+        if (dt >= 500000u)
             break;
         n *= 2u;
     }
@@ -559,6 +560,11 @@ int aar_main(int argc, char **argv)
         fault_illegal();
     if (same(v, CONF_LIFE_V_FAULT_ALIGN))
         fault_align();
+    if (same(v, CONF_LIFE_V_FAULT_QUIET)) {
+        aar_sleep_us(500000u);
+        *(volatile uint32_t *)(uintptr_t)fault_address() = 0;
+        return 0;
+    }
     if (same(v, CONF_LIFE_V_WAIT_MSG))
         return v_wait_msg();
     if (same(v, CONF_LIFE_V_SPIN))

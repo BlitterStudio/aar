@@ -54,7 +54,7 @@ checks that the handle can be closed and that a new claim succeeds.
 | C-ELF.12 | 2.2.3 | MUST | core | any | runner | yes | `p_memsz` smaller than `p_filesz` refused |
 | C-ELF.13 | 2.2.3 | MUST | core | any | runner | yes | overlapping `PT_LOAD` segments refused |
 | C-ELF.14 | 2.2.3 | MUST | core | any | runner | yes | a segment larger than any memory the runtime offers refused (`AAR_E_NOMEM` is also accepted) |
-| C-ELF.15 | 2.2.4 | MUST | core | any | runner | yes | image with no `PT_DYNAMIC` refused |
+| C-ELF.15 | 2.2.4 | MUST | core | any | runner | yes | image with no `PT_DYNAMIC` is refused, or loads (not started) [spec question 61] |
 | C-ELF.16 | 2.2.4 | MUST | core | any | runner | yes | image with no section headers loads and runs (relocations come from `PT_DYNAMIC`); `AARProbeFile` may refuse it [spec question 39] |
 | C-ELF.17 | 2.2.5 | MUST | core | a32 | runner | yes | a `REL` table loads and runs |
 | C-ELF.18 | 2.2.5 | MUST | core | a32 | runner | yes | a `RELA` table loads and runs |
@@ -62,7 +62,7 @@ checks that the handle can be closed and that a new claim succeeds.
 | C-ELF.20 | 2.2.5 | MUST | core | any | runner | yes | `DT_RELR` refused |
 | C-ELF.21 | 2.2.5 | MUST | core | any | runner | yes | a relocation with symbol index other than 0 refused |
 | C-ELF.22 | 2.2.5 | MUST | core | any | runner | yes | a relocation with a misaligned target refused |
-| C-ELF.23 | 2.2.5 | MUST | core | any | runner | yes | a relocation target outside the image refused |
+| C-ELF.23 | 2.2.5 | MUST | core | any | runner | yes | a relocation target outside the image is refused, or the image loads (not started) [spec question 61] |
 | C-ELF.24 | 2.2.6 | MUST | core | any | runner | yes | entry point outside an executable segment refused |
 | C-ELF.25 | 2.2.6 | MUST | core | a32 | runner | yes | entry point with bit 0 set refused |
 | C-ELF.26 | 2.2.7 | MUST | core | any | runner | yes | image with no AAR note refused |
@@ -70,7 +70,7 @@ checks that the handle can be closed and that a new claim succeeds.
 | C-ELF.28 | 2.3 | MUST | core | any | runner | yes | note with a wrong `magic` refused |
 | C-ELF.29 | 2.3 | MUST | core | any | runner | yes | `note_version` other than 1 refused |
 | C-ELF.30 | 2.3 | MUST | core | any | runner | yes | note `profile` that differs from the ELF class refused with `AAR_E_PROFILE` |
-| C-ELF.31 | 2.3 | MUST | core | any | runner | yes | an image of a profile that `AARInfo.profiles` does not list is refused with `AAR_E_PROFILE` (passes with detail `all profiles supported` when the platform lists every defined profile) |
+| C-ELF.31 | 2.3 | MUST | core | any | runner | yes | an image of a profile that `AARInfo.profiles` does not list is refused with `AAR_E_PROFILE` or `AAR_E_INVAL` (2.2 allows both for the class; passes with detail `all profiles supported` when the platform lists every defined profile) [spec question 61] |
 | C-ELF.32 | 2.3 | MUST | core | any | runner | yes | `api_major` other than the platform's refused with `AAR_E_INVAL` |
 | C-ELF.33 | 2.3 | MUST | core | any | runner | yes | `api_minor_required` above the platform's minor refused with `AAR_E_INVAL` |
 | C-ELF.34 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` below 64 KiB refused |
@@ -79,8 +79,8 @@ checks that the handle can be closed and that a new claim succeeds.
 | C-ELF.37 | 2.3 | MUST | core | any | runner | yes | `groups_required` with a reserved experimental bit (bit 28) refused with `AAR_E_NOGROUP` |
 | C-ELF.38 | 2.3 | MUST | core | any | runner | yes | a note with wrong name or descriptor padding is not an AAR note: refused |
 | C-ELF.39 | 5.2 | MUST | core | any | runner | yes | `AARInfo.max_image_bytes` is at least 16 MiB |
-| C-ELF.40 | 4.1 | MUST | core | any | runner | yes | `min_heap_mib` above anything the platform can commit: `AAR_E_NOMEM` from the load call (the image asks for 4095 MiB) [spec question 40] |
-| C-ELF.41 | 5.2 | MUST | core | any | runner | yes | every load refusal is one of `AAR_E_PROFILE`, `AAR_E_NOGROUP`, `AAR_E_INVAL`, `AAR_E_NOMEM` (checked over the whole corpus) |
+| C-ELF.40 | 4.1 | MUST | core | any | runner | yes | `min_heap_mib` above anything the platform can commit: `AAR_E_NOMEM` from the load call, or `AAR_E_NORESOURCE` with a reason in `AARStatusInfo.reason` (the image asks for 4095 MiB) [spec questions 40 and 60] |
+| C-ELF.41 | 5.2 | MUST | core | any | runner | yes | every load refusal is one of `AAR_E_PROFILE`, `AAR_E_NOGROUP`, `AAR_E_INVAL`, `AAR_E_NOMEM` (or `AAR_E_NORESOURCE` with a reason, spec question 60); checked over the whole corpus |
 | C-ELF.42 | 2.2 | MUST | core | any | runner | yes | the same image loaded with `AARLoadMemory` gives the same result as `AARLoadFile` (accept and refuse alike) |
 | C-ELF.43 | 2.4 | MUST | core | any | none | todo | not tested: `tools/aar-check` is a tool of this repository, tested by `tests/aar_check_test.py` in CI |
 | C-ELF.44 | 2.1 | SHOULD | core | any | none | todo | not tested: a launcher picks `.a32` or `.a64` with `AARProbeFile`; probe behaviour is C-CLIENT |
@@ -376,11 +376,11 @@ runner and under qemu user mode.
 | C-LIFE.19 | 5.5 | MUST | core | any | runner | yes | the client task blocking for 15 seconds without calling the library does not stop the app (the lease renews from interrupt or timer context) |
 | C-LIFE.20 | 5.5 | MUST | core | any | runner | yes | a client task that exits without `AARClose` (a child process) releases its handle: within 10 s a call on that handle returns `AAR_E_STALE` and no longer `AAR_E_OWNER`, and a new claim succeeds (a client cannot see the app stop [spec question 42]) |
 | C-LIFE.21 | 5.5 | MUST | core | any | runner | yes | a client task that closes its last `aar.library` base without `AARClose` releases its handles and stops the app: a call on the handle returns `AAR_E_STALE` and a new claim succeeds [spec question 42] |
-| C-LIFE.22 | 5.5 | MUST | zz9000 | any | runner | yes | after the claim is revoked (`aar-run RELEASE` through `AARExt`), calls with the old handle return `AAR_E_STALE` and change nothing |
+| C-LIFE.22 | 5.5 | MUST | zz9000 | any | runner | yes | after the claim is revoked (`aar-run RELEASE` through `AARExt`), calls with the old handle return `AAR_E_STALE` and change nothing (`AARStop` is the first call: it reaches the platform) [spec question 58] |
 | C-LIFE.23 | 5.5 | MUST | zz9000 | any | runner | yes | late writes: after the claim is revoked (the client's lease paused through `AARExt` until the platform ends it), a second app allocates shared memory and fills it with a pattern while the old client writes garbage through its stale map; the pattern is intact |
 | C-LIFE.24 | 5.5 | MUST | core | any | operator | yes | reset: start two apps with `aar-run` (for example a long-running payload of the suite) and, with them live, reset the machine; after the boot the suite starts and passes, `aar-run STATUS` or the platform's own listing shows no claim of the old apps, and a client that survived the reset (a platform that resets only the ARM side) saw `AAR_END_PLATFORM_RESET` |
 | C-LIFE.25 | 5.2 | MUST | core | any | runner | yes | relaunch: the same payload started 20 times one after the other behaves identically each time (same output, same exit code) |
-| C-LIFE.26 | 5.1 | MUST | core | any | runner | yes | `AARClose` of a running app stops it, releases the claim and the signal and returns `AAR_OK`; the app's heartbeat stops (seen as messages before the close, and as a stale handle and the signal bit back after it) |
+| C-LIFE.26 | 5.1 | MUST | core | any | runner | yes | `AARClose` of a running app stops it, releases the claim and returns `AAR_OK`; the app's heartbeat stops (seen as messages before the close, and as a stale handle and a working new claim after it; the signal bit is C-CLIENT.23) |
 | C-LIFE.27 | 5.3 | MUST | core | any | none | todo | not tested: a fault in runtime code ends every app and restarts the runtime (`AAR_END_RUNTIME_RESTART`); needs fault injection into the platform |
 | C-LIFE.28 | 5.4 | MUST | core | any | none | todo | not tested: `AAR_END_STUCK_CALL` needs a table call that runs for 10 seconds inside the runtime, which no honest call does; the 10 s floor is [spec question 12] |
 | C-LIFE.29 | 5.4 | MAY | core | any | none | todo | not tested: the runtime MAY stop an app that goes longer than the stall limit with `AAR_END_STALL` |
@@ -416,8 +416,8 @@ runner and under qemu user mode.
 | C-CLIENT.19 | 9.4 | MUST | core | any | runner | yes | the signal is set when the app sends a message, when it exits and when it queues a service request |
 | C-CLIENT.20 | 9.4 | SHOULD | core | any | runner | yes | the owner wakes within 250 ms of an app message (measured over 20 messages: the runner pings the app, which answers at once; the clock has a 20 ms step, so 290 ms are allowed) |
 | C-CLIENT.21 | 9.4 | MUST | core | any | runner | yes | a notify port receives one `AAREvent` at a time: the next is not posted until the previous is taken; its `handle` names the handle; the message needs no reply |
-| C-CLIENT.22 | 9.4 | MUST | core | any | runner | yes | event types coalesce in the order `MESSAGE`, then `COMPLETE` or `FAULT` when the app has ended, else `REQUEST` |
-| C-CLIENT.23 | 9.4 | MUST | core | any | runner | yes | a signal bit is allocated at a task's first open and freed at its last close: the number of free signal bits is the same before the first open and after the last close, with three handles in between |
+| C-CLIENT.22 | 9.4 | MUST | core | any | runner | yes | event types coalesce in the order `MESSAGE`, then `COMPLETE` or `FAULT` when the app has ended, else `REQUEST`: while a message waits every event is `MESSAGE`, also after the end (the status it carries shows the end); with nothing waiting a request gives `REQUEST`, an exit `COMPLETE` and a fault `FAULT` |
+| C-CLIENT.23 | 9.4 | MUST | core | any | runner | yes | a signal bit is allocated at a task's first open and freed at its last close: in a child task that opens the library itself the number of free signal bits drops by one at the first `AAROpen` (three handles), and is back after `CloseLibrary` [spec question 59] |
 | C-CLIENT.24 | 9.3 | MUST | core | any | runner | yes | a call with a handle from a task that does not own it returns `AAR_E_OWNER` (status, stop, send, close; the handle stays usable by its owner) |
 | C-CLIENT.25 | 9.3 | MUST | core | any | runner | yes | one task can hold at least 20 handles when admission allows (the per-task signal bit is shared); a platform that refuses earlier with `AAR_E_NORESOURCE` passes when that is its `max_apps` |
 | C-CLIENT.26 | 10.2 | MUST | core | any | runner | yes | a NULL handle is refused with a negative code (`AAR_E_INVAL`, or `AAR_E_STALE` as the reference library) and changes nothing [spec question 24] |
@@ -825,3 +825,28 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     codes from the mutating calls and judges what the client did from the files.
     Say whether a call after a stop request is expected to complete when the
     client answers at once.
+58. **Revoked handle and calls that read memory** (5.5, 9.3): "a request whose generation no
+    longer names a live app fails with `AAR_E_STALE`". The library learns that a claim
+    was revoked only from a platform call that answers stale (stop, load, map, start);
+    `AARStatus`, `AARGetMessage` and `AARSendMessage` read or write the shared
+    memory and cannot know. C-LIFE.22 makes `AARStop` the first call after the
+    revocation and requires `AAR_E_STALE` from every call after it. Say whether the
+    library has to check the claim (the handle word of the control block) on every call.
+59. **When the signal bit is freed** (9.2, 9.3, 9.4): `AARClose` "releases the claim and
+    the signal", 9.4 says the bit is freed "at its last close", and 9.3 says closing the
+    last base closes the handles. The reference library frees the bit when the task
+    closes its last `aar.library` base, not at its last `AARClose`. C-CLIENT.23 counts
+    in a child task and accepts either point after the last `AARClose`, and requires the
+    bit back after `CloseLibrary`.
+60. **Refusing a load for lack of memory** (4.1, 5.2, 5.6, 9.2): 5.2 lists `AAR_E_NOMEM`
+    for a load, 5.6 and the client API give `AAR_E_NORESOURCE` with an `AAR_REASON_*`
+    for a platform that lacks the memory. The ZZ9000 answers `AAR_E_NORESOURCE` with
+    `AAR_REASON_MEMORY` to a heap it can never commit. C-ELF.40 and C-ELF.41 accept
+    both. Say whether a request that can never be satisfied is `AAR_E_NOMEM` and a
+    shortage of the moment `AAR_E_NORESOURCE`.
+61. **Rules the loader is not told to enforce** (2.2): the spec does not say that an
+    image without `PT_DYNAMIC` or a relocation whose target lies outside every
+    `PT_LOAD` is refused (`tools/aar-check` and the library's probe do), and for a
+    class or machine that the platform does not run it allows `AAR_E_PROFILE` or
+    `AAR_E_INVAL`. C-ELF.15 and C-ELF.23 accept a refusal or a load, C-ELF.31 accepts
+    either code.
