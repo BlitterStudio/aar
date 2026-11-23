@@ -116,6 +116,16 @@ The file defines one `const struct conf_area conf_area_<area>` (see the stubs an
   ends it. A C-CON author sets these in a variant's `prepare`. If a mode is
   missing, add it in `aar-conf.c` (`con_write_start`, `con_read_start` and
   `console_pump`) and say so in the commit.
+- **Operator tests** (rows judged `operator`): a test that shows something to a
+  person is a variant of the area's payload run (it runs only with `INTERACTIVE`).
+  List `{ "C-AREA.n", "<variant>", review, accept }` in the area's `operators` table.
+  The core prints the row's text, waits for Return, runs the variant, and asks the
+  question right after it (the area's `prepare` prints the instruction for the person).
+  `review` may print what the app saw and return 1 to offer one repeat; `accept` may
+  refuse a yes that the app's own evidence contradicts (`r_input.c`, C-INPUT.11, is the
+  example). A row with no entry is a procedure done before the run, asked at the start
+  (C-LIFE.24). `ONLY=<operator id>` runs just that variant: payload variants that do
+  not belong to a selected test are skipped.
 - **Observers**: `on_open` and `on_end` are called for every payload run of every
   area, for tests that hold for any app (`r_life.c` judges C-LIFE.1 to C-LIFE.3 that
   way). `on_end` is called by the core after a payload area's run (`run_area`), not

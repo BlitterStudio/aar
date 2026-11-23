@@ -216,25 +216,38 @@ static void prep_reset(struct conf_run *run)
     memset(&is, 0, sizeof is);
 }
 
-/* Variant show: the events the app saw, kept for the operator. */
+/* Variant show: the events the app saw, kept for the operator, and whether any of
+ * them is evidence that a person used the input: a key, or a mouse or joystick event
+ * with motion or buttons. Events of the activation kind (type and code, no motion, no
+ * button) are not. */
 #define SHOW_LINES 24
 
 static char show_lines[SHOW_LINES][72];
 static unsigned show_count;
 static ULONG show_total;
+static ULONG show_keys;
+static ULONG show_moves;
 
 static void show_message(struct conf_run *run, const AARMessage *m)
 {
+    ULONG type = cm_get32(m->bytes, 4);
+    LONG dx = (LONG)cm_get32(m->bytes, 12);
+    LONG dy = (LONG)cm_get32(m->bytes, 16);
+    ULONG buttons = cm_get32(m->bytes, 20);
+
     (void)run;
     if (m->bytes[0] != 'S' || m->bytes[1] != 'H' || m->bytes[2] != 'O' || m->bytes[3] != 'W')
         return;
     show_total++;
+    if (type == AAR_EV_KEY_DOWN || type == AAR_EV_KEY_UP)
+        show_keys++;
+    else if ((type == AAR_EV_MOUSE || type == AAR_EV_JOY) && (dx || dy || buttons))
+        show_moves++;
     if (show_count < SHOW_LINES)
         snprintf(show_lines[show_count++], sizeof show_lines[0],
-                 "type %lu code 0x%lx dx %ld dy %ld buttons 0x%lx",
-                 (unsigned long)cm_get32(m->bytes, 4), (unsigned long)cm_get32(m->bytes, 8),
-                 (long)(LONG)cm_get32(m->bytes, 12), (long)(LONG)cm_get32(m->bytes, 16),
-                 (unsigned long)cm_get32(m->bytes, 20));
+                 "type %lu code 0x%lx dx %ld dy %ld buttons 0x%lx", (unsigned long)type,
+                 (unsigned long)cm_get32(m->bytes, 8), (long)dx, (long)dy,
+                 (unsigned long)buttons);
 }
 
 static void prep_show(struct conf_run *run)
@@ -242,14 +255,43 @@ static void prep_show(struct conf_run *run)
     memset(&is, 0, sizeof is);
     show_count = 0;
     show_total = 0;
-    if (!conf_g.interactive)
-        return; /* the payload ends at once without conf:show */
+    show_keys = 0;
+    show_moves = 0;
     run->serve_flags_off = AAR_SERVEF_NO_INPUT_WINDOW;
     run->on_message = show_message;
     run->extra_args[run->extra_count++] = "conf:show=1";
     conf_emitf("# C-INPUT.11: for 12 seconds the app shows a grey screen: press keys, move the "
                "mouse, press its buttons and use a joystick");
 }
+
+/* After the show, before the question: what counts, and a repeat when nothing does. */
+static int show_review(const struct conf_run *run)
+{
+    (void)run;
+    conf_emitf("# C-INPUT.11: %lu key events and %lu mouse or joystick events with motion or "
+               "buttons, among %lu events", (unsigned long)show_keys,
+               (unsigned long)show_moves, (unsigned long)show_total);
+    if (show_keys + show_moves)
+        return 0;
+    conf_emitf("# C-INPUT.11: the app saw no key press, mouse move, button or joystick movement, "
+               "only events like activation. Click the grey screen first, then press keys and "
+               "move the mouse.");
+    return 1;
+}
+
+/* The person says yes; the app's evidence has the last word. */
+static int show_accept(char *why)
+{
+    if (show_keys + show_moves)
+        return 1;
+    conf_detailf(why, "operator confirmed but the app saw no key or mouse event (%lu events, none "
+                      "a key, mouse move or button)", (unsigned long)show_total);
+    return 0;
+}
+
+static const struct conf_operator operators[] = {
+    { "C-INPUT.11", "show", show_review, show_accept },
+};
 
 static const struct conf_variant variants[] = {
     /* std ends in a stop (C-INPUT.2), so it runs last. */
@@ -308,5 +350,7 @@ const struct conf_area conf_area_input = {
     .peer_count = CONF_COUNT(peers),
     .variants = variants,
     .variant_count = CONF_COUNT(variants),
+    .operators = operators,
+    .operator_count = CONF_COUNT(operators),
     .on_end = on_end,
 };

@@ -671,8 +671,102 @@ static int expected_count(int area)
     return n;
 }
 
+/* ---- Operator tests ------------------------------------------------------------------- */
+
+/* Questions to a person, asked through the Shell. A test that shows something (a
+ * picture, a grey screen, a tone) is a variant of its area's payload run with an
+ * entry in the area's `operators` table: the runner prints what to look for, waits
+ * for Return so that the person is looking, runs the variant, and asks right after
+ * it. A test that is a procedure done before the run (C-LIFE.24) has no variant and
+ * is asked at the start of the run. Without INTERACTIVE they are SKIP manual. */
+
+static int read_answer(char *buf, ULONG size)
+{
+    BPTR in = Input();
+
+    buf[0] = '\0';
+    return in && FGets(in, (STRPTR)buf, size) != NULL;
+}
+
+/* Waits for Return. 0 when there is no input. */
+static int wait_ready(void)
+{
+    char line[16];
+
+    put_text("# Get ready. The test starts when you press Return: ");
+    return read_answer(line, sizeof line);
+}
+
+/* 1 yes, 0 no, -1 no input. */
+static int ask_yes_no(const char *question)
+{
+    char line[16];
+
+    put_text("# ");
+    put_text(question);
+    put_text(" (y/n) ");
+    if (!read_answer(line, sizeof line))
+        return -1;
+    return line[0] == 'y' || line[0] == 'Y';
+}
+
+static const struct conf_operator *find_operator(const char *id)
+{
+    unsigned a;
+    unsigned k;
+
+    for (a = 0; a < CONF_COUNT(areas); a++) {
+        for (k = 0; k < areas[a]->operator_count; k++) {
+            if (strcmp(areas[a]->operators[k].id, id) == 0)
+                return &areas[a]->operators[k];
+        }
+    }
+    return NULL;
+}
+
+/* The answer to the operator question of test idx. `op` may be NULL; its accept
+ * hook can refuse a yes that the app's own evidence contradicts. */
+static void judge_operator(int idx, const struct conf_operator *op, const char *question)
+{
+    int yes = ask_yes_no(question);
+
+    if (yes < 0) {
+        conf_set_result(idx, CONF_R_SKIP, "manual: no answer");
+    } else if (!yes) {
+        conf_set_result(idx, CONF_R_FAIL, "operator said no");
+    } else {
+        char why[CONF_DETAIL_MAX];
+
+        if (op && op->accept && !op->accept(why))
+            conf_set_result(idx, CONF_R_FAIL, why);
+        else
+            conf_set_result(idx, CONF_R_PASS, "operator confirmed");
+    }
+}
+
+/* Operator tests that are procedures done before the run: asked at the start. */
+static void ask_procedures(void)
+{
+    int i;
+
+    if (!conf_g.interactive)
+        return;
+    for (i = 0; i < CONF_TEST_COUNT && !conf_g.aborted; i++) {
+        if (!selected[i] || results[i].status != CONF_R_NONE ||
+            conf_tests[i].judge != CONF_J_OPERATOR ||
+            find_operator(conf_tests[i].id))
+            continue;
+        conf_emitf("# [%s] Procedure, to be done before this run: %s", conf_tests[i].id,
+                   conf_tests[i].prompt);
+        judge_operator(i, NULL,
+                       "Did you do this before this run, and did it behave as described?");
+    }
+}
+
 /* Run the payload of one area (once per variant) and fill the results of its
- * expected ids. */
+ * expected ids. A variant that shows something to a person runs only with
+ * INTERACTIVE and only when its operator test is selected; the other variants run
+ * when a payload test of the area is selected. */
 static void run_area(int area)
 {
     const char *name = conf_areas[area];
@@ -682,63 +776,112 @@ static void run_area(int area)
     unsigned a;
     char why[CONF_DETAIL_MAX] = "";
     int i;
+    int normal = expected_count(area) > 0;
+    int stop_area = 0;
 
-    if (!expected_count(area))
-        return;
     for (a = 0; a < CONF_COUNT(areas); a++) {
         if (strcmp(areas[a]->name, name) == 0)
             def = areas[a];
     }
     if (def && def->variant_count)
         nvariants = def->variant_count;
+    if (!normal && !(def && def->operator_count && conf_g.interactive))
+        return;
 
-    for (v = 0; v < nvariants && !conf_g.aborted; v++) {
-        struct conf_run run;
-        struct conf_outcome out;
-        struct conf_parsed pr;
+    for (v = 0; v < nvariants && !conf_g.aborted && !stop_area; v++) {
+        const struct conf_variant *var = def && def->variant_count ? &def->variants[v] : NULL;
+        const struct conf_operator *op = NULL;
+        int opidx = -1;
+        int repeated = 0;
+        int again;
+        unsigned k;
 
-        conf_run_init(&run, name);
-        if (def && def->variant_count) {
-            run.variant = def->variants[v].name;
-            if (def->variants[v].prepare)
-                def->variants[v].prepare(&run);
+        for (k = 0; var && def && k < def->operator_count; k++) {
+            if (strcmp(def->operators[k].variant, var->name) == 0)
+                op = &def->operators[k];
         }
-        conf_emitf("# running conf_%s%s%s", name + 2, run.variant ? " variant " : "",
-                   run.variant ? run.variant : "");
-        conf_run_payload(&run, &out);
-        conf_parse_capture(&run, &pr);
-        if (run.diag[0])
-            conf_emitf("# %s: client says: %.100s", name, run.diag);
-        if (run.cap.over)
-            conf_emitf("# %s: console capture overflowed", name);
-        if (pr.have_end && pr.pass + pr.fail + pr.skip != (ULONG)pr.relayed) {
-            conf_emitf("# %s: end line counts %lu results, %d were relayed", name,
-                       (unsigned long)(pr.pass + pr.fail + pr.skip), pr.relayed);
-            conf_g.suite_notes++;
+        if (op) {
+            opidx = conf_find_test(op->id);
+            if (!conf_g.interactive || opidx < 0 || !selected[opidx] ||
+                results[opidx].status != CONF_R_NONE)
+                continue;
+        } else if (!normal) {
+            continue;
         }
-        for (a = 0; a < CONF_COUNT(areas); a++) {
-            if (areas[a]->on_end)
-                areas[a]->on_end(&run, &out, &pr);
-        }
-        /* The reason an expected id will fail with, if it is never reported. */
-        if (!out.ran)
-            conf_detailf(why, "payload not run: %.90s", out.why);
-        else if (out.timed_out)
-            conf_detailf(why, "payload did not finish in %lu s",
-                         (unsigned long)(run.timeout_s ? run.timeout_s
-                                                       : PAYLOAD_TIMEOUT_S));
-        else if (!pr.have_end && out.end_reason == AAR_END_FORCED)
-            conf_detailf(why, "app ended by force (end reason FORCED, exit %ld) before its end line%s",
-                         (long)out.exit_code,
-                         run.stops ? ": it did not leave within the grace period after the stop it asked for" : "");
-        else if (!pr.have_end)
-            conf_detailf(why, "payload ended without its end line (exit %ld, end reason %lu)",
-                         (long)out.exit_code, (unsigned long)out.end_reason);
-        else
-            conf_detailf(why, "payload did not report this id");
-        conf_run_free(&run);
-        if (!out.ran || !pr.have_end)
-            break; /* the other variants would fail the same way */
+        do {
+            struct conf_run run;
+            struct conf_outcome out;
+            struct conf_parsed pr;
+
+            again = 0;
+            conf_run_init(&run, name);
+            if (var) {
+                run.variant = var->name;
+                if (var->prepare)
+                    var->prepare(&run);
+            }
+            if (op) {
+                conf_emitf("# [%s] %s", op->id, conf_tests[opidx].prompt);
+                if (!wait_ready()) {
+                    conf_set_result(opidx, CONF_R_SKIP, "manual: no answer");
+                    conf_run_free(&run);
+                    break;
+                }
+            }
+            conf_emitf("# running conf_%s%s%s", name + 2, run.variant ? " variant " : "",
+                       run.variant ? run.variant : "");
+            conf_run_payload(&run, &out);
+            conf_parse_capture(&run, &pr);
+            if (run.diag[0])
+                conf_emitf("# %s: client says: %.100s", name, run.diag);
+            if (run.cap.over)
+                conf_emitf("# %s: console capture overflowed", name);
+            if (pr.have_end && pr.pass + pr.fail + pr.skip != (ULONG)pr.relayed) {
+                conf_emitf("# %s: end line counts %lu results, %d were relayed", name,
+                           (unsigned long)(pr.pass + pr.fail + pr.skip), pr.relayed);
+                conf_g.suite_notes++;
+            }
+            for (a = 0; a < CONF_COUNT(areas); a++) {
+                if (areas[a]->on_end)
+                    areas[a]->on_end(&run, &out, &pr);
+            }
+            /* The reason an expected id will fail with, if it is never reported. */
+            if (!out.ran)
+                conf_detailf(why, "payload not run: %.90s", out.why);
+            else if (out.timed_out)
+                conf_detailf(why, "payload did not finish in %lu s",
+                             (unsigned long)(run.timeout_s ? run.timeout_s
+                                                           : PAYLOAD_TIMEOUT_S));
+            else if (!pr.have_end && out.end_reason == AAR_END_FORCED)
+                conf_detailf(why, "app ended by force (end reason FORCED, exit %ld) before its end line%s",
+                             (long)out.exit_code,
+                             run.stops ? ": it did not leave within the grace period after the stop it asked for" : "");
+            else if (!pr.have_end)
+                conf_detailf(why, "payload ended without its end line (exit %ld, end reason %lu)",
+                             (long)out.exit_code, (unsigned long)out.end_reason);
+            else
+                conf_detailf(why, "payload did not report this id");
+            if (op) {
+                /* Right after the run, while the person remembers it. */
+                if (!out.ran) {
+                    char d[CONF_DETAIL_MAX];
+
+                    conf_detailf(d, "payload not run: %.90s", out.why);
+                    conf_set_result(opidx, CONF_R_FAIL, d);
+                } else {
+                    if (op->review && op->review(&run) && !repeated &&
+                        ask_yes_no("Repeat the test once?") == 1) {
+                        repeated = 1;
+                        again = 1;
+                    }
+                    if (!again)
+                        judge_operator(opidx, op, "Did it happen as described?");
+                }
+            } else if (!out.ran || !pr.have_end) {
+                stop_area = 1; /* the other variants would fail the same way */
+            }
+            conf_run_free(&run);
+        } while (again && !conf_g.aborted);
     }
     /* An expected id that was not reported fails: a payload that crashed or was
      * refused cannot pass by silence. */
@@ -751,28 +894,15 @@ static void run_area(int area)
     }
 }
 
-/* ---- Operator tests ------------------------------------------------------------------- */
-
+/* Operator tests that are left: SKIP manual without INTERACTIVE. */
 static void run_operator(int idx)
 {
-    char answer[16];
-    BPTR in = Input();
-
     if (!conf_g.interactive) {
         conf_set_result(idx, CONF_R_SKIP, "manual");
         return;
     }
     conf_emitf("# [%s] %s", conf_tests[idx].id, conf_tests[idx].prompt);
-    put_text("# Did it happen as described? (y/n) ");
-    answer[0] = '\0';
-    if (!in || !FGets(in, (STRPTR)answer, sizeof answer)) {
-        conf_set_result(idx, CONF_R_SKIP, "manual: no answer");
-        return;
-    }
-    if (answer[0] == 'y' || answer[0] == 'Y')
-        conf_set_result(idx, CONF_R_PASS, "operator confirmed");
-    else
-        conf_set_result(idx, CONF_R_FAIL, "operator said no");
+    judge_operator(idx, NULL, "Did it happen as described?");
 }
 
 /* ---- The run ------------------------------------------------------------------------------ */
@@ -885,6 +1015,9 @@ static void run_tests(void)
     int i;
     unsigned a;
     unsigned k;
+
+    /* Procedures the operator did before the run are asked first. */
+    ask_procedures();
 
     /* Runner-judged tests of every registered area. */
     for (a = 0; a < CONF_COUNT(areas); a++) {

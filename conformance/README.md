@@ -29,12 +29,29 @@ reference for app semantics. It does not count as a platform. A test that needs 
 client or a platform prints `SKIP host: ...` there; such a line is allowed in the
 host run and in the qemu run and never in a platform's report.
 
-Tests that need a person (reset the machine, hear a sound, see a picture) are
-`operator` tests. By default the runner skips them with the reason `manual`. With
-`INTERACTIVE` it asks yes or no on the console and records the answer. A SHOULD
+Tests that need a person (reset the machine, hear a sound, see a picture, use the
+keyboard and mouse) are `operator` tests. By default the runner skips them with the
+reason `manual`. With `INTERACTIVE` the runner takes the operator through them while
+the run goes on:
+
+- A test that shows something (C-DISPLAY.17 a picture for 5 seconds, C-INPUT.11 a grey
+  screen for 12 seconds in which to use the keyboard, mouse and joystick, C-AUDIO.12 a
+  tone for 2 seconds) prints what to look for or do, and waits for Return, so that you
+  are looking when it starts. It runs, and the question (`y/n`) comes right after.
+- C-INPUT.11 also prints what the app saw. If no event is a key press, a mouse move, a
+  button or a joystick movement, it says so and offers to repeat the 12 seconds once.
+  A yes does not count when the app saw no such event: the test fails with "operator
+  confirmed but the app saw no key or mouse event". The app's evidence has the last
+  word.
+- C-LIFE.24 is a procedure that you do before the run (start two apps, reset the machine,
+  boot, start the suite); the runner prints the text and, at the start of the run, asks
+  whether you did it and whether it behaved as described.
+
+`ONLY` with one operator id runs just that test and its question, for example
+`ONLY=C-INPUT.11 INTERACTIVE`. Without `INTERACTIVE` it is `SKIP manual`. A SHOULD
 operator test that is skipped does not affect the verdict. A MUST operator test
-that is skipped does, so a platform's report must include the operator's run of
-those.
+(C-LIFE.24) that is skipped does, so a platform's report must include the operator's
+run of it.
 
 A test marked `todo` in `TESTS.md` is not written yet. The runner prints
 `SKIP suite: not implemented` for it, which is not allowed for a MUST test, so a

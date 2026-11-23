@@ -182,6 +182,10 @@ static void prep_picture(struct conf_run *run)
                "top right, blue bottom left, white bottom right");
 }
 
+static const struct conf_operator operators[] = {
+    { "C-DISPLAY.17", "picture", NULL, NULL },
+};
+
 static const struct conf_variant variants[] = {
     { "std", prep_std },
     { "picture", prep_picture },
@@ -208,6 +212,8 @@ const struct conf_area conf_area_display = {
     .peer_count = CONF_COUNT(peers),
     .variants = variants,
     .variant_count = CONF_COUNT(variants),
+    .operators = operators,
+    .operator_count = CONF_COUNT(operators),
     .on_open = on_open,
     .on_end = on_end,
 };

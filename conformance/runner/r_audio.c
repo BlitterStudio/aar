@@ -220,6 +220,10 @@ static void prep_tone(struct conf_run *run)
     conf_emitf("# C-AUDIO.12: a 440 Hz tone plays for two seconds: listen for it");
 }
 
+static const struct conf_operator operators[] = {
+    { "C-AUDIO.12", "tone", NULL, NULL },
+};
+
 static const struct conf_variant variants[] = {
     { "std", prep_std },
     { "tone", prep_tone },
@@ -238,4 +242,6 @@ const struct conf_area conf_area_audio = {
     .peer_count = CONF_COUNT(peers),
     .variants = variants,
     .variant_count = CONF_COUNT(variants),
+    .operators = operators,
+    .operator_count = CONF_COUNT(operators),
 };

@@ -198,6 +198,24 @@ struct conf_variant {
     void (*prepare)(struct conf_run *run);
 };
 
+/* An operator test (judge `operator` in TESTS.md) that a variant of the payload run
+ * shows to a person: a picture, a screen to touch, a tone. The core runs the variant
+ * only with INTERACTIVE and only when the test is selected (so ONLY=<id> runs just
+ * this variant): it prints the test's text, waits for Return so that the person is
+ * looking, runs the variant and asks the question right after it. An operator test
+ * with no entry here is a procedure done before the run and is asked at the start.
+ *   review  after the run, before the question; it prints what the app saw and
+ *           returns 1 when the run gave no evidence and may be repeated once (the
+ *           core then offers a repeat). May be NULL.
+ *   accept  after a yes; returns 0 and fills why (a result detail) when the app's
+ *           own evidence contradicts the person, so that the test fails. May be NULL. */
+struct conf_operator {
+    const char *id;                          /* "C-INPUT.11" */
+    const char *variant;                     /* "show" */
+    int (*review)(const struct conf_run *run);
+    int (*accept)(char *why);
+};
+
 /* What an area registers (r_areas.h). Everything is optional. */
 struct conf_area {
     const char *name;                       /* "C-CLIENT" */
@@ -207,6 +225,8 @@ struct conf_area {
     unsigned peer_count;
     const struct conf_variant *variants;    /* runs of its payload */
     unsigned variant_count;
+    const struct conf_operator *operators;  /* operator tests shown by a variant */
+    unsigned operator_count;
     /* Observers: called for every payload run of every area. */
     void (*on_open)(const struct conf_run *run, LONG status_rc,
                     const AARStatusInfo *status);        /* after AAROpen */
