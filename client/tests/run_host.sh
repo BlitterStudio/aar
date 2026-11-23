@@ -86,7 +86,7 @@ fi
 
 # The image probe against tools/aar-check: the corpus of tests/aar_check_test.py
 # and mutations of it. Plain build, then the sanitizer build.
-PROBE_SRC="client/tests/probe_test.c client/src/aar_probe.c"
+PROBE_SRC="client/tests/probe_test.c client/src/aar_probe.c loader/aar_image.c"
 "$CC" $CFLAGS -O2 -o "$OUT/probe_test" $PROBE_SRC
 "$PYTHON" client/tests/probe_corpus.py "$OUT/probe_test"
 if [ "${1:-}" != nom32 ] && cc_can -m32; then
@@ -107,7 +107,7 @@ fi
 # APTR fields, so these programs are linked without PIE.
 LIB_CFLAGS="$CFLAGS -Iclient/tests -no-pie -fno-pie"
 CORE_SRC="client/tests/core_test.c client/src/aar_core.c client/src/refplat.c"
-SHELL_SRC="client/tests/shell_test.c client/src/aar_core.c client/src/refplat.c client/src/aar_probe.c"
+SHELL_SRC="client/tests/shell_test.c client/src/aar_core.c client/src/refplat.c client/src/aar_probe.c loader/aar_image.c"
 SERVE_CFLAGS="$CFLAGS -Iclient/serve -Iclient/run"
 "$PYTHON" client/tests/make_images.py "$OUT/good.elf"
 lib_tests() {

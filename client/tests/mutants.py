@@ -1029,6 +1029,8 @@ def run_one(name, test, path, changes, tmp):
     work = os.path.join(tmp, name)
     shutil.copytree(os.path.join(ROOT, "client"), os.path.join(work, "client"),
                     ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(os.path.join(ROOT, "loader"), os.path.join(work, "loader"),
+                    ignore=shutil.ignore_patterns("__pycache__", "tests"))
     target = os.path.join(work, path)
     with open(target, "r", newline="") as fh:
         text = fh.read()
@@ -1047,7 +1049,7 @@ def run_one(name, test, path, changes, tmp):
     is_leak = path == LEAK
     sources = ["client/src/aar_core.c", "client/src/refplat.c"]
     if is_shell:
-        sources += ["client/src/aar_probe.c", "client/tests/shell_test.c"]
+        sources += ["client/src/aar_probe.c", "loader/aar_image.c", "client/tests/shell_test.c"]
         tests = ["client/tests/shell_test.c"]
     else:
         sources += ["client/tests/core_test.c"]
@@ -1060,7 +1062,8 @@ def run_one(name, test, path, changes, tmp):
     else:
         programs.append(("core_test", sources, False, []))
         programs.append(("shell_test", ["client/src/aar_core.c", "client/src/refplat.c",
-                                        "client/src/aar_probe.c", "client/tests/shell_test.c"], True, []))
+                                        "client/src/aar_probe.c", "loader/aar_image.c",
+                                        "client/tests/shell_test.c"], True, []))
         # The scale test has 240 claims and no staging areas (see run_host.sh).
         programs.append(("scale_test", ["client/src/aar_core.c", "client/src/refplat.c",
                                         "client/tests/scale_test.c"], False, SCALE_FLAGS))

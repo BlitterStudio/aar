@@ -103,8 +103,9 @@ GUARD_TARGETS := $(foreach p,$(PROFILES),check-freestanding-guard-$(p))
 ABI_TARGETS := $(foreach p,$(PROFILES),check-abi-$(p))
 
 .PHONY: all check clean check-tool check-fp-codegen check-mode-switch \
-	check-freestanding-guard check-abi check-abi-host check-expect-note \
-	check-runtime check-conf-catalogue check-conf-payloads conf-bundle
+	check-freestanding-guard check-abi check-abi-host check-loader-host \
+	check-expect-note check-runtime check-conf-catalogue check-conf-payloads \
+	conf-bundle
 
 all: $(BUILD_TARGETS)
 
@@ -130,6 +131,13 @@ $(foreach p,$(PROFILES),$(eval $(call ABI_RULE,$(p))))
 
 check-abi-host:
 	$(AAR_SDK)/tests/abi_check.sh host
+
+# The reference loader (loader/) on the host: plan and place, the conformance
+# corpus, the aar-check corpus and a mutation fuzz run, 64-bit, -m32 and with
+# the sanitizers. Needs a host gcc and python3 (the SDK image has neither);
+# make check-runtime runs the same loader under qemu.
+check-loader-host:
+	sh $(AAR_SDK)/loader/tests/run_host.sh
 
 check-fp-codegen: $(FP_TARGETS)
 
