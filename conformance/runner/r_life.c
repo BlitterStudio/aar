@@ -895,6 +895,8 @@ static void g_revoke(void)
     char d[CONF_DETAIL_MAX];
     LONG rc;
     LONG status_before;
+    LONG stop_rc;
+    ULONG t0;
 
     x = zz_ext(d);
     if (!x) {
@@ -933,8 +935,21 @@ static void g_revoke(void)
      * a read of the control block (AARStatus) cannot [spec question 58]. What the
      * status says before that is noted, not judged. */
     status_before = AARStatus(h, &st);
-    if (AARStop(h) != AAR_E_STALE) {
-        life_note("C-LIFE.22", 0, "AARStop on a revoked handle is not AAR_E_STALE");
+    /* The release is carried out by the card's core 1 after the call returns, so the
+     * claim is revoked a little later: AARStop (a platform call) is repeated for up to 3 s
+     * until it gives AAR_E_STALE; any other failure code is the answer. */
+    t0 = conf_ticks();
+    for (;;) {
+        stop_rc = AARStop(h);
+        if (stop_rc != AAR_OK || conf_ticks() - t0 > 3UL * CONF_TICKS_PER_SECOND)
+            break;
+        Delay(1);
+    }
+    if (stop_rc != AAR_E_STALE) {
+        conf_detailf(d, "AARStop on a revoked handle returned %ld after %lu ms, AAR_E_STALE is "
+                        "due (AARStatus before: %ld)", (long)stop_rc,
+                     (unsigned long)ms_of(conf_ticks() - t0), (long)status_before);
+        life_note("C-LIFE.22", 0, d);
     } else if (AARStatus(h, &st) != AAR_E_STALE) {
         life_note("C-LIFE.22", 0, "AARStatus after AARStop on a revoked handle is not AAR_E_STALE");
     } else if (AARSendMessage(h, &msg) != AAR_E_STALE) {

@@ -718,7 +718,7 @@ static void clear_signal(ULONG mask)
     (void)SetSignal(0, mask);
 }
 
-/* The next request of the app (a console write) and its completion. clear_mask: the
+/* The next request of the app (a file stat: it parks the app) and its completion. clear_mask: the
  * signal bits to clear between taking the request and replying to it. */
 static int serve_one(AARHandle *h, ULONG ticks, char *d, ULONG clear_mask)
 {
@@ -738,16 +738,15 @@ static int serve_one(AARHandle *h, ULONG ticks, char *d, ULONG clear_mask)
         }
         Delay(1);
     }
-    if (req.op != AAR_OP_CONSOLE_WRITE) {
-        conf_detailf(d, "the request is op 0x%lx, a console write is due", (unsigned long)req.op);
+    if (req.op != AAR_OP_FILE_STAT) {
+        conf_detailf(d, "the request is op 0x%lx, a file stat is due", (unsigned long)req.op);
         return 0;
     }
     /* The signal for the end of the app can come as soon as the reply is posted:
      * clear what is pending before it, not after. */
     if (clear_mask)
         clear_signal(clear_mask);
-    req.result = AAR_OK;
-    req.out[AAR_R_CONSOLE_COUNT] = req.buf_len;
+    req.result = AAR_E_NOENT; /* the name does not exist */
     rc = AARServiceReply(h, &req);
     if (rc != AAR_OK) {
         conf_detailf(d, "AARServiceReply returned %ld", (long)rc);
