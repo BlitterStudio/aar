@@ -102,7 +102,11 @@ The file defines one `const struct conf_area conf_area_<area>` (see the stubs an
   the run needs before the load: `run->tags` (a tag list for `AARSetTagList`, for
   example `AAR_TAG_PRIVATE_MIB`), `run->extra_args` (more arguments),
   `run->argv_override` (all arguments), `run->timeout_s`, `run->serve_groups`,
-  the console modes, `run->poll` and `run->on_message`. It is also the place to
+  the console modes, `run->poll` and `run->on_message`; `run->display` (a display table
+  that replaces the Picasso96 screen, see `runner/r_gfx.h`), `run->serve_flags_off`
+  (flags the core sets that the run does not want, for example the input window) and
+  `run->on_finished` (called after the serving loop returned, with the handle still
+  open: the messages and the status are readable). It is also the place to
   prepare fixture files under `conf_g.root`.
 - **Console modes** (slow output and scripted input) are in the core, in
   `run->con`: `write_hold_ticks` delays the completion of each console write (the
@@ -118,8 +122,13 @@ The file defines one `const struct conf_area conf_area_<area>` (see the stubs an
 - A manual service loop (`AARServiceNext` and `AARServiceReply`, needed to withhold
   or misaddress completions for the queue and timeout tests) is not in the core.
   Write it in your `r_<area>.c` as a test that does its own open, load and start
-  (the core's `conf_run_payload` always uses `aar_serve`). Share it through a new
-  header if two areas need it.
+  (the core's `conf_run_payload` always uses `aar_serve`). `runner/r_mq.h` is one:
+  open, load and start a payload by hand, take requests with a stash, wait for a
+  message or a request, and finish; use it before writing another. A payload judged
+  by `payload` whose run is manual has its console text parsed with
+  `conf_parse_capture` (see `stage_late` in `r_queue.c`). A runner source may not name
+  the id of a `payload` row, so a manual run that serves a payload row hangs it
+  on a `runner` row's test function (`t_manual` in `r_queue.c`).
 
 The runner is plain C for AmigaOS m68k with warnings as errors; it may use
 `aar.library`, `aar_serve`, dos and exec, and nothing platform specific.

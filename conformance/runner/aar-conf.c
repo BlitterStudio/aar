@@ -571,7 +571,7 @@ void conf_run_payload(struct conf_run *run, struct conf_outcome *out)
 
     root = lock_root();
     aar_serve_config_default(&cfg);
-    cfg.flags = AAR_SERVEF_NO_INPUT_WINDOW | run->serve_flags;
+    cfg.flags = (AAR_SERVEF_NO_INPUT_WINDOW | run->serve_flags) & ~run->serve_flags_off;
     cfg.groups = run->serve_groups;
     cfg.root = root;
     cfg.screen_title = (CONST_STRPTR)"aar-conf";
@@ -585,6 +585,7 @@ void conf_run_payload(struct conf_run *run, struct conf_outcome *out)
     serve_hooks.status = hook_status;
     serve_hooks.log = hook_log;
     serve_hooks.message = hook_message;
+    serve_hooks.display = run->display;
     serve_hooks.console = &con_ops;
     cfg.hooks = &serve_hooks;
     cfg.user = run;
@@ -645,6 +646,8 @@ void conf_run_payload(struct conf_run *run, struct conf_outcome *out)
             out->status_rc = rc;
         }
     }
+    if (out->ran && run->on_finished)
+        run->on_finished(run);
     aar_serve_destroy(s);
     run->s = NULL;
 close_handle:

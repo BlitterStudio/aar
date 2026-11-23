@@ -217,23 +217,23 @@ messages as the payload asks for.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-MSG.1 | 6 | MUST | core | any | payload | todo | 32 bytes in, the same 32 bytes out, in both directions (all 256 byte values, no word swapped) |
-| C-MSG.2 | 6 | MUST | core | any | payload | todo | app to client: `msg_capacity` numbered messages arrive in order, none lost or repeated |
-| C-MSG.3 | 6 | MUST | core | any | payload | todo | client to app: `msg_capacity` numbered messages arrive in order through `msg_poll`, none lost or repeated |
-| C-MSG.4 | 6 | MUST | core | any | payload | todo | with the client not draining, `msg_send` returns `AAR_E_BUSY` after at least `msg_capacity` messages and never blocks (each call returns within 100 ms); then the client drains and gets the accepted messages intact and in order |
-| C-MSG.5 | 6 | MUST | core | any | runner | todo | with the app not polling, `AARSendMessage` returns `AAR_E_BUSY` after at least `msg_capacity` messages; the app then polls them all intact and in order |
-| C-MSG.6 | 6 | MUST | core | any | payload | todo | `msg_poll` returns 0 when empty, 1 with a copy when a message is queued |
-| C-MSG.7 | 6 | MUST | core | any | runner | todo | `AARGetMessage` returns `AAR_E_BUSY` when no message from the app is queued |
-| C-MSG.8 | 6 | MUST | core | any | payload | todo | `msg_wait` returns `AAR_OK` with the message still queued (a following `msg_poll` returns it) |
-| C-MSG.9 | 6 | MUST | core | any | payload | todo | `msg_wait` with nothing queued returns `AAR_E_TIMEDOUT` after at least the timeout |
-| C-MSG.10 | 6 | MUST | core | any | payload | todo | `msg_wait(0)` only tests: returns at once, `AAR_OK` with a message queued, `AAR_E_TIMEDOUT` without |
-| C-MSG.11 | 6 | MUST | core | any | payload | todo | a stop request ends `msg_wait` with `AAR_E_IO` (runner peer stops the app while it waits) |
-| C-MSG.12 | 6 | MUST | core | any | payload | todo | a message queued before the stop is reported first: `msg_wait` returns `AAR_OK` for it, then `AAR_E_IO` |
-| C-MSG.13 | 5.4 | MUST | core | any | payload | todo | an app parked in `msg_wait` for 12 seconds is not ended by the watchdog |
-| C-MSG.14 | 6 | MUST | core | any | runner | todo | messages the app sent remain readable by the client after the app exited, until `AARClose` (up to `msg_capacity`) |
-| C-MSG.15 | 10.4 | MUST | core | any | runner | todo | `AARInfo.msg_capacity` equals `queue_depth` minus 1 (`AAR_MSG_RESERVE`), and a platform with the default depth reports 63 |
-| C-MSG.16 | 10.4 | MUST | core | any | payload | todo | a request behind a message that the full client inbox holds back waits until the client drains: a console write completes after the client resumes draining (runner peer holds draining for 300 ms) |
-| C-MSG.17 | 9.6 | MUST | core | any | payload | todo | a burst of messages in both directions with a slow receiver loses none and reorders none (the `msgflood` pattern, 2000 messages) |
+| C-MSG.1 | 6 | MUST | core | any | payload | yes | 32 bytes in, the same 32 bytes out, in both directions (all 256 byte values, no word swapped) |
+| C-MSG.2 | 6 | MUST | core | any | payload | yes | app to client: `msg_capacity` numbered messages arrive in order, none lost or repeated |
+| C-MSG.3 | 6 | MUST | core | any | payload | yes | client to app: `msg_capacity` numbered messages arrive in order through `msg_poll`, none lost or repeated |
+| C-MSG.4 | 6 | MUST | core | any | payload | yes | with the client not draining, `msg_send` returns `AAR_E_BUSY` after at least `msg_capacity` messages and never blocks (each call returns within 100 ms); then the client drains and gets the accepted messages intact and in order [spec question 47] |
+| C-MSG.5 | 6 | MUST | core | any | runner | yes | with the app not polling, `AARSendMessage` returns `AAR_E_BUSY` after at least `msg_capacity` messages; the app then polls them all intact and in order |
+| C-MSG.6 | 6 | MUST | core | any | payload | yes | `msg_poll` returns 0 when empty, 1 with a copy when a message is queued |
+| C-MSG.7 | 6 | MUST | core | any | runner | yes | `AARGetMessage` returns `AAR_E_BUSY` when no message from the app is queued |
+| C-MSG.8 | 6 | MUST | core | any | payload | yes | `msg_wait` returns `AAR_OK` with the message still queued (a following `msg_poll` returns it) |
+| C-MSG.9 | 6 | MUST | core | any | payload | yes | `msg_wait` with nothing queued returns `AAR_E_TIMEDOUT` after at least the timeout |
+| C-MSG.10 | 6 | MUST | core | any | payload | yes | `msg_wait(0)` only tests: returns at once, `AAR_OK` with a message queued, `AAR_E_TIMEDOUT` without |
+| C-MSG.11 | 6 | MUST | core | any | payload | yes | a stop request ends `msg_wait` with `AAR_E_IO` (runner peer stops the app while it waits) |
+| C-MSG.12 | 6 | MUST | core | any | payload | yes | a message queued before the stop is reported first: `msg_wait` returns `AAR_OK` for it, then `AAR_E_IO` |
+| C-MSG.13 | 5.4 | MUST | core | any | payload | yes | an app parked in `msg_wait` for 12 seconds is not ended by the watchdog |
+| C-MSG.14 | 6 | MUST | core | any | runner | yes | messages the app sent remain readable by the client after the app exited, until `AARClose` (up to `msg_capacity`) |
+| C-MSG.15 | 10.4 | MUST | core | any | runner | yes | `AARInfo.msg_capacity` equals `queue_depth` minus 1 (`AAR_MSG_RESERVE`), and a platform with the default depth reports 63 |
+| C-MSG.16 | 10.4 | MUST | core | any | payload | yes | a request behind a message that the full client inbox holds back waits until the client drains: a console write completes after the client resumes draining (runner peer holds draining for 300 ms) [spec question 47] |
+| C-MSG.17 | 9.6 | MUST | core | any | payload | yes | a burst of messages in both directions with a slow receiver loses none and reorders none (the `msgflood` pattern, 2000 messages) |
 | C-MSG.18 | 9.6 | MUST | core | any | none | todo | not tested: app service calls park the app and become requests, payloads are shared buffers named by token; internal, shown indirectly by C-FILE and C-CON |
 | C-MSG.19 | 6 | MUST | core | any | none | todo | not tested: a runtime without wait support "may implement it as sleep-and-poll"; permitted, indistinguishable |
 | C-MSG.20 | 6 | MAY | core | any | none | todo | not tested: message content convention is recommended, not required |
@@ -247,22 +247,22 @@ or misaddresses completions.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-QUEUE.1 | 10.4 | MUST | core | any | runner | todo | `AARInfo.queue_depth` is a power of two from 64 to 4096 |
-| C-QUEUE.2 | 9.6 | MUST | core | any | runner | todo | `AARServiceNext` returns `AAR_OK` with a request, or `AAR_E_BUSY` when none is waiting |
-| C-QUEUE.3 | 9.6 | MUST | core | any | runner | todo | a reply with a wrong `id` does not resume the parked app or release its storage; the app continues only after the right reply |
-| C-QUEUE.4 | 9.6 | MUST | core | any | runner | todo | a reply with a wrong `op`, and a duplicate reply, do the same as C-QUEUE.3 |
-| C-QUEUE.5 | 9.6 | MUST | core | any | runner | todo | `AARServiceReply` resumes the app only if it is parked for that request: a reply to a non-parking request (console write) leaves a later parked request parked |
-| C-QUEUE.6 | 9.6 | MUST | core | any | payload | todo | a request whose client withholds the reply past the 30 s file timeout returns `AAR_E_TIMEDOUT` and a timeout is not a completion: the next call that needs the storage returns `AAR_E_BUSY` until the late completion is consumed (runner peer) |
-| C-QUEUE.7 | 9.6 | MUST | core | any | payload | todo | after the late completion of C-QUEUE.6 is consumed, the app can use the storage again |
-| C-QUEUE.8 | 10.4 | MUST | core | any | runner | todo | after `AAR_E_BUSY` for a full SQ the status counter `sq_full` has increased |
-| C-QUEUE.9 | 10.4 | MUST | core | any | payload | todo | `aar_log` flood with the client not serving never blocks the app; the status counter `log_dropped` increases when records were lost |
-| C-QUEUE.10 | 10.6 | MUST | core | any | payload | todo | a missed or merged doorbell does not lose an entry: 5000 console requests with the client serving only on a 50 ms timer (no wakeups) complete with every byte present |
-| C-QUEUE.11 | 10.4 | MUST | core | any | runner | todo | an unsolicited entry (event or log) that arrives while a request is pending does not complete or disturb that request |
-| C-QUEUE.12 | 5.6 | MUST | core | any | runner | todo | open claims until `AAR_E_NORESOURCE` (or until `max_apps`): the refusal carries a reason from 1 to 4 (`AAR_REASON_*`); a platform with a ceiling reports `max_apps` |
-| C-QUEUE.13 | 5.6 | MUST | core | any | runner | todo | a refused open leaves nothing allocated: after 100 further refused opens and closing every claim, the same number of claims can be opened again |
-| C-QUEUE.14 | 5.6 | MUST | core | any | runner | todo | releasing every claim returns every resource: open to the limit, close all, open to the limit again, the same count |
-| C-QUEUE.15 | 5.6 | SHOULD | core | any | runner | todo | with two compute-bound apps of weights 1 and 3 and `AAR_TAG_WEIGHT` accepted, the work done is within 30 percent of 1 to 3 (`AAR_E_NOSYS` for the tag skips with that reason) |
-| C-QUEUE.16 | 5.6 | MUST | core | any | runner | todo | an app parked in a wait uses no CPU: a parked app beside a compute-bound app leaves the compute-bound app at least 90 percent of the work it does alone |
+| C-QUEUE.1 | 10.4 | MUST | core | any | runner | yes | `AARInfo.queue_depth` is a power of two from 64 to 4096 |
+| C-QUEUE.2 | 9.6 | MUST | core | any | runner | yes | `AARServiceNext` returns `AAR_OK` with a request, or `AAR_E_BUSY` when none is waiting |
+| C-QUEUE.3 | 9.6 | MUST | core | any | runner | yes | a reply with a wrong `id` does not resume the parked app or release its storage; the app continues only after the right reply [spec question 45] |
+| C-QUEUE.4 | 9.6 | MUST | core | any | runner | yes | a reply with a wrong `op`, and a duplicate reply, do the same as C-QUEUE.3 [spec question 45] |
+| C-QUEUE.5 | 9.6 | MUST | core | any | runner | yes | `AARServiceReply` resumes the app only if it is parked for that request: a reply to a non-parking request (console write) leaves a later parked request parked [spec question 44] |
+| C-QUEUE.6 | 9.6 | MUST | core | any | payload | yes | a request whose client withholds the reply past the 30 s file timeout returns `AAR_E_TIMEDOUT` and a timeout is not a completion: the next call that needs the storage returns `AAR_E_BUSY` until the late completion is consumed (runner peer) |
+| C-QUEUE.7 | 9.6 | MUST | core | any | payload | yes | after the late completion of C-QUEUE.6 is consumed, the app can use the storage again |
+| C-QUEUE.8 | 10.4 | MUST | core | any | runner | yes | after `AAR_E_BUSY` for a full SQ the status counter `sq_full` has increased |
+| C-QUEUE.9 | 10.4 | MUST | core | any | payload | yes | `aar_log` flood with the client not serving never blocks the app; the status counter `log_dropped` increases when records were lost [spec question 46] |
+| C-QUEUE.10 | 10.6 | MUST | core | any | payload | yes | a missed or merged doorbell does not lose an entry: 5000 console requests with the client serving only on a 50 ms timer (no wakeups) complete with every byte present |
+| C-QUEUE.11 | 10.4 | MUST | core | any | runner | yes | an unsolicited entry (event or log) that arrives while a request is pending does not complete or disturb that request |
+| C-QUEUE.12 | 5.6 | MUST | core | any | runner | yes | open claims until `AAR_E_NORESOURCE` (or until `max_apps`): the refusal carries a reason from 1 to 4 (`AAR_REASON_*`); a platform with a ceiling reports `max_apps` |
+| C-QUEUE.13 | 5.6 | MUST | core | any | runner | yes | a refused open leaves nothing allocated: after 100 further refused opens and closing every claim, the same number of claims can be opened again |
+| C-QUEUE.14 | 5.6 | MUST | core | any | runner | yes | releasing every claim returns every resource: open to the limit, close all, open to the limit again, the same count |
+| C-QUEUE.15 | 5.6 | SHOULD | core | any | runner | yes | with two compute-bound apps of weights 1 and 3 and `AAR_TAG_WEIGHT` accepted, the work done is within 30 percent of 1 to 3 (`AAR_E_NOSYS` for the tag skips with that reason) |
+| C-QUEUE.16 | 5.6 | MUST | core | any | runner | yes | an app parked in a wait uses no CPU: a parked app beside a compute-bound app leaves the compute-bound app at least 90 percent of the work it does alone |
 | C-QUEUE.17 | 5.6 | MUST | core | any | none | todo | not tested: "keeps its own service work ahead of apps" is a platform scheduling policy |
 | C-QUEUE.18 | 10.4 | MUST | core | any | none | todo | not tested: entry layout, big-endian fields, slot clearing, reserved bytes, op codes in the entry, default pair geometry (`0x3000` bytes), release and acquire barriers and the head and tail writer rules are not visible to an `aar.library` client; covered by `tests/transport_model_test.c` and the platform's tests |
 | C-QUEUE.19 | 10.4 | MUST | core | any | none | todo | not tested: an index count above `depth` marks the block corrupt (`AAR_E_IO`); needs write access to the shared control block, which the client API does not give [spec question 8] |
@@ -442,23 +442,23 @@ from it; with a real screen the picture is judged by the operator.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-DISPLAY.1 | 8.2 | MUST | display | any | payload | todo | `display_open` of 320x200, 640x480 and 4096x1 in RGB565 and BGRA8888 succeeds with width, height and format as asked, `pitch` at least width times bytes per pixel, `reserved` 0, `caps` only defined bits |
-| C-DISPLAY.2 | 8.2 | MUST | display | any | payload | todo | `layout` is consistent with the format (RGB565: layouts 1 to 4; BGRA8888: 5 or 6; CLUT8: 7) and `back` is non-NULL and writable; `front` is NULL or writable |
-| C-DISPLAY.3 | 8.2 | MUST | display | any | payload | todo | width 0 or height 0 is refused with a negative code; an unknown format is refused with `AAR_E_INVAL` or `AAR_E_NOSYS` [spec question 15] |
-| C-DISPLAY.4 | 8.2 | MUST | display | any | payload | todo | one display per app: a second `display_open` while one is open fails with a negative code |
-| C-DISPLAY.5 | 8.2 | MUST | display | any | payload | todo | `display_close` returns `AAR_OK`; a second close and a flip after close are negative; a new open works again |
-| C-DISPLAY.6 | 8.2 | MUST | display | any | payload | todo | `flip` of the open id returns `AAR_OK`; a flip of any other id is `AAR_E_INVAL` |
-| C-DISPLAY.7 | 8.2 | MUST | display | any | payload | todo | write `back`, `flip`, `refresh`: after the refresh `back` can be written again and `front` (when non-NULL) holds the frame just presented [spec question 16] |
-| C-DISPLAY.8 | 8.2 | MUST | display | any | payload | todo | `AAR_DISPCAP_ASYNC` granted: `flip_async` then `flip_idle` reaches 1 within 1 s; a second async flip while one is pending is `AAR_E_BUSY` or completes (no frame is lost); without the cap `flip_async` is negative |
-| C-DISPLAY.9 | 8.2 | MUST | display | any | payload | todo | `AAR_DISPLAY_LATEST` requested: the open succeeds with or without `AAR_DISPCAP_LATEST`; without the cap `display_latest_dropped` returns 0 |
-| C-DISPLAY.10 | 8.2 | MUST | display | any | payload | todo | with `AAR_DISPCAP_LATEST` granted, 100 quick flips leave `display_latest_dropped` non-decreasing and not above 99 |
-| C-DISPLAY.11 | 8.2 | MUST | display | any | payload | todo | `vsync` returns `AAR_OK`; ten vsyncs take at least 100 ms and at most 2 s |
-| C-DISPLAY.12 | 8.2 | MUST | display | any | payload | todo | flip publishes the surface (runner peer): the frame the app flips without calling `aar_publish` is read by the client's display table byte for byte |
-| C-DISPLAY.13 | 8.2 | MUST | display | any | payload | todo | pixel layout (runner peer): a four-colour test frame stored by the reported `layout` decodes in the client's table to the four colours, for each format the platform grants |
-| C-DISPLAY.14 | 8.2 | MUST | display | any | payload | todo | `pitch` larger than the row bytes is honoured: rows stored by `pitch` arrive in the right rows (a surface whose pitch equals the row bytes is also accepted) |
-| C-DISPLAY.15 | 8.2 | MUST | display | any | payload | todo | CLUT8 with `AAR_DISPCAP_CLUT8` granted: `set_palette` of 256 colours returns `AAR_OK`; first plus count above 256 is `AAR_E_INVAL`; the client's table received the colours |
-| C-DISPLAY.16 | 8.2 | MUST | display | any | payload | todo | `set_palette` on a surface without the CLUT8 cap is negative |
-| C-DISPLAY.17 | 8.2 | SHOULD | display | any | operator | todo | the picture: the operator sees the test pattern the payload shows in the colours named on the console |
+| C-DISPLAY.1 | 8.2 | MUST | display | any | payload | yes | `display_open` of 320x200, 640x480 and 4096x1 in RGB565 and BGRA8888 succeeds with width, height and format as asked, `pitch` at least width times bytes per pixel, `reserved` 0, `caps` only defined bits |
+| C-DISPLAY.2 | 8.2 | MUST | display | any | payload | yes | `layout` is consistent with the format (RGB565: layouts 1 to 4; BGRA8888: 5 or 6; CLUT8: 7) and `back` is non-NULL and writable; `front` is NULL or writable |
+| C-DISPLAY.3 | 8.2 | MUST | display | any | payload | yes | width 0 or height 0 is refused with a negative code; an unknown format is refused with `AAR_E_INVAL` or `AAR_E_NOSYS` [spec question 15] |
+| C-DISPLAY.4 | 8.2 | MUST | display | any | payload | yes | one display per app: a second `display_open` while one is open fails with a negative code |
+| C-DISPLAY.5 | 8.2 | MUST | display | any | payload | yes | `display_close` returns `AAR_OK`; a second close and a flip after close are negative; a new open works again |
+| C-DISPLAY.6 | 8.2 | MUST | display | any | payload | yes | `flip` of the open id returns `AAR_OK`; a flip of any other id is `AAR_E_INVAL` |
+| C-DISPLAY.7 | 8.2 | MUST | display | any | payload | yes | write `back`, `flip`, `refresh`: after the refresh `back` can be written again and `front` (when non-NULL) holds the frame just presented [spec question 16] |
+| C-DISPLAY.8 | 8.2 | MUST | display | any | payload | yes | `AAR_DISPCAP_ASYNC` granted: `flip_async` then `flip_idle` reaches 1 within 1 s; a second async flip while one is pending is `AAR_E_BUSY` or completes (no frame is lost); without the cap `flip_async` is negative |
+| C-DISPLAY.9 | 8.2 | MUST | display | any | payload | yes | `AAR_DISPLAY_LATEST` requested: the open succeeds with or without `AAR_DISPCAP_LATEST`; without the cap `display_latest_dropped` returns 0 |
+| C-DISPLAY.10 | 8.2 | MUST | display | any | payload | yes | with `AAR_DISPCAP_LATEST` granted, 100 quick flips leave `display_latest_dropped` non-decreasing and not above 99 |
+| C-DISPLAY.11 | 8.2 | MUST | display | any | payload | yes | `vsync` returns `AAR_OK`; ten vsyncs take at least 100 ms and at most 2 s |
+| C-DISPLAY.12 | 8.2 | MUST | display | any | payload | yes | flip publishes the surface (runner peer): the frame the app flips without calling `aar_publish` is read by the client's display table byte for byte [spec questions 49, 50] |
+| C-DISPLAY.13 | 8.2 | MUST | display | any | payload | yes | pixel layout (runner peer): a four-colour test frame stored by the reported `layout` decodes in the client's table to the four colours, for each format the platform grants |
+| C-DISPLAY.14 | 8.2 | MUST | display | any | payload | yes | `pitch` larger than the row bytes is honoured: rows stored by `pitch` arrive in the right rows (a surface whose pitch equals the row bytes is also accepted) [spec question 50] |
+| C-DISPLAY.15 | 8.2 | MUST | display | any | payload | yes | CLUT8 with `AAR_DISPCAP_CLUT8` granted: `set_palette` of 256 colours returns `AAR_OK`; first plus count above 256 is `AAR_E_INVAL`; the client's table received the colours |
+| C-DISPLAY.16 | 8.2 | MUST | display | any | payload | yes | `set_palette` on a surface without the CLUT8 cap is negative |
+| C-DISPLAY.17 | 8.2 | SHOULD | display | any | operator | yes | the picture: the operator sees the test pattern the payload shows in the colours named on the console |
 | C-DISPLAY.18 | 8.2 | MAY | display | any | none | todo | not tested: a platform MAY allow more than 4096 in width or height |
 | C-DISPLAY.19 | 9.6 | MUST | display | any | none | todo | not tested: a platform that owns the display buffers may complete a flip itself, so no flip entry is promised; no test may assume one (C-DISPLAY.6 to C-DISPLAY.12 allow both) |
 | C-DISPLAY.20 | 8.2 | MUST | display | any | none | todo | not tested: the app MUST write `back`, flip, then `refresh` before writing again; an obligation of the app |
@@ -467,17 +467,17 @@ from it; with a real screen the picture is judged by the operator.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-INPUT.1 | 8.3 | MUST | core | any | payload | todo | `event_poll` never blocks: 1000 calls with nothing pending return `AAR_OK` with 0 events within 100 ms |
-| C-INPUT.2 | 8.3 | MUST | core | any | payload | todo | a stop (`AARStop` and an `AAR_EV_STOP` posted with `AARPostEvent`) reaches `event_poll` as type 5 even without the input group |
-| C-INPUT.3 | 8.3 | MUST | input | any | payload | todo | key down and key up events posted with `AARPostEvent` arrive in order with `code`, `buttons` and `time_ms` intact (types 1 and 2) |
-| C-INPUT.4 | 8.3 | MUST | input | any | payload | todo | mouse events arrive in order with `dx`, `dy` and button bits intact (type 3) |
-| C-INPUT.5 | 8.3 | MUST | input | any | payload | todo | joystick events arrive with axes in -1, 0, 1 and fire in bit 0 (type 4) |
-| C-INPUT.6 | 8.3 | MUST | input | any | payload | todo | Ctrl-D, Ctrl-E and Ctrl-F signalled to the runner task arrive as `AAR_EV_BREAK` with codes 4, 5 and 6 (the serving loop's break mask) |
-| C-INPUT.7 | 8.3 | MUST | input | any | payload | todo | `AAR_EV_RESIZE` (6) is never delivered during the whole input test |
-| C-INPUT.8 | 8.3 | MUST | input | any | payload | todo | the runtime retains at least 64 events: 64 key events posted while the app does not poll all arrive in order |
-| C-INPUT.9 | 8.3 | MUST | input | any | runner | todo | with the queue overfull the client drops the new events, never the old ones: the app finds the first events in order, and `AARStatusInfo.events_dropped` equals the number posted minus the number received |
-| C-INPUT.10 | 9.6 | MUST | input | any | payload | todo | mouse motion posted while the queue is full: the sum of `dx` received plus `events_dropped` equals the sum posted (merged or counted as dropped, never lost silently) [spec question 17] |
-| C-INPUT.11 | 8.3 | SHOULD | input | any | operator | todo | real keyboard, mouse and joystick events reach the app with the up bit removed from keys: the operator presses keys and moves the mouse and confirms the codes the payload prints |
+| C-INPUT.1 | 8.3 | MUST | core | any | payload | yes | `event_poll` never blocks: 1000 calls with nothing pending return `AAR_OK` with 0 events within 100 ms |
+| C-INPUT.2 | 8.3 | MUST | core | any | payload | yes | a stop (`AARStop` and an `AAR_EV_STOP` posted with `AARPostEvent`) reaches `event_poll` as type 5 even without the input group |
+| C-INPUT.3 | 8.3 | MUST | input | any | payload | yes | key down and key up events posted with `AARPostEvent` arrive in order with `code`, `buttons` and `time_ms` intact (types 1 and 2) [spec question 48] |
+| C-INPUT.4 | 8.3 | MUST | input | any | payload | yes | mouse events arrive in order with `dx`, `dy` and button bits intact (type 3) |
+| C-INPUT.5 | 8.3 | MUST | input | any | payload | yes | joystick events arrive with axes in -1, 0, 1 and fire in bit 0 (type 4) |
+| C-INPUT.6 | 8.3 | MUST | input | any | payload | yes | Ctrl-D, Ctrl-E and Ctrl-F signalled to the runner task arrive as `AAR_EV_BREAK` with codes 4, 5 and 6 (the serving loop's break mask) |
+| C-INPUT.7 | 8.3 | MUST | input | any | payload | yes | `AAR_EV_RESIZE` (6) is never delivered during the whole input test |
+| C-INPUT.8 | 8.3 | MUST | input | any | payload | yes | the runtime retains at least 64 events: 64 key events posted while the app does not poll all arrive in order |
+| C-INPUT.9 | 8.3 | MUST | input | any | runner | yes | with the queue overfull the client drops the new events, never the old ones: the app finds the first events in order, and `AARStatusInfo.events_dropped` equals the number posted minus the number received |
+| C-INPUT.10 | 9.6 | MUST | input | any | payload | yes | mouse motion posted while the queue is full: the sum of `dx` received plus `events_dropped` equals the sum posted (merged or counted as dropped, never lost silently) [spec question 17] |
+| C-INPUT.11 | 8.3 | SHOULD | input | any | operator | yes | real keyboard, mouse and joystick events reach the app with the up bit removed from keys: the operator presses keys and moves the mouse and confirms the codes the payload prints |
 | C-INPUT.12 | 8.3 | MAY | input | any | none | todo | not tested: the client MAY coalesce mouse motion when the queue is full (C-INPUT.10 allows both) |
 | C-INPUT.13 | 8.3 | MUST | input | any | none | todo | not tested: "the runtime keeps at least 64 events" beyond the completion queue's own 64 entries is internal; the outcome is C-INPUT.8 |
 | C-INPUT.14 | 8.3 | MUST | core | any | none | todo | not tested: an idle app uses `msg_wait`, `sleep_us` or `yield` and not a spin; advice to apps |
@@ -486,18 +486,18 @@ from it; with a real screen the picture is judged by the operator.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-AUDIO.1 | 8.4 | MUST | audio | any | payload | todo | `audio_open(22050, 2)` succeeds; the grant has `channels` 2, `rate` one of 22050, 44100, 48000, `frames` a power of two, `flags` 0, `samples`, `read_frame` and `write_frame` non-NULL |
-| C-AUDIO.2 | 8.4 | MUST | audio | any | payload | todo | the ring header is where the standard puts it: `read_frame` is `write_frame` plus 0x40 bytes, `samples` is `write_frame` plus 0x80 bytes, the little-endian words at +4 (rate), +8 (channels), +0xC (format `AAR_AUDIO_FORMAT_S16LE`) agree with the grant [spec question 18] |
-| C-AUDIO.3 | 8.4 | MUST | audio | any | payload | todo | `audio_open` of 44100 and 48000 stereo returns `AAR_OK` with a supported pair or a refusal of `AAR_E_INVAL`; a granted pair is written into `out` |
-| C-AUDIO.4 | 8.4 | MUST | audio | any | payload | todo | an unsupported rate (8000, 96000) or channel count (1, 0, 6) is `AAR_E_INVAL`; `channels` is always 2 in a grant |
-| C-AUDIO.5 | 8.4 | MUST | audio | any | payload | todo | the app writes 1 second of samples ahead of `*read_frame` (never more than `frames` ahead); the runtime advances `*read_frame` at the granted rate within 25 percent over 1 second, and `read_frame` never passes `write_frame` (route PLATFORM) |
-| C-AUDIO.6 | 8.4 | MUST | audio | any | payload | todo | when the app stops writing, underruns are counted: `audio_get_stats` (when present) shows more than before and equals the ring's word at +0x44 |
-| C-AUDIO.7 | 8.4 | MUST | audio | any | payload | todo | `audio_get_stats` honours `size` (8 fills `size` and `underruns` only); a NULL slot returns `AAR_E_NOSYS` |
-| C-AUDIO.8 | 8.4 | MUST | audio | any | payload | todo | `audio_close` detaches the stream, returns `AAR_OK`, a new open works, a second close is negative |
-| C-AUDIO.9 | 8.4 | SHOULD | audio | any | payload | todo | a second `audio_open` in the same app is `AAR_E_BUSY`; opens in more apps than the platform has streams are `AAR_E_BUSY` (the runner opens apps until the first refusal) |
-| C-AUDIO.10 | 9.6 | MUST | audio | any | runner | todo | route `AHI` (`AAR_TAG_AUDIO_ROUTE`): `AARAudioRead` with `frames` 0 returns the frames available |
-| C-AUDIO.11 | 9.6 | MUST | audio | any | runner | todo | route `AHI`: the PCM `AARAudioRead` returns is exactly what the app wrote, in order (a ramp of 48000 frames) |
-| C-AUDIO.12 | 8.4 | SHOULD | audio | any | operator | todo | sound: the operator hears the 440 Hz tone the payload plays for two seconds and confirms |
+| C-AUDIO.1 | 8.4 | MUST | audio | any | payload | yes | `audio_open(22050, 2)` succeeds; the grant has `channels` 2, `rate` one of 22050, 44100, 48000, `frames` a power of two, `flags` 0, `samples`, `read_frame` and `write_frame` non-NULL |
+| C-AUDIO.2 | 8.4 | MUST | audio | any | payload | yes | the ring header is where the standard puts it: `read_frame` is `write_frame` plus 0x40 bytes, `samples` is `write_frame` plus 0x80 bytes, the little-endian words at +4 (rate), +8 (channels), +0xC (format `AAR_AUDIO_FORMAT_S16LE`) agree with the grant [spec question 18] |
+| C-AUDIO.3 | 8.4 | MUST | audio | any | payload | yes | `audio_open` of 44100 and 48000 stereo returns `AAR_OK` with a supported pair or a refusal of `AAR_E_INVAL`; a granted pair is written into `out` |
+| C-AUDIO.4 | 8.4 | MUST | audio | any | payload | yes | an unsupported rate (8000, 96000) or channel count (1, 0, 6) is `AAR_E_INVAL`; `channels` is always 2 in a grant |
+| C-AUDIO.5 | 8.4 | MUST | audio | any | payload | yes | the app writes 1 second of samples ahead of `*read_frame` (never more than `frames` ahead); the runtime advances `*read_frame` at the granted rate within 25 percent over 1 second, and `read_frame` never passes `write_frame` (route PLATFORM) |
+| C-AUDIO.6 | 8.4 | MUST | audio | any | payload | yes | when the app stops writing, underruns are counted: `audio_get_stats` (when present) shows more than before and equals the ring's word at +0x44 [spec question 51] |
+| C-AUDIO.7 | 8.4 | MUST | audio | any | payload | yes | `audio_get_stats` honours `size` (8 fills `size` and `underruns` only); a NULL slot returns `AAR_E_NOSYS` |
+| C-AUDIO.8 | 8.4 | MUST | audio | any | payload | yes | `audio_close` detaches the stream, returns `AAR_OK`, a new open works, a second close is negative |
+| C-AUDIO.9 | 8.4 | SHOULD | audio | any | payload | yes | a second `audio_open` in the same app is `AAR_E_BUSY`; opens in more apps than the platform has streams are `AAR_E_BUSY` (the runner opens apps until the first refusal) |
+| C-AUDIO.10 | 9.6 | MUST | audio | any | runner | yes | route `AHI` (`AAR_TAG_AUDIO_ROUTE`): `AARAudioRead` with `frames` 0 returns the frames available [spec question 52] |
+| C-AUDIO.11 | 9.6 | MUST | audio | any | runner | yes | route `AHI`: the PCM `AARAudioRead` returns is exactly what the app wrote, in order (a ramp of 48000 frames) |
+| C-AUDIO.12 | 8.4 | SHOULD | audio | any | operator | yes | sound: the operator hears the 440 Hz tone the payload plays for two seconds and confirms |
 | C-AUDIO.13 | 9.6 | MUST | audio | any | none | todo | not tested: a failed `AUDIO_CLOSE` retains the ring while a consumer can access it; needs failure injection |
 | C-AUDIO.14 | 8.4 | MUST | audio | any | none | todo | not tested: each ring index has its own cache line and one writer, indices are free-running `uint32_t` counters that wrap (a wrap needs 2^32 frames, about 54 hours) |
 | C-AUDIO.15 | 8.4 | MUST | audio | any | none | todo | not tested: the ring is little-endian and the library swaps the words it reads; the effect is C-AUDIO.11 |
@@ -509,14 +509,14 @@ matrix cases map onto C-GL.6.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-GL.1 | 8.5 | MUST | gl | any | payload | todo | `aar_gl_bind` of an open surface returns a table with `size` and `version` set, `version` `AAR_GL_VERSION_V0` or `AAR_GL_VERSION_ARRAYS` |
-| C-GL.2 | 8.5 | MUST | gl | any | payload | todo | every slot of the table that `size` covers up to `Build2DMipmaps` is non-NULL; with `AAR_GL_VERSION_ARRAYS` the array entries are non-NULL too; fields past `Build2DMipmaps` are used only when `AAR_GL_COVERS` says so |
-| C-GL.3 | 8.5 | MUST | gl | any | payload | todo | `aar_gl_bind` with an id that is not an open surface returns NULL |
-| C-GL.4 | 8.5 | MUST | gl | any | payload | todo | `aar_gl_unbind` releases the context; a new bind works |
-| C-GL.5 | 8.5 | MUST | gl | any | payload | todo | `aar_gl_swap` flushes, copies and flips: a cleared colour is read by the client's display table after the swap (runner peer) |
-| C-GL.6 | 8.5 | MUST | gl | any | payload | todo | the `mgl_conformance` matrix cases pass (each case gets its own detail in the line) |
-| C-GL.7 | 8.5 | MUST | gl | any | payload | todo | `Perspective`, `Ortho`, `Frustum` and `DepthRange` take doubles and `gluPerspective` takes four doubles: a scene drawn with them has the expected pixels |
-| C-GL.8 | 8.5 | MUST | gl | any | payload | todo | on an isolated runtime a client-array draw with a bad pointer returns `AAR_E_FAULT` and sets `GL_INVALID_VALUE` (passes with detail `not isolated` otherwise) |
+| C-GL.1 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_bind` of an open surface returns a table with `size` and `version` set, `version` `AAR_GL_VERSION_V0` or `AAR_GL_VERSION_ARRAYS` |
+| C-GL.2 | 8.5 | MUST | gl | any | payload | yes | every slot of the table that `size` covers up to `Build2DMipmaps` is non-NULL; with `AAR_GL_VERSION_ARRAYS` the array entries are non-NULL too; fields past `Build2DMipmaps` are used only when `AAR_GL_COVERS` says so |
+| C-GL.3 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_bind` with an id that is not an open surface returns NULL |
+| C-GL.4 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_unbind` releases the context; a new bind works |
+| C-GL.5 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_swap` flushes, copies and flips: a cleared colour is read by the client's display table after the swap (runner peer) |
+| C-GL.6 | 8.5 | MUST | gl | any | payload | yes | the `mgl_conformance` matrix cases pass (the line names the first failing case, with its environment, format, draw path, texel, colour and the actual and expected pixel, and counts the failures) |
+| C-GL.7 | 8.5 | MUST | gl | any | payload | yes | `Perspective`, `Ortho`, `Frustum` and `DepthRange` take doubles and `gluPerspective` takes four doubles: a scene drawn with them has the expected pixels [spec question 53] |
+| C-GL.8 | 8.5 | MUST | gl | any | payload | yes | on an isolated runtime a client-array draw with a bad pointer returns `AAR_E_FAULT` and sets `GL_INVALID_VALUE` (passes with detail `not isolated` otherwise) [spec question 54] |
 | C-GL.9 | 8.5 | MUST | gl | any | none | todo | not tested: integer parameters are `int32_t` and `uint32_t`; the matrix and header checks cover the widths |
 | C-GL.10 | 8.5 | MUST | gl | any | none | todo | not tested: debug bind flags are not part of the standard (ZZ9000 extension, 8.8); tested only through C-TABLE.23 |
 | C-GL.11 | 8.5 | MUST | gl | any | none | todo | not tested: the `gl*` wrappers forward to the table that `aar_gl_bind` returned (libaar, 3.8) |
@@ -754,3 +754,52 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     aperture (0 and 0xFFFFFFF0) and a range of 2 GiB and of 4 GiB minus 16 bytes,
     and assumes the aperture is smaller than that. Say whether the block is part of
     the check.
+44. **Which requests park the app** (9.6, 10.4): the text calls console writes, palette
+    updates and asynchronous flips "non-parking" without saying that no other op
+    is, or that a console write never parks. C-QUEUE.5 needs a request that leaves
+    the app running; if the platform parks the app in `console_write`, the test
+    passes with the reason in its detail and the rule is not exercised. Say which
+    ops never park.
+45. **Reply to a request that is not outstanding** (9.6): the text says wrong-id, wrong-op
+    and duplicate replies "cannot release another request's storage" and that
+    `AARServiceReply` resumes the app only if it is parked for that request, but
+    gives no code for the refused reply (docs/aar-client-api.md says `AAR_E_INVAL`).
+    C-QUEUE.3 and C-QUEUE.4 record the code and judge only that the app stays
+    parked.
+46. **Log drops under a rate limit** (7.2, 10.4): a platform MAY rate-limit `aar_log`
+    (the ZZ9000: 32 records per second to the client), and the platform counts a
+    dropped record in `log_dropped`. It is not said whether a record that the rate
+    limit discards is a dropped record. C-QUEUE.9 requires `log_dropped` above 0
+    whenever fewer records than were written reached the client.
+47. **The client's inbox** (6, 10.4): C-MSG.16 needs the client's inbox to be full while
+    the next message and a request behind it wait in the submission queue. The text
+    says a full inbox leaves the next message in the queue and holds up the request
+    behind it, but not how big the inbox is (`msg_capacity`?), so the number of
+    messages `aar_msg_send` accepts before `AAR_E_BUSY` is only bounded below (C-MSG.4
+    and C-MSG.5 test "at least `msg_capacity`").
+48. **Posted events** (8.3, 9.6): C-INPUT.3 assumes that `AARPostEvent` hands `time_ms`
+    and `code` of a mouse event to the app unchanged ("client timestamp" may mean
+    that the library stamps it), and that an `AAR_EV_STOP` posted with `AARPostEvent`
+    is an event only, not a stop request. Say what the library may change.
+49. **Client pixel memory** (9.2, 8.2): `AARSharedToken` names memory "in the platform's
+    shared aperture", and a client cannot obtain such memory portably (the ZZ9000
+    aperture is the card's own memory). The C-DISPLAY and C-GL tests that read the
+    frame (C-DISPLAY.12 to C-DISPLAY.15, C-GL.5) give the platform a display table with
+    memory from `AllocVec` and, when the platform refuses it, from a Picasso96 bitmap;
+    a platform whose aperture is neither cannot be tested. The standard should give a
+    client a way to allocate shared memory (the app side has `aar_shared_alloc`).
+50. **Copy pitch in single-buffer mode** (8.2, 9.6): when the client's table has one buffer,
+    "the platform copies each frame"; it is not said that the copy keeps the pitch of
+    the open reply and the layout. C-DISPLAY.12 and C-DISPLAY.14 assume it.
+51. **Underrun counting** (8.4): "the runtime counts underruns" does not say per frame, per
+    period or per starved callback. C-AUDIO.6 requires only that the count rises while
+    the app writes nothing, and that the stats call and the ring word agree.
+52. **AHI route is not optional?** (8.4, 9.2): `AAR_TAG_AUDIO_ROUTE` is "the client's
+    decision" and `AARSetTagList` may answer `AAR_E_NOSYS` for an option the platform
+    cannot carry. It is not said whether a platform with the audio group must carry the
+    route `AHI`. C-AUDIO.10 and C-AUDIO.11 fail when it does not.
+53. **Depth buffer in the GL group** (8.5): the group is "GL 1.1 entry points" but the text
+    does not promise a depth buffer. C-GL.7 draws a depth-tested scene for `DepthRange`;
+    a platform without depth testing fails that row.
+54. **Bad pointer in a `void` GL call** (8.5): "return `AAR_E_FAULT` plus `GL_INVALID_VALUE`" is
+    not observable through a `void` `gl*` wrapper; C-GL.8 checks `glGetError` only.
