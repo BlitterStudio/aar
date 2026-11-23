@@ -1,7 +1,7 @@
 # aar_serve: the serving loop of an aar.library client
 
 `aar_serve` answers the service requests of an app that runs on a platform
-behind `aar.library` (spec section 9.6): files, console, display and audio. It
+behind `aar.library` ([spec section 9.6](../spec/aar.md)): files, console, display and audio. It
 also posts the input events and the stop event. The reference launcher
 [`aar-run`](../client/run/README.md) is a small program around it; a program
 with its own window and event loop can use it the same way.
@@ -10,8 +10,9 @@ It is MIT code in this repository: `client/serve/aar_serve.c` is the one
 translation unit of the loop (it includes the Amiga backends), and
 `client/serve/aar_serve_core.c` holds the OS-free request handlers. The public
 header is `libraries/aar_serve.h`. The calls are plain C functions linked into
-the program, not library vectors. Link both `.c` files, with the program's
-`AARBase`, `IntuitionBase` and `GfxBase`, `-lamiga` and `-noixemul`.
+the program, not library vectors. Link `libaarserve.a`, or compile both `.c`
+files below, and supply the program's `AARBase`, `IntuitionBase` and `GfxBase`.
+The Amiga link also needs `-lamiga` and `-noixemul`.
 
 ```sh
 m68k-amigaos-gcc -std=gnu11 -noixemul -m68030 -O2 -Iclient/include -Iinclude \
@@ -20,16 +21,15 @@ m68k-amigaos-gcc -std=gnu11 -noixemul -m68030 -O2 -Iclient/include -Iinclude \
 
 ## Rules
 
-- One `aar_serve` serves one `AARHandle`. The caller opens the handle, gives it
-  its options (`AARSetTagList`), loads and starts the app, creates the
-  `aar_serve`, steps it until the app has ended, destroys it and closes the
-  handle. `aar_serve` never opens or closes the handle and never loads or starts
-  an app.
+- One `aar_serve` serves one `AARHandle`. The caller opens the handle and
+  controls options, load and start. It creates the serving loop after open,
+  steps it while serving is needed, destroys it and closes the handle.
+  `aar_serve` never opens or closes the handle and never loads or starts an app.
 - Every call comes from the task that opened the handle (`AAR_E_OWNER`
   otherwise). The hooks run in that task, inside `aar_serve_step`. Nothing runs
   in an interrupt.
-- The program supplies `AARBase`, and `IntuitionBase` and `GfxBase` for a
-  display. `aar_serve` opens `timer.device`, `Picasso96API.library` (when there
+- The program supplies `AARBase`, `IntuitionBase` and `GfxBase`.
+  `aar_serve` opens `timer.device`, `Picasso96API.library` (when there
   is one) and `ahi.device` (for the AHI audio route) itself and keeps those
   bases to itself.
 - The calling task needs `AAR_SERVE_MIN_STACK` bytes of stack (16 KiB); a
@@ -224,8 +224,9 @@ the final status and returns `AAR_OK`, otherwise the library's error
 
 `struct aar_serve_result` holds `size` (set by the caller), `flags`, `state`,
 `end_reason`, `exit_code`, `dropped_logs`, `runtime_dropped_logs`,
-`dropped_messages`, `ahi_underruns`, `ahi_gaps` and the final
-`status`. The flags: `AAR_SERVE_R_FAULTED`, `AAR_SERVE_R_USER_STOP`,
+`dropped_messages`, `ahi_underruns`, `ahi_gaps`, `ahi_requests`,
+`ahi_min_frames`, `ahi_avg_frames` and the final `status`.
+The flags: `AAR_SERVE_R_FAULTED`, `AAR_SERVE_R_USER_STOP`,
 `AAR_SERVE_R_STOP_ASKED`, `AAR_SERVE_R_CLAIM_LOST`, `AAR_SERVE_R_DISPLAY_FAILED`,
 `AAR_SERVE_R_CONSOLE_FAILED`, `AAR_SERVE_R_AUDIO_FAILED` and
 `AAR_SERVE_R_QUEUE_CORRUPT`. The process exit code and the fault report are the
@@ -244,8 +245,13 @@ afterwards.
 ## An embedding program
 
 ```c
-aar_serve_config_default(&cfg);     /* cfg.poll_us = 20000; USE_SIGNAL, NO_INPUT_WINDOW */
-aar_serve_create(h, &cfg, &s);
+aar_serve_config_default(&cfg);
+cfg.poll_us = 20000;
+cfg.flags |= AAR_SERVEF_USE_SIGNAL | AAR_SERVEF_NO_INPUT_WINDOW;
+if (aar_serve_create(h, &cfg, &s) != AAR_OK) {
+    AARClose(h);
+    return 20;
+}
 for (;;) {
     ULONG mine = mywin_sigmask();
     ULONG got = Wait(mine | aar_serve_sigmask(s));  /* recompute each time */
@@ -307,7 +313,7 @@ program's own window signals are not lost.
   If AHI runs dry while the app is still writing, `ahi_gaps` counts it, the empty
   ring is read once (a ring underrun) and the stream is buffered again. The
   added latency is about 120 ms (240 ms in all). More than two requests in
-  flight do not play on the card.
+  flight are not used by this backend.
 - **The heartbeat.** The AHI route needs one of at most 20 ms (a buffer has to
   be refilled well before the other one has played); `aar_serve_create` answers `AAR_E_NOSYS` for
   other values with it. Without AHI, `poll_us` 0 is allowed: the program is woken
@@ -335,6 +341,6 @@ program's own window signals are not lost.
 Workbench/Shell tool: its own window with a close gadget that stops the app, the
 app's last message in the window title, a 20 ms heartbeat, the library signal,
 no input window, messages kept for `AARGetMessage`. `client/tests/m68k_check.sh`
-compiles it and links it against `libaarserve.a`, the loop as an archive
-(`aar_serve.o` and `aar_serve_core.o`) that the SDK package can ship with the
-header.
+compiles it and links it against `libaarserve.a` (`aar_serve.o` and
+`aar_serve_core.o`). The ZZ9000 firmware SDK ships the archive in
+`Developer/Lib/` and the public header in `Developer/Include/`.

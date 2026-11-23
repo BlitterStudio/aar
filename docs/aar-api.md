@@ -137,7 +137,7 @@ transport statuses to these; that mapping is private to the platform.
 
 ### AAR_E_IO
 
-`-1`. The operation failed; a control block or queue is corrupt; a transfer ended early; or stop cancelled a parked call. **ZZ9000:** `aar_display_open` returns this when the client cannot open the requested mode, and the client also asks the app to stop.
+`-1`. The operation failed; a control block or queue is corrupt; a transfer ended early; or stop cancelled a parked call. For display failures in the reference client, see the [aar-run manual](../client/run/README.md#console-and-audio-routes).
 
 ### AAR_E_INVAL
 
@@ -677,7 +677,7 @@ typedef struct aar_shared {
 
 The result of `aar_shared_alloc`. `bytes` is the granted size, a multiple of
 `shared_granule`. `haddr` is the host address token: an opaque 32-bit value
-that names the whole block for the client library. It is not a pointer and not
+that names the allocated block for the client library. It is not a pointer and not
 an offset, and the app must not interpret it. `flags` is `AAR_SHAREDF_COHERENT`
 when this block needs no cache maintenance. `ptr` is the app's mapping. The
 pointer is at offset 16 on both profiles.
@@ -840,9 +840,8 @@ The parameters of `aar_image_open`. `codec` is `AAR_IMAGE_*`.
 `output_format` must be `AAR_FMT_BGRA8888`. `tile` must hold `stride * rows`
 bytes, `tile_bytes` is that capacity, and the buffer stays valid for every
 decode call on the session. It stays caller-owned. The pointer is last, at
-offset 24 on both profiles. An app passes 0 in `flags` in API 0.5; a runtime may
-accept bits it defines (**ZZ9000:** bit 0 fits the image to the tile buffer and
-bit 1 preserves the aspect ratio while fitting).
+offset 24 on both profiles. Pass 0 in `flags` in API 0.5; see
+[spec section 8.6](../spec/aar.md) for the portable image-session contract.
 
 ### aar_image_result
 
@@ -986,8 +985,9 @@ void aar_exit(int code);
 Does not return, including when the slot is missing. Publishes `code` as the
 app's exit status. By convention the AmigaDOS return codes 0, 5, 10 and 20 are
 used; the client reads the code through its status call and a launcher returns
-it to the Shell. **ZZ9000:** aar-run returns the exit code on a normal stop and 20
-on a fault. Gate: `AAR_API_COVERS(api, exit)`. Minimum minor: 5.
+it to the Shell. The [aar-run manual](../client/run/README.md#exit-codes)
+defines that launcher's exit codes. Gate: `AAR_API_COVERS(api, exit)`.
+Minimum minor: 5.
 
 ### aar_yield
 
@@ -1179,7 +1179,7 @@ Allocates a shared buffer. `bytes` and `align` are rounded up to
 `shared_granule`. On success `*out` holds the granted size, the host address
 token `haddr`, the `AAR_SHAREDF_COHERENT` flag and the app mapping `ptr`. The
 app hands `haddr` to the client, for example inside a message; an interior range
-is described by the token plus an offset. The token names only the whole block,
+is described by the token plus an offset. The token names the allocated block,
 and is meaningful only for this app and only until `aar_shared_free`, exit,
 fault or stop. `flags` must be 0; a non-zero value, a zero `bytes` or a NULL
 `out` is `AAR_E_INVAL`. `AAR_E_NOMEM` means the limit, the block count or the
@@ -1273,9 +1273,9 @@ void aar_log(const char *msg, uint32_t len);
 A lossy diagnostic channel, separate from stdout, for the platform's debug
 output and for the client. Records longer than `AAR_LOG_MAX` bytes are
 truncated, and the platform may rate-limit. It never blocks. It is not the
-console. Gate: `AAR_API_COVERS(api, log)`. Missing slot: returns. **ZZ9000:** 32
-records per second go to the client and 8 lines per second to the UART, as
-`[app] ` plus the text; the excess is counted and discarded. Minimum minor: 5.
+console. Gate: `AAR_API_COVERS(api, log)`. Missing slot: returns.
+**ZZ9000 note:** rate limits are recorded in
+[C-CON.10](../conformance/TESTS.md). Minimum minor: 5.
 
 ### aar_console_write
 
@@ -2003,9 +2003,9 @@ stays valid for the call. Byte counts of whole buffers are `uint64_t`; per-call
 chunk sizes are `uint32_t`. Every call may return `AAR_E_NOSYS` for an algorithm
 or codec the platform does not provide. At least `AAR_MIN_DECODE_SESSIONS`
 sessions of each kind exist per app; a further one is `AAR_E_NOMEM`. A session
-that is still open at exit is closed by the runtime. **ZZ9000:** the calls run
-inline on the app's own core, in the call, so they are the right tool for a
-codec you do not want to port, not a second core.
+that is still open at exit is closed by the runtime.
+
+**ZZ9000 note:** these calls run inline on the app's own core.
 
 **Compressed formats.** `aar_decompress` takes one complete stream. `DEFLATE_RAW`
 is RFC 1951, `ZLIB` RFC 1950, `GZIP` RFC 1952, `LZ4_BLOCK` one LZ4 block without
@@ -2016,7 +2016,7 @@ that method without its header. Every stream except LHA ends itself; an LHA
 stream has no end marker, so `dst_bytes` must be exactly the plain size. The
 specification, section 8.6, has the details.
 
-**Image sessions.** In API 0.5 the tile buffer must hold the whole image and an
+**Image sessions.** In API 0.5 the tile buffer must hold all image pixels and an
 app passes 0 in `aar_image_params.flags`. `aar_image_decode` takes `flags` bit 0 to say
 that the input ends with the call, and the image is complete after a call with
 that bit that consumed all its input and returned result `flags` bit 1 (more
@@ -2064,7 +2064,7 @@ int aar_image_open(const aar_image_params *params, uint32_t *session,
 Starts one tile-buffer session and writes `*session`. NULL required pointers, a
 zero stride, row count or tile size, or an output format other than
 `AAR_FMT_BGRA8888` is `AAR_E_INVAL`. The tile buffer stays caller-owned; in
-API 0.5 it must hold the whole image and the app passes 0 in `params->flags`
+API 0.5 it must hold all image pixels and the app passes 0 in `params->flags`
 (a runtime may accept bits it defines). Gate:
 `AAR_API_COVERS(api, image_open)`. Missing slot: `AAR_E_NOSYS`. Minimum minor:
 5.

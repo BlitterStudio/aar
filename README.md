@@ -6,16 +6,16 @@ table (`aar/app.h`). The runtime loads the ELF, checks it, and gives it a
 display, input, audio, files, a console, a message queue, a heap and shared
 buffers. An AmigaOS client library starts apps and watches them.
 
-There are two profiles: **A32** (ARMv7-A, hard-float, VFPv3 and NEON, ILP32,
-the ZZ9000's Cortex-A9) and **A64** (ARMv8-A AArch64, LP64, for Pi 4 and Pi 5
-class cores). An image belongs to exactly one profile.
+There are two profiles: **A32** (ARMv7-A, hard-float, VFPv3 and NEON, ILP32)
+and **A64** (ARMv8-A AArch64, LP64). An image belongs to exactly one profile.
 
-The ZZ9000 is the reference implementation: its firmware runs apps on the
-card's ARM cores. The aim is to run the same app binaries on other Amiga
-platforms, such as PiStorm with Emu68 or a CM5 card. This repository holds the
-part that does not depend on any one of them: the headers, the runtime library,
-the linker scripts, the build helpers, the image checker, the docs, the
-transport contract, and a host runner that runs an app natively on a PC.
+AAR runs on a platform that implements the runtime, transport and Amiga client
+library described in [spec/aar.md](spec/aar.md). This repository holds the
+headers, runtime library, linker scripts, build helpers, image checker, reference
+loader, docs, transport contract and a host runner for native PC builds.
+
+The ZZ9000 is the reference platform (A32, Cortex-A9); see the
+[porting guide](docs/porting.md) for the parts a platform supplies.
 
 ## Status
 
@@ -35,6 +35,7 @@ pins the commit of this repository it builds against in `sdk/AAR_REF`.
 | `include/aar/` | `app.h` (the table, types and wrappers), `note.h` (`AAR_NOTE()`), `gl.h`, `transport.h`, `ext_zz9000.h` |
 | `client/` | `aar.library`, the Amiga client library: `include/` (the public headers and the generated call headers), `fd/aar_lib.fd`, `src/` (the platform interface and the image probe), `tools/fdgen.py`, `tests/` |
 | `libaar/` | `src/` (the `aar_*` and `gl*` wrappers, the libc glue, the freestanding `mem*` routines), and per profile `a32/` and `a64/` with `crt0.S` and `aar.ld` |
+| `loader/` | Portable reference ELF validator and loader; [`aar_load.h`](loader/aar_load.h) is its interface |
 | `mk/aar.mk` | Makefile include for building one app |
 | `cmake/` | `aar.cmake` (`aar_add_executable`), `aar-toolchain-a32.cmake`, `aar-toolchain-a64.cmake`, and an example project |
 | `build_pic_newlib.sh` | Builds the position-independent newlib that apps link against (`AAR_PROFILE=a32` or `a64`) |
@@ -56,12 +57,38 @@ needs. It installs this repository at `/opt/aar-sdk` and sets `AAR_SDK`,
 
 ```sh
 docker build -f docker/Dockerfile -t aar-sdk .
-docker run --rm -v "$PWD":/src -w /src aar-sdk make check
+docker run --rm -v "$PWD:/src:ro" aar-sdk sh -c \
+  'cp -r /src /w && cd /w && make AAR_SDK=/w check'
 ```
 
-`make check` builds every template, runs `tools/aar-check` on each ELF, and
-runs the tests in `tests/`. ELFs land in `build/<profile>/<name>.elf` with a
-`.map` beside each.
+`make check` runs the following for A32 and for A64 when its compiler is
+available (`PROFILES=a32` limits the run):
+
+- the image checker's synthetic-image tests (`check-tool`);
+- the profile header layouts and note bytes (`check-abi`);
+- floating-point code generation (`check-fp-codegen`);
+- builds and `aar-check` for every template, `sbrk_smoke` and every conformance payload;
+- fixed template notes (`check-expect-note`), libc/freestanding mode switching
+  (`check-mode-switch`) and rejection of a freestanding libc link (`check-freestanding-guard`);
+- the conformance catalogue, tools and bundle tests, and generated negative-image
+  corpus (`check-conf-catalogue`).
+
+ELFs land in `build/<profile>/<name>.elf` with a `.map` beside each.
+Other root Makefile targets are separate from `check`:
+
+| Target | What it runs or builds | Extra requirements |
+|---|---|---|
+| `all` (default) | Templates and conformance payloads | Profile toolchains and PIC sysroots |
+| `check-runtime` | libaar tests, marked conformance payloads and the negative-image corpus under qemu | qemu-user and Linux cross GCC per profile; missing tools skip that profile |
+| `check-abi-host` | Host header layouts and transport model, including 32-bit and C++ | GCC, G++, multilib |
+| `check-loader-host` | Reference loader placement, corpora and mutation tests, including 32-bit and sanitizers | Host GCC and Python 3; optional compiler features are probed |
+| `check-conf-payloads` | Build and check only the conformance payloads | Profile toolchains and PIC sysroots |
+| `conf-bundle` | Check and stage payloads and negative images | See [bundle assembly](conformance/README.md#the-bundle) for the runner and manifest |
+| `clean` | Remove `build/` | None |
+
+The named `check-*` prerequisites above can also run on their own. Client library
+and serving-loop tests use `sh client/tests/run_host.sh`; m68k compile/link checks
+use `sh client/tests/m68k_check.sh`. Host-runner checks are below.
 
 An app Makefile includes `mk/aar.mk`. `AAR_PROFILE` is `a32` (the default) or
 `a64`:
@@ -92,7 +119,7 @@ have the details.
 ## Host runner
 
 `host-runner/` runs an app as a native process with SDL2 standing in for the
-card:
+platform:
 
 ```sh
 cmake -S host-runner -B build-host
@@ -101,7 +128,7 @@ ctest --test-dir build-host --output-on-failure
 ```
 
 `host-runner/README.md` lists the options and where the host differs from the
-card.
+target.
 
 ## Documentation
 
@@ -118,6 +145,18 @@ card.
 - [docs/porting.md](docs/porting.md): the guide for a platform implementer: what a
   platform provides, the image rules and the loader, the entry contract, and how
   to run the conformance suite (the CI bundle) and report.
+- [docs/aar-serve-api.md](docs/aar-serve-api.md): `aar_serve` and
+  `libaarserve.a`, for a client that serves app requests.
+- [client/run/README.md](client/run/README.md): the aar-run manual, including
+  Shell arguments, Workbench ToolTypes, exit codes and platform requirements.
+- [templates/README.md](templates/README.md): example apps and how to build them.
+- [host-runner/README.md](host-runner/README.md): native PC builds, options and
+  differences from a target.
+- [loader/aar_load.h](loader/aar_load.h) and [loader/aar_image.h](loader/aar_image.h):
+  the reference loader and shared image-validation interfaces.
+- [conformance/README.md](conformance/README.md): running and reporting the suite.
+- [conformance/TESTS.md](conformance/TESTS.md): the test catalogue and spec questions.
+- [conformance/CONTRIBUTING.md](conformance/CONTRIBUTING.md): writing conformance tests.
 
 ## License
 

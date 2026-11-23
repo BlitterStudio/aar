@@ -12,8 +12,8 @@ launcher, a test tool, a debugger. An app (the ARM side) uses
 `aar.library` is a normal Exec library. It hides how the app runs and how the
 Amiga reaches it. A client opens a handle, loads an image, starts it, serves
 the app's requests, watches its status and closes the handle. The same calls
-work on every platform that implements the standard. The ZZ9000 is the
-reference platform.
+work on every platform that implements the standard. The normative contract is
+[spec section 9](../spec/aar.md).
 
 The files, all under `client/`:
 
@@ -159,12 +159,14 @@ giving a notify port arms one. A client that polls from its own timer (aar-run
 does, every millisecond by default) never arms and costs the library nothing:
 a handle that is not armed and has no doorbell or mouse event waiting is not
 visited at all by the library's dispatcher, so the cost of the library does not
-grow with the number of such handles. On the ZZ9000 the library looks at armed
-handles at each vertical blank, so a wake-up takes up to 20 ms on a PAL machine.
-A client that needs a faster response polls `AARServiceNext` itself.
+grow with the number of such handles. A client that needs a faster response
+polls `AARServiceNext` itself.
 
-On a platform that publishes event counts (the ZZ9000 with a firmware that has
-them) an armed handle that has nothing pending costs one read per vertical blank
+**ZZ9000 note.** The library looks at armed handles at each vertical blank,
+so a wake-up takes up to 20 ms on a PAL machine.
+
+On a platform that publishes event counts, an armed handle that has nothing
+pending costs one read per vertical blank
 for all such handles together: the library reads one word, the platform's global
 event count, and reads the control block of an armed handle (three reads, each
 slow on a 68060) only when the count of its group changed, while it has a request
@@ -212,7 +214,7 @@ limit or does not report it.
 | 16 | `profiles` | mask of `AAR_PROFILEF_*` |
 | 20 | `groups` | `AAR_GROUP_*` the platform provides |
 | 24 | `flags` | `AAR_INFOF_*` |
-| 28 | `max_apps` | apps at once; 0: limited by resources only (ZZ9000) |
+| 28 | `max_apps` | apps at once; 0: bounded by platform resources (spec section 5.6) |
 | 32 | `max_image_bytes` | the largest image `AARLoadFile` takes |
 | 36 | `max_args` | the most strings `AARStart` takes |
 | 40 | `max_arg_bytes` | the most bytes of one string, NUL included |
@@ -368,7 +370,7 @@ The values of `AARSharedMap.flags`, 1 and 2.
 A `reply_flags` bit for the completion of `AAR_OP_DISPLAY_FLIP`. The client has
 submitted the pan or buffer change and relies on the platform's vertical blank
 to show it. Without the bit the flip is complete when the completion arrives.
-The ZZ9000 uses it; other platforms ignore it.
+**ZZ9000 note.** This platform uses the submitted-pan flag.
 
 ### AAR_CCAP_DISPLAY_CLUT8, AAR_CCAP_DISPLAY_PAN_ACK, AAR_CCAP_DISPLAY_LATEST, AAR_CCAP_KNOWN
 
@@ -396,7 +398,7 @@ in full before any tag is applied, so a list with a bad tag changes nothing.
 | Tag | Data | Meaning |
 |---|---|---|
 | `AAR_TAG_PRIVATE_MIB` | `ULONG` MiB | cap on the app's private memory; 0 takes the platform's default; above 4095 is `AAR_E_INVAL` |
-| `AAR_TAG_SHARED_MIB` | `ULONG` MiB | limit on its shared buffers; 0 takes the default; above 4095 is `AAR_E_INVAL`; the platform may grant less |
+| `AAR_TAG_SHARED_MIB` | `ULONG` MiB | limit on shared buffers; 0 takes the default; above `AARInfo.shared_max_mib` or 4095 is `AAR_E_INVAL` (spec section 4.2) |
 | `AAR_TAG_WEIGHT` | `ULONG` | CPU share weight, 0 to `AARInfo.weight_max`; 0 takes the default of 1; `AAR_E_NOSYS` where `weight_max` is 0 |
 | `AAR_TAG_LEASE_EXTENDED` | `BOOL` | the long lease; default TRUE |
 | `AAR_TAG_AUDIO_ROUTE` | `ULONG` | `AAR_AUDIO_ROUTE_PLATFORM` or `AAR_AUDIO_ROUTE_AHI`: the client says which route it serves; any other value is `AAR_E_INVAL` |
@@ -430,11 +432,12 @@ not repeated below.
 LONG AARQuery(AARInfo *info);
 ```
 
-Fills `info` with what the platform offers. It needs no handle, starts nothing
-and does not need `mmu.library`. It asks the platform every time, because the
-live counts in `platform` change. On the ZZ9000 that is one mailbox call, about
-2 ms. Returns `AAR_E_NOSYS` when there is no platform: no board, a
-`zz9k.library` that is too old, or firmware without the app runtime.
+Fills `info` with what the platform offers. It needs no handle and starts
+nothing. It asks the platform every time, because live counts in `platform`
+may change. Returns `AAR_E_NOSYS` when the platform cannot be attached.
+
+**ZZ9000 note.** Query needs no shared-memory mapping. Hardware and library
+requirements are in the [aar-run manual](../client/run/README.md#platform-notes).
 
 ### AAROpen
 
@@ -450,7 +453,7 @@ code with `AAR_E_NORESOURCE`, and `AAR_REASON_NONE` otherwise.
 | Error | Cause |
 |---|---|
 | `AAR_E_NORESOURCE` | the platform refused the claim; `*reason` says why |
-| `AAR_E_NOSYS` | no platform, or `mmu.library` is missing (ZZ9000) |
+| `AAR_E_NOSYS` | no platform, or the platform cannot map the claim's shared memory |
 | `AAR_E_NOMEM` | no memory for the handle, or the task has no free signal bit |
 | `AAR_E_IO` | the control block or the queues did not check out |
 
@@ -557,9 +560,8 @@ LONG AARStart(AARHandle *handle, const char *const *argv, ULONG argc);
 ```
 
 Starts the loaded image with `argc` strings, at most `AARInfo.max_args`
-(`argv[0]` included), each
-under `AARInfo.max_arg_bytes` bytes with its NUL. The first is the program
-name. `argv` may be NULL when `argc` is 0. Returns `AAR_E_INVAL` for a bad
+(`argv[0]` included), each at most `AARInfo.max_arg_bytes` bytes including
+its NUL. The first is the program name. `argv` may be NULL when `argc` is 0. Returns `AAR_E_INVAL` for a bad
 argument, or when no image is loaded (a load that failed or was cut short counts as
 none), or the app has started already. When the platform itself fails the start,
 the error is returned, the handle cannot be started again, and the next step is
@@ -637,7 +639,7 @@ may belong to another app.
 |---|---|
 | `AAR_E_INVAL` | `bytes` is 0, a flag is set, the range is outside the aperture, or the range rounded up to 8 KiB does not fit in 32 bits (the same holds for the buffer of a service request, which the library refuses to the app) |
 | `AAR_E_NOMEM` | no memory for the map |
-| `AAR_E_NOSYS` | the platform cannot map (ZZ9000: no `mmu.library`) |
+| `AAR_E_NOSYS` | the platform cannot map |
 | `AAR_E_STALE` | the handle's claim has been revoked |
 
 ### AARSharedUnmap
@@ -646,8 +648,10 @@ may belong to another app.
 LONG AARSharedUnmap(AARHandle *handle, struct AARSharedMap *map);
 ```
 
-Gives the map up. On the ZZ9000 this is bookkeeping only: restoring the page
-properties takes most of a second, so the pages stay cache-inhibited.
+Gives the map up.
+
+**ZZ9000 note.** Unmapping releases the library's map record but leaves the
+pages cache-inhibited; see the [transport note](transport.md#visibility-of-the-control-structures).
 
 ### AARSharedPublish
 
@@ -756,10 +760,11 @@ the platform's shared aperture, for a reply that names the client's own memory
 (the surfaces of a display open). For the base of a range that `AARSharedMap`
 mapped, the token equals `map.haddr`. `AAR_E_INVAL` for NULL, zero bytes or an
 address outside the aperture; `AAR_E_NOSYS` where the platform cannot name host
-memory to the app. Where the aperture is not ordinary Amiga memory (the ZZ9000:
-the card's memory), the pixel memory of a bitmap that the platform's own display
-driver allocated is in it and `AllocVec` memory is not; a platform documents
-which Amiga memory is in its aperture.
+memory to the app. A platform documents which Amiga memory is in its shared
+aperture.
+
+**ZZ9000 note.** The aperture is card memory: pixels allocated by its display
+driver lie in it, but ordinary `AllocVec` memory does not.
 
 ### AARExt
 
@@ -768,9 +773,9 @@ APTR AARExt(ULONG platform_id, ULONG ext_id);
 ```
 
 Returns a platform extension table, or NULL when this platform does not have
-that `platform_id` or `ext_id`, or when the platform cannot be attached (no
-board, a `zz9k.library` that is too old). A table is size-first and
-append-only. For the ZZ9000, see [ZZ9000 extension](#zz9000-extension).
+that `platform_id` or `ext_id`, or when the platform cannot be attached. A table
+is size-first and append-only. For the ZZ9000, see
+[ZZ9000 extension](#zz9000-extension).
 
 ### AARSetLogSink
 
@@ -786,10 +791,12 @@ each. `data` is the record, `len` its
 length (at most `AAR_LOG_MAX`, longer records are truncated), and `user` is the
 pointer given here. `data` is valid for the call only. `NULL` as `sink` removes
 the sink. A new handle has none, and a record that arrives while there is none
-is dropped and counted in `AARZZ9000Stats.logs_unclaimed`; it is not held for a
-sink set later. Setting a sink again replaces the old one: from the next record
-on, neither the old sink nor its `user` is called. The call needs no platform
-support and works the same on every platform.
+is dropped; it is not held for a sink set later. Setting a sink again replaces
+the old one: from the next record on, neither the old sink nor its `user` is
+called. The call needs no platform support and works the same on every platform.
+
+**ZZ9000 note.** Unclaimed records are counted in
+`AARZZ9000Stats.logs_unclaimed`.
 
 The library calls the sink in the owner task, from inside `AARServiceNext` or
 `AARGetMessage`, so it must return quickly. From inside the sink a program may
@@ -824,7 +831,7 @@ detect a mismatch.
 | `AAR_E_NOMEM` | no memory for a handle, a map or a signal bit, or the platform lacks memory |
 | `AAR_E_BUSY` | a queue is full or empty (messages, requests), an option set too late, an image loaded twice |
 | `AAR_E_NOENT` | a file does not exist |
-| `AAR_E_NOSYS` | no platform, `mmu.library` missing, a tag or call the platform cannot do |
+| `AAR_E_NOSYS` | no platform, or a map, tag or call the platform cannot provide |
 | `AAR_E_PROFILE` | the platform's loader refuses the image's profile; the probe never returns it |
 | `AAR_E_NOGROUP` | the platform's loader refuses an image that needs a group it lacks |
 | `AAR_E_NORESOURCE` | admission or load refused for lack of a resource; `AAR_REASON_*` says which |

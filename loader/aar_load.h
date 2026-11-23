@@ -111,9 +111,9 @@ struct aar_load_plan {
     uint32_t nrelocs;          /* 0 to AAR_LOAD_MAX_RELOCS */
     struct aar_load_reloc reloc[AAR_LOAD_MAX_RELOCS];
 
-    /* The AAR note (spec 2.3). The loader has judged the note's own rules
-     * (magic, version, profile, API major and minor, stack size, group bits);
-     * whether the platform has the groups and the heap is the platform's. */
+    /* The AAR note (spec 2.3). The validator checks magic, version, profile,
+     * API major/minor and stack size. Group bits are reported unchanged;
+     * the platform checks required groups and admits the heap and stack. */
     uint32_t note_version;
     uint32_t api_major;
     uint32_t api_minor_required;
@@ -157,7 +157,7 @@ int aar_load_plan(aar_load_read_fn read, void *user, uint64_t length,
  *                end below 4 GiB (app_base + span at most 2^32).
  *   limit_bytes  the size of the memory at write_base. The loader writes
  *                nothing at or beyond write_base + limit_bytes.
- * The whole of [write_base, write_base + span) is written: the bytes of the
+ * The range [write_base, write_base + span) is written: the bytes of the
  * segments, zero for the bss and for the gaps between segments, then the
  * relocations. The platform makes the instruction and data caches agree over
  * the code before it enters the app, and applies the permissions of the

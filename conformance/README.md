@@ -1,11 +1,11 @@
 # AAR conformance suite
 
 This directory holds the tests that decide whether a platform implements the
-AAR standard (specification section 11). Version 0.1 of the suite tests API 0.5.
+AAR standard ([specification section 11](../spec/aar.md)). Version 0.1 of the suite tests API 0.5.
 
 | Path | Content |
 |---|---|
-| `TESTS.md` | The catalogue: one row for every test id, with the specification section, MUST or SHOULD, group, profile, who judges it and what it checks. It also lists what is not tested and why, and the questions this work raised about the specification |
+| [`TESTS.md`](TESTS.md) | The catalogue: one row per test id, with its spec section, requirement level, group, profile, judge and check. It also lists untested rules and spec questions |
 | `payloads/` | The payloads: ARM apps (`conf_<area>.c`) that judge one area from the inside. `conf.h` is the protocol they print their results with |
 | `runner/` | The runner `aar-conf`: an AmigaOS m68k program that uses only `aar.library` and the serving loop (`libaarserve.a`). `aar-conf.c` is the core (options, verdict, payload runs); each area has its file `r_<area>.c` for its runner-judged tests. It runs the payloads, judges the client-side tests, and writes the report. `conf_catalogue.h` is generated from `TESTS.md` at build time and is not in git |
 | `tools/` | `conf_catalogue.py` reads `TESTS.md`, generates the runner's header and checks the ids against the sources; `check_results.py` checks one payload's output or a whole report; `conf_bundle.py` assembles the downloadable bundle (below) |
@@ -179,8 +179,9 @@ AAR-CONF-SUMMARY pass=41 fail=0 skip=359 verdict=DOES-NOT-CONFORM
   profile, in the order of `TESTS.md`. The detail says what was measured or why
   the test failed or was skipped.
 - `AAR-CONF-SUMMARY pass=N fail=N skip=N verdict=CONFORMS|DOES-NOT-CONFORM`
-  ends it. The verdict follows spec 11.1: no MUST test failed, and no MUST test of
-  a declared group was skipped. A filtered run (`ONLY`) says `PARTIAL`.
+  ends it. The verdict follows the rules under [What passing means](#what-passing-means),
+  including catalogue-approved skips for an optional route.
+  A filtered run (`ONLY`) says `PARTIAL`.
 
 `python3 conformance/tools/check_results.py report <file>` validates a report: the
 suite line, the `AARInfo` lines, one line per test, a summary whose counts match,
@@ -214,15 +215,16 @@ cannot pass by silence. A payload must print the end line last; the runner check
 that the counts in it match the lines, and that the exit code read through
 `AARStatus` is 0 when nothing failed and 10 otherwise (C-LIFE.3).
 
-A payload asks the runner for help by sending a 32-byte message that starts with a
-keyword (`payloads/conf_proto.h`). Today there is one, `CONF-STOP-NOW`: the runner
-stops the app as a client would. C-TIME.5 uses it. When a test needs the runner and
-there is none (`conf:peer=1` missing: a run by hand, the host runner, the qemu
-loader), it prints `SKIP host: <reason>`.
+A payload asks the runner for help by sending a 32-byte message with an ASCII
+keyword. The core handles `CONF-STOP-NOW` (`payloads/conf_proto.h`); areas add
+their own keywords and handlers in `payloads/conf_<area>.h` and
+`runner/r_<area>.c`. When a test needs the runner and there is none
+(`conf:peer=1` missing: a run by hand, the host runner or qemu loader), it prints
+`SKIP host: <reason>`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the peer interface.
 
 ## Adding tests
 
-`CONTRIBUTING.md` is the guide for the author of an area: which files the area
+[`CONTRIBUTING.md`](CONTRIBUTING.md) is the guide for the author of an area: which files the area
 owns, how to mark rows `impl yes`, how to add peer keywords, payload variants and
 console modes to the runner, what to do about gaps in the spec, and how to run the
 host, qemu and m68k checks. In short: the rows are in `TESTS.md`; a payload test is

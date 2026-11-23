@@ -63,10 +63,10 @@ Returning from the entry point itself, without exiting, is undefined.
 
 Stop is Ctrl-C, the client's stop call, or the client closing its handle. The
 app sees `aar_should_stop` become true and gets an `AAR_EV_STOP` event. The
-grace period (`aar_info.stop_grace_ms`, default 500) runs, and then the runtime
-stops the app by force (`AAR_END_FORCED`). The app's exit code is the return
-value of `aar_main` or the argument of `aar_exit`. By convention the AmigaDOS
-return codes 0, 5, 10 and 20 are used.
+grace period (`aar_info.stop_grace_ms`) runs, and then the runtime stops the
+app by force (`AAR_END_FORCED`). Read the platform's reported value; the
+[lifecycle rules](../spec/aar.md#52-load-start-stop) define the default. The app's
+exit code is the return value of `aar_main` or the argument of `aar_exit`.
 
 A fault in app code (a bad data or instruction access, an undefined
 instruction, an alignment fault) ends that app only and leaves a profile
@@ -88,20 +88,18 @@ program might want it.
 
 ## Watchdog
 
-Call the API at least every 5 seconds during a long computation. The runtime
-tolerates at least 10 seconds between calls (`aar_info.stall_limit_ms`) and may
-stop an app that goes longer (`AAR_END_STALL`). A single call that runs longer
-than the runtime's stuck-call limit, at least 10 seconds, ends the app with
-`AAR_END_STUCK_CALL`. A call that is parked in a declared wait counts toward
-neither limit. `aar_yield` is enough to count as activity. `aar_sleep_us`, file
+Call the API at least every 5 seconds during a long computation. Read
+`aar_info.stall_limit_ms` for the platform's limit. The minimum stall and
+stuck-call limits and their end reasons are defined in
+[spec section 5.4](../spec/aar.md#54-watchdog).
+A call parked in a declared wait counts toward neither limit.
+`aar_yield` is enough to count as activity. `aar_sleep_us`, file
 calls, console reads, a flip wait and `aar_msg_wait` are already inside an API
 call, and `aar_should_stop` and `aar_time_us` count too: a loop that only polls
 them is not a stall. A loop that only touches app memory is.
 
-**ZZ9000.** The stall limit is 30 seconds and the stuck-call limit is 10
-seconds. A separate two-second watchdog on the card cold-restarts the ARM core
-that runs apps when it has neither progress nor timer ticks, and records a
-runtime restart for every app.
+**ZZ9000 note.** Its watchdog and scheduler choices are platform behaviour,
+not app guarantees; see [spec section 5.4](../spec/aar.md#54-watchdog).
 
 ## Memory
 
@@ -124,7 +122,7 @@ system reserve. When the free pool crosses below its low-water mark it sends
 `AAR_EV_LOW_MEMORY` through `aar_event_poll`, once per crossing; another event
 comes only after the pool has risen above its high-water mark and fallen again.
 
-**ZZ9000.** Each app has its own virtual window and its memory is mapped from
+**ZZ9000 note.** Each app has its own virtual window and its memory is mapped from
 1 MiB frames of the card's pool. The heap grows upward and the stack is at the
 top of the window. Firmware memory, other apps' private frames and device
 mappings are not user mappings.
@@ -167,7 +165,7 @@ if (aar_shared_alloc(1u << 20, 64, 0, &buf) != AAR_OK)
 ```
 
 `aar_shared.haddr` is an opaque 32-bit token. It is not a pointer, and the app
-must not interpret it. It names the whole block, only for this app, and only
+must not interpret it. It names the allocated block, only for this app, and only
 until `aar_shared_free`, exit, fault or stop. To describe part of a block, send
 the token and an offset. The block is rounded up to `shared_granule`.
 
@@ -223,10 +221,8 @@ what `aar_publish` and `aar_acquire` do.
 
 **Why they are table calls.** User mode on A64 cannot invalidate a cache line by
 address, and a platform with a non-coherent bridge needs privileged maintenance.
-The calls are no-ops with a barrier on a coherent platform, and cost nothing
-worth measuring. Always call them: an app that always does is correct on every
-platform, and an app that skips them is correct only where the buffer reports
-`AAR_SHAREDF_COHERENT`.
+The calls are no-ops with a barrier on a coherent platform. Always call them;
+skipping them requires a buffer that reports `AAR_SHAREDF_COHERENT`.
 
 **Surfaces are the exception.** A display flip publishes the surface itself:
 before the host sees the frame the runtime cleans the presented range. A
@@ -245,13 +241,8 @@ write a stale dirty line over your fresh bytes. That is the reason for the
 granule rule. A client that always calls publish and acquire is correct on every
 platform.
 
-**ZZ9000.** The Zorro master reaches DDR through the Zynq ACP, which snoops the
-ARM caches, so `aar_publish` on this platform is a store barrier only. The 68k
-data cache is not reached by the ACP, so the ZZ9000 library maps the control
-block, the queues and every shared buffer cache-inhibited. The token is the
-board-relative Zorro III offset. The block is ordinary write-back shareable
-memory, so do not use it as a framebuffer scratch pad: draw into private memory
-or the surface back buffer, then present.
+For the ZZ9000's ACP path and cache-inhibited client mapping, see the
+[transport's ZZ9000 note](transport.md#visibility-of-the-control-structures).
 
 ## Messages
 
@@ -349,8 +340,8 @@ end of input. `isatty` returns 0.
 
 `aar_log` is a different channel: a lossy diagnostic record of at most 1024
 bytes, separate from stdout, for the platform's debug output and for the client.
-Use `aar_log` for traces and stdout for the user. **ZZ9000:** 32 records per
-second go to aar-run and 8 lines per second to the card's UART as `[app] ...`.
+Use `aar_log` for traces and stdout for the user. The ZZ9000 rate limits are
+recorded in [C-CON.10](../conformance/TESTS.md#c-con-console-and-log-section-72-104).
 
 The client decides what the console is: the Shell's `Output()` and `Input()`, or
 a window it opens on the first console call for a Workbench launch. On AmigaOS
@@ -526,23 +517,19 @@ program run:
 - `aar_alloc(bytes, align)` and `aar_free(p)` are `malloc` with an alignment.
   Shared memory is `aar_shared_alloc`, and the two allocators do not mix.
 
-## Running on the ZZ9000
+## Running on AmigaOS
 
-The ZZ9000 is the reference platform. Its firmware runs apps on the card's ARM
-cores. An AAR 0.5 image needs firmware that implements AAR 0.5. The firmware
-side of the runtime is described in
-[app-runtime.md](https://github.com/BlitterStudio/zz9000-firmware/blob/master/docs/app-runtime.md)
-in the firmware repository.
-This repository does not include firmware headers; do not include any firmware
-header in an app.
+Use [`aar-run`](../client/run/README.md), the reference Shell command and
+Workbench tool. It uses `aar.library` ([client API](aar-client-api.md)) and
+`aar_serve` ([serve API](aar-serve-api.md)) on any supported platform.
+The manual is the reference for arguments, ToolTypes, exit codes and platform
+requirements.
 
-The launcher is `aar-run`, the reference launcher of the standard (`client/run`,
-MIT). It is built on `aar.library` ([client API](aar-client-api.md)) and the
-serving loop `aar_serve` ([serve API](aar-serve-api.md)), is a Shell command and
-a Workbench tool, and runs on any platform that has an `aar.library`. Its
-[manual](../client/run/README.md) has the arguments, ToolTypes, exit codes and
-platform notes; this section is what an app author needs. On the ZZ9000 it needs a Zorro III
-board, `zz9k.library` and, for a display, Picasso96.
+**ZZ9000 note.** AAR 0.5 images need firmware that implements AAR 0.5.
+See the firmware's
+[runtime contract](https://github.com/BlitterStudio/zz9000-firmware/blob/master/docs/app-runtime.md)
+and the manual's [platform notes](../client/run/README.md#platform-notes).
+Do not include firmware headers in an app.
 
 Shell:
 
@@ -551,38 +538,12 @@ Stack 32768
 aar-run RAM:app.elf [MAXMEM=<MiB>] [HOSTMEM=<MiB>] [WEIGHT=<n>] [AUDIO=AHI] [args]
 ```
 
-`argv[0]` is the ELF file name. Further tokens are the app's arguments, as many
-as the platform takes (`AARInfo.max_args` counts `argv[0]`; the ZZ9000 takes 15
-arguments). aar-run refuses a launch the platform's limits do not allow, and an
-image its profile, API or service groups the platform cannot run, before it
-claims anything. `AUDIO=AHI` selects AHI; the default route is the platform's own
-audio path (the card audio fabric on the ZZ9000). `MAXMEM` caps the app's
-private memory and `HOSTMEM` sets its shared-buffer limit (the platform
-default by default, 16 MiB on the ZZ9000).
-
-Workbench: the project icon's default tool is aar-run (`DEFAULT_TOOL=aar-run`).
-Dragging an ELF onto the aar-run icon overrides ToolType `APP`.
-
-| ToolType | Effect |
-|---|---|
-| `APP` | ELF path when no project file was dropped |
-| `ROOT` | Root for relative app paths. Default is the icon directory |
-| `ABS=1` | Allow paths that contain `:`. The root check does not apply to those |
-| `MODE` | Optional Picasso96 DisplayID, decimal, `$` hex, or `0x` hex. The app still chooses width, height, and format |
-| `ARGS` | Space-separated arguments. Quoting is not parsed |
-| `AUDIO=AHI` | PCM to AHI instead of the platform's own audio path |
-| `MAXMEM` | Private memory cap in MiB |
-| `HOSTMEM` | Shared-buffer limit in MiB, 1 to the platform's `shared_max_mib` (4095 at most); **ZZ9000:** the card grants at most 62 MiB |
-| `WEIGHT` | CPU share weight, 1 to the platform's `weight_max` |
-| `JOYPORT0=1` | Also read joystick port 0. Port 1 is read while the display window is active |
-
-A display open makes aar-run open the Picasso96 screen and bind the bitmap's real
-pitch and address. RGB565 is the first path. CLUT8 is supported. BGRA8888 is
-accepted when P96 returns that format. If the mode cannot be opened, aar-run asks
-the app to stop and `aar_display_open` returns `AAR_E_IO`. aar-run's `STATUS` CPU
-time is user execution plus SVC execution and excludes idle and recovery
-intervals. `STATUS` and `RELEASE` need the platform's extension table and print
-`not supported on this platform` where there is none.
+`argv[0]` is the ELF file name; further tokens are the app's arguments.
+aar-run checks the image and requested limits against `AARInfo` before
+taking a claim where possible. `MAXMEM` caps private memory, `HOSTMEM`
+sets the shared-buffer limit (the platform default when omitted), and
+`AUDIO=AHI` selects AHI instead of the platform audio path. See the
+[manual](../client/run/README.md) for Shell and Workbench use.
 
 ### The client library
 
@@ -596,46 +557,35 @@ completion or fault). Before closing a handle, drain the notify port and read
 messages until none is queued. A task has one signal bit shared by all its
 handles, not one per handle.
 
-`zz9k-app-ringtest` and `templates/ringflood.c` are the message ring
-conformance test. The app starts quiet and answers pings; on request it floods
-sequence-numbered, pattern-checked messages and a counter word in a shared
-buffer, then goes quiet again. The tool reads the counter through a
-cache-inhibited mapping and ends in `PASS` or `FAIL`. See step 12 of
-[zz9k-release-smoke.md](https://github.com/BlitterStudio/zz9000-firmware/blob/master/sdk/docs/zz9k-release-smoke.md).
+Use [`templates/echo.c`](../templates/echo.c) for a message peer and
+[`templates/ringflood.c`](../templates/ringflood.c) for queue load testing.
+The [firmware SDK smoke guide](https://github.com/BlitterStudio/zz9000-firmware/blob/master/sdk/docs/zz9k-release-smoke.md)
+describes its ZZ9000 test tools.
 
-### Scheduling and shared resources on the card
+### Scheduling and shared resources
 
-**ZZ9000.** The card runs apps on one ARM core, next to its own system
-thread. Service work (the SDK tasks, MiniGL, launcher processing, audio
-feeding) runs before apps. Runnable apps share the remaining time in 5 ms
-quanta. Parked apps use no CPU. The number of apps is bounded by the card's
-resources, not by a constant (specification 5.6). Two direct card-audio
-streams may be open across all apps, and one app at a time may bind GL. Release
-a resource promptly so another app can use it. A GL call does not return until
-that call's RasterIX work has drained. Do not stay inside one GL call for long:
-a call over 50 ms is logged and a call over 10 seconds stops the app.
+The standard does not prescribe a scheduler. Read
+[spec section 5.6](../spec/aar.md#56-concurrent-apps) for the
+weight convention and admission limits. Release scarce resources promptly.
+
+**ZZ9000 note.** Its scheduler, audio stream count and GL ownership are
+documented in the firmware's
+[runtime contract](https://github.com/BlitterStudio/zz9000-firmware/blob/master/docs/app-runtime.md).
+Apps must not depend on the scheduler quantum or API-body preemption policy.
 
 ## Running on a PC
 
-The host runner in `host-runner/` runs an app as a native process, with SDL2
-standing in for the card. It implements the core API with host semantics and
-the display, input, audio and services groups, with shared buffers whose
-tokens the runner can resolve, and plain host-memory heap growth. Its README,
-[host-runner/README.md](../host-runner/README.md), is the reference for its
-options, input and message scripts, key mapping and the differences from the
-card. There is no GL group there; compression, image and audio decode return
-`AAR_E_NOSYS` while SHA-256 works. A build for the runner needs no define on a
-host compiler, because `AAR_NOTE` vanishes unless the compiler targets Arm
-(`AAR_HOST` forces it). The runner always links the host C library and ignores
-the freestanding mode, so an app that calls `malloc` runs there and fails to
-link for the card in freestanding mode. Timing, memory limits and the watchdog
-are not the card's, so check performance and limits on hardware.
+The [host-runner manual](../host-runner/README.md) describes native PC builds,
+its options and differences from a target. SDL2 supplies display, input and
+audio; the runner does not load an ARM ELF. Check timing, memory limits and
+watchdog behaviour on the target platform.
 
 ## Debugging
 
 On a fault the client can read the fault class, the raw syndrome, the processor
 state, `pc`, `sp`, `lr`, the fault address, the exit code and the load base.
-aar-run prints them and returns 20.
+aar-run prints them; its [manual](../client/run/README.md#exit-codes) defines
+the launcher exit codes.
 
 Resolve `pc` and `lr` against the app ELF, not the firmware ELF. They are
 virtual addresses in the app's window. Subtract the load base that the status
@@ -646,18 +596,17 @@ arm-none-eabi-addr2line -e app.elf -f -C <pc minus load base>
 aarch64-none-elf-addr2line -e app.elf -f -C <pc minus load base>
 ```
 
-`aar_log` lines arrive at the client, and on the ZZ9000 on the card UART as
-`[app] ...`, subject to the rate limits above. stdout and stderr are the
-console, not that log. A missing console on Workbench means the app has not
-called a console function yet. There is no gdb stub.
+`aar_log` lines arrive at the client; platform sinks may have separate rate
+limits (see [C-CON.10](../conformance/TESTS.md#c-con-console-and-log-section-72-104)).
+stdout and stderr are the console, not that log. A missing console on
+Workbench means the app has not called a console function yet.
 
 ## Performance
 
 **A32.** Compile with the profile's flags, `-mcpu=cortex-a9 -marm -mfpu=neon
 -mfloat-abi=hard`; the make include and the CMake toolchain file set them. NEON
 and the hard-float ABI are the app ABI. Use NEON for bulk pixel and sample
-work. Do not ship a soft-float object: it will not link against `libaar`. The
-ZZ9000's ARM core runs at 666666687 Hz.
+work. Do not ship a soft-float object: it will not link against `libaar`.
 
 **A64.** The baseline is ARMv8-A with FP and ASIMD. Use `aar_info.cpu_features`
 before you use an optional instruction. A32 and A64 do not give bit-identical
@@ -682,15 +631,14 @@ never more than `frames` ahead. Store the samples first, then publish
 `*write_frame` with a release store; read `*read_frame` with an acquire load
 before you work out the free space (`__atomic_store_n` and `__atomic_load_n`
 on GCC and Clang). `volatile` alone does not order the samples against the
-index. See `templates/tone.c`. On the ZZ9000 today the grant is 22050 Hz with a
-ring of 8192 frames, and AHI does not resample: if AHI cannot open that stereo
-rate, the open fails.
+index. See `templates/tone.c`. The audio contract is in
+[spec section 8.4](../spec/aar.md#84-audio-aar_group_audio); AHI route behaviour is in the
+[aar-run manual](../client/run/README.md#console-and-audio-routes).
 
-SHA-256, decompress, and image or audio decode run inside the call. They are the
-right tool for a codec you do not want to port. On the ZZ9000 they run on the
-app's own core inline, so they are not a second core.
+SHA-256, decompress, and image or audio decode run inside the call.
+Their codec availability is platform-defined.
 
-## Bit-identical maths
+## ZZ9000 note: bit-identical maths
 
 A lockstep simulation or a replay needs the same floating-point results on
 every run. This section states what the A32 profile does on the ZZ9000's
@@ -830,16 +778,7 @@ minor.
 
 ## Licensing
 
-`libaar`, the headers in `include/aar/`, the note macro, the linker scripts, the
-templates and `aar-check` are MIT. The ZZ9000 firmware, including its runtime and
-the in-firmware GL build, is GPL-3.0-or-later. The GL front end that the firmware
-compiles is `PolyForm-Noncommercial-1.0.0 OR GPL-3.0-or-later`. Each platform's
-implementation keeps its own licence.
-
-The boundary is the table. An app links MIT `libaar` only. It reaches GL, files
-and the display through that table. It must not be linked against firmware
-objects, the GL front-end objects, or the firmware's runtime library. An app
-built that way can use any licence, including a closed one: the firmware licence
-does not cover programs that use the card through its published interfaces.
-[LICENSING.md](https://github.com/BlitterStudio/zz9000-firmware/blob/master/LICENSING.md)
-states this for the firmware. The firmware sources are not a public header.
+This repository is [MIT licensed](../LICENSE). Each platform implementation
+keeps its own licence. For the ZZ9000 firmware and the boundary between the
+runtime and an app, see the firmware's
+[LICENSING.md](https://github.com/BlitterStudio/zz9000-firmware/blob/master/LICENSING.md).

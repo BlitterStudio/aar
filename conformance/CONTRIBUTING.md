@@ -1,9 +1,8 @@
 # Writing the tests of an area
 
-Read `README.md` first (what the suite is, the result format, how a payload and the
-runner work together). This file is for the person who writes one area, for
-example C-FILE, and is laid out so that areas can be written in parallel without
-touching each other's files.
+Read [README.md](README.md) first for the suite, result format and payload/runner
+protocol. This guide describes the files and interfaces used to implement one
+test area, for example C-FILE.
 
 ## What an area author owns
 
@@ -18,7 +17,7 @@ For an area `C-<AREA>` (file names use the area in lower case, `<area>`):
 | `payloads/conf_<area>.qemu` | Optional marker: the payload runs under qemu user mode in `make check-runtime` (only when the loader of `libaar/tests/loader.c` has what the payload needs) |
 | `payloads/conf_<area>.ldlibs` | Optional marker: its text is passed to the link as `LDLIBS` (the Makefile and `tests/qemu_run.sh` both read it). `conf_entry` owns the entry symbol and links with `-Wl,-e,conf_entry_start` |
 | `payloads/conf_<area>.freestanding` | Optional marker: the payload builds with `AAR_FREESTANDING=1` (no libc), as `conf_free` does |
-| `runner/r_<area>.c` | The runner side: runner-judged tests, peer keywords, payload variants, observers. It exists already as a stub for every area |
+| `runner/r_<area>.c` | Runner-judged tests, peer keywords, payload variants and observers; every area has a file |
 
 Under qemu the loader enters the payload as the runtime would (`ENTRY_CONTRACT=1`, set by `tests/qemu_run.sh`): a fresh stack, every register 0 except `r0`/`x0` to `r2`/`x2`, a table with every core slot filled and a complete `aar_info`, 2 MiB of heap committed. The environment variables `ENTRY_ARGS` (more arguments, for example `conf:variant=lowmem`), `HEAP_CAP_MIB` (a cap on the heap, like `AAR_TAG_PRIVATE_MIB`) and `CPU_FEATURES` (the `cpu_features` word) shape it; see the comments of `libaar/tests/loader.c`. It prints the peer messages a payload sends (`[loader] message <keyword> <words>`) and takes them, so the payload's variants can be run by hand.
 
@@ -63,7 +62,9 @@ A payload is an app (`aar_main`) that prints one line per id with the helpers of
 - Use the `C-<AREA>.n` ids as string literals in the call (`conf_begin(&t,
   "C-TIME.1")`); the check finds them there. Put the area name in `conf_finish`.
 - Use `conf_skip` for what cannot be done in an environment that is not a platform,
-  with a reason that starts with `host:`. A platform run must not skip MUST tests.
+  with a reason that starts with `host:`. For platform runs, follow the
+  [spec's skip rules](../spec/aar.md) and the row in `TESTS.md`; an optional
+  PLATFORM audio route can have a catalogue-approved MUST skip.
 - A test that uses the runner as the peer must check `conf_have_peer(argc, argv)`
   first and skip with `host:` without it.
 - No libc in the payload unless the test is about the libc flavour. Build
@@ -153,8 +154,9 @@ The file defines one `const struct conf_area conf_area_<area>` (see the stubs an
   the id of a `payload` row, so a manual run that serves a payload row hangs it
   on a `runner` row's test function (`t_manual` in `r_queue.c`).
 
-The runner is plain C for AmigaOS m68k with warnings as errors; it may use
-`aar.library`, `aar_serve`, dos and exec, and nothing platform specific.
+The runner is plain C for AmigaOS m68k, compiled with warnings as errors. Base
+tests use `aar.library`, `aar_serve`, dos and exec. A test of a platform
+extension uses that extension only for the platform named by its catalogue group.
 
 ## Gaps in the spec
 
