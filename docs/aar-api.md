@@ -840,7 +840,9 @@ The parameters of `aar_image_open`. `codec` is `AAR_IMAGE_*`.
 `output_format` must be `AAR_FMT_BGRA8888`. `tile` must hold `stride * rows`
 bytes, `tile_bytes` is that capacity, and the buffer stays valid for every
 decode call on the session. It stays caller-owned. The pointer is last, at
-offset 24 on both profiles.
+offset 24 on both profiles. An app passes 0 in `flags` in API 0.5; a runtime may
+accept bits it defines (**ZZ9000:** bit 0 fits the image to the tile buffer and
+bit 1 preserves the aspect ratio while fitting).
 
 ### aar_image_result
 
@@ -2011,8 +2013,8 @@ that method without its header. Every stream except LHA ends itself; an LHA
 stream has no end marker, so `dst_bytes` must be exactly the plain size. The
 specification, section 8.6, has the details.
 
-**Image sessions.** In API 0.5 the tile buffer must hold the whole image and
-`aar_image_params.flags` must be 0. `aar_image_decode` takes `flags` bit 0 to say
+**Image sessions.** In API 0.5 the tile buffer must hold the whole image and an
+app passes 0 in `aar_image_params.flags`. `aar_image_decode` takes `flags` bit 0 to say
 that the input ends with the call, and the image is complete after a call with
 that bit that consumed all its input and returned result `flags` bit 1 (more
 output pending) clear. A call with `src_bytes` 0 is valid only with bit 0 set and
@@ -2059,7 +2061,8 @@ int aar_image_open(const aar_image_params *params, uint32_t *session,
 Starts one tile-buffer session and writes `*session`. NULL required pointers, a
 zero stride, row count or tile size, or an output format other than
 `AAR_FMT_BGRA8888` is `AAR_E_INVAL`. The tile buffer stays caller-owned; in
-API 0.5 it must hold the whole image and `params->flags` must be 0. Gate:
+API 0.5 it must hold the whole image and the app passes 0 in `params->flags`
+(a runtime may accept bits it defines). Gate:
 `AAR_API_COVERS(api, image_open)`. Missing slot: `AAR_E_NOSYS`. Minimum minor:
 5.
 
