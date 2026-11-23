@@ -127,6 +127,25 @@ check_source client/examples/aar-embed.c "."
 test -e "$OUT/aar-embed"
 echo "libaarserve.a builds and client/examples/aar-embed.c links against it, 0 warnings"
 
+# The conformance runner (conformance/runner): the program that runs the suite on
+# a platform. It uses only aar.library and libaarserve.a and is built here like
+# any other client program, no warning allowed. The core is aar-conf.c; each area
+# has its r_<area>.c, and every .c file of the directory is part of the program
+# (there is no list to edit). The catalogue header is generated from TESTS.md
+# (python3 is in the image; it is not kept in git).
+python3 conformance/tools/conf_catalogue.py gen
+stack=4096
+runner_srcs=$(ls conformance/runner/*.c)
+for src in $runner_srcs; do
+    check_source "$src" "."
+done
+# shellcheck disable=SC2086
+"$CC" -std=gnu11 -noixemul -m68030 -O2 -Wall -Wextra -Werror -Iclient/include -Iinclude \
+    $runner_srcs -L"$OUT" -laarserve -lamiga -o "$OUT/aar-conf"
+test -e "$OUT/aar-conf"
+echo "aar-conf: $(echo "$runner_srcs" | wc -l) files link against libaarserve.a for m68k, 0 warnings, $(wc -c < "$OUT/aar-conf") bytes"
+stack=1024
+
 # The test defines AARBase itself; every call goes through it, so nothing
 # else may be undefined (no stub library, no helper function).
 "$NM" "$OUT/t.o" > "$OUT/t.nm"

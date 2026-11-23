@@ -66,7 +66,8 @@ def build(profile="a32", **o):
     note_blob = (note or b"") + o.get("second_note", b"")
     cur = note_off + len(note_blob)
     text_off = align(cur, 8)
-    cur = text_off + 8
+    text = o.get("text", b"\x00" * 8)  # the code at e_entry (the conformance corpus runs it)
+    cur = text_off + len(text)
     rel_off = align(cur, 8)
     cur = rel_off + nrel * ent
 
@@ -92,7 +93,7 @@ def build(profile="a32", **o):
     dyn_off = align(cur, 8)
     dyn_size = len(dyn) * struct.calcsize(dyn_fmt)
     cur = dyn_off + dyn_size
-    data_off = align(cur, 16)
+    data_off = align(cur, o.get("data_align", 16))  # 4096: the RW segment on its own page
 
     reloc_type = o.get("reloc_type", R_AARCH64_RELATIVE if a64 else R_ARM_RELATIVE)
     r_off = data_off + o.get("reloc_target", 0)
@@ -100,12 +101,12 @@ def build(profile="a32", **o):
     for _ in range(nrel):
         if a64:
             info = (o.get("reloc_sym", 0) << 32) | reloc_type
-            rel_blob += struct.pack("<QQq", r_off, info, 0)
+            rel_blob += struct.pack("<QQq", r_off, info, o.get("reloc_addend", 0))
         else:
             info = (o.get("reloc_sym", 0) << 8) | reloc_type
             rel_blob += struct.pack("<II", r_off, info)
             if kind == "rela":
-                rel_blob += struct.pack("<I", 0)
+                rel_blob += struct.pack("<I", o.get("reloc_addend", 0))
     data_len = 32
     shstr = b"\x00"
     name_at = {}
@@ -195,8 +196,12 @@ def build(profile="a32", **o):
             struct.pack_into("<IIIIIIII", blob, at, typ, off, vaddr, vaddr,
                              filesz, memsz, flags, al)
     blob[note_off:note_off + len(note_blob)] = note_blob
-    blob[text_off:text_off + 8] = b"\x00" * 8
+    blob[text_off:text_off + len(text)] = text
     blob[rel_off:rel_off + len(rel_blob)] = rel_blob
+    if kind == "rel" and o.get("reloc_addend") and 0 <= o.get("reloc_target", 0) <= data_len - 4:
+        # A REL entry has no addend: it is the word at the target (the conformance
+        # corpus uses it to make the relocated pointer point at known code).
+        struct.pack_into("<Q" if a64 else "<I", blob, r_off, o["reloc_addend"])
     for i, (tag, val) in enumerate(dyn):
         struct.pack_into(dyn_fmt, blob, dyn_off + i * struct.calcsize(dyn_fmt),
                          tag, val)

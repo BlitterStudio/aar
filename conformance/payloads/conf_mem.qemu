@@ -1,0 +1,1 @@
+Marker: conf_mem runs under qemu user mode (make check-runtime runs every conf_*.qemu); the loader commits the 2 MiB the note asks for (HEAP_INIT_MIB).

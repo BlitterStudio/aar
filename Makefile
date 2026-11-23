@@ -6,7 +6,8 @@
 #
 #   make                build every template for every available profile
 #   make check          build, run aar-check on every ELF, run the tests
-#   make check-runtime  run libaar under qemu (needs qemu and Linux cross gcc)
+#   make check-runtime  run libaar and the conformance payloads under qemu (needs
+#                       qemu and Linux cross gcc)
 #   make PROFILES=a32   limit the profiles
 #
 # Output goes to build/<profile>/<app>.elf.
@@ -51,8 +52,25 @@ fpenv_SRCS := templates/fpenv.c
 ringflood_SRCS := templates/ringflood.c
 sbrk_smoke_SRCS := templates/sbrk_smoke.c
 
+# The conformance payloads (conformance/): apps that judge one area of the
+# standard from the inside, built per profile as build/<profile>/conf_<area>.elf.
+# There is no list to edit: an area is a file conformance/payloads/conf_<area>.c,
+# and it runs under qemu when conformance/payloads/conf_<area>.qemu exists (the
+# loader of libaar has a partial table; add the marker when it grows what the
+# payload needs). Two optional markers set how a payload links, and
+# conformance/tests/qemu_run.sh reads the same files: conf_<area>.ldlibs holds
+# extra linker words (conf_entry owns its entry symbol with -Wl,-e,...), and
+# conf_<area>.freestanding builds it with AAR_FREESTANDING=1.
+CONF_DIR := $(AAR_SDK)/conformance/payloads
+CONF_AREAS := $(sort $(patsubst $(CONF_DIR)/conf_%.c,%,$(wildcard $(CONF_DIR)/conf_*.c)))
+CONF_QEMU_AREAS := $(sort $(patsubst $(CONF_DIR)/conf_%.qemu,%,$(wildcard $(CONF_DIR)/conf_*.qemu)))
+CONF_APPS := $(addprefix conf_,$(CONF_AREAS))
+$(foreach a,$(CONF_AREAS),$(eval conf_$(a)_SRCS := conformance/payloads/conf_$(a).c))
+$(foreach a,$(CONF_AREAS),$(if $(wildcard $(CONF_DIR)/conf_$(a).ldlibs),$(eval conf_$(a)_LDLIBS := $(shell cat $(CONF_DIR)/conf_$(a).ldlibs))))
+$(foreach a,$(CONF_AREAS),$(if $(wildcard $(CONF_DIR)/conf_$(a).freestanding),$(eval conf_$(a)_FREESTANDING := 1)))
+
 TEMPLATES := hello pixels fault tone echo console membench isolate spin svcbench memhog svcprobe mgl-conformance filter freestanding fpenv ringflood
-CHECK_APPS := $(TEMPLATES) sbrk_smoke
+CHECK_APPS := $(TEMPLATES) sbrk_smoke $(CONF_APPS)
 
 # One target pair per profile and app: build-<profile>-<app> and
 # check-<profile>-<app> (build, then aar-check).
@@ -63,16 +81,18 @@ build-$(1)-$(2):
 	$$(MAKE) -f $$(AAR_SDK)/mk/aar.mk \
 		AAR_SDK=$$(AAR_SDK) AAR_PROFILE=$(1) CROSS=$$(CROSS_$(1)) \
 		APP=$(2) SRCS="$$($(2)_SRCS)" BUILD=$$(AAR_SDK)/build/$(1) \
+		LDLIBS="$$($(2)_LDLIBS)" \
 		AAR_FREESTANDING=$$(or $$($(2)_FREESTANDING),0) all
 check-$(1)-$(2):
 	$$(MAKE) -f $$(AAR_SDK)/mk/aar.mk \
 		AAR_SDK=$$(AAR_SDK) AAR_PROFILE=$(1) CROSS=$$(CROSS_$(1)) \
 		APP=$(2) SRCS="$$($(2)_SRCS)" BUILD=$$(AAR_SDK)/build/$(1) \
+		LDLIBS="$$($(2)_LDLIBS)" \
 		AAR_FREESTANDING=$$(or $$($(2)_FREESTANDING),0) check
 endef
 $(foreach p,$(PROFILES),$(foreach a,$(CHECK_APPS),$(eval $(call APP_RULES,$(p),$(a)))))
 
-BUILD_TARGETS := $(foreach p,$(PROFILES),$(foreach a,$(TEMPLATES),build-$(p)-$(a)))
+BUILD_TARGETS := $(foreach p,$(PROFILES),$(foreach a,$(TEMPLATES) $(CONF_APPS),build-$(p)-$(a)))
 CHECK_TARGETS := $(foreach p,$(PROFILES),$(foreach a,$(CHECK_APPS),check-$(p)-$(a)))
 EXPECT_TARGETS := $(foreach p,$(PROFILES),expect-note-$(p))
 FP_TARGETS := $(foreach p,$(PROFILES),check-fp-codegen-$(p))
@@ -82,12 +102,12 @@ ABI_TARGETS := $(foreach p,$(PROFILES),check-abi-$(p))
 
 .PHONY: all check clean check-tool check-fp-codegen check-mode-switch \
 	check-freestanding-guard check-abi check-abi-host check-expect-note \
-	check-runtime
+	check-runtime check-conf-catalogue check-conf-payloads
 
 all: $(BUILD_TARGETS)
 
 check: check-tool check-abi check-fp-codegen $(CHECK_TARGETS) \
-	check-expect-note check-mode-switch check-freestanding-guard
+	check-expect-note check-mode-switch check-freestanding-guard check-conf-catalogue
 
 # The checker's own tests, with synthetic images for both profiles.
 check-tool:
@@ -171,16 +191,29 @@ check-freestanding-guard-$(1):
 endef
 $(foreach p,$(PROFILES),$(eval $(call GUARD_RULE,$(p))))
 
-# libaar on a real instruction stream under qemu user mode: init arrays, the
-# libc glue and the freestanding flavour. Not part of check, because it needs
-# qemu and Linux cross compilers that the SDK image does not carry; each
-# profile prints "skipped" when they are missing.
+# The conformance catalogue (conformance/TESTS.md) against the payload and runner
+# sources and the runner's generated header: no orphan ids either way.
+check-conf-catalogue:
+	$(PYTHON) $(AAR_SDK)/conformance/tools/conf_catalogue.py check
+	$(PYTHON) $(AAR_SDK)/conformance/tests/tools_test.py
+	$(PYTHON) $(AAR_SDK)/conformance/negative/gen_negative.py --check
+
+# Every conformance payload built for every profile and checked by aar-check.
+check-conf-payloads: $(foreach p,$(PROFILES),$(foreach a,$(CONF_APPS),check-$(p)-$(a)))
+
+# libaar and the conformance payloads on a real instruction stream under qemu
+# user mode: init arrays, the libc glue, the freestanding flavour, and the
+# payloads of CONF_QEMU_AREAS. Not part of check, because it needs qemu and
+# Linux cross compilers that the SDK image does not carry; each profile prints
+# "skipped" when they are missing.
 check-runtime: $(foreach p,$(PROFILES),check-runtime-$(p))
 
 define RUNTIME_RULE
 .PHONY: check-runtime-$(1)
 check-runtime-$(1):
 	CROSS=$$(CROSS_$(1)) sh $$(AAR_SDK)/libaar/tests/runtime_test.sh $$(AAR_SDK) $(1)
+	CROSS=$$(CROSS_$(1)) sh $$(AAR_SDK)/conformance/tests/qemu_run.sh $$(AAR_SDK) $(1) $$(CONF_QEMU_AREAS)
+	sh $$(AAR_SDK)/conformance/tests/negative_run.sh $$(AAR_SDK) $(1)
 endef
 $(foreach p,$(PROFILES),$(eval $(call RUNTIME_RULE,$(p))))
 

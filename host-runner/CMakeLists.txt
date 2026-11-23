@@ -119,6 +119,25 @@ aar_host_executable(msgflood SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/msgflood.
 aar_host_executable(conshort SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/conshort.c)
 aar_host_executable(mailbox SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/mailbox.c)
 
+# Conformance payloads (conformance/payloads) that make sense on the host. The
+# host runner is the reference for app semantics (spec 11.1): the core group
+# must pass. A test that needs a client or a platform prints "SKIP host: ..."
+# here. There is no list to edit: a payload builds for the host when the file
+# conformance/payloads/conf_<area>.host exists.
+set(AAR_CONF_DIR ${AAR_ROOT}/conformance)
+file(GLOB AAR_CONF_HOST_MARKERS CONFIGURE_DEPENDS
+  ${AAR_CONF_DIR}/payloads/conf_*.host)
+set(AAR_CONF_HOST_PAYLOADS "")
+foreach(marker IN LISTS AAR_CONF_HOST_MARKERS)
+  get_filename_component(marker_name ${marker} NAME_WE)
+  string(REGEX REPLACE "^conf_" "" marker_area ${marker_name})
+  list(APPEND AAR_CONF_HOST_PAYLOADS ${marker_area})
+endforeach()
+foreach(area IN LISTS AAR_CONF_HOST_PAYLOADS)
+  aar_host_executable(conf_${area}
+    SOURCES ${AAR_CONF_DIR}/payloads/conf_${area}.c)
+endforeach()
+
 # Direct unit checks: they include the src file under test, so they do not
 # link the runner library.
 set(AAR_UNIT_INCLUDES
@@ -134,6 +153,14 @@ target_include_directories(memory_unit PRIVATE ${AAR_UNIT_INCLUDES})
 add_executable(sleep_unit tests/sleep_unit.c)
 target_include_directories(sleep_unit PRIVATE ${AAR_UNIT_INCLUDES})
 target_link_libraries(sleep_unit PRIVATE ${AAR_SDL2})
+
+# The C-FREE.8 decision of the conformance runner (plain C, no SDL).
+add_executable(free_judge_test ${AAR_CONF_DIR}/tests/free_judge_test.c)
+target_compile_options(free_judge_test PRIVATE -Wall -Wextra -Werror)
+
+# The selection decisions of the conformance runner core (plain C, no SDL).
+add_executable(select_test ${AAR_CONF_DIR}/tests/select_test.c)
+target_compile_options(select_test PRIVATE -Wall -Wextra -Werror)
 
 # Compiles libaar's aar.c and gl.c with AAR_FREESTANDING and freestanding.c by
 # inclusion.
@@ -198,9 +225,35 @@ if(BUILD_TESTING)
   aar_host_test(nogl EXE mgl-conformance)
   aar_host_test(keys EXE hello ENV "AAR_HOST_SELFTEST=1")
   aar_host_test(contract)
+
+  # conf_<area> runs the payload and checks its AAR-CONF lines against
+  # conformance/TESTS.md; conf_catalogue checks the catalogue itself.
+  foreach(area IN LISTS AAR_CONF_HOST_PAYLOADS)
+    string(TOUPPER ${area} AREA_UPPER)
+    add_test(
+      NAME conf_${area}
+      COMMAND ${Python3_EXECUTABLE} ${AAR_CONF_DIR}/tools/check_results.py
+              payload --area C-${AREA_UPPER} --profile host --
+              $<TARGET_FILE:conf_${area}> --headless
+    )
+    set_tests_properties(conf_${area} PROPERTIES
+      TIMEOUT 120
+      ENVIRONMENT "${AAR_TEST_ENV}"
+    )
+  endforeach()
+  add_test(
+    NAME conf_catalogue
+    COMMAND ${Python3_EXECUTABLE} ${AAR_CONF_DIR}/tools/conf_catalogue.py check
+  )
+  add_test(
+    NAME conf_tools
+    COMMAND ${Python3_EXECUTABLE} ${AAR_CONF_DIR}/tests/tools_test.py
+  )
   add_test(NAME files_unit COMMAND files_unit)
   add_test(NAME memory_unit COMMAND memory_unit)
   add_test(NAME sleep_unit COMMAND sleep_unit)
+  add_test(NAME conf_free_judge COMMAND free_judge_test)
+  add_test(NAME conf_select COMMAND select_test)
   add_test(NAME freestanding_unit COMMAND freestanding_unit)
   add_test(NAME freestanding_memmove_unit COMMAND freestanding_memmove_unit)
 endif()

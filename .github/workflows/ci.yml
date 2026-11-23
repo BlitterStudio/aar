@@ -153,6 +153,31 @@ jobs:
             amigadev/crosstools@sha256:9c81fcd973058fb37f1ca5b1c608c65473dc1dd657ab5c8533e7b43b80f01cf3 \
             sh -c 'cp -r /src /w && cd /w && sh client/tests/m68k_check.sh'
 
+  # The conformance suite (conformance/): the payloads build for A32 and, where
+  # the compiler is in the image, A64, and pass aar-check; the runner aar-conf
+  # builds for m68k with the pinned cross compiler (it is part of
+  # client/tests/m68k_check.sh); and the catalogue TESTS.md agrees with the ids
+  # the payloads and the runner can print, with the runner's generated header
+  # current. The payloads run under qemu in the sdk-image job (make
+  # check-runtime) and on the host in the host job (ctest).
+  conformance:
+    name: conformance suite builds and catalogue check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build SDK image
+        run: docker build -f docker/Dockerfile -t aar-sdk:conf .
+      - name: Payloads for every profile, catalogue against the sources
+        run: docker run --rm aar-sdk:conf make check-conf-payloads check-conf-catalogue
+      - name: Catalogue counts
+        run: python3 conformance/tools/conf_catalogue.py summary
+      - name: Build the runner for m68k
+        run: |
+          docker run --rm -v "$PWD":/src:ro \
+            amigadev/crosstools@sha256:9c81fcd973058fb37f1ca5b1c608c65473dc1dd657ab5c8533e7b43b80f01cf3 \
+            sh -c 'cp -r /src /w && cd /w && sh client/tests/m68k_check.sh'
+
   docs:
     name: AAR API docs
     runs-on: ubuntu-latest
@@ -190,7 +215,7 @@ jobs:
   publish:
     name: Publish the SDK image
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-    needs: [lint, sdk-image, abi-host, client-host, client-m68k, docs, host]
+    needs: [lint, sdk-image, abi-host, client-host, client-m68k, conformance, docs, host]
     runs-on: ubuntu-latest
     permissions:
       contents: read

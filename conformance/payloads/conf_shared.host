@@ -1,0 +1,1 @@
+Marker: conf_shared builds for the host runner (host-runner/CMakeLists.txt picks up every conf_*.host).
