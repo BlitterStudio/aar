@@ -37,7 +37,7 @@ cd "$SDK"
 
 # shellcheck disable=SC2086
 "$HOSTCC" -static $LOADER_FLAGS -O1 -Wall -Wextra -Werror -I"$SDK/include" \
-  "$SDK/libaar/tests/loader.c" -o "$WORK/loader"
+  "$SDK/libaar/tests/loader.c" "$SDK/loader/aar_load.c" "$SDK/loader/aar_image.c" -o "$WORK/loader"
 
 # The loader enters the image as the runtime would (ENTRY_CONTRACT: fresh stack,
 # zeroed registers, link register 0, a table with every core slot and a complete

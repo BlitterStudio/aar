@@ -74,6 +74,7 @@ check_source() {
 }
 check_source client/src/aar_probe.c "^_?($STR|aar_image_check)\$" -pedantic
 check_source loader/aar_image.c "^_?($STR)\$" -pedantic
+check_source loader/aar_load.c "^_?($STR|aar_image_check)\$" -pedantic
 check_source client/src/aar_core.c "^_?($STR)\$" -pedantic
 check_source client/src/refplat.c "^_?($STR|aar_core_ext_(stats|lease_pause))\$" -pedantic
 check_source client/src/aar_shell.c "^_?($STR|UtilityBase|aar_plat_get|aar_core_[a-z_]+|aar_probe_[a-z_]+)\$"

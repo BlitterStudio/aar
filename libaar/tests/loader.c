@@ -1,9 +1,13 @@
 /*
- * Test loader for libaar. Loads an AAR PIE ELF into anonymous memory, applies
- * the RELATIVE relocations listed in PT_DYNAMIC the way a runtime must (spec
- * 2.2), builds an aar_api table over POSIX calls and enters the image. Build
- * it for Linux user mode (arm-linux-gnueabihf-gcc -static -marm, or
- * aarch64-linux-gnu-gcc -static) and run it under qemu-arm or qemu-aarch64:
+ * Test loader for libaar. Loads an AAR PIE ELF into anonymous memory with the
+ * reference loader of the standard (loader/aar_load.h: every rule of spec 2.2
+ * and 2.3, the segments, the bss and the RELATIVE relocations of PT_DYNAMIC),
+ * builds an aar_api table over POSIX calls and enters the image. The same code
+ * loads A32 and A64 images; the build decides which profile it runs. Build it
+ * for Linux user mode with the loader sources (arm-linux-gnueabihf-gcc -static
+ * -marm, or aarch64-linux-gnu-gcc -static, with loader/aar_load.c and
+ * loader/aar_image.c) and run it under qemu-arm or qemu-aarch64. An image the
+ * loader refuses ends the run with status 2 and the code and rule on stderr:
  *
  *   loader app.elf
  *
@@ -14,7 +18,8 @@
  *   COHERENT=1       report AAR_INFOF_SHARED_COHERENT, so publish and acquire
  *                    must not reach the table
  *   NO_RELOC=1       apply no relocation (a test of the conformance corpus: an
- *                    image whose code checks its relocated pointer then fails)
+ *                    image whose code checks its relocated pointer then fails;
+ *                    the loader's plan loses its relocation tables)
  *
  * Two paths have a meaning of their own: huge.bin opens as a file of 3 GiB
  * (no data, seeks tracked), and stat-calls.magic stats as a file whose size is
@@ -26,7 +31,6 @@
  * SPDX-License-Identifier: MIT
  */
 #define _GNU_SOURCE
-#include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -38,26 +42,7 @@
 #include <unistd.h>
 
 #include "aar/app.h"
-
-#if defined(__aarch64__)
-typedef Elf64_Ehdr Ehdr;
-typedef Elf64_Phdr Phdr;
-typedef Elf64_Dyn Dyn;
-typedef Elf64_Rela Reloc;
-#define DT_RELOC DT_RELA
-#define DT_RELOCSZ DT_RELASZ
-#define RELOC_RELATIVE R_AARCH64_RELATIVE
-#define RELOC_TYPE(info) ELF64_R_TYPE(info)
-#else
-typedef Elf32_Ehdr Ehdr;
-typedef Elf32_Phdr Phdr;
-typedef Elf32_Dyn Dyn;
-typedef Elf32_Rel Reloc;
-#define DT_RELOC DT_REL
-#define DT_RELOCSZ DT_RELSZ
-#define RELOC_RELATIVE R_ARM_RELATIVE
-#define RELOC_TYPE(info) ELF32_R_TYPE(info)
-#endif
+#include "../../loader/aar_load.h"
 
 #define HEAP_LIMIT (64u << 20)
 #define MAX_FILES 64
@@ -396,97 +381,92 @@ static uint8_t *read_file(const char *path, long *size)
     return data;
 }
 
-/* Copy the PT_LOAD segments to a fresh mapping and apply the dynamic
- * relocations. Returns the load base, or NULL. */
-static uint8_t *load_image(const uint8_t *img, size_t *mapped, int *relocs)
-{
-    const Ehdr *eh = (const Ehdr *)img;
-    const Phdr *ph = (const Phdr *)(img + eh->e_phoff);
-    uintptr_t top = 0;
-    uintptr_t table = 0;
-    uintptr_t table_bytes = 0;
-#if !defined(__aarch64__)
-    uintptr_t rela_table = 0;
-    uintptr_t rela_bytes = 0;
+/* ---- Loading, through the reference loader (loader/aar_load.h) --------------------
+ *
+ * The loader reads the whole file from memory. aar_load_plan applies every rule of
+ * spec 2.2 and 2.3 for the profile this build runs (a platform that ran both
+ * would pass both bits); a refusal is reported with its code and rule and ends the
+ * run with status 2. The memory is anonymous and readable, writable and
+ * executable (the test needs no more), the app runs where it is written, so
+ * write_base and app_base are the same address. aar_load_place copies the
+ * segments, zeroes the bss and applies the relocations; NO_RELOC=1 drops the
+ * relocation tables from the plan first.
+ */
+#if defined(__aarch64__)
+#define LOADER_PROFILE AAR_PROFILE_A64
+#else
+#define LOADER_PROFILE AAR_PROFILE_A32
 #endif
-    uint8_t *base;
-    int i;
 
-    for (i = 0; i < eh->e_phnum; i++)
-        if (ph[i].p_type == PT_LOAD && ph[i].p_vaddr + ph[i].p_memsz > top)
-            top = ph[i].p_vaddr + ph[i].p_memsz;
-    top = (top + 0xfffu) & ~(uintptr_t)0xfffu;
-    /* One spare page after the image: the A64 entry stub of ENTRY_CONTRACT. */
-    base = mmap(NULL, top + 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
-                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (base == MAP_FAILED) {
+#define PAGE_BYTES 4096u
+
+struct file_source {
+    const uint8_t *data;
+    uint64_t size;
+};
+
+static int file_read(void *user, uint64_t offset, void *dst, uint32_t count)
+{
+    const struct file_source *f = (const struct file_source *)user;
+
+    if (offset > f->size || count > f->size - offset)
+        return AAR_E_IO;
+    memcpy(dst, f->data + offset, count);
+    return AAR_OK;
+}
+
+/* Plans and places the image. Returns the base the app runs at (the memory
+ * mapped, `*mapped` bytes of the span rounded to pages, then one spare page for
+ * the A64 entry stub of ENTRY_CONTRACT), or NULL. *entry is the address of the
+ * entry point. */
+static uint8_t *load_image(const uint8_t *img, size_t size, const char *path,
+                           size_t *mapped, int *relocs, uint64_t *entry)
+{
+    struct file_source src;
+    struct aar_load_plan plan;
+    const char *why = NULL;
+    uint64_t align, top;
+    uint8_t *raw, *base;
+    uint32_t i;
+    int rc;
+
+    src.data = img;
+    src.size = size;
+    rc = aar_load_plan(file_read, &src, size, LOADER_PROFILE, &plan, &why);
+    if (rc != AAR_OK) {
+        fprintf(stderr, "%s: refused (code %d): %s\n", path, rc, why ? why : "?");
+        return NULL;
+    }
+    /* NO_RELOC=1 applies no relocation: a test of the tests, to show that an
+     * image whose code checks its relocated pointer exits with another code. */
+    if (getenv("NO_RELOC"))
+        plan.nrelocs = 0;
+    /* The base is a multiple of the image's alignment (at least a page). */
+    align = plan.align > PAGE_BYTES ? plan.align : PAGE_BYTES;
+    if (plan.span > (1ull << 30) || align > (1u << 24)) {
+        fprintf(stderr, "%s: the image needs too much memory (span %llu, alignment %llu)\n",
+                path, (unsigned long long)plan.span, (unsigned long long)align);
+        return NULL;
+    }
+    top = (plan.span + PAGE_BYTES - 1u) & ~(uint64_t)(PAGE_BYTES - 1u);
+    raw = mmap(NULL, (size_t)(top + PAGE_BYTES + align), PROT_READ | PROT_WRITE | PROT_EXEC,
+               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) {
         perror("mmap");
         return NULL;
     }
-    for (i = 0; i < eh->e_phnum; i++)
-        if (ph[i].p_type == PT_LOAD)
-            memcpy(base + ph[i].p_vaddr, img + ph[i].p_offset,
-                   ph[i].p_filesz);
-    for (i = 0; i < eh->e_phnum; i++) {
-        const Dyn *d;
-
-        if (ph[i].p_type != PT_DYNAMIC)
-            continue;
-        for (d = (const Dyn *)(base + ph[i].p_vaddr); d->d_tag != DT_NULL; d++) {
-            if (d->d_tag == DT_RELOC)
-                table = d->d_un.d_ptr;
-            if (d->d_tag == DT_RELOCSZ)
-                table_bytes = d->d_un.d_val;
-#if !defined(__aarch64__)
-            /* A32 allows a RELA table too (spec 2.2.5). */
-            if (d->d_tag == DT_RELA)
-                rela_table = d->d_un.d_ptr;
-            if (d->d_tag == DT_RELASZ)
-                rela_bytes = d->d_un.d_val;
-#endif
-        }
+    base = (uint8_t *)(((uintptr_t)raw + (uintptr_t)align - 1u) & ~((uintptr_t)align - 1u));
+    rc = aar_load_place(&plan, file_read, &src, base, (uint64_t)(uintptr_t)base, top,
+                        entry, &why);
+    if (rc != AAR_OK) {
+        fprintf(stderr, "%s: could not be placed (code %d): %s\n", path, rc, why ? why : "?");
+        return NULL;
     }
     *relocs = 0;
-    /* NO_RELOC=1 skips every relocation: a test of the tests, to show that an
-     * image whose code checks its relocated pointer exits with another code. */
-    if (getenv("NO_RELOC")) {
-        table_bytes = 0;
-#if !defined(__aarch64__)
-        rela_bytes = 0;
-#endif
-    }
-    for (const Reloc *r = (const Reloc *)(base + table);
-         (const uint8_t *)r < base + table + table_bytes; r++) {
-        uintptr_t *where = (uintptr_t *)(base + r->r_offset);
-
-        if (RELOC_TYPE(r->r_info) != RELOC_RELATIVE) {
-            fprintf(stderr, "relocation type %u is not RELATIVE\n",
-                    (unsigned)RELOC_TYPE(r->r_info));
-            return NULL;
-        }
-#if defined(__aarch64__)
-        *where = (uintptr_t)base + (uintptr_t)r->r_addend;
-#else
-        *where += (uintptr_t)base;
-#endif
-        (*relocs)++;
-    }
-#if !defined(__aarch64__)
-    for (const Elf32_Rela *r = (const Elf32_Rela *)(base + rela_table);
-         (const uint8_t *)r < base + rela_table + rela_bytes; r++) {
-        uintptr_t *where = (uintptr_t *)(base + r->r_offset);
-
-        if (ELF32_R_TYPE(r->r_info) != R_ARM_RELATIVE) {
-            fprintf(stderr, "relocation type %u is not RELATIVE\n",
-                    (unsigned)ELF32_R_TYPE(r->r_info));
-            return NULL;
-        }
-        *where = (uintptr_t)base + (uintptr_t)r->r_addend;
-        (*relocs)++;
-    }
-#endif
+    for (i = 0; i < plan.nrelocs; i++)
+        *relocs += (int)plan.reloc[i].count;
     __builtin___clear_cache((char *)base, (char *)base + top);
-    *mapped = top;
+    *mapped = (size_t)top;
     return base;
 }
 
@@ -823,6 +803,7 @@ int main(int argc, char **argv)
     int relocs = 0;
     uint8_t *img;
     uint8_t *base;
+    uint64_t entry_addr = 0;
     int (*entry)(const aar_api *, int, char **);
     int rc;
 
@@ -834,7 +815,7 @@ int main(int argc, char **argv)
     img = read_file(argv[1], &size);
     if (!img)
         return 2;
-    base = load_image(img, &mapped, &relocs);
+    base = load_image(img, (size_t)size, argv[1], &mapped, &relocs, &entry_addr);
     if (!base)
         return 2;
     heap_base = mmap(NULL, HEAP_LIMIT, PROT_READ | PROT_WRITE,
@@ -843,10 +824,9 @@ int main(int argc, char **argv)
         return 2;
     heap_committed = (init ? (uint64_t)atoi(init) : 0u) * AAR_HEAP_GRANULE;
     build_table(&api);
-    entry = (int (*)(const aar_api *, int, char **))
-            (base + ((const Ehdr *)img)->e_entry);
+    entry = (int (*)(const aar_api *, int, char **))(uintptr_t)entry_addr;
     fprintf(stderr, "[loader] %d relocations applied, entry offset %#lx\n",
-            relocs, (unsigned long)((const Ehdr *)img)->e_entry);
+            relocs, (unsigned long)(entry_addr - (uint64_t)(uintptr_t)base));
     if (getenv("ENTRY_CONTRACT"))
         run_contract((uintptr_t)entry, base, mapped, &api, argv[1]);
     rc = entry(&api, 2, app_argv);
