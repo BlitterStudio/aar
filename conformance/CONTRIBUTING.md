@@ -118,7 +118,10 @@ The file defines one `const struct conf_area conf_area_<area>` (see the stubs an
   `console_pump`) and say so in the commit.
 - **Observers**: `on_open` and `on_end` are called for every payload run of every
   area, for tests that hold for any app (`r_life.c` judges C-LIFE.1 to C-LIFE.3 that
-  way).
+  way). `on_end` is called by the core after a payload area's run (`run_area`), not
+  by `conf_run_payload`; when `ONLY` selects an observer test but no payload area,
+  the core runs the payload of C-TIME once (result lines not taken) so that the
+  observers have a run to judge.
 - A manual service loop (`AARServiceNext` and `AARServiceReply`, needed to withhold
   or misaddress completions for the queue and timeout tests) is not in the core.
   Write it in your `r_<area>.c` as a test that does its own open, load and start

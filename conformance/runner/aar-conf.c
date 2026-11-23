@@ -838,6 +838,48 @@ static void plan(void)
     }
 }
 
+/* The observer tests (C-LIFE.1 to C-LIFE.3) are judged on every payload run of a
+ * run_area. When the selection (ONLY) leaves them without a result because no
+ * payload area was selected, the core runs the payload of OBSERVER_AREA once with
+ * its result lines not taken, so that the observers see a run. A full run never
+ * needs it: the observers have their results by then. */
+#define OBSERVER_AREA "C-TIME"
+
+static void run_observer_fallback(void)
+{
+    struct conf_run run;
+    struct conf_outcome out;
+    struct conf_parsed pr;
+    unsigned a;
+    int i;
+    int need = 0;
+
+    for (a = 0; a < CONF_COUNT(areas) && !need; a++) {
+        if (!areas[a]->on_open && !areas[a]->on_end)
+            continue;
+        for (i = 0; i < CONF_TEST_COUNT; i++) {
+            if (selected[i] && results[i].status == CONF_R_NONE &&
+                conf_tests[i].judge == CONF_J_RUNNER &&
+                strcmp(conf_areas[conf_tests[i].area], areas[a]->name) == 0) {
+                need = 1;
+                break;
+            }
+        }
+    }
+    if (!need || conf_g.aborted)
+        return;
+    conf_run_init(&run, OBSERVER_AREA);
+    run.norelay = 1;
+    conf_emitf("# running conf_%s for the observer tests", OBSERVER_AREA + 2);
+    conf_run_payload(&run, &out);
+    conf_parse_capture(&run, &pr);
+    for (a = 0; a < CONF_COUNT(areas); a++) {
+        if (areas[a]->on_end)
+            areas[a]->on_end(&run, &out, &pr);
+    }
+    conf_run_free(&run);
+}
+
 static void run_tests(void)
 {
     int i;
@@ -855,6 +897,7 @@ static void run_tests(void)
     }
     for (i = 0; i < CONF_AREA_COUNT && !conf_g.aborted; i++)
         run_area(i);
+    run_observer_fallback();
     for (i = 0; i < CONF_TEST_COUNT; i++) {
         if (selected[i] && results[i].status == CONF_R_NONE &&
             conf_tests[i].judge == CONF_J_OPERATOR)
