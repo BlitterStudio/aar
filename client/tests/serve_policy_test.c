@@ -96,6 +96,29 @@ static void test_clean_exit_still_drains(void)
     assert(aar_serve_run_should_exit(&watchdog) == 1);
 }
 
+static void test_stopping_before_the_forced_end_is_waited_for(void)
+{
+    /* The runtime publishes STOPPING at the stop request, before the app has
+     * left or been forced out, and the teardown sets the end reason. The
+     * grace period alone does not end the run: the forced end, up to a tick
+     * after the grace period, must be read first. */
+    struct aar_serve_exit_in waiting =
+        exit_in(AAR_STATE_STOPPING, AAR_END_NONE, 500u, 1, 0, 0, 0);
+    struct aar_serve_exit_in forced =
+        exit_in(AAR_STATE_STOPPING, AAR_END_FORCED, 500u, 1, 0, 0, 0);
+    struct aar_serve_exit_in early =
+        exit_in(AAR_STATE_STOPPING, AAR_END_FORCED, 100u, 1, 0, 0, 0);
+    struct aar_serve_exit_in stuck =
+        exit_in(AAR_STATE_STOPPING, AAR_END_NONE, 1000u, 1, 0, 0, 0);
+
+    waiting.grace_ms = forced.grace_ms = early.grace_ms = stuck.grace_ms = 500u;
+    assert(aar_serve_run_should_exit(&waiting) == 0);
+    assert(aar_serve_run_should_exit(&forced) == 1);
+    assert(aar_serve_run_should_exit(&early) == 0);
+    /* A runtime that never ends it is given up on after two grace periods. */
+    assert(aar_serve_run_should_exit(&stuck) == 1);
+}
+
 static void test_lost_claim_ends_the_run(void)
 {
     struct aar_serve_exit_in running =
@@ -812,7 +835,7 @@ static void test_async_release_preserves_or_frees_resources_by_delivery(void)
  * the default applies only when the platform says none. */
 static void test_the_stop_grace_is_the_platforms(void)
 {
-    struct aar_serve_exit_in in = exit_in(AAR_STATE_STOPPING, 0u, 1500u, 1, 0, 0, 0);
+    struct aar_serve_exit_in in = exit_in(AAR_STATE_STOPPING, AAR_END_EXIT, 1500u, 1, 0, 0, 0);
 
     in.grace_ms = 2000u;
     assert(aar_serve_run_should_exit(&in) == 0);
@@ -830,7 +853,7 @@ static void test_the_stop_grace_is_the_platforms(void)
     in.elapsed_ms = 400u;
     assert(aar_serve_run_should_exit(&in) == 1);
     /* None reported: the default. */
-    in = exit_in(AAR_STATE_STOPPING, 0u, AAR_SERVE_GRACE_MS - 1u, 1, 0, 0, 0);
+    in = exit_in(AAR_STATE_STOPPING, AAR_END_EXIT, AAR_SERVE_GRACE_MS - 1u, 1, 0, 0, 0);
     assert(aar_serve_run_should_exit(&in) == 0);
     in.elapsed_ms = AAR_SERVE_GRACE_MS;
     assert(aar_serve_run_should_exit(&in) == 1);
@@ -841,6 +864,7 @@ int main(void)
     test_output_failure_does_not_block_exit();
     test_ctrl_c_ends_even_if_output_remains();
     test_clean_exit_still_drains();
+    test_stopping_before_the_forced_end_is_waited_for();
     test_lost_claim_ends_the_run();
     test_console_read_gated_on_running();
     test_finish_prompt_is_not_stdout();

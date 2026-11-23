@@ -115,10 +115,14 @@ static inline int aar_serve_run_should_exit(const struct aar_serve_exit_in *in)
          in->end_reason == AAR_END_RUNTIME_RESTART) &&
         !blocked)
         return 1;
+    /* STOPPING at the stop request is not the end: the runtime sets the end
+     * reason when it tears the app down, up to a tick after the grace
+     * period (a forced stop). The run waits for it, and for two grace
+     * periods at most (below). */
     if (in->entered &&
         (in->state == AAR_STATE_IDLE ||
          (in->state == AAR_STATE_STOPPING && in->stop_asked &&
-          in->elapsed_ms >= grace)) &&
+          in->end_reason != AAR_END_NONE && in->elapsed_ms >= grace)) &&
         (!in->stop_asked || in->elapsed_ms >= grace) &&
         !blocked)
         return 1;
