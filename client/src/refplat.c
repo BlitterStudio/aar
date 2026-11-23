@@ -27,7 +27,7 @@ static const struct aar_plat_info info_default = {
     16u,                /* max_args */
     128u,               /* max_arg_bytes */
     4096u,              /* shared_granule */
-    2000u,              /* stall_limit_ms */
+    10000u,             /* stall_limit_ms: spec 3.4 minimum */
     1000u,              /* stop_grace_ms */
     16u,                /* shared_default_mib */
     4095u,              /* shared_max_mib */
