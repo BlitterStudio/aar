@@ -410,7 +410,8 @@ static uint8_t *load_image(const uint8_t *img, size_t *mapped, int *relocs)
         if (ph[i].p_type == PT_LOAD && ph[i].p_vaddr + ph[i].p_memsz > top)
             top = ph[i].p_vaddr + ph[i].p_memsz;
     top = (top + 0xfffu) & ~(uintptr_t)0xfffu;
-    base = mmap(NULL, top, PROT_READ | PROT_WRITE | PROT_EXEC,
+    /* One spare page after the image: the A64 entry stub of ENTRY_CONTRACT. */
+    base = mmap(NULL, top + 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (base == MAP_FAILED) {
         perror("mmap");
@@ -454,6 +455,329 @@ static uint8_t *load_image(const uint8_t *img, size_t *mapped, int *relocs)
     return base;
 }
 
+/* ---- ENTRY_CONTRACT=1: enter the image as spec 3.2 says ----------------------
+ *
+ * The plain entry above is a C call: link register, scratch registers and
+ * floating-point state are whatever the loader had. With ENTRY_CONTRACT set the
+ * image is entered with r0/x0 the table, r1/w1 argc, r2/x2 argv, a fresh 1 MiB
+ * stack (8-byte aligned on A32, 16 on A64), every other general and vector
+ * register 0, lr 0 (and x29 0), FPSCR 0 (FPCR and FPSR 0). argv is the file name
+ * of the image (last path component), "alpha" and "beta gamma", the first
+ * words of the runner's arguments (conformance/payloads/conf.h), then the words
+ * of ENTRY_ARGS. The conformance payloads conf_entry, conf_table and conf_mem
+ * judge this state and the table below.
+ *
+ * A32 jumps through the stack (ldr pc), A64 through a copy of the stub in a page
+ * next to the image whose last instruction is a branch patched to the entry, so
+ * that no register carries the entry address.
+ */
+#define APP_STACK_BYTES (1u << 20)
+
+#if defined(__aarch64__)
+__asm__(
+    ".text\n"
+    ".balign 4\n"
+    "loader_enter_start:\n"
+    "    hint #34\n"
+    "    mov  sp, x3\n"
+    "    mov  w1, w1\n"
+    "    .irp r, 3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30\n"
+    "    mov  x\\r, xzr\n"
+    "    .endr\n"
+    "    .irp r, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31\n"
+    "    movi v\\r\\().2d, #0\n"
+    "    .endr\n"
+    "    msr  fpcr, xzr\n"
+    "    msr  fpsr, xzr\n"
+    "    b    .\n"
+    "loader_enter_end:\n"
+    ".pushsection .rodata\n"
+    ".balign 4\n"
+    "loader_enter_bytes:\n"
+    ".word loader_enter_end - loader_enter_start\n"
+    ".popsection\n");
+extern const uint32_t loader_enter_start[], loader_enter_bytes;
+
+static void enter_contract(uintptr_t entry, uint8_t *near_img, size_t near_bytes,
+                           const aar_api *api, int argc, char **argv,
+                           uint8_t *stack_top)
+{
+    size_t bytes = loader_enter_bytes;
+    uint32_t *stub = (uint32_t *)(void *)(near_img + near_bytes);
+    uint32_t *last;
+    int64_t delta;
+
+    memcpy(stub, loader_enter_start, bytes);
+    last = stub + bytes / 4 - 1;
+    delta = ((int64_t)entry - (int64_t)(uintptr_t)last) / 4;
+    if (delta < -(1 << 25) || delta >= (1 << 25)) {
+        fprintf(stderr, "[loader] the entry is out of branch range of the stub\n");
+        _exit(2);
+    }
+    *last = 0x14000000u | ((uint32_t)delta & 0x03ffffffu);
+    __builtin___clear_cache((char *)stub, (char *)stub + bytes);
+    ((void (*)(const aar_api *, int, char **, uint8_t *))(void *)stub)(
+        api, argc, argv, stack_top);
+    _exit(99);
+}
+#else
+__asm__(
+    ".text\n"
+    ".arm\n"
+    ".balign 4\n"
+    ".fpu neon\n"
+    ".global loader_enter_a32\n"
+    "loader_enter_a32:\n"
+    "    ldr  r12, [sp]\n"
+    "    mov  sp, r3\n"
+    "    sub  sp, sp, #8\n"
+    "    str  r12, [sp]\n"
+    "    .irp r, 3,4,5,6,7,8,9,10,11,12\n"
+    "    mov  r\\r, #0\n"
+    "    .endr\n"
+    "    mov  lr, #0\n"
+    "    .irp r, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15\n"
+    "    vmov.i32 q\\r, #0\n"
+    "    .endr\n"
+    "    vmsr fpscr, r3\n"
+    "    ldr  pc, [sp], #8\n");
+extern void loader_enter_a32(const aar_api *api, int argc, char **argv,
+                             uint8_t *stack_top, uintptr_t entry);
+
+static void enter_contract(uintptr_t entry, uint8_t *near_img, size_t near_bytes,
+                           const aar_api *api, int argc, char **argv,
+                           uint8_t *stack_top)
+{
+    (void)near_img;
+    (void)near_bytes;
+    loader_enter_a32(api, argc, argv, stack_top, entry);
+    _exit(99);
+}
+#endif
+
+/* ---- The table a contract run sees -------------------------------------------------
+ *
+ * Enough of a platform for the conformance payloads (C-TABLE, C-MEM) to judge
+ * it: every core slot is non-NULL (a slot the loader does not implement is
+ * filled with a stub that refuses), aar_info is complete, and
+ *   HEAP_CAP_MIB=<n>   caps the private heap at n MiB (default and most: 64),
+ *                      as AAR_TAG_PRIVATE_MIB would
+ *   CPU_FEATURES=<n>   aar_info.cpu_features (default 0), the bits of spec 8.7
+ * The private heap raises AAR_EV_LOW_MEMORY once when less than a tenth of the
+ * cap is free and again after more than half is free. No group is declared.
+ */
+static uint64_t contract_cap;
+static int low_armed = 1;
+static int low_pending;
+
+static void low_check(void)
+{
+    uint64_t free_bytes = contract_cap - heap_committed;
+
+    if (low_armed && free_bytes < contract_cap / 10u) {
+        low_pending = 1;
+        low_armed = 0;
+    } else if (!low_armed && free_bytes >= contract_cap / 2u) {
+        low_armed = 1;
+    }
+}
+
+static int contract_heap_grow(uint64_t bytes, void **old_break)
+{
+    int rc;
+
+    if (bytes % AAR_HEAP_GRANULE)
+        return AAR_E_INVAL;
+    if (heap_committed + bytes > contract_cap)
+        return AAR_E_NOMEM;
+    rc = app_heap_grow(bytes, old_break);
+    low_check();
+    return rc;
+}
+
+static int contract_heap_shrink(uint64_t bytes, void **new_break)
+{
+    int rc = app_heap_shrink(bytes, new_break);
+
+    low_check();
+    return rc;
+}
+
+static int contract_heap_info(aar_heap_info *out)
+{
+    int rc = app_heap_info(out);
+
+    out->limit = contract_cap;
+    out->pool_free = contract_cap - heap_committed;
+    return rc;
+}
+
+static int contract_event_poll(aar_event *out, uint32_t max, uint32_t *out_n)
+{
+    *out_n = 0;
+    if (max && low_pending) {
+        memset(out, 0, sizeof *out);
+        out->type = AAR_EV_LOW_MEMORY;
+        low_pending = 0;
+        *out_n = 1;
+    }
+    return AAR_OK;
+}
+
+static int contract_info(aar_info *out)
+{
+    aar_info full;
+    uint32_t size = out->size;
+    const char *features = getenv("CPU_FEATURES");
+
+    memset(&full, 0, sizeof full);
+    full.size = size;
+#if defined(__aarch64__)
+    full.profile = AAR_PROFILE_A64;
+#else
+    full.profile = AAR_PROFILE_A32;
+#endif
+    full.flags = coherent ? AAR_INFOF_SHARED_COHERENT : 0u;
+    full.heap_granule = AAR_HEAP_GRANULE;
+    full.shared_granule = 4096u;
+    full.msg_capacity = 63u;
+    full.sleep_granule_us = 1000u;
+    full.stall_limit_ms = AAR_STALL_LIMIT_MIN_MS;
+    full.stop_grace_ms = 500u;
+    full.cpu_features = features ? (uint32_t)strtoul(features, NULL, 0) : 0u;
+    full.shared_limit = (uint64_t)AAR_SHARED_DEFAULT_MIB << 20;
+    full.max_files = AAR_MIN_FILES;
+    memcpy(out, &full, size < sizeof full ? size : sizeof full);
+    if (size > sizeof full)
+        memset((uint8_t *)out + sizeof full, 0, size - sizeof full);
+    return AAR_OK;
+}
+
+static int stub_shared_alloc(uint64_t bytes, uint32_t align, uint32_t flags,
+                             aar_shared *out)
+{
+    (void)bytes;
+    (void)align;
+    (void)flags;
+    (void)out;
+    return AAR_E_NOMEM;
+}
+
+static int stub_shared_free(void *p)
+{
+    (void)p;
+    return AAR_E_INVAL;
+}
+
+/* The loader has no client: a message is printed (the keyword, then the four
+ * little-endian words from byte 16) and taken. */
+static int stub_msg_send(const void *msg)
+{
+    const uint8_t *b = (const uint8_t *)msg;
+    uint32_t w[4];
+    int i;
+
+    for (i = 0; i < 4; i++)
+        w[i] = (uint32_t)b[16 + 4 * i] | ((uint32_t)b[17 + 4 * i] << 8) |
+               ((uint32_t)b[18 + 4 * i] << 16) | ((uint32_t)b[19 + 4 * i] << 24);
+    fprintf(stderr, "[loader] message %.16s %u %u %u %u\n", (const char *)msg, w[0], w[1],
+            w[2], w[3]);
+    return AAR_OK;
+}
+
+static int stub_msg_poll(void *msg)
+{
+    (void)msg;
+    return 0;
+}
+
+static int stub_msg_wait(uint32_t timeout_us)
+{
+    (void)timeout_us;
+    return AAR_E_TIMEDOUT;
+}
+
+static int stub_list_open(const char *path)
+{
+    (void)path;
+    return AAR_E_NOENT;
+}
+
+static int stub_list_next(int list, aar_dirent *out)
+{
+    (void)list;
+    (void)out;
+    return AAR_E_BADF;
+}
+
+static int stub_list_close(int list)
+{
+    (void)list;
+    return AAR_E_BADF;
+}
+
+static void contract_table(aar_api *api)
+{
+    const char *cap = getenv("HEAP_CAP_MIB");
+
+    contract_cap = (uint64_t)HEAP_LIMIT;
+    if (cap && (uint64_t)strtoul(cap, NULL, 0) * AAR_HEAP_GRANULE < contract_cap)
+        contract_cap = (uint64_t)strtoul(cap, NULL, 0) * AAR_HEAP_GRANULE;
+    api->heap_grow = contract_heap_grow;
+    api->heap_shrink = contract_heap_shrink;
+    api->heap_info = contract_heap_info;
+    api->event_poll = contract_event_poll;
+    api->info = contract_info;
+    if (!api->shared_alloc)
+        api->shared_alloc = stub_shared_alloc;
+    if (!api->shared_free)
+        api->shared_free = stub_shared_free;
+    if (!api->msg_send)
+        api->msg_send = stub_msg_send;
+    if (!api->msg_poll)
+        api->msg_poll = stub_msg_poll;
+    if (!api->msg_wait)
+        api->msg_wait = stub_msg_wait;
+    if (!api->file_list_open)
+        api->file_list_open = stub_list_open;
+    if (!api->file_list_next)
+        api->file_list_next = stub_list_next;
+    if (!api->file_list_close)
+        api->file_list_close = stub_list_close;
+}
+
+/* argv: the image path's last component, "alpha", "beta gamma", then the
+ * space-separated words of ENTRY_ARGS (for example conf:variant=caps). */
+#define CONTRACT_ARGV_MAX 32
+
+static void run_contract(uintptr_t entry, uint8_t *base, size_t mapped,
+                         aar_api *api, const char *elf)
+{
+    static char *contract_argv[CONTRACT_ARGV_MAX + 1] = { NULL, "alpha", "beta gamma" };
+    static char words[512];
+    const char *extra = getenv("ENTRY_ARGS");
+    const char *slash = strrchr(elf, '/');
+    uint8_t *stack = mmap(NULL, APP_STACK_BYTES, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    int n = 3;
+
+    if (stack == MAP_FAILED) {
+        perror("mmap stack");
+        _exit(2);
+    }
+    contract_argv[0] = (char *)(slash ? slash + 1 : elf);
+    if (extra) {
+        char *w;
+
+        snprintf(words, sizeof words, "%s", extra);
+        for (w = strtok(words, " "); w && n < CONTRACT_ARGV_MAX; w = strtok(NULL, " "))
+            contract_argv[n++] = w;
+    }
+    contract_table(api);
+    enter_contract(entry, base, mapped, api, n, contract_argv,
+                   stack + APP_STACK_BYTES);
+}
+
 int main(int argc, char **argv)
 {
     static aar_api api;
@@ -488,6 +812,8 @@ int main(int argc, char **argv)
             (base + ((const Ehdr *)img)->e_entry);
     fprintf(stderr, "[loader] %d relocations applied, entry offset %#lx\n",
             relocs, (unsigned long)((const Ehdr *)img)->e_entry);
+    if (getenv("ENTRY_CONTRACT"))
+        run_contract((uintptr_t)entry, base, mapped, &api, argv[1]);
     rc = entry(&api, 2, app_argv);
     fprintf(stderr, "[loader] entry returned %d\n", rc);
     return 99;

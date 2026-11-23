@@ -1,0 +1,1 @@
+Marker: conf_table builds for the host runner (host-runner/CMakeLists.txt picks up every conf_*.host).

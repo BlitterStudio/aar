@@ -16,7 +16,11 @@ For an area `C-<AREA>` (file names use the area in lower case, `<area>`):
 | `payloads/conf_<area>.h` | Optional. What the payload and `r_<area>.c` share: peer keywords, message layouts, fixture names, expected values |
 | `payloads/conf_<area>.host` | Optional marker, a one-line text file: the payload also builds for the host runner and runs under CTest |
 | `payloads/conf_<area>.qemu` | Optional marker: the payload runs under qemu user mode in `make check-runtime` (only when the loader of `libaar/tests/loader.c` has what the payload needs) |
+| `payloads/conf_<area>.ldlibs` | Optional marker: its text is passed to the link as `LDLIBS` (the Makefile and `tests/qemu_run.sh` both read it). `conf_entry` owns the entry symbol and links with `-Wl,-e,conf_entry_start` |
+| `payloads/conf_<area>.freestanding` | Optional marker: the payload builds with `AAR_FREESTANDING=1` (no libc), as `conf_free` does |
 | `runner/r_<area>.c` | The runner side: runner-judged tests, peer keywords, payload variants, observers. It exists already as a stub for every area |
+
+Under qemu the loader enters the payload as the runtime would (`ENTRY_CONTRACT=1`, set by `tests/qemu_run.sh`): a fresh stack, every register 0 except `r0`/`x0` to `r2`/`x2`, a table with every core slot filled and a complete `aar_info`, 2 MiB of heap committed. The environment variables `ENTRY_ARGS` (more arguments, for example `conf:variant=lowmem`), `HEAP_CAP_MIB` (a cap on the heap, like `AAR_TAG_PRIVATE_MIB`) and `CPU_FEATURES` (the `cpu_features` word) shape it; see the comments of `libaar/tests/loader.c`. It prints the peer messages a payload sends (`[loader] message <keyword> <words>`) and takes them, so the payload's variants can be run by hand.
 
 Everything else is shared and is not edited for a normal area: `runner/aar-conf.c`
 and `runner/aar-conf.h` (the core), `runner/r_areas.h` (the list of areas, already

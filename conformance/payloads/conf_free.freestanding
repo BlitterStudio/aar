@@ -1,0 +1,1 @@
+conf_free is built without libc (AAR_FREESTANDING=1): crt0, libaar and libgcc only.

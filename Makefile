@@ -57,12 +57,17 @@ sbrk_smoke_SRCS := templates/sbrk_smoke.c
 # There is no list to edit: an area is a file conformance/payloads/conf_<area>.c,
 # and it runs under qemu when conformance/payloads/conf_<area>.qemu exists (the
 # loader of libaar has a partial table; add the marker when it grows what the
-# payload needs).
+# payload needs). Two optional markers set how a payload links, and
+# conformance/tests/qemu_run.sh reads the same files: conf_<area>.ldlibs holds
+# extra linker words (conf_entry owns its entry symbol with -Wl,-e,...), and
+# conf_<area>.freestanding builds it with AAR_FREESTANDING=1.
 CONF_DIR := $(AAR_SDK)/conformance/payloads
 CONF_AREAS := $(sort $(patsubst $(CONF_DIR)/conf_%.c,%,$(wildcard $(CONF_DIR)/conf_*.c)))
 CONF_QEMU_AREAS := $(sort $(patsubst $(CONF_DIR)/conf_%.qemu,%,$(wildcard $(CONF_DIR)/conf_*.qemu)))
 CONF_APPS := $(addprefix conf_,$(CONF_AREAS))
 $(foreach a,$(CONF_AREAS),$(eval conf_$(a)_SRCS := conformance/payloads/conf_$(a).c))
+$(foreach a,$(CONF_AREAS),$(if $(wildcard $(CONF_DIR)/conf_$(a).ldlibs),$(eval conf_$(a)_LDLIBS := $(shell cat $(CONF_DIR)/conf_$(a).ldlibs))))
+$(foreach a,$(CONF_AREAS),$(if $(wildcard $(CONF_DIR)/conf_$(a).freestanding),$(eval conf_$(a)_FREESTANDING := 1)))
 
 TEMPLATES := hello pixels fault tone echo console membench isolate spin svcbench memhog svcprobe mgl-conformance filter freestanding fpenv ringflood
 CHECK_APPS := $(TEMPLATES) sbrk_smoke $(CONF_APPS)
@@ -76,11 +81,13 @@ build-$(1)-$(2):
 	$$(MAKE) -f $$(AAR_SDK)/mk/aar.mk \
 		AAR_SDK=$$(AAR_SDK) AAR_PROFILE=$(1) CROSS=$$(CROSS_$(1)) \
 		APP=$(2) SRCS="$$($(2)_SRCS)" BUILD=$$(AAR_SDK)/build/$(1) \
+		LDLIBS="$$($(2)_LDLIBS)" \
 		AAR_FREESTANDING=$$(or $$($(2)_FREESTANDING),0) all
 check-$(1)-$(2):
 	$$(MAKE) -f $$(AAR_SDK)/mk/aar.mk \
 		AAR_SDK=$$(AAR_SDK) AAR_PROFILE=$(1) CROSS=$$(CROSS_$(1)) \
 		APP=$(2) SRCS="$$($(2)_SRCS)" BUILD=$$(AAR_SDK)/build/$(1) \
+		LDLIBS="$$($(2)_LDLIBS)" \
 		AAR_FREESTANDING=$$(or $$($(2)_FREESTANDING),0) check
 endef
 $(foreach p,$(PROFILES),$(foreach a,$(CHECK_APPS),$(eval $(call APP_RULES,$(p),$(a)))))

@@ -1,0 +1,1 @@
+Marker: conf_table runs under qemu user mode (make check-runtime runs every conf_*.qemu); the loader's ENTRY_CONTRACT table has every core slot and a complete aar_info.
