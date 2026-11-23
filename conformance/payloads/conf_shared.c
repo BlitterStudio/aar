@@ -24,6 +24,12 @@ AAR_NOTE(0, 0, 0, 0)
 #define LIVE 64u  /* AAR_SHARED_MIN_BLOCKS */
 #define SCRATCH "conf-shared.tmp"
 
+/* The pause between the rounds of C-SHARED.11. conf_shared.h says about 2 ms;
+ * the client reads 4 KiB through an uncached map, which takes the 68k longer than
+ * that, so that a round never held still for a whole read and the first card run
+ * counted one sample of the five required. 10 ms leaves most reads whole. */
+#define SEQ_PAUSE_US 10000u
+
 static aar_info info;
 static uint64_t granule;
 
@@ -706,7 +712,7 @@ static void test_seq(void)
         (void)aar_publish(out.ptr, out.bytes);
         conf_shared_put_be32(b, 2u * n);
         (void)aar_publish(out.ptr, granule);
-        aar_sleep_us(2000);
+        aar_sleep_us(SEQ_PAUSE_US);
     }
     rc = conf_shared_send(CONF_SHARED_END_SEQ, 2u * CONF_SHARED_SEQ_ROUNDS, 0, 0, 0);
     if (rc != AAR_OK) {

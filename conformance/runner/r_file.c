@@ -322,6 +322,55 @@ static void h_check(struct conf_run *run, const AARMessage *msg)
     }
 }
 
+/* ---- C-FILE.6: what the client did with the requests after the stop ------------------------- */
+
+/* The size of a file in the fixture directory, -1 when it is missing. */
+static LONG fx_size(const char *name)
+{
+    char path[256];
+    struct FileInfoBlock *fib;
+    BPTR lock;
+    LONG size = -1;
+
+    if (!fx_path(path, sizeof path, name))
+        return -1;
+    lock = Lock((STRPTR)path, SHARED_LOCK);
+    if (!lock)
+        return -1;
+    fib = AllocDosObject(DOS_FIB, NULL);
+    if (fib && Examine(lock, fib))
+        size = (LONG)fib->fib_Size;
+    if (fib)
+        FreeDosObject(DOS_FIB, fib);
+    UnLock(lock);
+    return size;
+}
+
+/* The payload runs create, truncate and write after the stop request. A stop
+ * ends a parked call with AAR_E_IO whatever the client then does with the
+ * request, so the payload's codes prove nothing: the files do. The payload prints
+ * the id; this adds a failure when the client let a request through. The id is
+ * built at run time because the row is judged by the payload. */
+static void on_end(const struct conf_run *run, const struct conf_outcome *out,
+                   const struct conf_parsed *pr)
+{
+    char id[16];
+
+    (void)pr;
+    if (strcmp(run->area, "C-FILE") != 0 || !run->variant ||
+        strcmp(run->variant, CONF_FILE_VARIANT_MAIN) != 0 || !out->ran)
+        return;
+    if (fx_size("stopkeep.tmp") < 0)
+        return; /* the payload did not get to the stop test */
+    snprintf(id, sizeof id, "C-FILE.%d", 6);
+    if (fx_size("afterstop.tmp") >= 0)
+        conf_record(id, 0, "a create after the stop request made a file");
+    else if (fx_size("stopkeep.tmp") != 4)
+        conf_record(id, 0, "a truncate after the stop request emptied a file");
+    else if (fx_size("stopw.tmp") != 0)
+        conf_record(id, 0, "a write after the stop request put bytes in a file");
+}
+
 static const struct conf_peer peers[] = {
     { CONF_FILE_CHECK, h_check },
 };
@@ -713,4 +762,5 @@ const struct conf_area conf_area_file = {
     .peer_count = CONF_COUNT(peers),
     .variants = variants,
     .variant_count = CONF_COUNT(variants),
+    .on_end = on_end,
 };

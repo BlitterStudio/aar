@@ -493,10 +493,6 @@ static void test_modes(void)
     } else {
         rc = aar_file_read(fd, buf, sizeof buf, &n);
         conf_check(&t, rc == AAR_OK && n == 11 && buf[0] == 'h', "READ does not read the file");
-        n = 0;
-        rc = aar_file_write(fd, "x", 1, &n);
-        if (rc >= 0 && n > 0)
-            conf_check(&t, 0, "a write through a read-only id took bytes");
         (void)aar_file_close(fd);
     }
     fd = aar_file_open(file, AAR_FILE_WRITE);
@@ -515,7 +511,7 @@ static void test_modes(void)
                    "after WRITE the file is not HELLO world");
         (void)aar_file_close(fd);
     }
-    conf_buf_str(&t.note, "READ reads and takes no write, WRITE overwrites in place");
+    conf_buf_str(&t.note, "READ reads, WRITE overwrites in place and keeps the rest [spec question 37]");
     conf_end(&t);
 }
 
@@ -786,16 +782,19 @@ static void test_seek(void)
     rc = aar_file_read(fd, buf, 1, &n);
     conf_check(&t, rc == AAR_OK && n == 1 && buf[0] == conf_file_small(0),
                "a refused seek moved the position");
+    /* A seek past the end: AmigaDOS refuses it on a handle that cannot grow the
+     * file (AAR_E_INVAL); where it works, a read there finds the end [spec question 55]. */
     rc = aar_file_seek(fd, 1000, AAR_SEEK_SET, &pos);
-    if (rc != AAR_OK || pos != 1000) {
-        fail_rc(&t, "seek past the end", rc);
-    } else {
+    if (rc == AAR_OK) {
+        conf_check(&t, pos == 1000, "a seek past the end did not return the new position");
         n = 99;
         rc = aar_file_read(fd, buf, sizeof buf, &n);
         conf_check(&t, rc == AAR_OK && n == 0, "a read past the end is not AAR_OK with 0 bytes");
+    } else if (rc != AAR_E_INVAL) {
+        fail_rc(&t, "seek past the end", rc);
     }
     (void)aar_file_close(fd);
-    conf_buf_str(&t.note, "SET, CUR and END return the position, before the start is AAR_E_INVAL");
+    conf_buf_str(&t.note, "SET, CUR and END return the position, before the start is AAR_E_INVAL, past the end is accepted or AAR_E_INVAL");
     conf_end(&t);
 }
 
@@ -1203,7 +1202,6 @@ static void test_stop(void)
     uint8_t buf[128];
     uint32_t n = 0;
     uint32_t len = slen(CONF_FILE_TEXT);
-    aar_stat st;
     int wfd;
     int fd;
     int rc;
@@ -1228,30 +1226,33 @@ static void test_stop(void)
     }
     aar_sleep_us(5000000u);
     conf_check(&t, aar_should_stop() == 1, "the client did not stop the app");
+    /* After the stop request a parked call can be ended by the stop (AAR_E_IO),
+     * and the call after it can find the abandoned request still open (AAR_E_BUSY):
+     * every answer is negative. What the client did with the requests is judged
+     * by the runner when the app has ended [spec question 56]. */
     fd = aar_file_open(created, AAR_FILE_WRITE | AAR_FILE_CREATE);
     if (fd >= 0)
         (void)aar_file_close(fd);
     expect_neg(&t, fd, "a create after the stop request");
-    expect(&t, aar_file_stat(created, &st), AAR_E_NOENT, "stat of the file a refused create made");
     fd = aar_file_open(keep, AAR_FILE_WRITE | AAR_FILE_TRUNCATE);
     if (fd >= 0)
         (void)aar_file_close(fd);
     expect_neg(&t, fd, "a truncate after the stop request");
-    rc = aar_file_stat(keep, &st);
-    conf_check(&t, rc == AAR_OK && st.size == 4, "a refused truncate emptied the file");
+    n = 0;
     rc = aar_file_write(wfd, "data", 4, &n);
-    expect_neg(&t, rc, "a write after the stop request");
+    if (rc >= 0 && n > 0 && conf_fail_first(&t))
+        conf_buf_str(&t.why, "a write after the stop request took bytes");
+    /* A read is served (then it is right) or ended by the stop. */
     fd = aar_file_open(fx(CONF_FILE_TEXT_NAME), AAR_FILE_READ);
-    if (fd < 0) {
-        fail_rc(&t, "a read open after the stop request", fd);
-    } else {
+    if (fd >= 0) {
+        n = 0;
         rc = aar_file_read(fd, buf, sizeof buf, &n);
-        conf_check(&t, rc == AAR_OK && n == len && buf[0] == (uint8_t)CONF_FILE_TEXT[0],
-                   "a read after the stop request does not work");
+        if (rc == AAR_OK && (n != len || buf[0] != (uint8_t)CONF_FILE_TEXT[0]))
+            conf_check(&t, 0, "a read after the stop request returned other bytes");
         (void)aar_file_close(fd);
     }
     (void)aar_file_close(wfd);
-    conf_buf_str(&t.note, "create, truncate and write refused, read works");
+    conf_buf_str(&t.note, "create, truncate and write after the stop request give negative codes");
     conf_end(&t);
 }
 

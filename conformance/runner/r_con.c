@@ -171,11 +171,26 @@ static void h_logchk(struct conf_run *run, const AARMessage *msg)
 
 /* ---- The console capture ---------------------------------------------------------------- */
 
-/* CONF_CON_VERIFY: the block between the markers is the pattern; cut it out. */
-static void h_verify(struct conf_run *run, const AARMessage *msg)
+/* The console bytes a write call has returned for are not all in the capture yet
+ * on a platform that buffers console output: aar_serve takes them from the app's
+ * console buffer after the call has returned, and the app's next message can come
+ * first. A VERIFY or FIND that finds its text incomplete waits, for the poll
+ * hook, until the text is there or one second has passed [the first card run:
+ * C-CON.1 saw 197618 of 204800 bytes]. */
+#define WAIT_TICKS 50UL
+
+static struct {
+    int active;
+    int is_find;
+    ULONG length, seed;
+    UBYTE text[16];
+    ULONG due;
+} pending;
+
+/* 0 settled (the answer is sent), 1 the text is not complete yet. final: answer
+ * with what there is. */
+static int try_verify(struct conf_run *run, int final)
 {
-    ULONG length = conf_con_get32(msg->bytes, 0);
-    ULONG seed = conf_con_get32(msg->bytes, 1);
     const ULONG bl = (ULONG)strlen(CONF_CON_BEGIN);
     const ULONG el = (ULONG)strlen(CONF_CON_END);
     const UBYTE *hit;
@@ -185,43 +200,89 @@ static void h_verify(struct conf_run *run, const AARMessage *msg)
 
     hit = find_bytes(run->cap.buf, run->cap.len, (const UBYTE *)CONF_CON_BEGIN, bl);
     if (!hit) {
+        if (!final)
+            return 1;
         reply(run, 1, 0);
-        return;
+        return 0;
     }
     start = (ULONG)(hit - run->cap.buf);
     data = start + bl;
-    if (data + length + el > run->cap.len || run->cap.over) {
+    if (data + pending.length + el > run->cap.len || run->cap.over) {
+        if (!final && !run->cap.over)
+            return 1;
         reply(run, 3, run->cap.len - data);
-        return;
+        return 0;
     }
-    for (i = 0; i < length; i++) {
-        if (run->cap.buf[data + i] != conf_con_block_byte((uint32_t)seed, (uint32_t)i)) {
+    for (i = 0; i < pending.length; i++) {
+        if (run->cap.buf[data + i] != conf_con_block_byte((uint32_t)pending.seed, (uint32_t)i)) {
             reply(run, 2, i);
-            return;
+            return 0;
         }
     }
-    if (memcmp(run->cap.buf + data + length, CONF_CON_END, el) != 0) {
+    if (memcmp(run->cap.buf + data + pending.length, CONF_CON_END, el) != 0) {
         reply(run, 3, 0);
-        return;
+        return 0;
     }
-    memmove(run->cap.buf + start, run->cap.buf + data + length + el,
-            run->cap.len - (data + length + el));
-    run->cap.len -= bl + length + el;
+    memmove(run->cap.buf + start, run->cap.buf + data + pending.length + el,
+            run->cap.len - (data + pending.length + el));
+    run->cap.len -= bl + pending.length + el;
     run->cap.buf[run->cap.len] = '\0';
-    reply(run, 0, length);
+    reply(run, 0, pending.length);
+    return 0;
+}
+
+static int try_find(struct conf_run *run, int final)
+{
+    if (find_bytes(run->cap.buf, run->cap.len, pending.text,
+                   (ULONG)strlen((const char *)pending.text))) {
+        reply(run, 0, 0);
+        return 0;
+    }
+    if (!final)
+        return 1;
+    reply(run, 1, 0);
+    return 0;
+}
+
+static void start_pending(struct conf_run *run, int is_find)
+{
+    pending.active = 1;
+    pending.is_find = is_find;
+    pending.due = conf_ticks() + WAIT_TICKS;
+    if (is_find ? try_find(run, 0) : try_verify(run, 0))
+        return;
+    pending.active = 0;
+}
+
+/* The poll hook of the variants that verify. */
+static void poll_pending(struct conf_run *run, ULONG now_ticks)
+{
+    int final;
+
+    if (!pending.active)
+        return;
+    final = (LONG)(now_ticks - pending.due) >= 0;
+    if (pending.is_find ? try_find(run, final) : try_verify(run, final)) {
+        if (!final)
+            return;
+    }
+    pending.active = 0;
+}
+
+/* CONF_CON_VERIFY: the block between the markers is the pattern; cut it out. */
+static void h_verify(struct conf_run *run, const AARMessage *msg)
+{
+    pending.length = conf_con_get32(msg->bytes, 0);
+    pending.seed = conf_con_get32(msg->bytes, 1);
+    start_pending(run, 0);
 }
 
 /* CONF_CON_FIND */
 static void h_find(struct conf_run *run, const AARMessage *msg)
 {
-    UBYTE text[16];
-
-    memcpy(text, msg->bytes + CONF_CON_KEYWORD_BYTES, 15);
-    text[15] = '\0';
-    if (find_bytes(run->cap.buf, run->cap.len, text, (ULONG)strlen((const char *)text)))
-        reply(run, 0, 0);
-    else
-        reply(run, 1, 0);
+    memcpy(pending.text, msg->bytes + CONF_CON_KEYWORD_BYTES, 15);
+    pending.text[15] = '\0';
+    start_pending(run, 1);
 }
 
 /* ---- The stop (variant block) -------------------------------------------------------------- */
@@ -261,16 +322,22 @@ static const struct conf_peer peers[] = {
 static void prepare_main(struct conf_run *run)
 {
     memset(&logs, 0, sizeof logs);
+    memset(&pending, 0, sizeof pending);
     run->on_log = on_log;
+    run->poll = poll_pending;
 }
 
 static void prepare_slow(struct conf_run *run)
 {
+    memset(&pending, 0, sizeof pending);
     run->con.write_hold_ticks = CONF_CON_SLOW_HOLD_TICKS;
+    run->poll = poll_pending;
 }
 
 static void prepare_input(struct conf_run *run)
 {
+    memset(&pending, 0, sizeof pending);
+    run->poll = poll_pending;
     run->con.input = (const UBYTE *)CONF_CON_INPUT;
     run->con.input_len = (ULONG)(sizeof CONF_CON_INPUT - 1);
     run->con.input_hold_ticks = CONF_CON_INPUT_HOLD_TICKS;
