@@ -185,7 +185,7 @@ transport statuses to these; that mapping is private to the platform.
 
 ### AAR_E_PROFILE
 
-`-13`. The image's profile, or its note, is not acceptable on this platform. Returned by the load, never by a table call.
+`-13`. The image's profile, or its note, is not acceptable on this platform. Returned by the load, never by a table call. The probe (`AARProbeFile`, `AARProbeMemory`) never returns it: it reports the profile and the launcher compares it with the platform's.
 
 ### AAR_E_NOGROUP
 

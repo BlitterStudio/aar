@@ -592,10 +592,7 @@ developers.
    observable consequence or drop the sentence from the test surface.
    settled: spec 3.2 (the mode shows in two effects: the profile's instruction state, and a fault on a privileged instruction where the runtime isolates; C-ENTRY.23 and C-ENTRY.24)
 4. **Group bits** (8.1). Bits 5 to 27 were neither defined nor reserved.
-   settled: spec 0.5, 8.1: bits 5 to 27 are reserved for later versions and no
-   platform sets one, bits 28 to 31 are for experiments of a platform; a required
-   group the platform lacks is `AAR_E_NOGROUP` whether the bit is defined, reserved
-   or experimental, and unknown bits of `groups_optional` are ignored (C-ELF.37).
+   settled: spec 8.1 (bits 5 to 27 are reserved for later versions and no platform sets one, bits 28 to 31 are for experiments of a platform; a required group the platform lacks is `AAR_E_NOGROUP` whether the bit is defined, reserved or experimental, and unknown bits of `groups_optional` are ignored: C-ELF.37)
 5. **LOW_MEMORY** (4.1) has no thresholds ("once per low-water crossing", "high-water
    mark"). A test has to exhaust the pool, which the host runner cannot do
    (heap arena fixed at 8 MiB with no trigger), so C-MEM.12 cannot pass there
@@ -624,7 +621,7 @@ developers.
    settled: spec 7.1 (an empty or overlong path is `AAR_E_INVAL`; a client's filesystem may accept less)
 10. **File access modes** (7.1): no error code is given for a write through an id
     opened `READ` only, or a read through one opened `WRITE` only.
-    settled: spec 7.1 (the wrong direction of a file id is `AAR_E_BADF`, see question 37)
+    settled: spec 7.1, 3.5 (the wrong direction of a file id is `AAR_E_BADF`, see question 37)
 11. **Alignment faults** (5.3): the class `AAR_FAULT_ALIGN` is listed but an
     alignment fault is only produced for some instructions (exclusive and
     multiple loads, device memory); say which fault the standard expects the
@@ -643,14 +640,14 @@ developers.
     settled: spec 10.2 (a platform need not retire the index at the wrap)
 15. **Unknown display format** (8.2): `AAR_E_INVAL` (unknown argument) or `AAR_E_NOSYS`
     ("format not implemented", the CLUT8 case)? C-DISPLAY.3 accepts both.
-    settled: spec 8.2 (an unknown format is `AAR_E_INVAL`, a defined format the platform does not provide is `AAR_E_NOSYS`)
+    settled: spec 8.2, 3.5 (an unknown format is `AAR_E_INVAL`, a defined format the platform does not provide is `AAR_E_NOSYS`)
 16. **What `front` holds after `flip` and `refresh`** (8.2): the text does not say
     that `front` shows the frame just presented; C-DISPLAY.7 assumes it.
     settled: spec 8.2 (after a completed flip and a refresh `front` is NULL or the frame just presented; not promised with LATEST)
 17. **Mouse coalescing** (8.3 against 9.6): 8.3 says the client MAY coalesce when
     the queue is full; 9.6 says `AARPostEvent` merges mouse motion while the queue
     is full (no MAY). C-INPUT.10 accepts both through the sum rule; choose one.
-    settled: spec 8.3 (motion is never lost without a count: it is merged or counted)
+    settled: spec 8.3, 9.6 (motion is never lost without a count: it is merged or counted)
 18. **Audio ring format value** (8.4): `AAR_AUDIO_FORMAT_S16LE` has no stated
     number in the text; C-AUDIO.2 uses the header's value. Also, the `aar_audio`
     pointers are in the app's address space, so the "plus 0x40" and "plus 0x80"
@@ -737,7 +734,7 @@ developers.
     `max_arg_bytes` (the latter with the NUL, 128) do not say it either. C-ENTRY.4
     passes 16 strings including `argv[0]`, each of 127 bytes, which is the strictest
     reading; a platform that counts `argv[0]` apart fails it. State which.
-    settled: spec 3.2 (`argv[0]` is one of the 16 arguments and the NUL is one of the 128 bytes)
+    settled: spec 3.2, 9.2 (`argv[0]` is one of the 16 arguments and the NUL is one of the 128 bytes)
 34. **The platform's own cap and the pool** (4.1): the limit is "the smaller of the
     platform's cap and the client's `AAR_TAG_PRIVATE_MIB`", but nothing says what the
     platform's cap is, or whether it equals the pool the app can exhaust. C-MEM.9
@@ -764,7 +761,7 @@ developers.
     `AAR_FILE_READ` took bytes, because `aar_serve` does not keep the open mode
     of an id. C-FILE.9 tests neither. Say whether a runtime has to refuse them
     and, if so, with which code (question 10).
-    settled: spec 7.1 (a file id is used only for the direction it was opened for, else `AAR_E_BADF`: C-FILE.37)
+    settled: spec 7.1, 3.5 (a file id is used only for the direction it was opened for, else `AAR_E_BADF`: C-FILE.37)
 38. **Stream and session details of the services group** (8.6) that the text did
     not give: the framing of an LZMA2 stream (one byte of properties before the
     raw stream), the LHA streams (no end marker, so the destination size is the
@@ -781,24 +778,18 @@ developers.
     loading", and said nothing about an image that breaks a rule of 2.2 or 2.3. The
     reference library applied every rule of `tools/aar-check`, which also demands
     section headers, while 2.2.4 says section headers MAY be absent.
-    settled: spec 0.5, 9.2: the probe applies the image rules of 2.2 and 2.3 as the
-    loader does, with or without section headers, and does not judge the image
-    against the platform. `tools/aar-check` stays a stricter lint for build output
-    (2.4). C-ELF.16 requires the probe to accept the image without section headers.
+    settled: spec 2.2, 2.4, 9.2 (the probe applies the image rules of 2.2 and 2.3 as the loader does, with or without section headers, and does not judge the image against the platform; `tools/aar-check` stays a stricter lint for build output; C-ELF.16 requires the probe to accept the image without section headers)
 40. **An unsatisfiable heap** (4.1, 2.3): `min_heap_mib` "committed at load" had no
     limit in the text, and a platform that converts MiB to bytes in 32 bits wraps
     at 4096.
-    settled: spec 0.5, 4.1: the word is a 32-bit count with no maximum, and a runtime
-    compares it without a conversion that can wrap. C-ELF.40 uses `heap-max`
-    (0xFFFFFFFF) and `heap-wrap` (0x10000001, which is 1 MiB in 32-bit bytes); both
-    are refused with `AAR_E_NOMEM` or `AAR_E_NORESOURCE`.
+    settled: spec 4.1 (the word is a 32-bit count with no maximum, and a runtime compares it without a conversion that can wrap; C-ELF.40 uses `heap-max` (0xFFFFFFFF) and `heap-wrap` (0x10000001, which is 1 MiB in 32-bit bytes), both refused with `AAR_E_NOMEM` or `AAR_E_NORESOURCE`)
 41. **An address that no app can map** (5.3): the fault tests need an address that is
     unmapped in every app's address space. The standard does not say what the
     address space of an app holds beyond the image, heap and stack. C-LIFE.9 uses
     `0xDEAD0000` (A32) and `0xDEAD00000000` (A64); a platform that maps it fails
     the test through no fault of its own. Say which part of the space is never
     mapped.
-    open: asked in spec section 13
+    settled: spec 4.4 (an app's address space holds its image, heap, stack and the buffers it owns, and where `AAR_INFOF_ISOLATED` is set every other address is unmapped; the test picks an address outside them at run time; asked in section 13 what each platform maps)
 42. **Seeing a dead client's release** (5.5): the client API has no call that shows
     from outside that the runtime stopped an app whose owner is gone. C-LIFE.20 and
     C-LIFE.21 show that the handle is released (a call returns `AAR_E_STALE`, not
@@ -819,7 +810,7 @@ developers.
     the app running; if the platform parks the app in `console_write`, the test
     passes with the reason in its detail and the rule is not exercised. Say which
     ops never park.
-    settled: spec 9.6 (three requests return at once and every other op parks; a console write of 16 bytes does not park)
+    settled: spec 9.6, 7.2 (three requests return at once and every other op parks; a console write of 16 bytes does not park)
 45. **Reply to a request that is not outstanding** (9.6): the text says wrong-id, wrong-op
     and duplicate replies "cannot release another request's storage" and that
     `AARServiceReply` resumes the app only if it is parked for that request, but
@@ -839,7 +830,7 @@ developers.
     behind it, but not how big the inbox is (`msg_capacity`?), so the number of
     messages `aar_msg_send` accepts before `AAR_E_BUSY` is only bounded below (C-MSG.4
     and C-MSG.5 test "at least `msg_capacity`").
-    settled: spec 6 (`msg_capacity` is a minimum; the client library's inbox adds to it)
+    settled: spec 6, 10.4 (`msg_capacity` is a minimum; the client library's inbox adds to it)
 48. **Posted events** (8.3, 9.6): C-INPUT.3 assumes that `AARPostEvent` hands `time_ms`
     and `code` of a mouse event to the app unchanged ("client timestamp" may mean
     that the library stamps it), and that an `AAR_EV_STOP` posted with `AARPostEvent`
@@ -856,7 +847,7 @@ developers.
 50. **Copy pitch in single-buffer mode** (8.2, 9.6): when the client's table has one buffer,
     "the platform copies each frame"; it is not said that the copy keeps the pitch of
     the open reply and the layout. C-DISPLAY.12 and C-DISPLAY.14 assume it.
-    settled: spec 8.2 (the copy of a single buffer keeps pitch and layout)
+    settled: spec 8.2, 9.6 (the copy of a single buffer keeps pitch and layout)
 51. **Underrun counting** (8.4): "the runtime counts underruns" does not say per frame, per
     period or per starved callback. C-AUDIO.6 requires only that the count rises while
     the app writes nothing, and that the stats call and the ring word agree.
@@ -865,7 +856,7 @@ developers.
     decision" and `AARSetTagList` may answer `AAR_E_NOSYS` for an option the platform
     cannot carry. It is not said whether a platform with the audio group must carry the
     route `AHI`. C-AUDIO.10 and C-AUDIO.11 fail when it does not.
-    settled: spec 8.4 (a platform with the audio group carries the route `AHI`; `PLATFORM` is optional and may be refused with `AAR_E_NOSYS`)
+    settled: spec 8.4, 9.2 (a platform with the audio group carries the route `AHI`; `PLATFORM` is optional and may be refused with `AAR_E_NOSYS`)
 53. **Depth buffer in the GL group** (8.5): the group is "GL 1.1 entry points" but the text
     does not promise a depth buffer. C-GL.7 draws a depth-tested scene for `DepthRange`;
     a platform without depth testing fails that row.
@@ -923,10 +914,7 @@ developers.
     image without `PT_DYNAMIC` or a relocation whose target lies outside every
     `PT_LOAD` is refused, and for a class or machine that the platform does not run it
     allowed `AAR_E_PROFILE` or `AAR_E_INVAL`.
-    settled: spec 0.5, 2.2: an image has exactly one `PT_DYNAMIC`, every relocation
-    target lies inside `p_memsz` of a `PT_LOAD` with room for the whole word, and both
-    are refused with `AAR_E_INVAL`. C-ELF.15 and C-ELF.23 accept a refusal only;
-    C-ELF.31 accepts `AAR_E_PROFILE` or `AAR_E_INVAL`, as 2.2 says.
+    settled: spec 2.2 (an image has exactly one `PT_DYNAMIC`, every relocation target lies inside `p_memsz` of a `PT_LOAD` with room for the whole word, and both are refused with `AAR_E_INVAL`; C-ELF.15 and C-ELF.23 accept a refusal only; C-ELF.31 accepts `AAR_E_PROFILE` or `AAR_E_INVAL`, as 2.2 says)
 62. **SQ full and the message reserve** (10.3, 10.4): `sq_full` counts "a post that finds the SQ
     full", but a message post is refused one entry early (the reserve for a request, 6), when
     the queue is not yet full. The ZZ9000 does not count that refusal. C-QUEUE.8 fills the
@@ -941,7 +929,7 @@ developers.
     and no counter, however many it posts. C-INPUT.9 takes the guarantees that are stated
     (the first 64 kept in order, the client's own refusals counted); C-INPUT.10 keeps the
     sum rule of 9.6 ("never lost silently") and fails on such a platform.
-    settled: spec 8.3 (the runtime MAY discard events beyond 64, mouse motion excepted, and does not count them; a runtime counter is an API 0.6 candidate)
+    settled: spec 8.3, 10.3 (the runtime MAY discard events beyond 64, mouse motion excepted, and does not count them; a runtime counter is an API 0.6 candidate)
 64. **Tolerance of lossy image decode** (8.6): the text gives none and does not fix the
     IDCT or the chroma upsampling. The reference pixels are those of libjpeg's accurate
     integer IDCT and libwebp; the ZZ9000 uses the fast integer IDCT (`JDCT_IFAST`), which
