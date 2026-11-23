@@ -206,12 +206,12 @@ static void test_refusals(void)
         (void)aar_display_close(s.id);
     for (i = 0; i < 3u; i++) {
         rc = aar_display_open(64, 64, bad_formats[i], AAR_DISPLAY_VSYNC, &s);
-        if (rc != AAR_E_INVAL && rc != AAR_E_NOSYS && conf_fail_first(&t)) {
+        if (rc != AAR_E_INVAL && conf_fail_first(&t)) {
             conf_buf_str(&t.why, "format ");
             conf_buf_u64(&t.why, bad_formats[i]);
             conf_buf_str(&t.why, " returned ");
             conf_buf_i64(&t.why, rc);
-            conf_buf_str(&t.why, ", not AAR_E_INVAL or AAR_E_NOSYS");
+            conf_buf_str(&t.why, ", not AAR_E_INVAL (an unknown format is a bad argument, 8.2)");
         }
         if (rc == AAR_OK)
             (void)aar_display_close(s.id);
@@ -293,7 +293,8 @@ static void test_flip_ids(void)
 }
 
 /* C-DISPLAY.7: write back, flip, refresh. After the refresh back can be written again and
- * front (when there is one) holds the frame just presented [spec question 16]. */
+ * front (when there is one) holds the frame just presented (spec 8.2; the test opens with
+ * AAR_DISPLAY_VSYNC only, a plain open, so the rule of LATEST does not apply). */
 static void test_refresh(void)
 {
     struct conf_test t;
@@ -472,8 +473,8 @@ static void test_vsync(void)
         }
         dt = aar_time_us() - t0;
         /* "Requests synchronisation with the refresh" does not say that the call waits for it (the
-         * ZZ9000 yields once), so a floor on the time is not a requirement [spec question 65];
-         * the ceiling still catches a call that hangs. */
+         * ZZ9000 yields once), so a floor on the time is not a requirement (spec 8.2, a pacing
+         * hint); the ceiling still catches a call that hangs. */
         if (dt > 2000000u && conf_fail_first(&t)) {
             conf_buf_str(&t.why, "ten vsyncs took ");
             conf_buf_u64(&t.why, dt);

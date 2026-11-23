@@ -192,7 +192,7 @@ static void test_sleep_ceiling(void)
 }
 
 /* C-TIME.5: a stop request ends a long sleep early (spec 3.7). The runner is the
- * peer: it stops the app when it gets the keyword message. This test comes
+ * peer: it stops the app when it gets the keyword message. This test and C-TIME.9 come
  * last, because the app is on its way out afterwards. */
 static void test_sleep_stop(int argc, char **argv)
 {
@@ -236,6 +236,39 @@ static void test_sleep_stop(int argc, char **argv)
     conf_end(&t);
 }
 
+/* C-TIME.9: a sleep entered with a stop request already pending returns at once (spec 3.7, 7.3).
+ * It runs right after C-TIME.5, whose stop is still pending: the app has stop_grace_ms to leave,
+ * so the sleep must end well within it. */
+static void test_sleep_pending(int argc, char **argv)
+{
+    struct conf_test t;
+    uint64_t t0;
+    uint64_t elapsed;
+
+    if (!conf_have_peer(argc, argv)) {
+        conf_skip("C-TIME.9", "host: no runner to stop the app");
+        return;
+    }
+    conf_begin(&t, "C-TIME.9");
+    if (aar_should_stop() != 1) {
+        conf_check(&t, 0, "no stop request is pending after C-TIME.5");
+        conf_end(&t);
+        return;
+    }
+    t0 = aar_time_us();
+    aar_sleep_us(10000000u);
+    elapsed = aar_time_us() - t0;
+    if (elapsed >= 1000000u && conf_fail_first(&t)) {
+        conf_buf_str(&t.why, "a sleep entered with a stop pending ran ");
+        conf_buf_u64(&t.why, elapsed);
+        conf_buf_str(&t.why, " us");
+    }
+    conf_buf_str(&t.note, "a 10 s sleep entered with the stop pending ended after ");
+    conf_buf_u64(&t.note, elapsed);
+    conf_buf_str(&t.note, " us");
+    conf_end(&t);
+}
+
 int aar_main(int argc, char **argv)
 {
     test_monotonic();
@@ -243,5 +276,6 @@ int aar_main(int argc, char **argv)
     test_sleep_floor();
     test_sleep_ceiling();
     test_sleep_stop(argc, argv);
+    test_sleep_pending(argc, argv);
     return conf_finish("C-TIME");
 }

@@ -397,7 +397,7 @@ static void t_map_stale(int idx)
     }
 }
 
-/* C-SHARED.27: a limit the platform could never grant fails the load. */
+/* C-SHARED.27: a limit the platform cannot grant when the load starts fails the load (spec 4.2). */
 static void t_limit_too_big(int idx)
 {
     AARHandle *h = NULL;
@@ -439,13 +439,13 @@ static void t_limit_too_big(int idx)
         conf_set_result(idx, CONF_R_FAIL, d);
     } else {
         rc = AARLoadFile(h, path);
-        if (rc == AAR_E_NOMEM) {
-            conf_detailf(d, "the load refused %lu MiB (shared_max_mib %lu) with AAR_E_NOMEM",
-                         (unsigned long)(max + 1UL), (unsigned long)max);
+        if (rc == AAR_E_NOMEM || rc == AAR_E_NORESOURCE) {
+            conf_detailf(d, "the load refused %lu MiB (shared_max_mib %lu) with %ld",
+                         (unsigned long)(max + 1UL), (unsigned long)max, (long)rc);
             conf_set_result(idx, CONF_R_PASS, d);
         } else {
             conf_detailf(d, "a shared limit of %lu MiB, above shared_max_mib %lu: the load "
-                            "returned %ld, AAR_E_NOMEM is due [spec question 29]",
+                            "returned %ld, AAR_E_NOMEM or AAR_E_NORESOURCE is due (spec 4.2)",
                          (unsigned long)(max + 1UL), (unsigned long)max, (long)rc);
             conf_set_result(idx, CONF_R_FAIL, d);
         }

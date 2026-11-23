@@ -35,6 +35,9 @@
 #define CONF_LIFE_V_FAULT_FETCH "fault-fetch"
 #define CONF_LIFE_V_FAULT_ILLEGAL "fault-illegal"
 #define CONF_LIFE_V_FAULT_ALIGN "fault-align"
+/* An instruction that needs privilege (A32 mcr p15 to SCTLR, A64 msr vbar_el1), at once and
+ * without a report: C-ENTRY.23 and C-ENTRY.24, judged by r_entry.c. */
+#define CONF_LIFE_V_FAULT_PRIVILEGED "fault-privileged"
 /* Sleeps 500 ms and then writes to the unmapped address, sending no message. */
 #define CONF_LIFE_V_FAULT_QUIET "fault-quiet"
 /* Waits in aar_msg_wait for a message, returns 0 when one arrives (5 on a stop). */
@@ -97,8 +100,10 @@
 #define CONF_LIFE_PONG "CONF-LIFE-PONG"      /* app to runner: the same a */
 
 #define CONF_LIFE_LR_MAGIC 0x4C494645u /* "LIFE": the lr the fault variants set */
-/* The address the fault variants touch (unmapped in any app's address space [spec
- * question 41]), as the low and high word. */
+/* The default address the fault variants touch, as the low and high word. The app moves to
+ * another one of a short list when this one lies within 16 MiB of its image, heap or stack and
+ * reports the address it chose first (spec 5.3: no address is guaranteed unmapped), as the low and
+ * high word. */
 #define CONF_LIFE_FAULT_ADDR_LO32 0xDEAD0000u
 #define CONF_LIFE_FAULT_ADDR_HI32 0x00000000u
 #define CONF_LIFE_FAULT_ADDR_LO64 0x00000000u

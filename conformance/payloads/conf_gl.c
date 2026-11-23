@@ -228,15 +228,15 @@ static void test_swap(void)
             glClearColor(colours[i][0], colours[i][1], colours[i][2], 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
             aar_gl_swap();
-            /* A platform may present the frame of a swap while the next swap runs (the copy
-             * and flip are queued): the same frame is swapped again, up to 4 more times, until
-             * the client has it [spec question 66]. */
+            /* A platform may present the frame of a swap while a later swap runs (the copy
+             * and flip are queued): at most two swapped frames are in flight, so the same frame
+             * is swapped again, up to 2 more times, until the client has it (spec 8.5). */
             for (;;) {
                 (void)cmio_kw(CG_K_PIXEL, WIDTH / 2, HEIGHT / 2, 0);
                 rc = cmio_result(10000000u, &ok, &rgb, 0, 0, 0, 0);
                 if (rc == 1 && ok && rgb == want)
                     break;
-                if (rc != 1 || swaps > 4u) {
+                if (rc != 1 || swaps > 2u) {
                     if (conf_fail_first(&t)) {
                         conf_buf_str(&t.why, "after ");
                         conf_buf_u64(&t.why, swaps);

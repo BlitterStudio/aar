@@ -118,13 +118,50 @@ static void spin_for(uint64_t rate, uint64_t us)
 
 /* ---- Faults ------------------------------------------------------------------------------- */
 
+/* True when a lies within margin of [lo, lo + len). */
+static int near_range(uint64_t a, uint64_t lo, uint64_t len, uint64_t margin)
+{
+    return a + margin >= lo && a < lo + len + margin;
+}
+
+/* An address that no part of the app's own memory can contain (spec 5.3, 4.4): the first of a
+ * short list that lies at least 16 MiB away from the image, the heap and the stack. The image
+ * is taken as the 64 MiB from aar_start (offset 0 of the image) and the stack as 16 MiB around
+ * the frame of this function. The default is CONF_LIFE_FAULT_ADDR_*; the runner reads the address
+ * the app chose from its first report. */
 static uint64_t fault_address(void)
 {
+    static const uint64_t margin = 16ull << 20;
 #if defined(__aarch64__)
-    return ((uint64_t)CONF_LIFE_FAULT_ADDR_HI64 << 32) | CONF_LIFE_FAULT_ADDR_LO64;
+    static const uint64_t list[] = {
+        ((uint64_t)CONF_LIFE_FAULT_ADDR_HI64 << 32) | CONF_LIFE_FAULT_ADDR_LO64,
+        0x00007EAD00000000ull, 0x0000BEAD00000000ull, 0x00003EAD00000000ull,
+    };
 #else
-    return ((uint64_t)CONF_LIFE_FAULT_ADDR_HI32 << 32) | CONF_LIFE_FAULT_ADDR_LO32;
+    static const uint64_t list[] = {
+        ((uint64_t)CONF_LIFE_FAULT_ADDR_HI32 << 32) | CONF_LIFE_FAULT_ADDR_LO32,
+        0x7EAD0000ull, 0xBEAD0000ull, 0x3EAD0000ull,
+    };
 #endif
+    void *heap = 0;
+    uint64_t heap_bytes = 0;
+    uint64_t image = (uint64_t)(uintptr_t)aar_start;
+    uint64_t stack = (uint64_t)(uintptr_t)__builtin_frame_address(0);
+    uint32_t i;
+
+    aar_heap_range(&heap, &heap_bytes);
+    for (i = 0; i < sizeof list / sizeof list[0]; i++) {
+        uint64_t a = list[i];
+
+        if (near_range(a, image, 64ull << 20, margin))
+            continue;
+        if (near_range(a, (uint64_t)(uintptr_t)heap, heap_bytes, margin))
+            continue;
+        if (near_range(a, stack - margin, 2u * margin, margin))
+            continue;
+        return a;
+    }
+    return list[0];
 }
 
 /* The instruction labels: where the app faults. */
@@ -240,6 +277,18 @@ static void __attribute__((noinline, noreturn)) fault_align(void)
                          :
                          : "r"(addr)
                          : "r2", "memory");
+#endif
+    __builtin_unreachable();
+}
+
+/* An instruction that needs privilege: a write of a system control register (C-ENTRY.23 and
+ * C-ENTRY.24, spec 3.2). In user mode (EL0) it is an undefined instruction. */
+static void __attribute__((noinline, noreturn)) fault_privileged(void)
+{
+#if defined(__aarch64__)
+    __asm__ __volatile__("msr vbar_el1, %0\n\t" : : "r"((uint64_t)0) : "memory");
+#else
+    __asm__ __volatile__("mcr p15, 0, %0, c1, c0, 0\n\t" : : "r"(0u) : "memory");
 #endif
     __builtin_unreachable();
 }
@@ -567,6 +616,8 @@ int aar_main(int argc, char **argv)
         *(volatile uint32_t *)(uintptr_t)fault_address() = 0;
         return 0;
     }
+    if (same(v, CONF_LIFE_V_FAULT_PRIVILEGED))
+        fault_privileged();
     if (same(v, CONF_LIFE_V_WAIT_MSG))
         return v_wait_msg();
     if (same(v, CONF_LIFE_V_SPIN))
