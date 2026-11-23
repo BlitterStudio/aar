@@ -182,20 +182,20 @@ because the registers differ.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-SHARED.1 | 4.2 | MUST | core | any | payload | todo | `shared_alloc` with `flags` other than 0 is `AAR_E_INVAL` |
-| C-SHARED.2 | 4.2 | MUST | core | any | payload | todo | a granted block has `bytes` rounded up to `shared_granule`, `ptr` aligned to the requested alignment (rounded up to `shared_granule`) and writable over all `bytes`; `flags` holds only `AAR_SHAREDF_COHERENT` |
-| C-SHARED.3 | 4.2 | MUST | core | any | payload | todo | `shared_free` of an interior pointer, of NULL, of a block already freed is `AAR_E_INVAL`; of the base of a live block is `AAR_OK` |
-| C-SHARED.4 | 4.2 | MUST | core | any | payload | todo | at least 64 live blocks (`AAR_SHARED_MIN_BLOCKS`) can be held at once |
-| C-SHARED.5 | 4.2 | MUST | core | any | payload | todo | 64 live blocks are still possible after the runtime has made its own service buffers (console writes, a file read) |
-| C-SHARED.6 | 4.2 | MUST | core | any | payload | todo | allocate until failure: the failure is `AAR_E_NOMEM` and the total granted does not exceed `shared_limit` |
-| C-SHARED.7 | 4.2 | MUST | core | any | payload | todo | `shared_used` rises by at least the granted bytes with an allocation and falls back with the free |
-| C-SHARED.8 | 4.2 | MUST | core | any | payload | todo | variant `caps` (runner sets `AAR_TAG_SHARED_MIB`): `shared_limit` is that value and allocation past it, service buffers included, fails |
-| C-SHARED.9 | 4.2 | MUST | core | any | payload | todo | token round trip (runner peer): the app writes a pattern, publishes, sends `haddr` and length in a message; the client maps it with `AARSharedMap` and reads the same bytes |
-| C-SHARED.10 | 4.3 | MUST | core | any | payload | todo | the client writes a different pattern, publishes and posts a message; the app acquires and reads it intact (runner peer) |
-| C-SHARED.11 | 4.3 | MUST | core | any | payload | todo | counter and pattern test (runner peer): the app writes an increasing counter and a pattern into a shared buffer while the client reads it in a loop with the map the library gave and `AARSharedAcquire` before each pass; zero stale and zero torn reads |
-| C-SHARED.12 | 4.3 | MUST | core | any | payload | todo | the same test with a client map that is deliberately cacheable plus `AARSharedAcquire` (needs a way to ask for a cacheable map [spec question 7]) |
-| C-SHARED.13 | 4.3 | MUST | core | any | payload | todo | `aar_publish` and `aar_acquire` over a range inside a live block return `AAR_OK`; they return at once when the runtime is coherent |
-| C-SHARED.14 | 4.3 | MUST | core | any | payload | todo | granule ownership (runner peer): app and client write alternate adjacent granules between hand-offs and neither sees the other's bytes in its own granule |
+| C-SHARED.1 | 4.2 | MUST | core | any | payload | yes | `shared_alloc` with `flags` other than 0 is `AAR_E_INVAL` |
+| C-SHARED.2 | 4.2 | MUST | core | any | payload | yes | a granted block has `bytes` rounded up to `shared_granule`, `ptr` aligned to the requested alignment (rounded up to `shared_granule`) and writable over all `bytes`; `flags` holds only `AAR_SHAREDF_COHERENT` |
+| C-SHARED.3 | 4.2 | MUST | core | any | payload | yes | `shared_free` of an interior pointer, of NULL, of a block already freed is `AAR_E_INVAL`; of the base of a live block is `AAR_OK` |
+| C-SHARED.4 | 4.2 | MUST | core | any | payload | yes | at least 64 live blocks (`AAR_SHARED_MIN_BLOCKS`) can be held at once |
+| C-SHARED.5 | 4.2 | MUST | core | any | payload | yes | 64 live blocks are still possible after the runtime has made its own service buffers (console writes, a file read) |
+| C-SHARED.6 | 4.2 | MUST | core | any | payload | yes | allocate until failure: the failure is `AAR_E_NOMEM` and the total granted does not exceed `shared_limit` |
+| C-SHARED.7 | 4.2 | MUST | core | any | payload | yes | `shared_used` rises by at least the granted bytes with an allocation and falls back with the free |
+| C-SHARED.8 | 4.2 | MUST | core | any | payload | yes | variant `caps` (runner sets `AAR_TAG_SHARED_MIB`): `shared_limit` is that value and allocation past it, service buffers included, fails |
+| C-SHARED.9 | 4.2 | MUST | core | any | payload | yes | token round trip (runner peer): the app writes a pattern, publishes, sends `haddr` and length in a message; the client maps it with `AARSharedMap` and reads the same bytes |
+| C-SHARED.10 | 4.3 | MUST | core | any | payload | yes | the client writes a different pattern, publishes and posts a message; the app acquires and reads it intact (runner peer) |
+| C-SHARED.11 | 4.3 | MUST | core | any | payload | yes | counter and pattern test (runner peer): the app writes an increasing counter and a pattern into a shared buffer while the client reads it in a loop with the map the library gave and `AARSharedAcquire` before each pass; zero stale and zero torn reads |
+| C-SHARED.12 | 4.3 | MUST | core | any | none | todo | not tested: the same test with a client map that is deliberately cacheable plus `AARSharedAcquire` needs a way to ask for a cacheable map, which the API does not have [spec question 7]; C-SHARED.11 runs with the map the library gives |
+| C-SHARED.13 | 4.3 | MUST | core | any | payload | yes | `aar_publish` and `aar_acquire` over a range inside a live block return `AAR_OK`; they return at once when the runtime is coherent |
+| C-SHARED.14 | 4.3 | MUST | core | any | payload | yes | granule ownership (runner peer): app and client write alternate adjacent granules between hand-offs and neither sees the other's bytes in its own granule |
 | C-SHARED.15 | 9.5 | MUST | core | any | runner | todo | `AARSharedMap` of a range that leaves the block or the platform's aperture is `AAR_E_INVAL`; an unknown token is `AAR_E_INVAL` |
 | C-SHARED.16 | 9.5 | SHOULD | core | any | runner | todo | `AARSharedMap` after the app ended and its claim is gone is `AAR_E_STALE` (where the platform can tell) |
 | C-SHARED.17 | 9.5 | MUST | core | any | runner | todo | `AARSharedMap.flags` holds only `AAR_MAPF_UNCACHED` and `AAR_MAPF_COHERENT`; `granule` is a power of two; `base` is non-NULL |
@@ -281,37 +281,37 @@ path) and checks the files the payload leaves behind.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-FILE.1 | 7.1 | MUST | core | any | payload | todo | a path of 255 bytes opens; the first file id is at least `AAR_FD_BASE` (3) and below 64 |
-| C-FILE.2 | 7.1 | MUST | core | any | payload | todo | a path of 256 bytes is refused with a negative code [spec question 9] |
-| C-FILE.3 | 7.1 | MUST | core | any | payload | todo | a relative path resolves under the client's root: a file the app creates is found there by the runner, and a fixture the runner placed there reads back |
-| C-FILE.4 | 7.1 | SHOULD | core | any | payload | todo | `..` and a leading `/` are refused with `AAR_E_ACCES` by the recommended default policy (`aar_serve`) |
-| C-FILE.5 | 7.1 | SHOULD | core | any | payload | todo | a path with a volume or assign prefix is refused with `AAR_E_ACCES` unless `AAR_SERVEF_ABS_PATHS` is set; with the flag set a prefixed path to the root's own volume opens |
-| C-FILE.6 | 7.1 | MUST | core | any | payload | todo | once the client has asked the app to stop, a create, a truncate and a write are refused (negative code) while a read still works (runner peer stops the app) |
-| C-FILE.7 | 7.1 | MUST | core | any | payload | todo | 16 files and, separately, 16 directory lists can be open at once; closing the lists leaves the files open |
-| C-FILE.8 | 7.1 | MUST | core | any | payload | todo | a bad id (-1, 0, 1, 2, 999, a closed id) is `AAR_E_BADF` from close, read, write, seek and list next |
-| C-FILE.9 | 7.1 | MUST | core | any | payload | todo | `AAR_FILE_READ` opens an existing file; `AAR_FILE_WRITE` writes; a write through a read-only id and a read through a write-only id fail with a negative code [spec question 10] |
-| C-FILE.10 | 7.1 | MUST | core | any | payload | todo | `CREATE` and `TRUNCATE` together create a missing file and empty an existing one |
-| C-FILE.11 | 7.1 | MUST | core | any | payload | todo | `CREATE` alone keeps the contents of an existing file |
-| C-FILE.12 | 7.1 | MUST | core | any | payload | todo | `TRUNCATE` alone empties an existing file and does not create a missing one (`AAR_E_NOENT`) |
-| C-FILE.13 | 7.1 | MUST | core | any | payload | todo | `CREATE` with `EXCL`: `AAR_E_EXIST` for an existing file, which stays untouched; creates a missing file |
-| C-FILE.14 | 7.1 | MUST | core | any | payload | todo | flags 0 (neither read nor write) is `AAR_E_INVAL` |
-| C-FILE.15 | 7.1 | MUST | core | any | payload | todo | `CREATE` without `WRITE` and `TRUNCATE` without `WRITE` are `AAR_E_INVAL` |
-| C-FILE.16 | 7.1 | MUST | core | any | payload | todo | `EXCL` without `CREATE` is `AAR_E_INVAL` |
-| C-FILE.17 | 7.1 | MUST | core | any | payload | todo | an unknown flag bit is `AAR_E_INVAL` |
-| C-FILE.18 | 7.1 | MUST | core | any | payload | todo | a missing file without `CREATE` is `AAR_E_NOENT` |
-| C-FILE.19 | 7.1 | MUST | core | any | payload | todo | seek with `AAR_SEEK_SET`, `CUR` and `END` returns the new position; a position before the start is `AAR_E_INVAL`; a seek past the end then a read returns `AAR_OK` and 0 bytes |
-| C-FILE.20 | 7.1 | MUST | core | any | payload | todo | `file_read` sets `*out_n` to the bytes obtained; a read of more than the file holds returns what is left; a read at the end returns `AAR_OK` and 0 |
-| C-FILE.21 | 7.1 | MUST | core | any | payload | todo | one `file_read` of the 1 MiB fixture returns all of it (chunking is the platform's business, a short read means end of file) |
-| C-FILE.22 | 7.1 | MUST | core | any | payload | todo | one `file_write` of 1 MiB returns a count of 1 MiB and the runner finds the exact bytes in the file |
-| C-FILE.23 | 7.1 | MUST | core | any | payload | todo | `file_stat` gives size and mode (1 file, 2 directory) of the fixtures; a missing path is `AAR_E_NOENT` |
-| C-FILE.24 | 7.1 | MUST | core | any | payload | todo | `mtime` of the dated fixture equals its date in Unix seconds, or is 0 when the filesystem has none |
-| C-FILE.25 | 7.1 | MUST | core | any | payload | todo | a directory list returns every entry of the fixture directory once, names of at most 255 bytes, mode per entry, then `AAR_E_NOENT`; a missing directory is `AAR_E_NOENT` |
-| C-FILE.26 | 7.1 | MUST | core | any | payload | todo | a call waits at most 30 seconds for the client and then returns `AAR_E_TIMEDOUT` (runner peer withholds the reply; the test takes 31 seconds) |
-| C-FILE.27 | 7.1 | MUST | core | any | payload | todo | after a timeout the file id is not reused for the rest of the app's life: ids the runtime hands out later differ from the timed-out one (runner peer reports the ids it saw) |
-| C-FILE.28 | 7.1 | MUST | core | any | payload | todo | a stop request ends a file wait with `AAR_E_IO` (runner peer withholds the reply, then stops the app) |
-| C-FILE.29 | 7.1 | MUST | core | any | payload | todo | `aar_map_file`, when present, returns the exact contents of the 1 MiB fixture and the buffer stays valid until `aar_unmap_file`; `AAR_E_NOSYS` is allowed |
-| C-FILE.30 | 7.1 | MUST | zz9000 | any | payload | todo | `aar_map_file` is present, `shared_used` rises by the file size while mapped, and a file over 16 MiB is `AAR_E_NOSPC` |
-| C-FILE.31 | 7.1 | MUST | core | any | runner | todo | after the app exited with files and lists still open, the runner can delete and rename those files (the client released every lock and handle) |
+| C-FILE.1 | 7.1 | MUST | core | any | payload | yes | a path of 255 bytes opens; the first file id is at least `AAR_FD_BASE` (3) and below 64 |
+| C-FILE.2 | 7.1 | MUST | core | any | payload | yes | a path of 256 bytes is refused with a negative code [spec question 9] |
+| C-FILE.3 | 7.1 | MUST | core | any | payload | yes | a relative path resolves under the client's root: a file the app creates is found there by the runner, and a fixture the runner placed there reads back |
+| C-FILE.4 | 7.1 | SHOULD | core | any | payload | yes | `..` and a leading `/` are refused with `AAR_E_ACCES` by the recommended default policy (`aar_serve`) |
+| C-FILE.5 | 7.1 | SHOULD | core | any | payload | yes | a path with a volume or assign prefix is refused with `AAR_E_ACCES` unless `AAR_SERVEF_ABS_PATHS` is set; with the flag set a prefixed path to the root's own volume opens |
+| C-FILE.6 | 7.1 | MUST | core | any | payload | yes | once the client has asked the app to stop, a create, a truncate and a write are refused (negative code) while a read still works (runner peer stops the app) |
+| C-FILE.7 | 7.1 | MUST | core | any | payload | yes | 16 files and, separately, 16 directory lists can be open at once; closing the lists leaves the files open |
+| C-FILE.8 | 7.1 | MUST | core | any | payload | yes | a bad id (-1, 0, 1, 2, 999, a closed id) is `AAR_E_BADF` from close, read, write, seek and list next |
+| C-FILE.9 | 7.1 | MUST | core | any | payload | yes | `AAR_FILE_READ` opens an existing file; `AAR_FILE_WRITE` writes in place; a write through a read-only id transfers no byte (a negative code or a count of 0); a read through a write-only id is not tested [spec question 37] |
+| C-FILE.10 | 7.1 | MUST | core | any | payload | yes | `CREATE` and `TRUNCATE` together create a missing file and empty an existing one |
+| C-FILE.11 | 7.1 | MUST | core | any | payload | yes | `CREATE` alone keeps the contents of an existing file |
+| C-FILE.12 | 7.1 | MUST | core | any | payload | yes | `TRUNCATE` alone empties an existing file and does not create a missing one (`AAR_E_NOENT`) |
+| C-FILE.13 | 7.1 | MUST | core | any | payload | yes | `CREATE` with `EXCL`: `AAR_E_EXIST` for an existing file, which stays untouched; creates a missing file |
+| C-FILE.14 | 7.1 | MUST | core | any | payload | yes | flags 0 (neither read nor write) is `AAR_E_INVAL` |
+| C-FILE.15 | 7.1 | MUST | core | any | payload | yes | `CREATE` without `WRITE` and `TRUNCATE` without `WRITE` are `AAR_E_INVAL` |
+| C-FILE.16 | 7.1 | MUST | core | any | payload | yes | `EXCL` without `CREATE` is `AAR_E_INVAL` |
+| C-FILE.17 | 7.1 | MUST | core | any | payload | yes | an unknown flag bit is `AAR_E_INVAL` |
+| C-FILE.18 | 7.1 | MUST | core | any | payload | yes | a missing file without `CREATE` is `AAR_E_NOENT` |
+| C-FILE.19 | 7.1 | MUST | core | any | payload | yes | seek with `AAR_SEEK_SET`, `CUR` and `END` returns the new position; a position before the start is `AAR_E_INVAL`; a seek past the end then a read returns `AAR_OK` and 0 bytes |
+| C-FILE.20 | 7.1 | MUST | core | any | payload | yes | `file_read` sets `*out_n` to the bytes obtained; a read of more than the file holds returns what is left; a read at the end returns `AAR_OK` and 0 |
+| C-FILE.21 | 7.1 | MUST | core | any | payload | yes | one `file_read` of the 1 MiB fixture returns all of it (chunking is the platform's business, a short read means end of file) |
+| C-FILE.22 | 7.1 | MUST | core | any | payload | yes | one `file_write` of 1 MiB returns a count of 1 MiB and the runner finds the exact bytes in the file |
+| C-FILE.23 | 7.1 | MUST | core | any | payload | yes | `file_stat` gives size and mode (1 file, 2 directory) of the fixtures; a missing path is `AAR_E_NOENT` |
+| C-FILE.24 | 7.1 | MUST | core | any | payload | yes | `mtime` of the dated fixture equals its date in Unix seconds, or is 0 when the filesystem has none |
+| C-FILE.25 | 7.1 | MUST | core | any | payload | yes | a directory list returns every entry of the fixture directory once, names of at most 255 bytes, mode per entry, then `AAR_E_NOENT`; a missing directory is `AAR_E_NOENT` |
+| C-FILE.26 | 7.1 | MUST | core | any | runner | yes | a call waits for the client and then returns `AAR_E_TIMEDOUT` after 29 to 36 seconds as the app measures it [spec question 36] (the runner serves the app by hand and withholds the reply; the test takes 31 seconds) |
+| C-FILE.27 | 7.1 | MUST | core | any | runner | yes | after a timeout the file id is not reused for the rest of the app's life: 20 later opens, after the runner completed the late request, all succeed and none is given the timed-out id (the runner reads the id from the request) |
+| C-FILE.28 | 7.1 | MUST | core | any | runner | yes | a stop request ends a file wait with `AAR_E_IO` (the runner withholds the reply, waits one second, then stops the app; the call ends with that code after at least 0.5 s) |
+| C-FILE.29 | 7.1 | MUST | core | any | payload | yes | `aar_map_file`, when present, returns the exact contents of the 1 MiB fixture and the buffer stays valid until `aar_unmap_file`; `AAR_E_NOSYS` is allowed |
+| C-FILE.30 | 7.1 | MUST | zz9000 | any | payload | yes | `aar_map_file` is present, `shared_used` rises by the file size while mapped, and a file over 16 MiB is `AAR_E_NOSPC` |
+| C-FILE.31 | 7.1 | MUST | core | any | runner | yes | after the app exited with files and lists still open, the runner can delete and rename those files (the client released every lock and handle) |
 | C-FILE.32 | 7.1 | MAY | core | any | none | todo | not tested: a platform MAY return `AAR_E_NOSYS` from `aar_map_file` (accepted by C-FILE.29) |
 | C-FILE.33 | 7.1 | MUST | core | any | none | todo | not tested: AmigaDOS has no atomic exclusive create; the check-then-create in the serving loop is only exclusive among the apps one client serves; C-FILE.13 tests what the standard promises |
 | C-FILE.34 | 7.1 | MUST | zz9000 | any | none | todo | not tested: the mapping of `READ`, `WRITE`, `CREATE` and `TRUNCATE` onto `MODE_OLDFILE`, `MODE_READWRITE`, `MODE_NEWFILE` is an implementation detail of the ZZ9000 client; its effects are C-FILE.9 to C-FILE.13 |
@@ -322,15 +322,15 @@ path) and checks the files the payload leaves behind.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-CON.1 | 7.2 | MUST | core | any | payload | todo | `console_write` of 200 KiB returns `AAR_OK` with `*n` equal to the length and the runner's capture holds every byte in order (pattern checked) |
-| C-CON.2 | 7.2 | MUST | core | any | payload | todo | with the client's output held back for 500 ms the write parks and then completes without losing a byte |
-| C-CON.3 | 7.2 | MUST | core | any | payload | todo | `console_read` parks until the client has input and returns the bytes the runner feeds (runner peer feeds after 300 ms) |
-| C-CON.4 | 7.2 | MUST | core | any | payload | todo | `console_read` returns `AAR_OK` with `*n == 0` at the end of input |
-| C-CON.5 | 7.2 | MUST | core | any | payload | todo | a stop request ends a console wait with `AAR_E_IO` (runner peer holds the input and stops the app) |
-| C-CON.6 | 3.8 | MUST | core | any | payload | todo | libc flavour: `write(1, ...)` and `write(2, ...)` reach the console, `read(0, ...)` reads its input, `isatty(0)`, `isatty(1)`, `isatty(2)` return 0 (host build: `SKIP host:`) |
-| C-CON.7 | 7.2 | MUST | core | any | payload | todo | an `aar_log` record reaches the client's log hook intact and does not appear in the console stream |
-| C-CON.8 | 7.2 | MUST | core | any | payload | todo | an `aar_log` record of 2000 bytes arrives truncated to at most `AAR_LOG_MAX` (1024) bytes, the first bytes intact, in one piece |
-| C-CON.9 | 10.4 | MUST | core | any | payload | todo | `aar_log` records over 1024 bytes are never wrapped or split: every record the client receives is a prefix of a record the app sent |
+| C-CON.1 | 7.2 | MUST | core | any | payload | yes | `console_write` of 200 KiB returns `AAR_OK` with `*n` equal to the length and the runner's capture holds every byte in order (pattern checked) |
+| C-CON.2 | 7.2 | MUST | core | any | payload | yes | with the client's output held back for 500 ms the write parks and then completes without losing a byte |
+| C-CON.3 | 7.2 | MUST | core | any | payload | yes | `console_read` parks until the client has input and returns the bytes the runner feeds (runner peer feeds after 300 ms) |
+| C-CON.4 | 7.2 | MUST | core | any | payload | yes | `console_read` returns `AAR_OK` with `*n == 0` at the end of input |
+| C-CON.5 | 7.2 | MUST | core | any | payload | yes | a stop request ends a console wait with `AAR_E_IO` (runner peer holds the input and stops the app) |
+| C-CON.6 | 3.8 | MUST | core | any | payload | yes | libc flavour: `write(1, ...)` and `write(2, ...)` reach the console, `read(0, ...)` reads its input, `isatty(0)`, `isatty(1)`, `isatty(2)` return 0 (host build: `SKIP host:`) |
+| C-CON.7 | 7.2 | MUST | core | any | payload | yes | an `aar_log` record reaches the client's log hook intact and does not appear in the console stream |
+| C-CON.8 | 7.2 | MUST | core | any | payload | yes | an `aar_log` record of 2000 bytes arrives truncated to at most `AAR_LOG_MAX` (1024) bytes, the first bytes intact, in one piece |
+| C-CON.9 | 10.4 | MUST | core | any | payload | yes | `aar_log` records over 1024 bytes are never wrapped or split: every record the client receives is a prefix of a record the app sent |
 | C-CON.10 | 7.2 | MAY | core | any | none | todo | not tested: the platform MAY rate-limit `aar_log` (ZZ9000: 32 per second to the client, 8 per second to its UART) |
 | C-CON.11 | 7.2 | MUST | core | any | none | todo | not tested: the client decides what the console is (Shell streams or a window); Ctrl-\ behaviour is the client's |
 | C-CON.12 | 7.2 | MUST | core | any | none | todo | not tested: `aar_log` is "lossy, separate from stdout, for the platform's debug output"; the platform's UART path is not visible to a client |
@@ -525,15 +525,15 @@ matrix cases map onto C-GL.6.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-SERVICES.1 | 8.6 | MUST | services | any | payload | todo | `aar_sha256` gives the known digests of the empty message, `abc`, a 1 MiB pattern, and an unaligned buffer of 1000 bytes |
-| C-SERVICES.2 | 8.6 | MUST | services | any | payload | todo | `aar_decompress` for each of the ten algorithms either returns `AAR_E_NOSYS` or the exact bytes of a known stream; `bytes_consumed` and `bytes_written` are right |
-| C-SERVICES.3 | 8.6 | MUST | services | any | payload | todo | `AAR_COMPRESS_NONE` and an unknown algorithm number are refused (`AAR_E_INVAL`) |
-| C-SERVICES.4 | 8.6 | MUST | services | any | payload | todo | a destination that is too small gives an error and writes nothing beyond `dst_bytes` (guard bytes intact); a truncated stream gives an error |
-| C-SERVICES.5 | 8.6 | MUST | services | any | payload | todo | PNG decode through an image session is exact (BGRA8888 tiles of a known image); a codec that is not implemented gives `AAR_E_NOSYS` from `image_open` |
-| C-SERVICES.6 | 8.6 | MUST | services | any | payload | todo | JPEG and WebP decode of known images stay within 3 per channel of the reference pixels (decoders differ in rounding) |
-| C-SERVICES.7 | 8.6 | MUST | services | any | payload | todo | FLAC decode is exact; MP3 and Vorbis decode stay within a root-mean-square error of 64 of the reference PCM; a codec that is not implemented gives `AAR_E_NOSYS` |
-| C-SERVICES.8 | 8.6 | MUST | services | any | payload | todo | at least four image sessions and four audio sessions can be open at once (`AAR_MIN_DECODE_SESSIONS`); the first refusal beyond is `AAR_E_NOMEM` |
-| C-SERVICES.9 | 8.6 | MUST | services | any | payload | todo | session calls with an unknown session id are `AAR_E_INVAL`; a closed session id is refused |
+| C-SERVICES.1 | 8.6 | MUST | services | any | payload | yes | `aar_sha256` gives the known digests of the empty message, `abc`, a 1 MiB pattern, and an unaligned buffer of 1000 bytes |
+| C-SERVICES.2 | 8.6 | MUST | services | any | payload | yes | `aar_decompress` for each of the ten algorithms either returns `AAR_E_NOSYS` or the exact bytes of a known stream; `bytes_written` is the plain length and `bytes_consumed` the stream length (an LHA stream: at most that) [spec question 38] |
+| C-SERVICES.3 | 8.6 | MUST | services | any | payload | yes | `AAR_COMPRESS_NONE` and unknown algorithm numbers (11, 99, 0xFFFFFFFF) are refused with `AAR_E_INVAL`; `AAR_E_NOSYS` is also accepted, as the call description of `aar_decompress` allows |
+| C-SERVICES.4 | 8.6 | MUST | services | any | payload | yes | for each implemented algorithm whose stream ends itself (not LHA, which has no end marker [spec question 38]): a destination that is too small gives an error and writes nothing beyond `dst_bytes` (guard bytes intact); a truncated stream gives an error |
+| C-SERVICES.5 | 8.6 | MUST | services | any | payload | yes | PNG decode through an image session is exact (a 24x16 image in one BGRA8888 tile, fed whole, then drained with the end-of-input flag 1 [spec question 38]); a codec that is not implemented gives `AAR_E_NOSYS` from `image_open` |
+| C-SERVICES.6 | 8.6 | MUST | services | any | payload | yes | JPEG and WebP decode of known images stay within 3 per channel of the reference pixels (decoders differ in rounding) |
+| C-SERVICES.7 | 8.6 | MUST | services | any | payload | yes | FLAC decode is exact; MP3 and Vorbis decode stay within a root-mean-square error of 64 of the reference PCM; a codec that is not implemented gives `AAR_E_NOSYS` |
+| C-SERVICES.8 | 8.6 | MUST | services | any | payload | yes | at least four image sessions and four audio sessions can be open at once (`AAR_MIN_DECODE_SESSIONS`), with the first implemented codec of each kind; the first refusal beyond is `AAR_E_NOMEM` |
+| C-SERVICES.9 | 8.6 | MUST | services | any | payload | yes | session calls with an unknown session id are `AAR_E_INVAL` (`AAR_E_NOSYS` where the kind has no codec); a closed session id is refused |
 | C-SERVICES.10 | 8.6 | MUST | services | any | none | todo | not tested: byte counts of whole buffers are `uint64_t`; a test would need buffers of 4 GiB or more |
 | C-SERVICES.11 | 8.6 | MAY | services | any | none | todo | not tested: a platform MAY implement any subset of algorithms and codecs (C-SERVICES.2, 5 and 7 accept `AAR_E_NOSYS`) |
 
@@ -699,3 +699,26 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     `stall_limit_ms`, `stop_grace_ms`, the groups and the platform id appear in
     `aar_info` (the app) and in `AARInfo` (the client), and nothing says they must be
     equal. C-TABLE.3, .10, .15 and .16 require it. Say so, or say which may differ.
+36. **How long a file wait lasts** (7.1): "a call waits at most 30 seconds for the
+    client (`AAR_E_TIMEDOUT`)". "At most" gives only an upper bound, and no
+    tolerance is stated for the timer that measures it. C-FILE.26 accepts
+    29 to 36 seconds as the app measures it; the spec should say whether a
+    shorter wait (a runtime that gives up after 10 s) conforms and how exact
+    the 30 seconds is.
+37. **Reading through a write-only file id** (7.1): the spec says nothing
+    about it, the host runner reads through such an id, and the ZZ9000 client
+    opens `AAR_FILE_WRITE` with `MODE_READWRITE`, which cannot refuse a read.
+    C-FILE.9 therefore tests only the write through a read-only id (no byte
+    moves, a negative code or a count of 0). Say whether a runtime has to refuse
+    the read and, if so, with which code (question 10).
+38. **Stream and session details of the services group** (8.6) that the text does
+    not give: the framing of an LZMA2 stream (the zzapp 0.x calls take one byte of
+    properties before the raw stream), the LHA streams (no end marker, so the
+    destination size is the decode length and a destination that is too small
+    ends the decode without an error; `bytes_consumed` is not defined), whether a
+    destination larger than the output is allowed for the other algorithms, and
+    the whole image-session protocol: what `aar_image_decode` `flags` mean (bit 0
+    ends the input in zzapp 0.x), when a tile is complete, how a drain with no new
+    input is made, what `bytes_written` counts, the result flags. C-SERVICES.2 to
+    C-SERVICES.5 follow zzapp 0.x; a platform with another framing fails them
+    until the standard says what is meant.
