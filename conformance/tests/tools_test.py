@@ -130,10 +130,14 @@ def check_report(text, *extra):
         os.unlink(path)
 
 
-expect("a report of an unfinished suite is valid", check_report(report()) == 0)
-expect("... and does not conform", check_report(report(), "--require-conforms") != 0)
+# A report of a suite with a test that is not written (a MUST skipped).
+UNFINISHED = {"C-TIME.1": ("SKIP", "suite: not implemented in this version")}
+expect("a report of an unfinished suite is valid",
+       check_report(report(override=UNFINISHED)) == 0)
+expect("... and does not conform",
+       check_report(report(override=UNFINISHED), "--require-conforms") != 0)
 expect("a wrong verdict is rejected",
-       check_report(report(summary_verdict="CONFORMS")) != 0)
+       check_report(report(override=UNFINISHED, summary_verdict="CONFORMS")) != 0)
 expect("a missing line is rejected", check_report(report(omit=("C-TIME.1",))) != 0)
 expect("a FAIL of a MUST test gives DOES-NOT-CONFORM", check_report(
     report(override={"C-TIME.1": ("FAIL", "went back")})) == 0)
