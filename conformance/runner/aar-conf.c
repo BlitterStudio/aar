@@ -680,12 +680,24 @@ static int expected_count(int area)
  * it. A test that is a procedure done before the run (C-LIFE.24) has no variant and
  * is asked at the start of the run. Without INTERACTIVE they are SKIP manual. */
 
+/* The console echoes what the operator types, the report file does not: the
+ * answer goes into it as typed, so the prompt line ends there too. */
 static int read_answer(char *buf, ULONG size)
 {
     BPTR in = Input();
+    int got;
+    size_t n;
 
     buf[0] = '\0';
-    return in && FGets(in, (STRPTR)buf, size) != NULL;
+    got = in && FGets(in, (STRPTR)buf, size) != NULL;
+    if (to_fh) {
+        n = strlen(buf);
+        if (n)
+            (void)Write(to_fh, (APTR)buf, (LONG)n);
+        if (!n || buf[n - 1] != '\n')
+            (void)Write(to_fh, (APTR)"\n", 1);
+    }
+    return got;
 }
 
 /* Waits for Return. 0 when there is no input. */
