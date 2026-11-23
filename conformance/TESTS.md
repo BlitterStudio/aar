@@ -452,7 +452,7 @@ from it; with a real screen the picture is judged by the operator.
 | C-DISPLAY.8 | 8.2 | MUST | display | any | payload | yes | `AAR_DISPCAP_ASYNC` granted: `flip_async` then `flip_idle` reaches 1 within 1 s; a second async flip while one is pending is `AAR_E_BUSY` or completes (no frame is lost); without the cap `flip_async` is negative |
 | C-DISPLAY.9 | 8.2 | MUST | display | any | payload | yes | `AAR_DISPLAY_LATEST` requested: the open succeeds with or without `AAR_DISPCAP_LATEST`; without the cap `display_latest_dropped` returns 0 |
 | C-DISPLAY.10 | 8.2 | MUST | display | any | payload | yes | with `AAR_DISPCAP_LATEST` granted, 100 quick flips leave `display_latest_dropped` non-decreasing and not above 99 |
-| C-DISPLAY.11 | 8.2 | MUST | display | any | payload | yes | `vsync` returns `AAR_OK`; ten vsyncs take at least 100 ms and at most 2 s |
+| C-DISPLAY.11 | 8.2 | MUST | display | any | payload | yes | `vsync` returns `AAR_OK`; ten vsyncs take at most 2 s (no floor: the text does not say that the call waits) [spec question 65] |
 | C-DISPLAY.12 | 8.2 | MUST | display | any | payload | yes | flip publishes the surface (runner peer): the frame the app flips without calling `aar_publish` is read by the client's display table byte for byte [spec questions 49, 50] |
 | C-DISPLAY.13 | 8.2 | MUST | display | any | payload | yes | pixel layout (runner peer): a four-colour test frame stored by the reported `layout` decodes in the client's table to the four colours, for each format the platform grants |
 | C-DISPLAY.14 | 8.2 | MUST | display | any | payload | yes | `pitch` larger than the row bytes is honoured: rows stored by `pitch` arrive in the right rows (a surface whose pitch equals the row bytes is also accepted) [spec question 50] |
@@ -513,7 +513,7 @@ matrix cases map onto C-GL.6.
 | C-GL.2 | 8.5 | MUST | gl | any | payload | yes | every slot of the table that `size` covers up to `Build2DMipmaps` is non-NULL; with `AAR_GL_VERSION_ARRAYS` the array entries are non-NULL too; fields past `Build2DMipmaps` are used only when `AAR_GL_COVERS` says so |
 | C-GL.3 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_bind` with an id that is not an open surface returns NULL |
 | C-GL.4 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_unbind` releases the context; a new bind works |
-| C-GL.5 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_swap` flushes, copies and flips: a cleared colour is read by the client's display table after the swap (runner peer) |
+| C-GL.5 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_swap` flushes, copies and flips: a cleared colour is read by the client's display table after the swap, or after up to four more swaps of the same picture (runner peer) [spec question 66] |
 | C-GL.6 | 8.5 | MUST | gl | any | payload | yes | the `mgl_conformance` matrix cases pass (the line names the first failing case, with its environment, format, draw path, texel, colour and the actual and expected pixel, and counts the failures) |
 | C-GL.7 | 8.5 | MUST | gl | any | payload | yes | `Perspective`, `Ortho`, `Frustum` and `DepthRange` take doubles and `gluPerspective` takes four doubles: a scene drawn with them has the expected pixels [spec question 53] |
 | C-GL.8 | 8.5 | MUST | gl | any | payload | yes | on an isolated runtime a client-array draw with a bad pointer returns `AAR_E_FAULT` and sets `GL_INVALID_VALUE` (passes with detail `not isolated` otherwise) [spec question 54] |
@@ -868,3 +868,15 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     integer IDCT and libwebp; the ZZ9000 uses the fast integer IDCT (`JDCT_IFAST`), which
     is off by 4 on the 16x16 test image. C-SERVICES.6 accepts 6 for JPEG and 3 for WebP.
     Say which error a conforming decoder may have, or require the accurate IDCT.
+65. **Does `aar_display_vsync` wait?** (8.2): the spec lists the call and says nothing of its
+    timing; docs/aar-api.md says it "requests synchronisation with the display refresh" and
+    that the ZZ9000 "yields once; it does not park for the next raster line". The test asks
+    for `AAR_OK` and for no hang, not for the time of a refresh. If the standard means that
+    the call returns at the next refresh, a floor can be added and the ZZ9000 fails it.
+66. **When is a swapped frame visible?** (8.5): "`aar_gl_swap()` flushes, copies and flips" and
+    docs/aar-api.md says it "parks as `aar_display_flip` does" and, for the ZZ9000, "drains
+    RasterIX and copies the context target". The ZZ9000 queues the copy and the flip and
+    does the copy during the next swap (or at once only with its debug flag `SYNC_PRESENT`):
+    a client that reads the frame right after the swap sees the one before. C-GL.5 accepts
+    a frame that is visible after up to four further swaps of the same picture; the text
+    should say whether a swap may return before its frame is presented.

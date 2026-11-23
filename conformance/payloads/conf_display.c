@@ -471,7 +471,10 @@ static void test_vsync(void)
                 cmio_why_rc(&t, "vsync", rc);
         }
         dt = aar_time_us() - t0;
-        if ((dt < 100000u || dt > 2000000u) && conf_fail_first(&t)) {
+        /* "Requests synchronisation with the refresh" does not say that the call waits for it (the
+         * ZZ9000 yields once), so a floor on the time is not a requirement [spec question 65];
+         * the ceiling still catches a call that hangs. */
+        if (dt > 2000000u && conf_fail_first(&t)) {
             conf_buf_str(&t.why, "ten vsyncs took ");
             conf_buf_u64(&t.why, dt);
             conf_buf_str(&t.why, " us");

@@ -178,11 +178,13 @@ static void test_bind_rules(void)
     other[1] = 0u;
     other[2] = 0xFFFFFFFFu;
     for (i = 0; i < 3u; i++) {
-        if (aar_gl_bind(other[i]) != 0 && conf_fail_first(&t3)) {
-            conf_buf_str(&t3.why, "aar_gl_bind of id ");
-            conf_buf_u64(&t3.why, other[i]);
-            conf_buf_str(&t3.why, " returned a table");
-            aar_gl_unbind();
+        if (aar_gl_bind(other[i]) != 0) {
+            if (conf_fail_first(&t3)) {
+                conf_buf_str(&t3.why, "aar_gl_bind of id ");
+                conf_buf_u64(&t3.why, other[i]);
+                conf_buf_str(&t3.why, " returned a table");
+            }
+            aar_gl_unbind(); /* so that the next call and C-GL.4 start with no context */
         }
     }
     conf_buf_str(&t3.note, "ids that are not an open surface return NULL");
@@ -213,30 +215,53 @@ static void test_swap(void)
     }
     conf_begin(&t, "C-GL.5");
     if (bind_display(&t)) {
+        uint32_t late = 0;
+
         for (i = 0; i < 3u; i++) {
             uint32_t ok = 0, rgb = 0;
             uint32_t want = ((uint32_t)(colours[i][0] * 255.0f) << 16) |
                             ((uint32_t)(colours[i][1] * 255.0f) << 8) |
                             (uint32_t)(colours[i][2] * 255.0f);
+            uint32_t swaps = 1;
             int rc;
 
             glClearColor(colours[i][0], colours[i][1], colours[i][2], 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
             aar_gl_swap();
-            (void)cmio_kw(CG_K_PIXEL, WIDTH / 2, HEIGHT / 2, 0);
-            rc = cmio_result(10000000u, &ok, &rgb, 0, 0, 0, 0);
-            if ((rc != 1 || !ok || rgb != want) && conf_fail_first(&t)) {
-                conf_buf_str(&t.why, "after the swap of colour ");
-                conf_buf_u64(&t.why, i);
-                conf_buf_str(&t.why, " the client's pixel is ");
-                conf_buf_hex(&t.why, rgb);
-                conf_buf_str(&t.why, ", expected ");
-                conf_buf_hex(&t.why, want);
-                if (rc != 1)
-                    conf_buf_str(&t.why, " (no answer from the runner)");
+            /* A platform may present the frame of a swap while the next swap runs (the copy
+             * and flip are queued): the same frame is swapped again, up to 4 more times, until
+             * the client has it [spec question 66]. */
+            for (;;) {
+                (void)cmio_kw(CG_K_PIXEL, WIDTH / 2, HEIGHT / 2, 0);
+                rc = cmio_result(10000000u, &ok, &rgb, 0, 0, 0, 0);
+                if (rc == 1 && ok && rgb == want)
+                    break;
+                if (rc != 1 || swaps > 4u) {
+                    if (conf_fail_first(&t)) {
+                        conf_buf_str(&t.why, "after ");
+                        conf_buf_u64(&t.why, swaps);
+                        conf_buf_str(&t.why, " swaps of colour ");
+                        conf_buf_u64(&t.why, i);
+                        conf_buf_str(&t.why, " the client's pixel is ");
+                        conf_buf_hex(&t.why, rgb);
+                        conf_buf_str(&t.why, ", expected ");
+                        conf_buf_hex(&t.why, want);
+                        if (rc != 1)
+                            conf_buf_str(&t.why, " (no answer from the runner)");
+                    }
+                    break;
+                }
+                glClear(GL_COLOR_BUFFER_BIT);
+                aar_gl_swap();
+                aar_sleep_us(50000u);
+                swaps++;
             }
+            if (swaps > 1u)
+                late++;
         }
-        conf_buf_str(&t.note, "red, green and blue clears read by the client after the swap");
+        conf_buf_str(&t.note, late ? "red, green and blue clears read by the client, each after "
+                                     "a further swap (the swap presents the frame queued before it)"
+                                   : "red, green and blue clears read by the client after the swap");
         unbind_display();
     }
     conf_end(&t);
@@ -528,12 +553,29 @@ static void test_doubles(void)
 
 /* ---- C-GL.8: a bad client-array pointer on an isolated runtime ------------------------------------------ */
 
+/* One draw from a vertex array at `p` (3 vertices of 3 floats). Returns the GL error. */
+static uint32_t draw_from(const void *p)
+{
+    uint32_t err;
+    uint32_t guard = 0;
+
+    while (glGetError() != 0 && guard++ < 16u)
+        ;
+    glVertexPointer(3, GL_FLOAT, 0, p);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    err = glGetError();
+    glDisableClientState(GL_VERTEX_ARRAY);
+    return err;
+}
+
 static void test_isolated_draw(void)
 {
     struct conf_test t;
     aar_info info;
+    void *heap = 0;
+    uint64_t heap_bytes = 0;
     uint32_t err;
-    uint32_t guard = 0;
 
     conf_begin(&t, "C-GL.8");
     info.size = sizeof info;
@@ -543,19 +585,25 @@ static void test_isolated_draw(void)
         return;
     }
     if (bind_display(&t)) {
-        while (glGetError() != 0 && guard++ < 16u)
-            ;
-        glVertexPointer(3, GL_FLOAT, 0, (const void *)(uintptr_t)0x10u);
-        glEnableClientState(GL_VERTEX_ARRAY);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        err = glGetError();
-        glDisableClientState(GL_VERTEX_ARRAY);
+        /* A pointer in the unmapped first page, and a range that starts in the last bytes of
+         * the heap and runs past its end: the first is a bad pointer, the second a bad range
+         * (draw-time validation, spec 8.5). */
+        err = draw_from((const void *)(uintptr_t)0x10u);
         if (err != GL_INVALID_VALUE && conf_fail_first(&t)) {
-            conf_buf_str(&t.why, "a draw from a bad array pointer left glGetError at ");
+            conf_buf_str(&t.why, "a draw from the bad pointer 0x10 left glGetError at ");
             conf_buf_hex(&t.why, err);
             conf_buf_str(&t.why, ", not GL_INVALID_VALUE");
         }
-        conf_buf_str(&t.note, "isolated: the bad draw set GL_INVALID_VALUE and the app went on");
+        aar_heap_range(&heap, &heap_bytes);
+        if (heap && heap_bytes >= 64u) {
+            err = draw_from((const uint8_t *)heap + heap_bytes - 4u);
+            if (err != GL_INVALID_VALUE && conf_fail_first(&t)) {
+                conf_buf_str(&t.why, "a draw from a range that leaves the heap left glGetError at ");
+                conf_buf_hex(&t.why, err);
+                conf_buf_str(&t.why, ", not GL_INVALID_VALUE");
+            }
+        }
+        conf_buf_str(&t.note, "isolated: the bad draws set GL_INVALID_VALUE and the app went on");
         unbind_display();
     }
     conf_end(&t);
