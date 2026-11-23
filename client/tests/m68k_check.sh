@@ -10,7 +10,8 @@
 # It compiles client/tests/m68k_compile_test.c with warnings as errors, then
 # checks the object: the 25 vector offsets of the .fd file all appear as calls
 # through the library base, and no symbol is left undefined. It then compiles
-# the library sources (core, probe, shell, reference platform), the serving loop
+# the library sources (core, probe, the image rules and loader of loader/,
+# shell, reference platform), the serving loop
 # (client/serve) and the launcher (client/run), and links aar-run, see below.
 #
 # SPDX-License-Identifier: MIT
@@ -71,7 +72,8 @@ check_source() {
     top=$(awk -F'	' 'NR == 1 { print $1 " " $2 " bytes" }' "$OUT/src.sorted")
     echo "$src: compiles for m68k, 0 warnings, largest stack frame: $top"
 }
-check_source client/src/aar_probe.c "^_?($STR)\$" -pedantic
+check_source client/src/aar_probe.c "^_?($STR|aar_image_check)\$" -pedantic
+check_source loader/aar_image.c "^_?($STR)\$" -pedantic
 check_source client/src/aar_core.c "^_?($STR)\$" -pedantic
 check_source client/src/refplat.c "^_?($STR|aar_core_ext_(stats|lease_pause))\$" -pedantic
 check_source client/src/aar_shell.c "^_?($STR|UtilityBase|aar_plat_get|aar_core_[a-z_]+|aar_probe_[a-z_]+)\$"
