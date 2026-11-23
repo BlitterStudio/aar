@@ -287,13 +287,18 @@ static void on_end(const struct conf_run *run, const struct conf_outcome *out,
         conf_record("C-INPUT.9", 0, d);
         return;
     }
-    ok = is.got_n == is.over_accepted && is.got_ok &&
+    /* The text guarantees that at least 64 events are kept and that the new ones are dropped,
+     * not the old. Events the runtime drops after the queue took them are not in the client's
+     * counter [spec question 63]: the counter must equal the posts the client was refused. */
+    ok = is.got_ok && is.got_n >= 64UL && is.got_n <= is.over_accepted &&
          is.got_drops == is.over_busy && is.over_accepted + is.over_busy == CI_OVERFULL_POSTS;
     conf_detailf(d, "%lu posted: %lu accepted, %lu refused; the app polled %lu, first events in order %lu; "
                     "events_dropped rose by %lu%s",
                  (unsigned long)CI_OVERFULL_POSTS, (unsigned long)is.over_accepted,
                  (unsigned long)is.over_busy, (unsigned long)is.got_n, (unsigned long)is.got_ok,
-                 (unsigned long)is.got_drops, is.over_busy ? "" : " (the queue never filled)");
+                 (unsigned long)is.got_drops,
+                 is.got_n < is.over_accepted ? " (the runtime kept the first ones, the rest are not counted)"
+                                             : "");
     conf_record("C-INPUT.9", ok, d);
 }
 

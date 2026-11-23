@@ -6,6 +6,8 @@
  */
 #include <exec/execbase.h>
 #include <graphics/gfx.h>
+#include <intuition/intuition.h>
+#include <proto/intuition.h>
 #include <libraries/Picasso96.h>
 #include <proto/Picasso96.h>
 
@@ -29,7 +31,7 @@ static void why_more(struct gfx_display *g, const char *more)
 {
     char tmp[sizeof g->why];
 
-    snprintf(tmp, sizeof tmp, "%.60s; %s", g->why, more);
+    snprintf(tmp, sizeof tmp, "%.50s; %.50s", g->why, more);
     snprintf(g->why, sizeof g->why, "%s", tmp);
 }
 
@@ -60,34 +62,52 @@ static int alloc_pixels(struct gfx_display *g, ULONG w, ULONG h, ULONG format)
     } else {
         snprintf(g->why, sizeof g->why, "no memory for %lu bytes of pixels", (unsigned long)bytes);
     }
-    /* The platform's aperture is not Amiga memory: a bitmap of the RTG card is. */
+    /* The platform's aperture is not Amiga memory: a bitmap of the RTG card is. Picasso96 puts a
+     * bitmap on the card only when it is displayable (or has a friend on the card), so ask for
+     * that; the second try takes the Workbench screen's bitmap as the friend. */
     if (!p96_lib)
         p96_lib = OpenLibrary((CONST_STRPTR)"Picasso96API.library", 2);
     if (p96_lib) {
-        struct BitMap *bm;
         ULONG rgb = format == AAR_FMT_BGRA8888 ? RGBFB_B8G8R8A8 :
                     (format == AAR_FMT_CLUT8 ? RGBFB_CLUT : RGBFB_R5G6B5);
+        int attempt;
 
         P96Base = p96_lib;
-        bm = p96AllocBitMap(w, h, bpp * 8UL, BMF_CLEAR, NULL, (RGBFTYPE)rgb);
-        if (bm) {
-            ULONG addr = p96GetBitMapAttr(bm, P96BMA_MEMORY);
-            ULONG row = p96GetBitMapAttr(bm, P96BMA_BYTESPERROW);
+        for (attempt = 0; attempt < 2; attempt++) {
+            struct Screen *wb = NULL;
+            struct BitMap *bm;
 
-            if (addr && row >= w * bpp &&
-                AARSharedToken(g->h, (APTR)addr, row * h, &token) == AAR_OK) {
-                g->mem = (UBYTE *)addr;
-                g->pitch = row;
-                g->bytes = row * h;
-                g->token = token;
-                g->bitmap = bm;
-                g->source = 2;
-                return 1;
+            if (attempt == 1 && IntuitionBase)
+                wb = LockPubScreen(NULL);
+            if (attempt == 1 && !wb)
+                break;
+            bm = p96AllocBitMap(w, h, bpp * 8UL, BMF_CLEAR | BMF_DISPLAYABLE,
+                                wb ? wb->RastPort.BitMap : NULL, (RGBFTYPE)rgb);
+            if (wb)
+                UnlockPubScreen(NULL, wb);
+            if (bm) {
+                ULONG addr = p96GetBitMapAttr(bm, P96BMA_MEMORY);
+                ULONG row = p96GetBitMapAttr(bm, P96BMA_BYTESPERROW);
+                char note[64];
+
+                if (addr && row >= w * bpp &&
+                    AARSharedToken(g->h, (APTR)addr, row * h, &token) == AAR_OK) {
+                    g->mem = (UBYTE *)addr;
+                    g->pitch = row;
+                    g->bytes = row * h;
+                    g->token = token;
+                    g->bitmap = bm;
+                    g->source = 2;
+                    return 1;
+                }
+                snprintf(note, sizeof note, "bitmap %s at 0x%lx row %lu refused",
+                         attempt ? "with a friend" : "displayable", (unsigned long)addr,
+                         (unsigned long)row);
+                why_more(g, note);
+                p96FreeBitMap(bm);
+            } else {
+                why_more(g, attempt ? "no bitmap with a friend" : "no displayable bitmap");
             }
-            p96FreeBitMap(bm);
-            why_more(g, "the Picasso96 bitmap was refused too");
-        } else {
-            why_more(g, "no Picasso96 bitmap");
         }
     } else {
         why_more(g, "no Picasso96API.library");

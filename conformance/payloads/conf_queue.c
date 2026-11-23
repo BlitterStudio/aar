@@ -248,6 +248,11 @@ static void variant_sqfull(void)
         if (aar_msg_send(m) != AAR_OK)
             break;
     }
+    /* A message is refused one entry early (the reserve for a request). A log record may take
+     * the last entry, and the next post finds the queue full: that is the SQ-full event the
+     * counter counts [spec question 62]. */
+    for (i = 0; i < 4u; i++)
+        aar_log("conf-queue sq full", 18u);
     while (!aar_should_stop())
         (void)aar_msg_wait(1000000u);
 }

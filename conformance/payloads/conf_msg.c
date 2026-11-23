@@ -178,13 +178,13 @@ static void test_client_to_app(void)
 
 /* ---- C-MSG.4 and C-MSG.16: the client does not drain --------------------------------- */
 
-/* Sends numbered messages until one is refused. Returns how many were accepted;
- * a call that took 100 ms or more, or an unexpected code, fails the test. */
-static uint32_t flood_until_busy(struct conf_test *t)
+/* Sends numbered messages from number `first` until one is refused. Returns how many were
+ * accepted; a call that took 100 ms or more, or an unexpected code, fails the test. */
+static uint32_t flood_phase(struct conf_test *t, uint32_t first)
 {
     uint8_t m[AAR_MSG_BYTES];
     uint32_t n = 0;
-    uint32_t limit = 4u * cap + 8u;
+    uint32_t limit = 2u * cap + 8u;
 
     for (;;) {
         uint64_t t0;
@@ -195,7 +195,7 @@ static uint32_t flood_until_busy(struct conf_test *t)
             conf_check(t, 0, "msg_send was never refused with AAR_E_BUSY");
             break;
         }
-        cm_fill(m, CM_MODE_SEQ, CM_DIR_TO_CLIENT, n);
+        cm_fill(m, CM_MODE_SEQ, CM_DIR_TO_CLIENT, first + n);
         t0 = aar_time_us();
         rc = aar_msg_send(m);
         dt = aar_time_us() - t0;
@@ -215,6 +215,29 @@ static uint32_t flood_until_busy(struct conf_test *t)
     return n;
 }
 
+/* Starts the hold, then floods until the client's side is full: a client that serves
+ * requests moves what is in the queue into its inbox (64 messages), so one flood ends at
+ * the queue's own limit and the next, after a pause, at the inbox's. Stops when a phase
+ * gets nothing in. Returns every message accepted. The first is sent only after the
+ * runner has taken the BEGIN message, so it does not take an entry of the queue. */
+static uint32_t hold_and_flood(struct conf_test *t, uint32_t hold_ms)
+{
+    uint32_t total = 0;
+    uint32_t phase;
+
+    cmio_kw(CM_K_BEGIN, CM_MODE_SEQ, hold_ms, 0);
+    aar_sleep_us(40000u);
+    for (phase = 0; phase < 4u; phase++) {
+        uint32_t n = flood_phase(t, total);
+
+        total += n;
+        if (n == 0)
+            break;
+        aar_sleep_us(40000u);
+    }
+    return total;
+}
+
 static void test_full_inbox(void)
 {
     struct conf_test t;
@@ -223,8 +246,7 @@ static void test_full_inbox(void)
     if (skip_no_peer("C-MSG.4"))
         return;
     conf_begin(&t, "C-MSG.4");
-    cmio_kw(CM_K_BEGIN, CM_MODE_SEQ, 500, 0);
-    accepted = flood_until_busy(&t);
+    accepted = hold_and_flood(&t, 600);
     if (accepted < cap && conf_fail_first(&t)) {
         conf_buf_str(&t.why, "msg_send was refused after ");
         conf_buf_u64(&t.why, accepted);
@@ -237,12 +259,14 @@ static void test_full_inbox(void)
     conf_end(&t);
 }
 
+/* A request that parks the app (file_stat) behind messages the full client inbox holds back
+ * waits until the client drains. A console write would not show it: it returns when its
+ * bytes are in the runtime's ring, not when the client has answered. */
 static void test_holdback(void)
 {
     struct conf_test t;
+    aar_stat st;
     uint32_t accepted;
-    const char line[] = "c-msg.16 write behind held messages\n";
-    uint32_t written = 0;
     uint64_t t0;
     uint64_t dt;
     int rc;
@@ -250,20 +274,19 @@ static void test_holdback(void)
     if (skip_no_peer("C-MSG.16"))
         return;
     conf_begin(&t, "C-MSG.16");
-    cmio_kw(CM_K_BEGIN, CM_MODE_SEQ, 300, 0);
-    accepted = flood_until_busy(&t);
+    accepted = hold_and_flood(&t, 900);
     t0 = aar_time_us();
-    rc = aar_console_write(line, (uint32_t)sizeof line - 1u, &written);
+    rc = aar_file_stat("c-msg-16-probe", &st);
     dt = aar_time_us() - t0;
-    conf_check(&t, rc == AAR_OK, "the console write failed");
-    conf_check(&t, written == sizeof line - 1u, "the console write was short");
-    if (dt < 150000u && conf_fail_first(&t)) {
-        conf_buf_str(&t.why, "the console write completed after ");
+    if ((rc == AAR_E_TIMEDOUT || rc == AAR_E_IO) && conf_fail_first(&t))
+        cmio_why_rc(&t, "the file request returned", rc);
+    if (dt < 200000u && conf_fail_first(&t)) {
+        conf_buf_str(&t.why, "the file request completed after ");
         conf_buf_u64(&t.why, dt);
         conf_buf_str(&t.why, " us, before the client resumed draining");
     }
     expect_verdict(&t, accepted, "after the client drained");
-    conf_buf_str(&t.note, "the write waited ");
+    conf_buf_str(&t.note, "the request waited ");
     conf_buf_u64(&t.note, dt / 1000u);
     conf_buf_str(&t.note, " ms behind ");
     conf_buf_u64(&t.note, accepted);

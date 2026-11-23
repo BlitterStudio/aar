@@ -254,7 +254,7 @@ or misaddresses completions.
 | C-QUEUE.5 | 9.6 | MUST | core | any | runner | yes | `AARServiceReply` resumes the app only if it is parked for that request: a reply to a non-parking request (console write) leaves a later parked request parked [spec question 44] |
 | C-QUEUE.6 | 9.6 | MUST | core | any | payload | yes | a request whose client withholds the reply past the 30 s file timeout returns `AAR_E_TIMEDOUT` and a timeout is not a completion: the next call that needs the storage returns `AAR_E_BUSY` until the late completion is consumed (runner peer) |
 | C-QUEUE.7 | 9.6 | MUST | core | any | payload | yes | after the late completion of C-QUEUE.6 is consumed, the app can use the storage again |
-| C-QUEUE.8 | 10.4 | MUST | core | any | runner | yes | after `AAR_E_BUSY` for a full SQ the status counter `sq_full` has increased |
+| C-QUEUE.8 | 10.4 | MUST | core | any | runner | yes | after `AAR_E_BUSY` for a full SQ the status counter `sq_full` has increased (the SQ is filled to its last entry with log records after the messages are refused) [spec question 62] |
 | C-QUEUE.9 | 10.4 | MUST | core | any | payload | yes | `aar_log` flood with the client not serving never blocks the app; the status counter `log_dropped` increases when records were lost [spec question 46] |
 | C-QUEUE.10 | 10.6 | MUST | core | any | payload | yes | a missed or merged doorbell does not lose an entry: 5000 console requests with the client serving only on a 50 ms timer (no wakeups) complete with every byte present |
 | C-QUEUE.11 | 10.4 | MUST | core | any | runner | yes | an unsolicited entry (event or log) that arrives while a request is pending does not complete or disturb that request |
@@ -475,8 +475,8 @@ from it; with a real screen the picture is judged by the operator.
 | C-INPUT.6 | 8.3 | MUST | input | any | payload | yes | Ctrl-D, Ctrl-E and Ctrl-F signalled to the runner task arrive as `AAR_EV_BREAK` with codes 4, 5 and 6 (the serving loop's break mask) |
 | C-INPUT.7 | 8.3 | MUST | input | any | payload | yes | `AAR_EV_RESIZE` (6) is never delivered during the whole input test |
 | C-INPUT.8 | 8.3 | MUST | input | any | payload | yes | the runtime retains at least 64 events: 64 key events posted while the app does not poll all arrive in order |
-| C-INPUT.9 | 8.3 | MUST | input | any | runner | yes | with the queue overfull the client drops the new events, never the old ones: the app finds the first events in order, and `AARStatusInfo.events_dropped` equals the number posted minus the number received |
-| C-INPUT.10 | 9.6 | MUST | input | any | payload | yes | mouse motion posted while the queue is full: the sum of `dx` received plus `events_dropped` equals the sum posted (merged or counted as dropped, never lost silently) [spec question 17] |
+| C-INPUT.9 | 8.3 | MUST | input | any | runner | yes | with the queue overfull the client drops the new events, never the old ones: the app finds the first (at least 64) events in order, and `AARStatusInfo.events_dropped` equals the number of posts the client was refused [spec question 63] |
+| C-INPUT.10 | 9.6 | MUST | input | any | payload | yes | mouse motion posted while the queue is full: the sum of `dx` received plus `events_dropped` equals the sum posted (merged or counted as dropped, never lost silently) [spec questions 17, 63] |
 | C-INPUT.11 | 8.3 | SHOULD | input | any | operator | yes | real keyboard, mouse and joystick events reach the app with the up bit removed from keys: the operator presses keys and moves the mouse and confirms the codes the payload prints |
 | C-INPUT.12 | 8.3 | MAY | input | any | none | todo | not tested: the client MAY coalesce mouse motion when the queue is full (C-INPUT.10 allows both) |
 | C-INPUT.13 | 8.3 | MUST | input | any | none | todo | not tested: "the runtime keeps at least 64 events" beyond the completion queue's own 64 entries is internal; the outcome is C-INPUT.8 |
@@ -850,3 +850,16 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     class or machine that the platform does not run it allows `AAR_E_PROFILE` or
     `AAR_E_INVAL`. C-ELF.15 and C-ELF.23 accept a refusal or a load, C-ELF.31 accepts
     either code.
+62. **SQ full and the message reserve** (10.3, 10.4): `sq_full` counts "a post that finds the SQ
+    full", but a message post is refused one entry early (the reserve for a request, 6), when
+    the queue is not yet full. The ZZ9000 does not count that refusal. C-QUEUE.8 fills the
+    last entry with log records and counts the next post as the full queue; the text should
+    say whether a refused message post is a full SQ.
+63. **Events the runtime drops** (8.3, 9.6, 10.3): the client counts an event it could not post
+    (`events_dropped`), and "the runtime keeps at least 64 events". It is not said what
+    happens to an event the runtime takes out of the CQ when its own queue is full, nor who
+    counts it: the ZZ9000 drops it without a count the client can read (the word is
+    written by the client), so a client never sees more than 64 events kept, with no refusal
+    and no counter, however many it posts. C-INPUT.9 takes the guarantees that are stated
+    (the first 64 kept in order, the client's own refusals counted); C-INPUT.10 keeps the
+    sum rule of 9.6 ("never lost silently") and fails on such a platform.
