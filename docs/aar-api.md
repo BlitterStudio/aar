@@ -7,8 +7,8 @@ SPDX-License-Identifier: MIT
 
 The public contract of `include/aar/app.h`, `note.h`, `gl.h` and
 `ext_zz9000.h`. The transport headers for platform implementers are covered in
-[transport.md](transport.md). The mapping from the old `zzapp` names is in
-[zzapp-to-aar.md](zzapp-to-aar.md). How to build and run an app is in the
+[transport.md](transport.md). The normative text is the
+[specification](../spec/aar.md); this page is the call reference. How to build and run an app is in the
 [developer guide](aar-developer-guide.md). The Amiga side, `aar.library`, which
 a launcher uses to load, start and serve an app, is in
 [aar-client-api.md](aar-client-api.md).
@@ -44,10 +44,12 @@ calls `aar_main`.
   when its bit is set in `aar_api.groups`; when it is, every call of that group
   that the table's `size` covers is non-NULL, except where a slot is marked
   optional. An app that needs a group checks `groups` once.
+  If the bit is clear, every slot of that group is absent or NULL.
 - An app has one thread. No call is reentrant and no call takes variable
-  arguments. A call that parks (files, console, display flip, `aar_msg_wait`,
-  sleep) returns when the work completes, on stop (`AAR_E_IO`), or on its own
-  timeout. Nothing calls back into the app.
+  arguments. A call that parks (files, console, display flip, `aar_msg_wait`)
+  returns when the work completes, on stop (`AAR_E_IO`), or on its own
+  timeout. A sleep is also ended by a stop, but it has no return value. Nothing
+  calls back into the app.
 - Structures are plain C structures with fixed-width integers. Where a
   structure carries pointers, they come last, so every fixed-width field has
   the same offset on A32 and A64.
@@ -126,9 +128,8 @@ minor.
 ## Error codes
 
 Calls return `AAR_OK` or a negative `AAR_E_*` value. The table, the client
-library and the transport share one code space. The first thirteen values keep
-the numbers of the old `zzapp.h`. A platform may map its own transport
-statuses to these; that mapping is private to the platform.
+library and the transport share one code space. A platform may map its own
+transport statuses to these; that mapping is private to the platform.
 
 ### AAR_OK
 
@@ -176,11 +177,11 @@ statuses to these; that mapping is private to the platform.
 
 ### AAR_E_EXIST
 
-`-11`. Reserved. No wrapper returns it; a client may.
+`-11`. The file exists and `AAR_FILE_EXCL` was set. Returned for `aar_file_open`.
 
 ### AAR_E_BADF
 
-`-12`. The file or list id is not open, or was never issued.
+`-12`. The file or list id is not open or was never issued, or it was opened for a direction the call does not use: `aar_file_write` through an id opened without `AAR_FILE_WRITE`, or `aar_file_read` through an id opened without `AAR_FILE_READ`.
 
 ### AAR_E_PROFILE
 
@@ -192,7 +193,7 @@ statuses to these; that mapping is private to the platform.
 
 ### AAR_E_NORESOURCE
 
-`-15`. Admission was refused for lack of a resource. The reason is one of the `AAR_REASON_*` codes. Returned by the client library when an app is opened, never by a table call.
+`-15`. Admission or a load was refused for lack of a resource. The reason is one of the `AAR_REASON_*` codes. Returned by the client library when an app is opened or loaded, never by a table call.
 
 ### AAR_E_STALE
 
@@ -245,11 +246,11 @@ handle.
 
 ### AAR_STATE_LOADING
 
-`1u`. The image is being streamed and relocated.
+`1u`. The image is being streamed and relocated. The state stays `LOADING` after the load call returns, until `AARStart` is accepted.
 
 ### AAR_STATE_STARTING
 
-`2u`. Load finished; the entry point has not been reached.
+`2u`. `AARStart` was accepted; the entry point has not been reached. A client cannot rely on seeing it, because it lasts only until the entry is reached.
 
 ### AAR_STATE_RUNNING
 
@@ -261,7 +262,7 @@ handle.
 
 ### AAR_STATE_FAULTED
 
-`6u`. The app faulted. The fault record in the control block is valid.
+`6u`. The app faulted. The fault record in the control block is valid. After a fault a platform may report `FAULTED` until the handle is closed, or return to `IDLE`; a client treats both as ended and reads the end reason. **ZZ9000:** returns to `IDLE`.
 
 ### AAR_STATE_CLAIMED
 
@@ -322,7 +323,7 @@ Why an app ended. Retained until the client closes its handle.
 
 ### AAR_END_STUCK_CALL
 
-`5u`. One call ran longer than the runtime's stuck-call limit.
+`5u`. A single call stayed inside the runtime's own code, not parked in a declared wait, for longer than the runtime's stuck-call limit. A runtime may have no such watchdog, and an app cannot cause it.
 
 ### AAR_END_LEASE
 
@@ -470,7 +471,7 @@ call that needs it.
 
 ### AAR_GROUPS_EXPERIMENTAL
 
-`0xF0000000u`. Bits 28 to 31, reserved for experiments.
+`0xF0000000u`. Bits 28 to 31, for experiments of a platform. Bits 5 to 27 are reserved for later versions of the standard: a platform must not set them.
 
 ## Limits the standard fixes
 
@@ -599,10 +600,17 @@ typedef struct aar_heap_info {
 } aar_heap_info;
 ```
 
-All fields are bytes. `committed` is the private memory currently committed,
-including image, heap and stack. `limit` is the effective limit after the
-client's cap. `pool_free` is the memory still available to this app now. The
-values are a snapshot: another app may grow before a later request. 24 bytes.
+All fields are bytes. `committed` is all the private memory the app holds: its
+image, its stack and its heap, each in whole `heap_granule` units. The heap that
+`aar_heap_range` reports is therefore smaller than `committed`. A successful
+`aar_heap_grow` of `n` bytes raises `committed` by `n`, and a successful
+`aar_heap_shrink` lowers it by the bytes returned. `limit` is the effective
+limit after the client's cap; it caps `committed` as a whole, so the image, the
+stack and `min_heap_mib` count against it at load. The platform's own cap need
+not equal its pool. `pool_free` is the memory the platform could give this app
+now; it can be smaller than `limit - committed`. A grow fails with `AAR_E_NOMEM`
+when either bound is used up. The values are a snapshot: another app may grow
+before a later request. 24 bytes.
 
 ### AAR_INFOF_ISOLATED
 
@@ -693,8 +701,9 @@ typedef struct aar_event {
 values. `code` is the Amiga raw key with the up bit removed, or an
 `AAR_BREAK_*` value. `dx` and `dy` are mouse deltas, or joystick axes in
 -1, 0 and 1. `buttons` holds key qualifiers, or mouse buttons in bits 0, 1 and
-2 (left, right, middle), or joystick fire in bit 0. `time_ms` is a client
-timestamp, 32 bits, and wraps. `reserved` is 0.
+2 (left, right, middle), or joystick fire in bit 0. `time_ms` is a timestamp in
+milliseconds that the client chooses; the library does not change it. It is 32
+bits and wraps. `reserved` is 0.
 
 ### aar_stat
 
@@ -768,6 +777,10 @@ what was granted. `flags` is 0. `*write_frame` is advanced by the app and
 that wrap. The app writes ahead of `*read_frame` but never more than `frames`
 ahead. The pointers are at offset 16 on both profiles.
 
+The three pointers point into one mapping of the ring. If `ring` is the address
+of its first byte, `write_frame` is `ring`, `read_frame` is `ring + 0x40` and
+`samples` is `ring + 0x80`.
+
 The indices order the PCM. The app stores the samples first, then publishes
 `*write_frame` with a release store (`__atomic_store_n` with
 `__ATOMIC_RELEASE` on GCC and Clang). Before it computes the free space or
@@ -827,7 +840,9 @@ The parameters of `aar_image_open`. `codec` is `AAR_IMAGE_*`.
 `output_format` must be `AAR_FMT_BGRA8888`. `tile` must hold `stride * rows`
 bytes, `tile_bytes` is that capacity, and the buffer stays valid for every
 decode call on the session. It stays caller-owned. The pointer is last, at
-offset 24 on both profiles.
+offset 24 on both profiles. An app passes 0 in `flags` in API 0.5; a runtime may
+accept bits it defines (**ZZ9000:** bit 0 fits the image to the tile buffer and
+bit 1 preserves the aspect ratio while fitting).
 
 ### aar_image_result
 
@@ -1014,10 +1029,16 @@ slot: 0. **ZZ9000:** the source is the global timer, which counts at half the
 void aar_sleep_us(uint32_t us);
 ```
 
-Parks for at least `us` microseconds. It is not a busy wait. The actual
-granularity is `aar_info.sleep_granule_us`. A parked app does not count toward
-the stall watchdog. Missing slot: returns at once. **ZZ9000:** the deadline is
-rounded to 5 ms ticks. Minimum minor: 5.
+Parks for at least `us` microseconds of the platform clock and returns nothing.
+It is not a busy wait. It ends early only for a stop: if a stop is requested
+while the app sleeps, or is already pending when the call is entered, it returns
+at once and `aar_should_stop` is 1. The actual granularity is
+`aar_info.sleep_granule_us`; with no other app competing for the CPU, a sleep
+should end no later than `us` plus four granules (each at least 1 ms) plus 10 ms.
+A parked app does not count toward the stall watchdog. Missing slot: returns at
+once. **ZZ9000:** the deadline is a microsecond value checked at each look at
+the clock; the 5 ms scheduler tick is a backstop, not a rounding step. Minimum
+minor: 5.
 
 ### aar_get_info
 
@@ -1038,10 +1059,12 @@ where; the app is position-independent and must not assume an address. The
 heap starts at the end of the image. The heap is always dynamic: it grows and
 shrinks in whole `heap_granule` units (1 MiB). Growth is first come, first
 served from the platform's pool after its reserve and any client cap. The
-note's `min_heap_mib` is committed at load; a refused admission is
-`AAR_E_NOMEM` from the load call. The runtime sends `AAR_EV_LOW_MEMORY` through
-`aar_event_poll` once per low-water crossing of the pool, and again only after
-the pool has risen above its high-water mark.
+note's `min_heap_mib` is committed at load; a refusal for lack of memory is
+`AAR_E_NORESOURCE` with `AAR_REASON_MEMORY`, or `AAR_E_NOMEM`, from the load
+call. The runtime queues `AAR_EV_LOW_MEMORY` for every running app when the free
+pool falls below its low-water mark, and again only after the pool has risen
+above its high-water mark. The marks are the platform's own (**ZZ9000:** 32 MiB
+and 64 MiB); a refusal because of the client's private limit is not a crossing.
 
 ### aar_heap_range
 
@@ -1262,7 +1285,9 @@ int aar_console_write(const void *buf, uint32_t len, uint32_t *out_n);
 
 Writes every requested byte to the console or returns an error. It never drops
 bytes: when the client's buffer is full the call parks until the client has
-taken it, and stop ends the wait with `AAR_E_IO`. NULL `out_n`, or NULL `buf`
+taken it, and stop ends the wait with `AAR_E_IO`. The platform buffers console
+output: a write of up to 1024 bytes into an empty buffer returns without waiting
+for the client. NULL `out_n`, or NULL `buf`
 with non-zero `len`, is `AAR_E_INVAL`. The client decides what the console is:
 the Shell's `Output()`, or a window opened on first use for a Workbench launch.
 `printf`, `puts` and `write` of fd 1 or 2 use this call in the libc flavor.
@@ -1283,8 +1308,11 @@ Missing slot: `AAR_E_NOSYS`. Minimum minor: 5.
 
 ### Path policy
 
-Paths are AmigaDOS paths, at most `AAR_PATH_MAX` bytes plus the NUL. The client
-decides the root and the policy. The recommended default, the one aar-run uses:
+Paths are AmigaDOS paths, at most `AAR_PATH_MAX` bytes plus the NUL; an empty or
+longer path is `AAR_E_INVAL`. The client decides the root and the policy, and
+the runtime passes a path to the client unchanged after checking its length. A
+client that serves apps it does not trust should apply this default, the one
+aar-run uses:
 
 - A relative path resolves under a root chosen by the client: the Shell's
   current directory, the icon's directory, or the client's explicit root.
@@ -1292,9 +1320,13 @@ decides the root and the policy. The recommended default, the one aar-run uses:
   with `AAR_E_ACCES`.
 - A path with a volume or assign prefix (a `:`) is refused with `AAR_E_ACCES`
   unless the client allowed absolute paths.
+- Once the client has asked the app to stop, it refuses every request that would
+  create, truncate or write a file; the call returns a negative code and the
+  file is not changed.
 
 This is path hygiene, not a security boundary: the client serves the calls with
-its own AmigaDOS rights.
+its own AmigaDOS rights. A client is not required to apply it and a platform is
+not judged on it.
 
 ### aar_file_open
 
@@ -1310,13 +1342,17 @@ Opens a file and returns a file id, at least `AAR_FD_BASE`, or a negative code.
 `AAR_FILE_CREATE`; a combination that breaks these rules is `AAR_E_INVAL`. The
 flags work as `O_CREAT`, `O_TRUNC` and `O_EXCL` do in POSIX, and the client
 applies them as part of this one call, so a libc `open` passes its flags
-straight through. An empty or NULL path is `AAR_E_INVAL`. A missing file
+straight through. An empty path, a path longer than `AAR_PATH_MAX` bytes or a
+NULL path is `AAR_E_INVAL`. A missing file
 without `AAR_FILE_CREATE` is `AAR_E_NOENT`, an existing file with
 `AAR_FILE_CREATE | AAR_FILE_EXCL` is `AAR_E_EXIST`, a refused path is
 `AAR_E_ACCES`, and no free id is `AAR_E_NOMEM`. At least `AAR_MIN_FILES` files
-can be open. The call parks until the client replies, stop (`AAR_E_IO`), or 30
-seconds (`AAR_E_TIMEDOUT`); after a timeout the id is not reused for the rest of
-the app's life. Gate: `AAR_API_COVERS(api, file_open)`. Missing slot:
+can be open. The id remembers how it was opened (see `aar_file_read` and
+`aar_file_write`). The call parks until the client replies, stop (`AAR_E_IO`), or
+until its request has waited 30 seconds for the client (`AAR_E_TIMEDOUT`; the
+app measures between 29 and 36 seconds); after a timeout the id is not reused
+for the rest of the app's life. Gate: `AAR_API_COVERS(api, file_open)`. Missing
+slot:
 `AAR_E_NOSYS`. Minimum minor: 5. **ZZ9000:** `AAR_FILE_READ` opens with
 `MODE_OLDFILE`, `AAR_FILE_WRITE` with `MODE_READWRITE`, and
 `AAR_FILE_CREATE | AAR_FILE_TRUNCATE` with `MODE_NEWFILE`.
@@ -1347,8 +1383,9 @@ int aar_file_read(int fd, void *buf, uint32_t len, uint32_t *out_n);
 ```
 
 Reads up to `len` bytes. `*out_n` is the count obtained. A short read with
-`AAR_OK` is end of file. NULL `out_n` is `AAR_E_INVAL`; a bad id is
-`AAR_E_BADF`. The transfer is served in chunks and each chunk waits for the
+`AAR_OK` is end of file. NULL `out_n` is `AAR_E_INVAL`; a bad id, or an id opened
+without `AAR_FILE_READ`, is `AAR_E_BADF`. The transfer is served in chunks and
+each chunk waits for the
 client. Gate: `AAR_API_COVERS(api, file_read)`. Missing slot: `AAR_E_NOSYS`.
 Minimum minor: 5.
 
@@ -1360,7 +1397,8 @@ int aar_file_write(int fd, const void *buf, uint32_t len, uint32_t *out_n);
 
 Writes up to `len` bytes. A short write means the client stopped early; the
 caller may retry with the remainder or treat it as an error. NULL `out_n` is
-`AAR_E_INVAL`; a bad id is `AAR_E_BADF`. Chunk and wait rules match
+`AAR_E_INVAL`; a bad id, or an id opened without `AAR_FILE_WRITE`, is
+`AAR_E_BADF` and nothing is written. Chunk and wait rules match
 `aar_file_read`. Gate: `AAR_API_COVERS(api, file_write)`. Missing slot:
 `AAR_E_NOSYS`. Minimum minor: 5.
 
@@ -1372,7 +1410,11 @@ int aar_file_seek(int fd, int64_t off, int whence, int64_t *out_pos);
 
 Sets the file position. `out_pos` receives the new position and may be NULL.
 `whence` must be `AAR_SEEK_SET`, `AAR_SEEK_CUR` or `AAR_SEEK_END`; anything else
-is `AAR_E_INVAL`. Parks for one client reply. Gate: `AAR_API_COVERS(api,
+is `AAR_E_INVAL`. A position before the start of the file is `AAR_E_INVAL` and
+leaves the position unchanged. A position past the end may be refused with
+`AAR_E_INVAL` (AmigaDOS handlers refuse it on a file opened for reading); if it
+is accepted, a read there returns `AAR_OK` with 0 bytes, and what a write there
+does is not specified. Parks for one client reply. Gate: `AAR_API_COVERS(api,
 file_seek)`. Missing slot: `AAR_E_NOSYS`. Minimum minor: 5.
 
 ### aar_file_stat
@@ -1497,10 +1539,12 @@ uses `aar_msg_wait`, `aar_sleep_us` or `aar_yield`, not a spin. NULL `out_n`,
 or NULL `out` with non-zero `max`, is `AAR_E_INVAL`. It always returns the
 lifecycle events `AAR_EV_STOP` and `AAR_EV_LOW_MEMORY`; with `AAR_GROUP_INPUT`
 it also returns the input events. Events are delivered in order. The runtime
-keeps at least 64 events. When the completion queue is full the client drops
-the newest event and counts the drop (`AAR_CB_EVENTS_DROPPED`), and the client
-coalesces mouse motion (it sums `dx` and `dy` and combines the buttons) before
-it posts, so an app that polls every frame does not lose input. Gate:
+keeps at least 64 events in order; once it holds that many that the app has not
+taken, it may discard each further event except mouse motion, which it merges.
+When the completion queue is full the client drops the newest event and counts
+it (`AAR_CB_EVENTS_DROPPED`). Mouse motion is never lost without a count: the
+client library merges it (it sums `dx` and `dy` while the buttons are unchanged)
+or counts it, so an app that polls every frame does not lose input. Gate:
 `AAR_API_COVERS(api, event_poll)`. Missing slot: `AAR_E_NOSYS`.
 Minimum minor: 5.
 
@@ -1656,8 +1700,8 @@ The call parks until the bind succeeds or stop (`AAR_E_IO`). On success `*out`
 holds the id, pitch, layout, caps and the mappings. `AAR_DISPLAY_LATEST` is a
 request: without `AAR_DISPCAP_LATEST` in the granted caps, the open fell back to
 plain `AAR_DISPLAY_VSYNC`. Gate: `AAR_API_COVERS(api, display_open)`. Missing
-slot: `AAR_E_NOSYS`. Minimum minor: 5. **ZZ9000:** the client is aar-run or an
-app using `zz9k.library`; it opens a Picasso96 screen. If it cannot open the
+slot: `AAR_E_NOSYS`. Minimum minor: 5. **ZZ9000:** the client is aar-run or
+another client of `aar.library`; it opens a Picasso96 screen. If it cannot open the
 mode, the call returns `AAR_E_IO` and the client asks the app to stop.
 
 ### aar_display_flip
@@ -1705,6 +1749,10 @@ int aar_display_refresh(aar_surface *s);
 
 Reloads `front`, `back`, `pitch` and `layout` after a completed flip. Call it
 when `aar_display_flip_idle` reports idle, or after `aar_display_flip` returns.
+After it, `front` is NULL or names the buffer that holds the frame just
+presented, and `back` names the buffer to draw into next; `back` has no promised
+content. With `AAR_DISPCAP_LATEST` no flip completes, and `front` holds no
+particular frame.
 A mismatched id is `AAR_E_INVAL`; a flip still pending is `AAR_E_BUSY`. Does not
 block. Gate: `AAR_API_COVERS(api, display_refresh)`. Missing slot:
 `AAR_E_NOSYS`. Minimum minor: 5.
@@ -1715,7 +1763,11 @@ block. Gate: `AAR_API_COVERS(api, display_refresh)`. Missing slot:
 int aar_display_vsync(void);
 ```
 
-Requests synchronisation with the display refresh. No bound display is
+Pacing hint: returns `AAR_OK` once the runtime has done what it can to line the
+app up with the display refresh, which may be nothing. A platform may wait for
+the next vertical blank; an app must not depend on it. An app that wants display
+pacing opens with `AAR_DISPLAY_VSYNC`, whose flip returns when the frame is on
+scanout. No bound display is
 `AAR_E_INVAL`. Gate: `AAR_API_COVERS(api, display_vsync)`. Missing slot:
 `AAR_E_NOSYS`. Minimum minor: 5. **ZZ9000:** it records a vsync request and
 yields once; it does not park for the next raster line.
@@ -1831,9 +1883,12 @@ Requires `AAR_GROUP_AUDIO`. One PCM stream is open per app. The app requests a
 rate and a channel count; the runtime grants a supported pair and writes it
 into the `aar_audio` that `aar_audio_open` fills. A platform must support 22050
 Hz stereo, and may grant 44100 and 48000 Hz. Other combinations are
-`AAR_E_INVAL`. The route is the client's decision: the platform's own mixer, or
-AHI through the client. Only a few streams can exist across all apps, and a
-stream that cannot be given is `AAR_E_BUSY`.
+`AAR_E_INVAL`. The route is the client's decision. A platform with the audio
+group must carry the `AHI` route (the client reads the PCM with
+`AARAudioRead`); the route `PLATFORM`, the platform's own mixer, is optional,
+and a platform without it answers `AAR_E_NOSYS` at `aar_audio_open`. Only a few
+streams can exist across all apps, and a stream that cannot be given is
+`AAR_E_BUSY`.
 
 ### aar_audio_open
 
@@ -1870,8 +1925,11 @@ int aar_audio_get_stats(aar_audio_stats *out);
 ```
 
 Optional. Fills the underrun counter of the open stream. The caller sets
-`out->size`. NULL `out` is `AAR_E_INVAL`. The runtime counts underruns when the
-ring runs empty. The wrapper is named `aar_audio_get_stats` for symmetry with
+`out->size`. NULL `out` is `AAR_E_INVAL`. The consumer of the ring counts one
+underrun each time it needed frames and the ring held fewer: once per starved
+period on a platform mixer, once per short `AARAudioRead` on the AHI route. The
+unit is not a number of frames, and the value equals the ring word. The wrapper
+is named `aar_audio_get_stats` for symmetry with
 the other info calls. Gate: `AAR_API_COVERS(api, audio_stats)` and a non-NULL
 slot. A NULL slot, which the standard allows, is `AAR_E_NOSYS`. Minimum minor:
 5.
@@ -1913,8 +1971,13 @@ may hold a GL context.
 void aar_gl_swap(void);
 ```
 
-Flushes the GL front end, copies the context target to the bound surface and
-flips. It parks as `aar_display_flip` does. Gate: `AAR_API_COVERS(api,
+Flushes the GL front end and hands the frame to the platform to copy and flip.
+It parks as `aar_display_flip` does, but it may return before the frame is
+visible: the platform keeps at most two swapped frames in flight, so when a swap
+returns every frame from an earlier swap is visible except at most the two most
+recent. A pipelined platform should also present a queued frame when the app
+next parks and at `aar_gl_unbind`; a frame still queued when the app ends may
+never be shown. Gate: `AAR_API_COVERS(api,
 gl_swap)`. Missing slot: returns. Minimum minor: 5. **ZZ9000:** it drains
 RasterIX and copies the context target into the bound P96 bitmap. A GL call that
 does not return is subject to the 10 second stuck-call limit; a call longer than
@@ -1940,6 +2003,28 @@ sessions of each kind exist per app; a further one is `AAR_E_NOMEM`. A session
 that is still open at exit is closed by the runtime. **ZZ9000:** the calls run
 inline on the app's own core, in the call, so they are the right tool for a
 codec you do not want to port, not a second core.
+
+**Compressed formats.** `aar_decompress` takes one complete stream. `DEFLATE_RAW`
+is RFC 1951, `ZLIB` RFC 1950, `GZIP` RFC 1952, `LZ4_BLOCK` one LZ4 block without
+a frame header, `LZMA_ALONE` the 13-byte `.lzma` header followed by the LZMA
+stream, `LZMA2` one dictionary-size property byte followed by the raw LZMA2
+chunks, and `LH1`, `LH5`, `LH6` and `LH7` the compressed data of an LHA file of
+that method without its header. Every stream except LHA ends itself; an LHA
+stream has no end marker, so `dst_bytes` must be exactly the plain size. The
+specification, section 8.6, has the details.
+
+**Image sessions.** In API 0.5 the tile buffer must hold the whole image and an
+app passes 0 in `aar_image_params.flags`. `aar_image_decode` takes `flags` bit 0 to say
+that the input ends with the call, and the image is complete after a call with
+that bit that consumed all its input and returned result `flags` bit 1 (more
+output pending) clear. A call with `src_bytes` 0 is valid only with bit 0 set and
+drains what the decoder still holds. Result `flags` bit 0 means the header is
+known and bit 2 that the output was scaled (not used in 0.5).
+
+**Lossy decoders** (JPEG, WebP) are not bit exact across platforms: a platform
+may use a faster IDCT or a cheaper chroma upsampling than libjpeg and libwebp.
+The suite accepts at most 6 per colour channel for JPEG and 3 for WebP on its
+test images. PNG decode is exact.
 
 ### aar_sha256
 
@@ -1975,7 +2060,9 @@ int aar_image_open(const aar_image_params *params, uint32_t *session,
 
 Starts one tile-buffer session and writes `*session`. NULL required pointers, a
 zero stride, row count or tile size, or an output format other than
-`AAR_FMT_BGRA8888` is `AAR_E_INVAL`. The tile buffer stays caller-owned. Gate:
+`AAR_FMT_BGRA8888` is `AAR_E_INVAL`. The tile buffer stays caller-owned; in
+API 0.5 it must hold the whole image and the app passes 0 in `params->flags`
+(a runtime may accept bits it defines). Gate:
 `AAR_API_COVERS(api, image_open)`. Missing slot: `AAR_E_NOSYS`. Minimum minor:
 5.
 
@@ -1987,7 +2074,9 @@ int aar_image_decode(uint32_t session, const void *src, uint32_t src_bytes,
 ```
 
 Feeds one buffer to an open session. An unknown session, or NULL `src` or `out`,
-is `AAR_E_INVAL`. `src` must remain valid for the call. Gate:
+is `AAR_E_INVAL`. `src` must remain valid for the call. `flags` bit 0 says the
+input ends with this call; any other bit is `AAR_E_INVAL`. A call with
+`src_bytes` 0 is valid only with bit 0 set. Gate:
 `AAR_API_COVERS(api, image_decode)`. Missing slot: `AAR_E_NOSYS`. Minimum minor:
 5.
 
@@ -2152,9 +2241,16 @@ from Khronos or any other vendor. The classic GL types that match are `GLenum`,
 `GLboolean` and `GLubyte` as `unsigned char`, `GLfloat` and `GLclampf` as
 `float`, and `GLdouble` and `GLclampd` as `double`. Do not pack the structure.
 
+The context has a depth buffer of at least 16 bits (`glGetIntegerv(GL_DEPTH_BITS)`
+returns 16 or more), because no call selects a pixel format. `GL_DEPTH_TEST`,
+`glDepthFunc`, `glDepthMask` and `glDepthRange` work as in GL 1.1. A platform that
+cannot provide such a buffer does not set `AAR_GROUP_GL`.
+
 An isolated runtime validates client-array pointers at draw time. An invalid
-range prevents the draw, returns `AAR_E_FAULT` through the call that failed, and
-makes the next `glGetError` return `GL_INVALID_VALUE`. `DrawArrays` checks each
+range prevents the draw and makes the next `glGetError` return
+`GL_INVALID_VALUE`; it does not fault or stop the app. The `gl*` entries return
+nothing the app could use, so `glGetError` is the only signal (`AAR_E_FAULT` is
+the runtime's own status for the failed call). `DrawArrays` checks each
 requested element; `DrawElements` checks the index buffer and every referenced
 element.
 
@@ -2784,8 +2880,8 @@ Unlocks the arrays locked by `glLockArrays`.
 
 ## The ZZ9000 extension table
 
-`aar/ext_zz9000.h` holds what the old `zzapp.h` had in its app table and the
-standard does not keep: the GL bind flags (through `aar_zz9000_gl_bind_flags`)
+`aar/ext_zz9000.h` holds what is specific to the ZZ9000 and that the standard
+does not keep: the GL bind flags (through `aar_zz9000_gl_bind_flags`)
 and two source revision strings. Only
 the ZZ9000 runtime provides it, and an app that uses it is not portable. Get it
 with:

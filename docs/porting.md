@@ -11,7 +11,8 @@ single-board computer. An app author does not need it. It says what the
 platform has to provide, which parts of this repository it can take as they
 are, how the app is entered, and how to run the conformance suite and report
 the result. It links to the documents that hold the details and does not
-repeat them.
+repeat them. The normative text is the [specification](../spec/aar.md); where
+this guide and the specification differ, the specification is right.
 
 A platform implements one or more profiles, **A32** and **A64**, and the two
 are treated alike here. Where the text says "the profile", read it once for
