@@ -43,7 +43,7 @@ pins the commit of this repository it builds against in `sdk/AAR_REF`.
 | `host-runner/` | An SDL2 runner for apps on a PC; see `host-runner/README.md` |
 | `conformance/` | The conformance suite: the test catalogue (`TESTS.md`), the payload apps, the `aar-conf` runner for the Amiga, and the scripts that check them; see `conformance/README.md` |
 | `tests/` | Tests for the checker, the headers and the transport model, the link map check, FP code generation and mode switching. The client library's tests are in `client/tests/` |
-| `docs/` | The API reference, the developer guide, the transport contract, the zzapp mapping, and the script that checks the reference covers every public symbol |
+| `docs/` | The API reference, the developer guide, the porting guide, the transport contract, the zzapp mapping, and the script that checks the reference covers every public symbol |
 | `Makefile` | Builds every template and runs the checks (`make check`) |
 
 ## Building apps
@@ -111,6 +111,9 @@ card.
   built, loaded and run, with the rules for shared buffers, messages and events.
 - [docs/transport.md](docs/transport.md): the transport contract for platform
   implementers.
+- [docs/porting.md](docs/porting.md): the guide for a platform implementer: what a
+  platform provides, the image rules and the loader, the entry contract, and how
+  to run the conformance suite (the CI bundle) and report.
 - [docs/zzapp-to-aar.md](docs/zzapp-to-aar.md): the old `zzapp` names and what
   replaced them.
 

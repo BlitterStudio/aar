@@ -8,6 +8,8 @@
 #   make check          build, run aar-check on every ELF, run the tests
 #   make check-runtime  run libaar and the conformance payloads under qemu (needs
 #                       qemu and Linux cross gcc)
+#   make conf-bundle    stage the conformance bundle (payloads of both profiles
+#                       and the C-ELF corpus) in build/conf-bundle
 #   make PROFILES=a32   limit the profiles
 #
 # Output goes to build/<profile>/<app>.elf.
@@ -102,7 +104,8 @@ ABI_TARGETS := $(foreach p,$(PROFILES),check-abi-$(p))
 
 .PHONY: all check clean check-tool check-fp-codegen check-mode-switch \
 	check-freestanding-guard check-abi check-abi-host check-loader-host \
-	check-expect-note check-runtime check-conf-catalogue check-conf-payloads
+	check-expect-note check-runtime check-conf-catalogue check-conf-payloads \
+	conf-bundle
 
 all: $(BUILD_TARGETS)
 
@@ -203,10 +206,20 @@ $(foreach p,$(PROFILES),$(eval $(call GUARD_RULE,$(p))))
 check-conf-catalogue:
 	$(PYTHON) $(AAR_SDK)/conformance/tools/conf_catalogue.py check
 	$(PYTHON) $(AAR_SDK)/conformance/tests/tools_test.py
+	$(PYTHON) $(AAR_SDK)/conformance/tests/bundle_test.py
 	$(PYTHON) $(AAR_SDK)/conformance/negative/gen_negative.py --check
 
 # Every conformance payload built for every profile and checked by aar-check.
 check-conf-payloads: $(foreach p,$(PROFILES),$(foreach a,$(CONF_APPS),check-$(p)-$(a)))
+
+# The conformance bundle that CI uploads (conformance/README.md): the payloads of
+# both profiles, checked by aar-check, and the C-ELF corpus, staged in $(BUNDLE).
+# The m68k runner aar-conf and MANIFEST.txt are added afterwards
+# (client/tests/m68k_check.sh with AAR_CONF_OUT set, then conf_bundle.py
+# manifest), because the runner needs the m68k compiler that this image lacks.
+BUNDLE ?= $(AAR_SDK)/build/conf-bundle
+conf-bundle: check-conf-payloads
+	$(PYTHON) $(AAR_SDK)/conformance/tools/conf_bundle.py stage $(BUNDLE) --build $(AAR_SDK)/build
 
 # libaar and the conformance payloads on a real instruction stream under qemu
 # user mode: init arrays, the libc glue, the freestanding flavour, and the

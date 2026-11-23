@@ -8,7 +8,7 @@ AAR standard (specification section 11). Version 0.1 of the suite tests API 0.5.
 | `TESTS.md` | The catalogue: one row for every test id, with the specification section, MUST or SHOULD, group, profile, who judges it and what it checks. It also lists what is not tested and why, and the questions this work raised about the specification |
 | `payloads/` | The payloads: ARM apps (`conf_<area>.c`) that judge one area from the inside. `conf.h` is the protocol they print their results with |
 | `runner/` | The runner `aar-conf`: an AmigaOS m68k program that uses only `aar.library` and the serving loop (`libaarserve.a`). `aar-conf.c` is the core (options, verdict, payload runs); each area has its file `r_<area>.c` for its runner-judged tests. It runs the payloads, judges the client-side tests, and writes the report. `conf_catalogue.h` is generated from `TESTS.md` at build time and is not in git |
-| `tools/` | `conf_catalogue.py` reads `TESTS.md`, generates the runner's header and checks the ids against the sources; `check_results.py` checks one payload's output or a whole report |
+| `tools/` | `conf_catalogue.py` reads `TESTS.md`, generates the runner's header and checks the ids against the sources; `check_results.py` checks one payload's output or a whole report; `conf_bundle.py` assembles the downloadable bundle (below) |
 | `negative/` | The image corpus of C-ELF: malformed and accepted images (`<profile>/<name>.aarimg`) and the `MANIFEST` the runner reads, all made by `gen_negative.py` from the builder of `tests/aar_check_test.py`. Copy the directory next to the payload directories (`<DIR>/negative`) |
 | `tests/qemu_run.sh` | Runs payloads under qemu user mode with the loader of `libaar/tests/loader.c` |
 
@@ -85,6 +85,35 @@ The host runner builds the payloads that make sense on a PC and runs them under
 CTest with a checker (`cmake -S host-runner -B build-host && cmake --build
 build-host && ctest --test-dir build-host -R conf`).
 
+## The bundle
+
+Every run of the CI workflow builds the suite for platform developers and uploads
+it as the artifact `aar-conformance-bundle` (the `conf-bundle` job). It is the
+directory below, ready to copy to the platform, with the m68k runner built from
+the pinned cross compiler and the payloads of both profiles, each checked by
+`aar-check`:
+
+```
+aar-conf
+a32/conf_<area>.elf       (16 payloads)
+a64/conf_<area>.elf       (16 payloads)
+negative/MANIFEST
+negative/a32/*.aarimg
+negative/a64/*.aarimg
+MANIFEST.txt
+```
+
+`MANIFEST.txt` holds the suite version, the commit it was built from, the run
+commands (the full run, `INTERACTIVE`, `ONLY` for every area, `PROFILE=a64` for an
+A64 platform) and the sha256 of every other file; check them with
+`grep -E '^[0-9a-f]{64}  ' MANIFEST.txt | sha256sum -c`. To make it yourself:
+`make conf-bundle` in the SDK image stages the payloads and the corpus (set
+`BUNDLE=<dir>`), `AAR_CONF_OUT=<dir>/aar-conf sh client/tests/m68k_check.sh` in the
+m68k image adds the runner, and `python3 conformance/tools/conf_bundle.py manifest
+<dir> --commit <sha>` writes the manifest. `tests/bundle_test.py` tests the
+assembly. [docs/porting.md](../docs/porting.md) is the guide for the platform
+that runs it.
+
 ## Running on a platform
 
 Copy `aar-conf` and the payload directories to the Amiga. The payloads of a
@@ -101,7 +130,8 @@ negative/a32/...
 negative/a64/...
 ```
 
-(`build/` has exactly this layout.) Then, from a Shell with at least 32 KiB of
+The CI workflow builds this tree and uploads it as the artifact
+`aar-conformance-bundle` (above). Then, from a Shell with at least 32 KiB of
 stack:
 
 ```
