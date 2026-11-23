@@ -34,7 +34,8 @@
 
 /* ---- Globals ------------------------------------------------------------------ */
 
-enum { CONF_R_NONE = 0, CONF_R_PASS, CONF_R_FAIL, CONF_R_SKIP };
+/* CONF_R_NONE, CONF_R_PASS, CONF_R_FAIL, CONF_R_SKIP and conf_update_allowed. */
+#include "conf_select.h"
 
 struct conf_globals {
     AARInfo info;              /* AARQuery of the platform */

@@ -71,6 +71,7 @@ static const struct conf_area *const areas[] = {
 
 struct result {
     UBYTE status;
+    UBYTE locked;              /* planned skip: nothing changes it (conf_select.h) */
     char detail[CONF_DETAIL_MAX];
 };
 
@@ -136,9 +137,7 @@ void conf_set_result(int idx, int status, const char *detail)
 {
     struct result *r = &results[idx];
 
-    if (r->status == CONF_R_FAIL)
-        return;
-    if (r->status != CONF_R_NONE && status != CONF_R_FAIL)
+    if (!conf_update_allowed(r->locked, r->status, status))
         return;
     r->status = (UBYTE)status;
     snprintf(r->detail, CONF_DETAIL_MAX, "%s", detail);
@@ -973,10 +972,13 @@ static void plan(void)
         if (conf_g.only && !has_prefix_nocase(t->id, conf_g.only))
             continue;
         selected[i] = 1;
-        if (!conf_group_declared(t->group))
+        if (!conf_group_declared(t->group)) {
             conf_set_result(i, CONF_R_SKIP, "group not declared");
-        else if (!t->impl)
+            results[i].locked = 1;
+        } else if (!t->impl) {
             conf_set_result(i, CONF_R_SKIP, "suite: not implemented in this version");
+            results[i].locked = 1;
+        }
     }
 }
 
