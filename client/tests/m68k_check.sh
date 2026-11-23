@@ -144,6 +144,10 @@ done
     $runner_srcs -L"$OUT" -laarserve -lamiga -o "$OUT/aar-conf"
 test -e "$OUT/aar-conf"
 echo "aar-conf: $(echo "$runner_srcs" | wc -l) files link against libaarserve.a for m68k, 0 warnings, $(wc -c < "$OUT/aar-conf") bytes"
+# AAR_CONF_OUT=<path> keeps the runner (the conformance bundle of CI takes it).
+if [ -n "${AAR_CONF_OUT:-}" ]; then
+    cp "$OUT/aar-conf" "$AAR_CONF_OUT"
+fi
 stack=1024
 
 # The test defines AARBase itself; every call goes through it, so nothing

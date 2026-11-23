@@ -178,6 +178,47 @@ jobs:
             amigadev/crosstools@sha256:9c81fcd973058fb37f1ca5b1c608c65473dc1dd657ab5c8533e7b43b80f01cf3 \
             sh -c 'cp -r /src /w && cd /w && sh client/tests/m68k_check.sh'
 
+  # The conformance bundle a platform developer downloads (docs/porting.md): the
+  # m68k runner aar-conf, the payloads of both profiles (each checked by
+  # aar-check), the C-ELF corpus, and MANIFEST.txt with the suite version, the
+  # source commit, the run commands and the sha256 of every file. The payloads
+  # come from the SDK image (make conf-bundle), the runner from the pinned m68k
+  # image, the manifest from the tree they make together. The artifact is
+  # aar-conformance-bundle.
+  conf-bundle:
+    name: conformance bundle artifact
+    runs-on: ubuntu-latest
+    env:
+      BUNDLE: /tmp/aar-conformance-bundle
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build SDK image
+        run: docker build -f docker/Dockerfile -t aar-sdk:bundle .
+      - name: Payloads for A32 and A64, and the corpus
+        run: |
+          mkdir -p "$BUNDLE"
+          docker run --rm -v "$BUNDLE":/out aar-sdk:bundle make conf-bundle BUNDLE=/out
+      - name: Runner for m68k
+        run: |
+          docker run --rm -v "$PWD":/src:ro -v "$BUNDLE":/out \
+            amigadev/crosstools@sha256:9c81fcd973058fb37f1ca5b1c608c65473dc1dd657ab5c8533e7b43b80f01cf3 \
+            sh -c 'cp -r /src /w && cd /w && AAR_CONF_OUT=/out/aar-conf sh client/tests/m68k_check.sh'
+      - name: Manifest
+        run: python3 conformance/tools/conf_bundle.py manifest "$BUNDLE" --commit "$GITHUB_SHA"
+      - name: List the bundle and check its hashes
+        run: |
+          cd "$BUNDLE"
+          find . -type f | sort
+          cat MANIFEST.txt
+          grep -E '^[0-9a-f]{64}  ' MANIFEST.txt | sha256sum -c --quiet
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: aar-conformance-bundle
+          path: ${{ env.BUNDLE }}
+          if-no-files-found: error
+
   docs:
     name: AAR API docs
     runs-on: ubuntu-latest
@@ -215,7 +256,7 @@ jobs:
   publish:
     name: Publish the SDK image
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-    needs: [lint, sdk-image, abi-host, client-host, client-m68k, conformance, docs, host]
+    needs: [lint, sdk-image, abi-host, client-host, client-m68k, conformance, conf-bundle, docs, host]
     runs-on: ubuntu-latest
     permissions:
       contents: read
