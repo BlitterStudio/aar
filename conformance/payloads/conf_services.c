@@ -123,6 +123,14 @@ static void test_sha(void)
 
     conf_begin(&t, "C-SERVICES.1");
     rc = aar_sha256("", 0, digest);
+    if (rc == AAR_E_NOSYS) {
+        /* A platform may implement any subset of the group (8.6, C-SERVICES.11): the
+         * absence passes, with its reason. A digest that is wrong when it is implemented
+         * still fails below. */
+        conf_buf_str(&t.note, "SHA-256 not provided (AAR_E_NOSYS)");
+        conf_end(&t);
+        return;
+    }
     if (rc != AAR_OK) {
         if (conf_fail_first(&t)) {
             conf_buf_str(&t.why, "aar_sha256 gave ");
