@@ -111,7 +111,9 @@ def report(groups=0x17, platform=0, omit=(), override=None, summary_verdict=None
         else:
             verdict, detail = "SKIP", "suite: not implemented"
         counts[verdict] += 1
-        if t.level == "MUST" and declared and verdict != "PASS":
+        if (t.level == "MUST" and declared and
+                not (verdict == "SKIP" and detail.startswith("no PLATFORM route"))
+                and verdict != "PASS"):
             must_bad = True
         lines.append("AAR-CONF %s %s %s" % (t.id, verdict, detail))
     lines.append("AAR-CONF-SUMMARY pass=%d fail=%d skip=%d verdict=%s" % (
@@ -162,6 +164,17 @@ conf_text = report()
 expect("an all-PASS report conforms", "verdict=CONFORMS" in conf_text)
 expect("... and is accepted with --require-conforms",
        check_report(conf_text, "--require-conforms") == 0)
+
+# A MUST row may skip for the optional PLATFORM audio route, with that reason and no other.
+route_skip = {"C-AUDIO.%d" % i: ("SKIP", "no PLATFORM route: audio_open returned AAR_E_NOSYS")
+              for i in range(1, 9)}
+expect("a skip for the missing PLATFORM route conforms",
+       check_report(report(override=route_skip), "--require-conforms") == 0)
+expect("... and the verdict says so", "verdict=CONFORMS" in report(override=route_skip))
+other_skip = {"C-AUDIO.1": ("SKIP", "host: no mixer")}
+expect("a MUST skip with another reason does not conform",
+       check_report(report(override=other_skip), "--require-conforms") != 0)
+expect("... and the verdict says so", "verdict=DOES-NOT-CONFORM" in report(override=other_skip))
 
 if failures:
     print("%d conformance tool tests failed" % len(failures))

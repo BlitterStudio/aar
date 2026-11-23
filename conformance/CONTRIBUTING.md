@@ -164,8 +164,12 @@ negative code", or "one of `AAR_E_INVAL` and `AAR_E_NOSYS`"), accept every answe
 the text allows, and add a numbered entry to "Spec questions for review" at the end
 of `TESTS.md` that says what is unstated. Point the row's check text at the
 question (`[spec question 15]`). Add new questions at the end, with the next number;
-do not renumber. If a statement cannot be observed at all, write a `none` row with
-the reason instead of a test that proves nothing.
+do not renumber. When a question is decided, the specification gets the text and the
+entry gets one line, `settled: spec x.y (the outcome)`, or `open: asked in spec section
+13` when it was put to the other platform developers; the number stays, and the row's
+check text then names the section instead of the question. If a statement cannot be
+observed at all, write a `none` row with the reason instead of a test that proves
+nothing.
 
 ## Running the checks
 

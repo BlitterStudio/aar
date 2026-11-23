@@ -2,9 +2,9 @@
  * Conformance payload for C-AUDIO (spec 8.4, 9.6): the audio group from the app: the
  * grant, the ring (its place, its indices, the underrun count), the stats call and the
  * close. Whether the runtime consumes the ring at the granted rate is measured here too
- * (C-AUDIO.5). The route AHI, where the runner reads the PCM with AARAudioRead
  * (C-AUDIO.10, C-AUDIO.11), and the sound itself (C-AUDIO.12, an operator row) are
- * variants; see conf_audio.h.
+ * variants; see conf_audio.h. C-AUDIO.1 to C-AUDIO.9 skip when the platform has no
+ * PLATFORM route (aar_audio_open returns AAR_E_NOSYS, spec 8.4).
  *
  * SPDX-License-Identifier: MIT
  */
@@ -550,6 +550,36 @@ static void variant_tone(int argc, char **argv)
     (void)aar_audio_close();
 }
 
+/* C-AUDIO.1 to C-AUDIO.9 run on the route PLATFORM. A platform without its own mixer completes
+ * AUDIO_OPEN for that route with AAR_E_NOSYS (spec 8.4, "A platform with the audio group MUST
+ * carry the route AHI"; the route PLATFORM is optional); the rows then skip with a reason that
+ * the runner accepts for a MUST row, and C-AUDIO.10 and C-AUDIO.11 carry the stream test. */
+static int platform_route_absent(void)
+{
+    aar_audio a;
+    uint32_t k;
+    int rc;
+
+    for (k = 0; k < sizeof a; k++)
+        ((uint8_t *)&a)[k] = 0;
+    rc = aar_audio_open(22050u, 2, &a);
+    if (rc == AAR_OK)
+        (void)aar_audio_close();
+    return rc == AAR_E_NOSYS;
+}
+
+static void skip_platform_tests(void)
+{
+    static const char *const ids[] = {
+        "C-AUDIO.1", "C-AUDIO.2", "C-AUDIO.3", "C-AUDIO.4", "C-AUDIO.5",
+        "C-AUDIO.6", "C-AUDIO.7", "C-AUDIO.8", "C-AUDIO.9",
+    };
+    uint32_t i;
+
+    for (i = 0; i < sizeof ids / sizeof ids[0]; i++)
+        conf_skip(ids[i], CONF_SKIP_NO_PLATFORM_ROUTE ": audio_open returned AAR_E_NOSYS");
+}
+
 int aar_main(int argc, char **argv)
 {
     const char *variant = conf_arg(argc, argv, "conf:variant");
@@ -565,6 +595,10 @@ int aar_main(int argc, char **argv)
     }
     if (variant && cmio_streq(variant, "tone")) {
         variant_tone(argc, argv);
+        return conf_finish("C-AUDIO");
+    }
+    if (platform_route_absent()) {
+        skip_platform_tests();
         return conf_finish("C-AUDIO");
     }
     test_grant();

@@ -6,7 +6,8 @@
  *
  * The runner passes its own view of the platform as info: words (groups,
  * platform_id, msg_capacity, stall_limit_ms, stop_grace_ms, and from the C-TABLE
- * variant api_minor and shared_default_mib). A test that compares the table with
+ * variant api_minor, shared_default_mib and aarinfo, which holds the client's flags,
+ * shared_granule and profiles). A test that compares the table with
  * the client's AARInfo does so when the word is there; without it (host runner,
  * qemu loader) the test checks what it can and ends in a skip that starts with
  * "host:" if it passed.
@@ -113,10 +114,42 @@ static void check_slots(struct conf_test *t, const aar_api *api, uint32_t first,
 
 struct cli {
     int have_groups, have_platform, have_msg_capacity, have_stall, have_grace;
-    int have_minor, have_shared_default;
+    int have_minor, have_shared_default, have_aarinfo;
     uint32_t groups, platform_id, msg_capacity, stall_limit_ms, stop_grace_ms;
     uint32_t api_minor, shared_default_mib;
+    uint32_t flags, shared_granule, profiles;
 };
+
+/* "info:aarinfo=<flags>,<shared_granule>,<profiles>": three decimal words of the client's
+ * AARInfo in one argument (the argument list of an app holds 16 strings). */
+static int read_aarinfo(struct cli *c, int argc, char **argv)
+{
+    const char *v = conf_arg(argc, argv, "info:aarinfo");
+    uint32_t w[3];
+    uint32_t i;
+
+    if (!v)
+        return 0;
+    for (i = 0; i < 3u; i++) {
+        uint32_t n = 0;
+        int digits = 0;
+
+        while (*v >= '0' && *v <= '9') {
+            n = n * 10u + (uint32_t)(*v - '0');
+            v++;
+            digits++;
+        }
+        if (!digits || (i < 2u ? *v != ',' : *v != '\0'))
+            return 0;
+        if (i < 2u)
+            v++;
+        w[i] = n;
+    }
+    c->flags = w[0];
+    c->shared_granule = w[1];
+    c->profiles = w[2];
+    return 1;
+}
 
 static void read_cli(struct cli *c, int argc, char **argv)
 {
@@ -128,6 +161,7 @@ static void read_cli(struct cli *c, int argc, char **argv)
     c->have_minor = conf_arg_u32(argc, argv, "info:api_minor", &c->api_minor);
     c->have_shared_default =
         conf_arg_u32(argc, argv, "info:shared_default_mib", &c->shared_default_mib);
+    c->have_aarinfo = read_aarinfo(c, argc, argv);
 }
 
 /* A test that passed but lacked a word of the runner ends in a skip. */
@@ -200,9 +234,15 @@ static void test_groups_word(const aar_api *api, const struct cli *c)
         conf_buf_str(&t.why, " differ from the client's AARInfo.groups ");
         conf_buf_hex(&t.why, c->groups);
     }
+    if (c->have_aarinfo && info.flags != c->flags && conf_fail_first(&t)) {
+        conf_buf_str(&t.why, "aar_info.flags ");
+        conf_buf_hex(&t.why, info.flags);
+        conf_buf_str(&t.why, " differ from the client's AARInfo.flags ");
+        conf_buf_hex(&t.why, c->flags);
+    }
     conf_buf_str(&t.note, "groups ");
     conf_buf_hex(&t.note, api->groups);
-    end_or_skip(&t, !c->have_groups);
+    end_or_skip(&t, !c->have_groups || !c->have_aarinfo);
 }
 
 static void test_platform_id(const aar_api *api, const struct cli *c)
@@ -224,9 +264,15 @@ static void test_platform_id(const aar_api *api, const struct cli *c)
         conf_buf_str(&t.why, " differs from the client's AARInfo.platform_id ");
         conf_buf_u64(&t.why, c->platform_id);
     }
+    if (c->have_aarinfo && info.shared_granule != c->shared_granule && conf_fail_first(&t)) {
+        conf_buf_str(&t.why, "shared_granule ");
+        conf_buf_u64(&t.why, info.shared_granule);
+        conf_buf_str(&t.why, " differs from the client's ");
+        conf_buf_u64(&t.why, c->shared_granule);
+    }
     conf_buf_str(&t.note, "platform_id ");
     conf_buf_u64(&t.note, api->platform_id);
-    end_or_skip(&t, !c->have_platform);
+    end_or_skip(&t, !c->have_platform || !c->have_aarinfo);
 }
 
 /* ---- C-TABLE.4 to C-TABLE.7: slots of the groups the platform declares ----------------------- */
@@ -260,9 +306,10 @@ static void test_group_slots(const aar_api *api, uint32_t declared)
 
 /* ---- C-TABLE.8: the wrappers of a group that is not declared ------------------------------------- */
 
-/* A wrapper over a slot that is absent or NULL returns AAR_E_NOSYS (0 or NULL for
- * a call that returns no code). A slot that is present although the group bit is
- * clear is not called: the spec does not say what it does [spec question 32]. */
+/* A clear group bit means every slot of the group that the table covers is absent or
+ * NULL (spec 3.3 rule 2), so the wrappers answer AAR_E_NOSYS (0 or NULL for a call that
+ * returns no code). A slot that is present although the bit is clear fails the test and
+ * is not called. */
 static int slot_absent(const aar_api *api, uint32_t i)
 {
     return !slot_covered(api, i) || slot_word(api, i) == 0;
@@ -276,6 +323,15 @@ static void expect_nosys(struct conf_test *t, int rc, const char *name)
         conf_buf_str(&t->why, " returned ");
         conf_buf_i64(&t->why, rc);
         conf_buf_str(&t->why, " over an absent slot, not AAR_E_NOSYS");
+    }
+}
+
+static void fail_present(struct conf_test *t, uint32_t slot)
+{
+    if (conf_fail_first(t)) {
+        conf_buf_str(&t->why, "the group bit is clear but slot ");
+        conf_buf_str(&t->why, slot_names[slot]);
+        conf_buf_str(&t->why, " is not NULL");
     }
 }
 
@@ -294,7 +350,6 @@ static void test_clear_groups(const aar_api *api, uint32_t declared)
     uint32_t session = 0;
     uint32_t i;
     uint32_t called = 0;
-    uint32_t present = 0;
 
     conf_begin(&t, "C-TABLE.8");
     for (i = 0; i < (uint32_t)sizeof buf; i++)
@@ -314,14 +369,13 @@ static void test_clear_groups(const aar_api *api, uint32_t declared)
     ares.rate = 0;
 
     if (!(declared & AAR_GROUP_DISPLAY)) {
-        /* One count per slot: a slot that is present is not called. */
 #define CLEAR_CALL(slot, call, name)           \
     do {                                       \
         if (slot_absent(api, (slot))) {        \
             expect_nosys(&t, (call), (name));  \
             called++;                          \
         } else {                               \
-            present++;                         \
+            fail_present(&t, (slot));          \
         }                                      \
     } while (0)
         CLEAR_CALL(SLOT_DISPLAY + 0u, aar_display_open(64u, 64u, AAR_FMT_RGB565, 0u, &surf), "display_open");
@@ -338,7 +392,7 @@ static void test_clear_groups(const aar_api *api, uint32_t declared)
                        "aar_display_latest_dropped is not 0 over an absent slot");
             called++;
         } else {
-            present++;
+            fail_present(&t, SLOT_DISPLAY + 8u);
         }
     }
     if (!(declared & AAR_GROUP_AUDIO)) {
@@ -351,14 +405,17 @@ static void test_clear_groups(const aar_api *api, uint32_t declared)
             conf_check(&t, aar_gl_bind(1u) == 0, "aar_gl_bind is not NULL over an absent slot");
             called++;
         } else {
-            present++;
+            fail_present(&t, SLOT_GL + 0u);
         }
         if (slot_absent(api, SLOT_GL + 1u) && slot_absent(api, SLOT_GL + 2u)) {
             aar_gl_swap();
             aar_gl_unbind();
             called += 2;
         } else {
-            present += 2;
+            if (!slot_absent(api, SLOT_GL + 1u))
+                fail_present(&t, SLOT_GL + 1u);
+            if (!slot_absent(api, SLOT_GL + 2u))
+                fail_present(&t, SLOT_GL + 2u);
         }
     }
     if (!(declared & AAR_GROUP_SERVICES)) {
@@ -375,17 +432,41 @@ static void test_clear_groups(const aar_api *api, uint32_t declared)
         CLEAR_CALL(SLOT_SERVICES + 7u, aar_audio_decode_close(1u), "audio_decode_close");
     }
 #undef CLEAR_CALL
-    if (called == 0 && present == 0)
+    if (called == 0)
         conf_buf_str(&t.note, "every group is declared");
     else {
         conf_buf_u64(&t.note, called);
-        conf_buf_str(&t.note, " wrappers over absent slots returned AAR_E_NOSYS, 0 or NULL");
-        if (present) {
-            conf_buf_str(&t.note, "; ");
-            conf_buf_u64(&t.note, present);
-            conf_buf_str(&t.note, " slots of undeclared groups are present and were not called");
-        }
+        conf_buf_str(&t.note, " wrappers over NULL slots returned AAR_E_NOSYS, 0 or NULL");
     }
+    conf_end(&t);
+}
+
+/* ---- C-TABLE.30: group bits that no version of the standard gives to a platform --------------- */
+
+/* Bits 5 to 27 are reserved for later versions (spec 8.1): a platform does not set one in
+ * the table or in aar_info. Bits 28 to 31 are for experiments and are allowed. The client's
+ * AARInfo.groups is checked by C-CLIENT.5. */
+#define GROUPS_RESERVED 0x0FFFFFE0u
+
+static void test_group_bits(const aar_api *api)
+{
+    struct conf_test t;
+    aar_info info;
+
+    conf_begin(&t, "C-TABLE.30");
+    need_info(&t, &info);
+    if ((api->groups & GROUPS_RESERVED) != 0u && conf_fail_first(&t)) {
+        conf_buf_str(&t.why, "the table groups ");
+        conf_buf_hex(&t.why, api->groups);
+        conf_buf_str(&t.why, " set a bit from 5 to 27");
+    }
+    if (!t.failed && (info.groups & GROUPS_RESERVED) != 0u && conf_fail_first(&t)) {
+        conf_buf_str(&t.why, "aar_info.groups ");
+        conf_buf_hex(&t.why, info.groups);
+        conf_buf_str(&t.why, " sets a bit from 5 to 27");
+    }
+    conf_buf_str(&t.note, "groups ");
+    conf_buf_hex(&t.note, api->groups);
     conf_end(&t);
 }
 
@@ -530,13 +611,22 @@ static void test_info_large(void)
     conf_end(&t);
 }
 
-static void test_info_profile(void)
+static void test_info_profile(const struct cli *c)
 {
     struct conf_test t;
     aar_info info;
 
     conf_begin(&t, "C-TABLE.13");
     need_info(&t, &info);
+    if (c->have_aarinfo &&
+        !(info.profile >= 1u && info.profile <= 32u &&
+          ((c->profiles >> (info.profile - 1u)) & 1u) != 0u) &&
+        conf_fail_first(&t)) {
+        conf_buf_str(&t.why, "aar_info.profile ");
+        conf_buf_u64(&t.why, info.profile);
+        conf_buf_str(&t.why, " is not in the client's AARInfo.profiles ");
+        conf_buf_hex(&t.why, c->profiles);
+    }
 #if defined(TABLE_ARM) && defined(__aarch64__)
     conf_check(&t, info.profile == AAR_PROFILE_A64, "aar_info.profile is not AAR_PROFILE_A64");
     conf_end(&t);
@@ -1017,13 +1107,14 @@ int aar_main(int argc, char **argv)
     test_core_slots(api);
     test_version(api, &c);
     test_groups_word(api, &c);
+    test_group_bits(api);
     test_group_slots(api, declared);
     test_clear_groups(api, declared);
     test_optional_slots(api);
     test_platform_id(api, &c);
     test_info_small();
     test_info_large();
-    test_info_profile();
+    test_info_profile(&c);
     test_info_granules();
     test_info_msg_capacity(&c);
     test_info_stall(&c);

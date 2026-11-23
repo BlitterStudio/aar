@@ -108,7 +108,7 @@ static void app_heap_range(void **base, uint64_t *bytes)
 static int app_heap_grow(uint64_t bytes, void **old_break)
 {
     grow_calls++;
-    if (bytes % AAR_HEAP_GRANULE)
+    if (bytes == 0 || bytes % AAR_HEAP_GRANULE)
         return AAR_E_INVAL;
     if (heap_committed + bytes > HEAP_LIMIT)
         return AAR_E_NOMEM;
@@ -120,7 +120,7 @@ static int app_heap_grow(uint64_t bytes, void **old_break)
 static int app_heap_shrink(uint64_t bytes, void **new_break)
 {
     shrink_calls++;
-    if (bytes % AAR_HEAP_GRANULE || bytes > heap_committed)
+    if (bytes == 0 || bytes % AAR_HEAP_GRANULE || bytes > heap_committed)
         return AAR_E_INVAL;
     heap_committed -= bytes;
     memset(heap_base + heap_committed, 0, bytes);
@@ -601,7 +601,7 @@ static int contract_heap_grow(uint64_t bytes, void **old_break)
 {
     int rc;
 
-    if (bytes % AAR_HEAP_GRANULE)
+    if (bytes == 0 || bytes % AAR_HEAP_GRANULE)
         return AAR_E_INVAL;
     if (heap_committed + bytes > contract_cap)
         return AAR_E_NOMEM;

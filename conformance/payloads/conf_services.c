@@ -7,12 +7,10 @@
  * answers anything else must give the exact bytes (or the pixels and samples
  * within the tolerance the catalogue names).
  *
- * The standard does not describe some stream details; the tests follow the zzapp
- * 0.x behaviour that the group was taken from (TESTS.md, spec question 38): the
- * LZMA2 stream has one byte of properties before the raw stream, an LHA stream
- * has no end marker (the destination size is the decode length), an image
- * session decodes into one tile that holds the whole image, and its EOF flag is
- * bit 0.
+ * The stream details are those of spec 8.6: the LZMA2 stream has one byte of properties
+ * before the raw stream, an LHA stream has no end marker (the destination size is the decode
+ * length), an image session decodes into one tile that holds the whole image, and its
+ * end-of-input flag is bit 0.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -28,8 +26,8 @@ AAR_NOTE(0, 0, AAR_GROUP_SERVICES, 0)
 #define GUARD 64u
 #define OUT_BYTES (VEC_PLAIN_BYTES + 16u + GUARD)
 #define SESSIONS_TRIED 12u
-/* The fast integer IDCT (libjpeg JDCT_IFAST, what the ZZ9000 uses) is off by 4 on
- * the vector where the accurate one is exact; 6 leaves room [spec question 64]. */
+/* A fast integer IDCT (libjpeg JDCT_IFAST, what the ZZ9000 uses) is off by 4 on the vector
+ * where the accurate one is exact; 6 leaves room (spec 8.6, lossy decoders). */
 #define JPEG_TOLERANCE 6u
 #define EOF_FLAG 1u              /* the image session's end-of-input flag */
 

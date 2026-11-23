@@ -223,7 +223,8 @@ static void variant_park(void)
     mark('3', 0);
     rc = stat_call("conf-q-2");
     mark('4', rc);
-    (void)aar_console_write("q\n", 2, &n); /* a request that need not park the app */
+    /* A console write of 16 bytes does not park the app (spec 9.6). */
+    (void)aar_console_write("conf-queue-park\n", 16, &n);
     mark('5', 0);
     rc = stat_call("conf-q-3");
     mark('6', rc);
@@ -248,9 +249,9 @@ static void variant_sqfull(void)
         if (aar_msg_send(m) != AAR_OK)
             break;
     }
-    /* A message is refused one entry early (the reserve for a request). A log record may take
-     * the last entry, and the next post finds the queue full: that is the SQ-full event the
-     * counter counts [spec question 62]. */
+    /* A message is refused one entry early (the reserve for a request) and that refusal is not
+     * counted. A log record may take the last entry, and the next post finds the queue full:
+     * that is the SQ-full event the counter counts (spec 10.4). */
     for (i = 0; i < 4u; i++)
         aar_log("conf-queue sq full", 18u);
     while (!aar_should_stop())

@@ -2,7 +2,7 @@
 # Runs the accepted images of the C-ELF corpus (conformance/negative/MANIFEST, load
 # column OK) on a real instruction stream: they are entered by the test loader of
 # libaar (libaar/tests/loader.c) under qemu user mode and must exit with code 3. The
-# images that stand for a relocation rule (C-ELF.16, C-ELF.17, C-ELF.18) load a
+# images that stand for a relocation rule (C-ELF.16, C-ELF.17, C-ELF.18, C-ELF.23) load a
 # relocated pointer and exit with 3 only if it holds the right address, so they are
 # run a second time with NO_RELOC=1 (the loader applies no relocation) and must then
 # exit with 4: the test would catch a loader that ignores the relocations.
@@ -51,7 +51,7 @@ while read -r name prof ids load probe; do
   fi
   ran=$((ran + 1))
   case ",$ids," in
-    *,C-ELF.16,*|*,C-ELF.17,*|*,C-ELF.18,*)
+    *,C-ELF.16,*|*,C-ELF.17,*|*,C-ELF.18,*|*,C-ELF.23,*)
       rc=0
       NO_RELOC=1 "$QEMU" "$WORK/loader" "$image" >/dev/null 2>&1 || rc=$?
       if [ "$rc" -ne 4 ]; then

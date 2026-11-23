@@ -1,7 +1,8 @@
 /*
- * Host test of two decisions of the runner core (conformance/runner/conf_select.h):
+ * Host test of three decisions of the runner core (conformance/runner/conf_select.h):
  * a planned skip of an undeclared group cannot be changed by a payload line or an
- * observer, and a variant that exists only for a runner test runs only for it.
+ * observer, a variant that exists only for a runner test runs only for it, and a MUST
+ * test may skip only for an optional route.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -49,6 +50,15 @@ int main(void)
            "input group must not run overfull)", !conf_variant_runs(1, 0, 1));
     expect("nothing selected: nothing runs", !conf_variant_runs(0, 0, 0));
     expect("nothing selected: a solo variant does not run", !conf_variant_runs(0, 0, 1));
+
+    /* A MUST test may skip only for the optional route the catalogue names (C-AUDIO.1 to
+     * C-AUDIO.9 without a PLATFORM route, spec 8.4). */
+    expect("the no-PLATFORM-route reason is accepted for a MUST test",
+           conf_must_skip_ok("no PLATFORM route: audio_open returned AAR_E_NOSYS"));
+    expect("a host: reason is not accepted for a MUST test", !conf_must_skip_ok("host: no pool"));
+    expect("an empty reason is not accepted for a MUST test", !conf_must_skip_ok(""));
+    expect("a reason that only contains the text is not accepted",
+           !conf_must_skip_ok("the no PLATFORM route"));
 
     if (failures) {
         printf("%d select tests failed\n", failures);

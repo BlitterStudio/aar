@@ -3,7 +3,7 @@
  * the payload conf_entry from inside. This file runs it twice:
  *
  *   main   the standard arguments (name, alpha, beta gamma, conf:peer=1, info:
- *          words): everything but C-ENTRY.4
+ *          words): everything but C-ENTRY.4, C-ENTRY.23 and C-ENTRY.24
  *   long   16 arguments of 127 bytes each, argv[0] included (spec 3.2: the
  *          runtime supports at least that many), for C-ENTRY.4; the payload
  *          prints no other id in this run
@@ -20,6 +20,8 @@
 
 #include "aar-conf.h"
 #include "../payloads/conf_entry.h"
+#include "../payloads/conf_life.h"
+#include "conf_util.h"
 
 static char long_store[CONF_ENTRY_LONG_ARGS][CONF_ENTRY_LONG_BYTES + 1UL];
 static const char *long_argv[CONF_ENTRY_LONG_ARGS];
@@ -53,6 +55,54 @@ static void prepare_long(struct conf_run *run)
     }
 }
 
+/* C-ENTRY.23 and C-ENTRY.24 (spec 3.2, "Mode"): the app runs unprivileged, which shows in one
+ * effect. Where the platform reports AAR_INFOF_ISOLATED, an instruction that needs privilege
+ * (the variant fault-privileged of conf_life: A32 mcr p15 to SCTLR, A64 msr vbar_el1) ends the
+ * app with AAR_END_USER_FAULT and the class ILLEGAL or OTHER (a trapped system register access
+ * is classed either way). Without the flag the row passes with "not isolated": a runtime that
+ * does not isolate apps may run them with more privilege (spec 3.2, 4.4). */
+static void priv_run(int idx)
+{
+    AARHandle *h = NULL;
+    struct conf_util_end e;
+    char d[CONF_DETAIL_MAX];
+    LONG rc;
+
+    if (!(conf_g.info.flags & AAR_INFOF_ISOLATED)) {
+        conf_set_result(idx, CONF_R_PASS, "not isolated");
+        return;
+    }
+    rc = conf_util_start_payload(&h, "conf_life.elf", CONF_LIFE_V_FAULT_PRIVILEGED, 0);
+    if (rc != AAR_OK) {
+        conf_detailf(d, "the app did not start: %ld", (long)rc);
+        conf_set_result(idx, CONF_R_FAIL, d);
+        return;
+    }
+    conf_util_wait_end(h, 20UL * CONF_TICKS_PER_SECOND, &e);
+    (void)AARClose(h);
+    if (!e.ended) {
+        conf_detailf(d, "the app did not end after a privileged instruction (state %lu)",
+                     (unsigned long)e.state);
+        conf_set_result(idx, CONF_R_FAIL, d);
+    } else if (e.end_reason != AAR_END_USER_FAULT ||
+               (e.fault_class != AAR_FAULT_ILLEGAL && e.fault_class != AAR_FAULT_OTHER)) {
+        conf_detailf(d, "a privileged instruction ended the app with reason %lu, class %lu; "
+                        "USER_FAULT with ILLEGAL (%lu) or OTHER (%lu) is due",
+                     (unsigned long)e.end_reason, (unsigned long)e.fault_class,
+                     (unsigned long)AAR_FAULT_ILLEGAL, (unsigned long)AAR_FAULT_OTHER);
+        conf_set_result(idx, CONF_R_FAIL, d);
+    } else {
+        conf_detailf(d, "isolated: a privileged instruction ended the app, USER_FAULT, class %lu",
+                     (unsigned long)e.fault_class);
+        conf_set_result(idx, CONF_R_PASS, d);
+    }
+}
+
+static const struct conf_r_test tests[] = {
+    { "C-ENTRY.23", priv_run },
+    { "C-ENTRY.24", priv_run },
+};
+
 static const struct conf_variant variants[] = {
     { "main", NULL },
     { "long", prepare_long },
@@ -60,6 +110,8 @@ static const struct conf_variant variants[] = {
 
 const struct conf_area conf_area_entry = {
     .name = "C-ENTRY",
+    .tests = tests,
+    .test_count = CONF_COUNT(tests),
     .variants = variants,
     .variant_count = CONF_COUNT(variants),
 };
