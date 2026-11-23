@@ -13,13 +13,6 @@
 
 #include "aar_serve_core.h"
 
-/* The AAR file open flags, under the names the older tests use. */
-#define ZZAPP_FILE_READ AAR_FILE_READ
-#define ZZAPP_FILE_WRITE AAR_FILE_WRITE
-#define ZZAPP_FILE_CREATE AAR_FILE_CREATE
-#define ZZAPP_FILE_TRUNCATE AAR_FILE_TRUNCATE
-#define ZZAPP_FILE_EXCL AAR_FILE_EXCL
-
 static struct aar_serve_exit_in exit_in(uint32_t state, uint32_t end_reason,
                                         uint32_t elapsed, int stop_asked,
                                         int user_stop, int pending, int failed)
@@ -272,9 +265,9 @@ static void test_open_flags_map_to_one_plan_each(void)
     uint32_t flags;
     size_t i;
 
-    assert(ZZAPP_FILE_READ == 1u && ZZAPP_FILE_WRITE == 2u &&
-           ZZAPP_FILE_CREATE == 4u && ZZAPP_FILE_TRUNCATE == 8u &&
-           ZZAPP_FILE_EXCL == 16u);
+    assert(AAR_FILE_READ == 1u && AAR_FILE_WRITE == 2u &&
+           AAR_FILE_CREATE == 4u && AAR_FILE_TRUNCATE == 8u &&
+           AAR_FILE_EXCL == 16u);
     for (flags = 0; flags < 256u; flags++) {
         enum aar_serve_open_plan expect = AAR_SERVE_OPEN_INVALID;
 
@@ -292,25 +285,25 @@ static void test_open_flag_refusals_are_the_invalid_combinations(void)
 {
     /* Neither READ nor WRITE. */
     assert(aar_serve_open_plan_for_flags(0u) == AAR_SERVE_OPEN_INVALID);
-    assert(aar_serve_open_plan_for_flags(ZZAPP_FILE_CREATE) ==
+    assert(aar_serve_open_plan_for_flags(AAR_FILE_CREATE) ==
            AAR_SERVE_OPEN_INVALID);
     /* CREATE or TRUNCATE without WRITE. */
-    assert(aar_serve_open_plan_for_flags(ZZAPP_FILE_READ | ZZAPP_FILE_CREATE) ==
+    assert(aar_serve_open_plan_for_flags(AAR_FILE_READ | AAR_FILE_CREATE) ==
            AAR_SERVE_OPEN_INVALID);
-    assert(aar_serve_open_plan_for_flags(ZZAPP_FILE_READ | ZZAPP_FILE_TRUNCATE) ==
+    assert(aar_serve_open_plan_for_flags(AAR_FILE_READ | AAR_FILE_TRUNCATE) ==
            AAR_SERVE_OPEN_INVALID);
     /* EXCL without CREATE. */
-    assert(aar_serve_open_plan_for_flags(ZZAPP_FILE_WRITE | ZZAPP_FILE_EXCL) ==
+    assert(aar_serve_open_plan_for_flags(AAR_FILE_WRITE | AAR_FILE_EXCL) ==
            AAR_SERVE_OPEN_INVALID);
-    assert(aar_serve_open_plan_for_flags(ZZAPP_FILE_READ | ZZAPP_FILE_WRITE |
-                                         ZZAPP_FILE_TRUNCATE |
-                                         ZZAPP_FILE_EXCL) == AAR_SERVE_OPEN_INVALID);
+    assert(aar_serve_open_plan_for_flags(AAR_FILE_READ | AAR_FILE_WRITE |
+                                         AAR_FILE_TRUNCATE |
+                                         AAR_FILE_EXCL) == AAR_SERVE_OPEN_INVALID);
     /* Unknown bit. */
-    assert(aar_serve_open_plan_for_flags(ZZAPP_FILE_READ | 32u) ==
+    assert(aar_serve_open_plan_for_flags(AAR_FILE_READ | 32u) ==
            AAR_SERVE_OPEN_INVALID);
     /* The old CREATE (create or replace) is CREATE|TRUNCATE now. */
-    assert(aar_serve_open_plan_for_flags(ZZAPP_FILE_WRITE | ZZAPP_FILE_CREATE |
-                                         ZZAPP_FILE_TRUNCATE) ==
+    assert(aar_serve_open_plan_for_flags(AAR_FILE_WRITE | AAR_FILE_CREATE |
+                                         AAR_FILE_TRUNCATE) ==
            AAR_SERVE_OPEN_CREATE_REPLACE);
 }
 

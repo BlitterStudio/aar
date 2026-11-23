@@ -42,6 +42,32 @@ static uint64_t shared_used;
 static uint32_t app_blocks;
 static uint64_t heap_committed;
 
+/* AAR_EV_LOW_MEMORY (spec 4.1): the pool is the arena. The event is raised when
+ * the free pool falls below the low-water mark, and again only after it has
+ * risen above the high-water mark. */
+#define HOST_LOW_WATER (1u << 20)
+#define HOST_HIGH_WATER (2u << 20)
+static int low_armed = 1;
+static void (*low_notify)(void);
+
+void host_memory_set_low_notify(void (*fn)(void))
+{
+    low_notify = fn;
+}
+
+static void update_water(void)
+{
+    uint64_t free_bytes = HOST_ARENA_BYTES - heap_committed;
+
+    if (low_armed && free_bytes < HOST_LOW_WATER) {
+        low_armed = 0;
+        if (low_notify)
+            low_notify();
+    } else if (!low_armed && free_bytes > HOST_HIGH_WATER) {
+        low_armed = 1;
+    }
+}
+
 static int whole_granule(uint64_t bytes)
 {
     return bytes != 0u && (bytes & (AAR_HEAP_GRANULE - 1u)) == 0u;
@@ -251,6 +277,7 @@ static int api_heap_grow(uint64_t bytes, void **old_break)
      * app's old bytes. */
     memset(arena + heap_committed, 0, (size_t)bytes);
     heap_committed += bytes;
+    update_water();
     return AAR_OK;
 }
 
@@ -259,6 +286,7 @@ static int api_heap_shrink(uint64_t bytes, void **new_break)
     if (!whole_granule(bytes) || bytes > heap_committed)
         return AAR_E_INVAL;
     heap_committed -= bytes;
+    update_water();
     if (new_break)
         *new_break = arena ? arena + heap_committed : 0;
     return AAR_OK;
@@ -308,6 +336,7 @@ void host_memory_init(void)
     shared_used = 0;
     app_blocks = 0;
     heap_committed = 0;
+    low_armed = 1;
     memset(shared, 0, sizeof shared);
     if (arena)
         memset(arena, 0, HOST_ARENA_BYTES);
@@ -326,6 +355,7 @@ void host_memory_shutdown(void)
     shared_used = 0;
     app_blocks = 0;
     heap_committed = 0;
+    low_armed = 1;
 }
 
 void host_memory_bind(aar_api *api)

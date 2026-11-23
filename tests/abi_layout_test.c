@@ -23,7 +23,7 @@
 #include "aar/note.h"
 #include "aar/transport.h"
 
-/* On a host build this expands to nothing, as ZZAPP_NOTE did. */
+/* On a host build this expands to nothing. */
 AAR_NOTE(0, 0, AAR_GROUP_DISPLAY, AAR_GROUP_AUDIO)
 AAR_NOTE_EX(5, 65536, 4, 0, 0)
 

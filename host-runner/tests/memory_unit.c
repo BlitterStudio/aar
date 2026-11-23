@@ -203,6 +203,45 @@ static void test_dynamic_heap_through_table(void)
     host_memory_shutdown();
 }
 
+static unsigned low_count;
+
+static void count_low(void)
+{
+    low_count++;
+}
+
+/* The pool is the 8 MiB arena. The low-water mark is 1 MiB of free pool and the
+ * high-water mark 2 MiB (spec 4.1): the event comes once when the free pool
+ * falls below the low mark, and again only after it has risen above the high
+ * mark. */
+static void test_low_memory_crossings(void)
+{
+    aar_api api;
+    void *brk = 0;
+
+    memset(&api, 0, sizeof api);
+    host_memory_init();
+    host_memory_bind(&api);
+    host_memory_set_low_notify(count_low);
+    low_count = 0;
+
+    assert(api.heap_grow(7u << 20, &brk) == AAR_OK);   /* 1 MiB free: not below */
+    assert(low_count == 0u);
+    assert(api.heap_grow(1u << 20, &brk) == AAR_OK);   /* empty pool */
+    assert(low_count == 1u);
+    assert(api.heap_grow(1u << 20, &brk) == AAR_E_NOMEM);
+    assert(low_count == 1u);
+    assert(api.heap_shrink(1u << 20, &brk) == AAR_OK); /* 1 MiB free: not above high */
+    assert(api.heap_grow(1u << 20, &brk) == AAR_OK);
+    assert(low_count == 1u);                           /* the same crossing */
+    assert(api.heap_shrink(8u << 20, &brk) == AAR_OK); /* everything free */
+    assert(api.heap_grow(8u << 20, &brk) == AAR_OK);
+    assert(low_count == 2u);
+    assert(api.heap_shrink(8u << 20, &brk) == AAR_OK);
+    host_memory_set_low_notify(0);
+    host_memory_shutdown();
+}
+
 int main(void)
 {
     test_shared_alignment_and_token();
@@ -210,5 +249,6 @@ int main(void)
     test_runtime_blocks_are_not_app_blocks();
     test_private_allocator();
     test_dynamic_heap_through_table();
+    test_low_memory_crossings();
     return 0;
 }

@@ -12,6 +12,11 @@
 
 The profile is inferred from the ELF class when --profile is not given.
 Exit status: 0 every check passed, 1 a check failed, 2 usage error.
+
+aar-check is a lint for build output and is stricter than a runtime: it also
+requires the section headers and compares the relocation and note sections with
+the segments (spec 2.4). A runtime and the image probe of aar.library apply the
+rules of spec 2.2 and 2.3 only and do not refuse an image for these.
 """
 import re
 import struct
@@ -31,7 +36,6 @@ NOTE_OWNER = b"AAR\x00"
 NOTE_SECTION = ".note.aar"
 GROUPS_DEFINED = 0x0000001F
 GROUPS_EXPERIMENTAL = 0xF0000000
-GROUPS_KNOWN = GROUPS_DEFINED | GROUPS_EXPERIMENTAL
 STACK_MIN = 64 << 10
 STACK_MAX = 1 << 20
 
@@ -414,10 +418,9 @@ def check_note(img):
     if stack != 0 and (stack < STACK_MIN or stack > STACK_MAX or stack % 16):
         fail("note stack %d is not 0 or 64 KiB..1 MiB, a multiple of 16"
              % stack)
-    if groups_req & ~GROUPS_KNOWN:
-        fail("note groups_required 0x%x has unknown bits" % groups_req)
-    if groups_opt & ~GROUPS_KNOWN:
-        fail("note groups_optional 0x%x has unknown bits" % groups_opt)
+    # The group words are not judged (spec 8.1): a platform that lacks a required
+    # group refuses the load with AAR_E_NOGROUP, and unknown optional bits are a hint.
+    del groups_req, groups_opt
     if reserved != 0:
         fail("note reserved word is 0x%x, need 0" % reserved)
 

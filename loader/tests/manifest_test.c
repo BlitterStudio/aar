@@ -11,12 +11,14 @@
  *                                   a platform that runs its profile, and
  *                                   refuses it with AAR_E_PROFILE for one that
  *                                   does not
- *   MAYBE in load or probe any      the spec states no rule: either; a refusal
- *                                   has a code the row lists
+ *   probe any                       the spec states no rule for the platform's
+ *                                   memory: either; a refusal has a code the
+ *                                   row lists
  *   otherwise                       plan refuses it with a code the row lists
  *                                   (PROFILE: AAR_E_PROFILE, INVAL: AAR_E_INVAL)
  * An image that is accepted is placed at an address that is not where it is
- * written; the images whose point is a relocation (C-ELF.16 to C-ELF.18) hold a
+ * written; the images whose point is a relocation (C-ELF.16 to C-ELF.18, and
+ * ok-reloc-bss of C-ELF.23) hold a
  * word that must be the runtime address of their own code, and it must not be
  * without the relocations.
  *
@@ -71,7 +73,7 @@ static unsigned count_words(const struct aar_load_plan *plan, const uint8_t *mem
 
         if (!(s->flags & AAR_LOAD_W))
             continue;
-        for (at = s->vaddr; at + width <= s->vaddr + s->filesz; at += width) {
+        for (at = s->vaddr; at + width <= s->vaddr + s->memsz; at += width) {
             uint64_t w = 0;
             unsigned k;
 
@@ -99,8 +101,17 @@ static void check_note_of(const struct row *r, const struct aar_load_plan *plan)
         CHECK(plan->groups_required == (1u << 28));
     else if (strcmp(r->name, "group-experimental-31") == 0)
         CHECK(plan->groups_required == (1u << 31));
-    else if (strcmp(r->name, "heap-4095") == 0)
-        CHECK(plan->min_heap_mib == 4095);
+    else if (strcmp(r->name, "group-reserved-5") == 0)
+        CHECK(plan->groups_required == (1u << 5));
+    else if (strcmp(r->name, "group-reserved-27") == 0)
+        CHECK(plan->groups_required == (1u << 27));
+    else if (strcmp(r->name, "group-optional-unknown") == 0)
+        CHECK(plan->groups_required == 0 &&
+              plan->groups_optional == ((1u << 5) | (1u << 27) | (1u << 28)));
+    else if (strcmp(r->name, "heap-max") == 0)
+        CHECK(plan->min_heap_mib == 0xFFFFFFFFu);
+    else if (strcmp(r->name, "heap-wrap") == 0)
+        CHECK(plan->min_heap_mib == 0x10000001u);
 }
 
 static unsigned long rows, accepted, refused, placed, relocation_images;
@@ -114,7 +125,7 @@ static void run_row(const struct row *r, const char *dir)
     uint32_t other = own == AAR_PROFILE_A64 ? AAR_PROFILE_A32 : AAR_PROFILE_A64;
     int must_accept = strcmp(r->load, "OK") == 0 || strcmp(r->load, "ANY") == 0 ||
                       strcmp(r->probe, "ok") == 0;
-    int either = !must_accept && (has_token(r->load, "MAYBE") || strcmp(r->probe, "any") == 0);
+    int either = !must_accept && strcmp(r->probe, "any") == 0;
     struct aar_load_plan plan;
     const uint32_t masks[3] = { own, BOTH, other };
     int rc[3];
@@ -188,7 +199,7 @@ static void run_row(const struct row *r, const char *dir)
                 placed++;
                 CHECK(entry == base + plan.entry_offset);
                 if (strstr(r->ids, "C-ELF.16") || strstr(r->ids, "C-ELF.17") ||
-                    strstr(r->ids, "C-ELF.18")) {
+                    strstr(r->ids, "C-ELF.18") || strcmp(r->name, "ok-reloc-bss") == 0) {
                     /* The relocated word: the runtime address of the code. */
                     CHECK(plan.nrelocs >= 1 && plan.reloc[0].count >= 1);
                     CHECK(count_words(&plan, block, entry, width) == 1);
@@ -251,6 +262,6 @@ int main(int argc, char **argv)
     printf("manifest_test: %lu images, %lu accepted (%lu placed, %lu relocation images), %lu refused\n",
            rows, accepted, placed, relocation_images, refused);
     CHECK(rows >= 140);
-    CHECK(relocation_images == 4); /* ok-nosections (A32, A64), ok-rel, ok-rela */
+    CHECK(relocation_images == 6); /* ok-nosections, ok-rel, ok-rela, ok-reloc-bss */
     return finish("manifest_test");
 }

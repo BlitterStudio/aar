@@ -59,7 +59,6 @@
 
 #define STACK_MIN (64u << 10)
 #define STACK_MAX (1u << 20)
-#define GROUPS_KNOWN (AAR_GROUPS_DEFINED | AAR_GROUPS_EXPERIMENTAL)
 
 #define WINDOW_BYTES 512u
 #define MAX_LOADS AAR_IMAGE_MAX_LOADS
@@ -786,10 +785,10 @@ static int check_note(struct image *p)
         return refuse(p, "the note needs a newer api minor");
     if (w[5] != 0 && (w[5] < STACK_MIN || w[5] > STACK_MAX || (w[5] & 15u)))
         return refuse(p, "the note stack size is not 0 or 64 KiB to 1 MiB in steps of 16");
-    if (w[7] & ~(uint32_t)GROUPS_KNOWN)
-        return refuse(p, "the note groups_required has unknown bits");
-    if (w[8] & ~(uint32_t)GROUPS_KNOWN)
-        return refuse(p, "the note groups_optional has unknown bits");
+    /* groups_required and groups_optional are reported, not judged (spec 8.1):
+     * the platform answers AAR_E_NOGROUP for a required group it lacks, whether
+     * the bit is defined, reserved or experimental, and ignores the optional
+     * bits it does not know. */
     if (w[9] != 0)
         return refuse(p, "the note reserved word is not 0");
 

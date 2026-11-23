@@ -55,6 +55,7 @@
 
 struct host_fd {
     int used;
+    uint32_t access;  /* AAR_FILE_READ and AAR_FILE_WRITE as opened */
     FILE *fp;
 };
 
@@ -397,7 +398,8 @@ static int api_file_open(const char *path, uint32_t flags)
     /* The flags go to open() as they are, so create, exclusive create and
      * truncate are one atomic operation of the host. The stdio stream is
      * read and write for any write access, as the old "r+b" and "wb+"
-     * modes were. */
+     * modes were; the id remembers the access it was opened with, and the
+     * read and write calls refuse the other direction (AAR_E_BADF). */
     if (flags & AAR_FILE_WRITE) {
         oflags = HOST_O_RDWR;
         mode = "r+b";
@@ -429,6 +431,7 @@ static int api_file_open(const char *path, uint32_t flags)
         return rc;
     }
     fds[slot].used = 1;
+    fds[slot].access = flags & (AAR_FILE_READ | AAR_FILE_WRITE);
     fds[slot].fp = fp;
     return HOST_FD_BASE + slot;
 }
@@ -455,6 +458,8 @@ static int api_file_read(int fd, void *buf, uint32_t len, uint32_t *out_n)
 
     if (ix < 0 || !fds[ix].used)
         return AAR_E_BADF;
+    if (!(fds[ix].access & AAR_FILE_READ))
+        return AAR_E_BADF; /* opened without AAR_FILE_READ (spec 7.1) */
     if (!buf || !out_n)
         return AAR_E_INVAL;
     n = fread(buf, 1, (size_t)len, fds[ix].fp);
@@ -471,6 +476,8 @@ static int api_file_write(int fd, const void *buf, uint32_t len, uint32_t *out_n
 
     if (ix < 0 || !fds[ix].used)
         return AAR_E_BADF;
+    if (!(fds[ix].access & AAR_FILE_WRITE))
+        return AAR_E_BADF; /* opened without AAR_FILE_WRITE (spec 7.1) */
     if (!buf || !out_n)
         return AAR_E_INVAL;
     n = fwrite(buf, 1, (size_t)len, fds[ix].fp);
