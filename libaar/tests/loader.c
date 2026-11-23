@@ -13,6 +13,8 @@
  *   CORE_ONLY=1      hand the app a table that ends before the optional slots
  *   COHERENT=1       report AAR_INFOF_SHARED_COHERENT, so publish and acquire
  *                    must not reach the table
+ *   NO_RELOC=1       apply no relocation (a test of the conformance corpus: an
+ *                    image whose code checks its relocated pointer then fails)
  *
  * Two paths have a meaning of their own: huge.bin opens as a file of 3 GiB
  * (no data, seeks tracked), and stat-calls.magic stats as a file whose size is
@@ -403,6 +405,10 @@ static uint8_t *load_image(const uint8_t *img, size_t *mapped, int *relocs)
     uintptr_t top = 0;
     uintptr_t table = 0;
     uintptr_t table_bytes = 0;
+#if !defined(__aarch64__)
+    uintptr_t rela_table = 0;
+    uintptr_t rela_bytes = 0;
+#endif
     uint8_t *base;
     int i;
 
@@ -431,9 +437,24 @@ static uint8_t *load_image(const uint8_t *img, size_t *mapped, int *relocs)
                 table = d->d_un.d_ptr;
             if (d->d_tag == DT_RELOCSZ)
                 table_bytes = d->d_un.d_val;
+#if !defined(__aarch64__)
+            /* A32 allows a RELA table too (spec 2.2.5). */
+            if (d->d_tag == DT_RELA)
+                rela_table = d->d_un.d_ptr;
+            if (d->d_tag == DT_RELASZ)
+                rela_bytes = d->d_un.d_val;
+#endif
         }
     }
     *relocs = 0;
+    /* NO_RELOC=1 skips every relocation: a test of the tests, to show that an
+     * image whose code checks its relocated pointer exits with another code. */
+    if (getenv("NO_RELOC")) {
+        table_bytes = 0;
+#if !defined(__aarch64__)
+        rela_bytes = 0;
+#endif
+    }
     for (const Reloc *r = (const Reloc *)(base + table);
          (const uint8_t *)r < base + table + table_bytes; r++) {
         uintptr_t *where = (uintptr_t *)(base + r->r_offset);
@@ -450,6 +471,20 @@ static uint8_t *load_image(const uint8_t *img, size_t *mapped, int *relocs)
 #endif
         (*relocs)++;
     }
+#if !defined(__aarch64__)
+    for (const Elf32_Rela *r = (const Elf32_Rela *)(base + rela_table);
+         (const uint8_t *)r < base + rela_table + rela_bytes; r++) {
+        uintptr_t *where = (uintptr_t *)(base + r->r_offset);
+
+        if (ELF32_R_TYPE(r->r_info) != R_ARM_RELATIVE) {
+            fprintf(stderr, "relocation type %u is not RELATIVE\n",
+                    (unsigned)ELF32_R_TYPE(r->r_info));
+            return NULL;
+        }
+        *where = (uintptr_t)base + (uintptr_t)r->r_addend;
+        (*relocs)++;
+    }
+#endif
     __builtin___clear_cache((char *)base, (char *)base + top);
     *mapped = top;
     return base;

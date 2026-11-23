@@ -20,6 +20,14 @@ on a runtime that maps pages, and an image that is meant to be refused has no
 other defect than the one it names. The runner starts the accepted images and
 reads the exit code.
 
+The accepted images whose point is a relocation (C-ELF.16, C-ELF.17, C-ELF.18) have
+different entry code: it loads the word at the relocation target and exits with 3
+only if that word is the runtime address of the code itself, which a RELATIVE
+relocation with the right addend makes it at any load base, and with 4 otherwise. A
+loader that ignores or misapplies the relocations fails the image.
+conformance/tests/negative_run.sh runs them under qemu with the loader's NO_RELOC=1
+and expects 4.
+
 The MANIFEST has one line per image, fields separated by a single space:
 
     <name> <profile> <ids> <load> <probe>
@@ -96,6 +104,56 @@ def entry_of(blob, profile):
     return struct.unpack_from("<I", blob, at)[0]
 
 
+def load_vaddr(blob, profile, n):
+    """p_vaddr of program header n."""
+    if profile == "a64":
+        phoff = struct.unpack_from("<Q", blob, 32)[0]
+        return struct.unpack_from("<Q", blob, phoff + 56 * n + 16)[0]
+    phoff = struct.unpack_from("<I", blob, 28)[0]
+    return struct.unpack_from("<I", blob, phoff + 32 * n + 8)[0]
+
+
+def reloc_code(profile, diff):
+    """Entry code, table in r0 / x0: load the word `diff` bytes after its own first
+    instruction (the relocation target in the data page) and compare it with the
+    address of its own first instruction; exit(EXIT_CODE) through the exit slot when
+    they are equal, exit(EXIT_CODE + 1) when not. A RELATIVE relocation with the
+    addend "offset of this code" makes them equal at any load base."""
+    assert 0 < diff < 65536
+    if profile == "a32":
+        words = (0xE24F1008,                                         # sub r1, pc, #8
+                 0xE3000000 | ((diff >> 12) << 16) | (2 << 12) | (diff & 0xFFF),  # movw r2, #diff
+                 0xE0812002,                                         # add r2, r1, r2
+                 0xE5923000,                                         # ldr r3, [r2]
+                 0xE1530001,                                         # cmp r3, r1
+                 0xE590C010,                                         # ldr r12, [r0, #16]
+                 0x03A00000 | EXIT_CODE,                             # moveq r0, #EXIT_CODE
+                 0x13A00000 | (EXIT_CODE + 1),                       # movne r0, #EXIT_CODE + 1
+                 0xE12FFF1C)                                         # bx r12
+    else:
+        words = (0x10000001,                                         # adr x1, .
+                 0xD2800000 | (diff << 5) | 2,                       # movz x2, #diff
+                 0x8B020022,                                         # add x2, x1, x2
+                 0xF9400043,                                         # ldr x3, [x2]
+                 0xEB01007F,                                         # cmp x3, x1
+                 0xF9400804,                                         # ldr x4, [x0, #16]
+                 0x52800000 | (EXIT_CODE << 5) | 5,                  # mov w5, #EXIT_CODE
+                 0x52800000 | ((EXIT_CODE + 1) << 5) | 6,            # mov w6, #EXIT_CODE + 1
+                 0x1A8600A0,                                         # csel w0, w5, w6, eq
+                 0xD61F0080)                                         # br x4
+    return struct.pack("<%dI" % len(words), *words)
+
+
+def reloc_img(profile, **o):
+    """An image whose one relocation makes the word at its target the runtime address
+    of the entry code, and whose entry code checks that (reloc_code). Built twice: the
+    first pass finds where the code and the data page are."""
+    first = img(profile, text=reloc_code(profile, 1), **o)
+    text_off = entry_of(first, profile)
+    diff = load_vaddr(first, profile, 1) + o.get("reloc_target", 0) - text_off
+    return img(profile, text=reloc_code(profile, diff), reloc_addend=text_off, **o)
+
+
 def corpus(p):
     """The images of profile p: (name, bytes, ids, load, probe)."""
     a64 = p == "a64"
@@ -114,10 +172,14 @@ def corpus(p):
     add("ok-stack0", base, ["C-ELF.36"], "OK", "ok")
     add("ok-stack-64k", img(p, note=note(stack=64 << 10)), ["C-ELF.36"], "OK", "ok")
     add("ok-stack-1m", img(p, note=note(stack=1 << 20)), ["C-ELF.36"], "OK", "ok")
-    add("ok-nosections", img(p, strip_sections=True), ["C-ELF.16"], "OK", "any")
+    # Accepted images whose point is a relocation: the entry code loads the relocated
+    # pointer and exits with EXIT_CODE only if it is the runtime address of the code
+    # itself (EXIT_CODE + 1 otherwise), so a loader that ignores or misapplies the
+    # relocations fails the image.
+    add("ok-nosections", reloc_img(p, strip_sections=True), ["C-ELF.16"], "OK", "any")
     if not a64:
-        add("ok-rel", img(p, reloc_kind="rel"), ["C-ELF.17"], "OK", "ok")
-        add("ok-rela", img(p, reloc_kind="rela"), ["C-ELF.18"], "OK", "ok")
+        add("ok-rel", reloc_img(p, reloc_kind="rel"), ["C-ELF.17"], "OK", "ok")
+        add("ok-rela", reloc_img(p, reloc_kind="rela"), ["C-ELF.18"], "OK", "ok")
     add("unlisted-profile", base, ["C-ELF.31"], "PROFILE|INVAL", "ok")
     # What C-CLIENT.9 and C-CLIENT.17 read: stack 128 KiB, heap 3 MiB, groups
     # required display and input, optional audio and services.

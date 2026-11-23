@@ -213,6 +213,7 @@ define RUNTIME_RULE
 check-runtime-$(1):
 	CROSS=$$(CROSS_$(1)) sh $$(AAR_SDK)/libaar/tests/runtime_test.sh $$(AAR_SDK) $(1)
 	CROSS=$$(CROSS_$(1)) sh $$(AAR_SDK)/conformance/tests/qemu_run.sh $$(AAR_SDK) $(1) $$(CONF_QEMU_AREAS)
+	sh $$(AAR_SDK)/conformance/tests/negative_run.sh $$(AAR_SDK) $(1)
 endef
 $(foreach p,$(PROFILES),$(eval $(call RUNTIME_RULE,$(p))))
 

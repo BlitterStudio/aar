@@ -101,12 +101,12 @@ def build(profile="a32", **o):
     for _ in range(nrel):
         if a64:
             info = (o.get("reloc_sym", 0) << 32) | reloc_type
-            rel_blob += struct.pack("<QQq", r_off, info, 0)
+            rel_blob += struct.pack("<QQq", r_off, info, o.get("reloc_addend", 0))
         else:
             info = (o.get("reloc_sym", 0) << 8) | reloc_type
             rel_blob += struct.pack("<II", r_off, info)
             if kind == "rela":
-                rel_blob += struct.pack("<I", 0)
+                rel_blob += struct.pack("<I", o.get("reloc_addend", 0))
     data_len = 32
     shstr = b"\x00"
     name_at = {}
@@ -198,6 +198,10 @@ def build(profile="a32", **o):
     blob[note_off:note_off + len(note_blob)] = note_blob
     blob[text_off:text_off + len(text)] = text
     blob[rel_off:rel_off + len(rel_blob)] = rel_blob
+    if kind == "rel" and o.get("reloc_addend") and 0 <= o.get("reloc_target", 0) <= data_len - 4:
+        # A REL entry has no addend: it is the word at the target (the conformance
+        # corpus uses it to make the relocated pointer point at known code).
+        struct.pack_into("<Q" if a64 else "<I", blob, r_off, o["reloc_addend"])
     for i, (tag, val) in enumerate(dyn):
         struct.pack_into(dyn_fmt, blob, dyn_off + i * struct.calcsize(dyn_fmt),
                          tag, val)
