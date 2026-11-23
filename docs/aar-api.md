@@ -770,8 +770,8 @@ typedef struct aar_audio {
 } aar_audio;
 ```
 
-An interleaved S16LE ring shared by the app and the runtime, not with the
-client. `frames` is the capacity, a power of two. `rate` and `channels` are
+An interleaved S16LE ring shared by the app and its consumer: the runtime, or
+on the AHI route the client library. `frames` is the capacity, a power of two. `rate` and `channels` are
 what was granted. `flags` is 0. `*write_frame` is advanced by the app and
 `*read_frame` by the runtime; both are free-running `uint32_t` frame counters
 that wrap. The app writes ahead of `*read_frame` but never more than `frames`
@@ -1540,7 +1540,8 @@ or NULL `out` with non-zero `max`, is `AAR_E_INVAL`. It always returns the
 lifecycle events `AAR_EV_STOP` and `AAR_EV_LOW_MEMORY`; with `AAR_GROUP_INPUT`
 it also returns the input events. Events are delivered in order. The runtime
 keeps at least 64 events in order; once it holds that many that the app has not
-taken, it may discard each further event except mouse motion, which it merges.
+taken, it may discard each further input event except mouse motion, which it
+merges. It never discards `AAR_EV_STOP` or `AAR_EV_LOW_MEMORY`.
 When the completion queue is full the client drops the newest event and counts
 it (`AAR_CB_EVENTS_DROPPED`). Mouse motion is never lost without a count: the
 client library merges it (it sums `dx` and `dy` while the buttons are unchanged)
@@ -1899,8 +1900,8 @@ int aar_audio_open(uint32_t rate, uint32_t channels, aar_audio *out);
 Opens the PCM stream. `channels` must be 2 and `rate` one of
 `AAR_AUDIO_RATE_22050`, `AAR_AUDIO_RATE_44100` and `AAR_AUDIO_RATE_48000`;
 anything else, or a NULL `out`, is `AAR_E_INVAL`. A second open, or no free
-stream, is `AAR_E_BUSY`. The ring is shared with the runtime, not with the
-client. Parks while the platform attaches the stream; stop cancels the wait with
+stream, is `AAR_E_BUSY`. The ring is shared with its consumer: the runtime, or
+on the AHI route the client library. Parks while the platform attaches the stream; stop cancels the wait with
 `AAR_E_IO`. Gate: `AAR_API_COVERS(api, audio_open)`. Missing slot:
 `AAR_E_NOSYS`. Minimum minor: 5. **ZZ9000:** two streams exist across all apps.
 The current runtime grants only 22050 Hz stereo with 8192 frames, and the ring is
@@ -1973,9 +1974,11 @@ void aar_gl_swap(void);
 
 Flushes the GL front end and hands the frame to the platform to copy and flip.
 It parks as `aar_display_flip` does, but it may return before the frame is
-visible: the platform keeps at most two swapped frames in flight, so when a swap
-returns every frame from an earlier swap is visible except at most the two most
-recent. A pipelined platform should also present a queued frame when the app
+visible: the platform keeps at most two swapped frames in flight, the frame of
+this swap included, so when a swap returns every frame from an earlier swap
+except the most recent one is visible; an app that needs its last frame visible
+without drawing another calls `aar_gl_swap` twice more. A pipelined platform
+should also present a queued frame when the app
 next parks and at `aar_gl_unbind`; a frame still queued when the app ends may
 never be shown. Gate: `AAR_API_COVERS(api,
 gl_swap)`. Missing slot: returns. Minimum minor: 5. **ZZ9000:** it drains
