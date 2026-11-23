@@ -116,8 +116,13 @@ tested against each other:
 | `loader/` | portable C99, MIT | the reference loader: the same checks, and then the placing of the image |
 
 `loader/` arrives with its own pull request. It is a module a runtime compiles
-in, as it is: no OS calls, both profiles in one build, for 32-bit and 64-bit
-hosts. It does not know where memory is or how the platform maps
+in, as it is: portable C99, no OS calls, no allocation, both profiles in one
+build, for 32-bit and 64-bit hosts. The rules themselves are in
+`loader/aar_image.c`, which the loader and the image probe of `aar.library`
+share, so they cannot drift apart; `aar-check` stays the independent second
+implementation. The loader reads the relocations from `PT_DYNAMIC` only and
+accepts an image without section headers, as the standard allows. It does not
+know where memory is or how the platform maps
 it; the runtime tells it. The interface is `loader/aar_load.h`:
 
 ```c
@@ -155,10 +160,11 @@ untrusted: the arithmetic does not wrap and no read goes outside `length`.
 the rule, for the platform's log. Planning writes nothing, so it can run
 before any memory is reserved, which is the right time to refuse an image.
 
-What the plan does not decide is the platform's: whether the groups the note
-requires are available (`AAR_E_NOGROUP`), whether the stack and the heap the
-note asks for fit (`AAR_E_NOMEM`), and whether the API the note names is one
-the runtime offers.
+The note's API is judged against the headers the module was built with: a
+different major, or a required minor above the header's, is refused (standard,
+section 2.3). What the plan does not decide is the platform's: whether the
+groups the note requires are available (`AAR_E_NOGROUP`) and whether the stack
+and the heap the note asks for fit (`AAR_E_NOMEM`).
 
 **Placing.** The runtime reserves `span` bytes aligned to `align`, then calls
 `aar_load_place`. It copies each segment, zeroes the part of the segment that is
@@ -207,17 +213,15 @@ int load_app(const struct image *img, void *window, uint64_t app_base,
 }
 ```
 
-A runtime that receives the image in pieces (the ZZ9000 firmware streams it
-through a 64 KiB buffer) can use `aar_load_plan` on the first part and place
-the segments itself; the module offers random access, not a streaming
-interface.
+The module offers random access through the callback, not a streaming
+interface. A runtime that receives the image in pieces keeps it where the
+callback can read it (a staging buffer or a file) until the plan and the
+placing are done.
 
 **Tests.** The corpus `conformance/negative/` holds an image for every rule in
 both profiles, and `MANIFEST` says which refusals each may give. A port tests
 its loader against it, as the host tests of `loader/` do, and the conformance
-runner does the same through the platform's own `aar.library` (area C-ELF). To
-check your own copy of the rules against `aar-check`, run
-`python3 tests/aar_check_test.py`.
+runner does the same through the platform's own `aar.library` (area C-ELF).
 
 ## The entry contract
 
