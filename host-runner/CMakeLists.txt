@@ -154,6 +154,10 @@ add_executable(sleep_unit tests/sleep_unit.c)
 target_include_directories(sleep_unit PRIVATE ${AAR_UNIT_INCLUDES})
 target_link_libraries(sleep_unit PRIVATE ${AAR_SDL2})
 
+# The C-FREE.8 decision of the conformance runner (plain C, no SDL).
+add_executable(free_judge_test ${AAR_CONF_DIR}/tests/free_judge_test.c)
+target_compile_options(free_judge_test PRIVATE -Wall -Wextra -Werror)
+
 # Compiles libaar's aar.c and gl.c with AAR_FREESTANDING and freestanding.c by
 # inclusion.
 add_executable(freestanding_unit tests/freestanding_unit.c)
@@ -244,6 +248,7 @@ if(BUILD_TESTING)
   add_test(NAME files_unit COMMAND files_unit)
   add_test(NAME memory_unit COMMAND memory_unit)
   add_test(NAME sleep_unit COMMAND sleep_unit)
+  add_test(NAME conf_free_judge COMMAND free_judge_test)
   add_test(NAME freestanding_unit COMMAND freestanding_unit)
   add_test(NAME freestanding_memmove_unit COMMAND freestanding_memmove_unit)
 endif()

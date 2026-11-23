@@ -33,6 +33,7 @@
 
 #include "aar-conf.h"
 #include "../payloads/conf_free.h"
+#include "free_judge.h"
 
 #define RUNS 20UL
 #define ROUNDS 200UL
@@ -567,35 +568,38 @@ static void t_corpus(int idx)
 
 /* ---- C-FREE.8 to C-FREE.10: groups ------------------------------------------------------------------------- */
 
-/* C-FREE.8 */
+/* C-FREE.8: a kind is unavailable only when every codec said AAR_E_NOSYS; a kind that
+ * opened sessions in an earlier run and now refuses, or opens fewer, fails with the run
+ * and the code (free_judge.h). */
 static void t_services(int idx)
 {
     struct reply r;
+    struct free_kind image;
+    struct free_kind audio;
     char why[CONF_DETAIL_MAX];
     char d[CONF_DETAIL_MAX];
     ULONG i;
-    ULONG images = 0;
-    ULONG audios = 0;
 
+    memset(&image, 0, sizeof image);
+    memset(&audio, 0, sizeof audio);
     for (i = 0; i < RUNS; i++) {
         if (!run_variant("services", &r, why)) {
             conf_detailf(d, "run %lu of %lu: %.80s", (unsigned long)(i + 1), (unsigned long)RUNS, why);
             pass_fail(idx, 0, d);
             return;
         }
-        images = r.w[1] ? 0 : r.w[0];
-        audios = r.w[3] ? 0 : r.w[2];
-        if ((!r.w[1] && r.w[0] < CONF_FREE_SESSIONS) || (!r.w[3] && r.w[2] < CONF_FREE_SESSIONS)) {
-            conf_detailf(d, "run %lu opened %lu image and %lu audio decode sessions, not %lu of each",
-                         (unsigned long)(i + 1), (unsigned long)r.w[0], (unsigned long)r.w[2],
-                         (unsigned long)CONF_FREE_SESSIONS);
+        if (!free_judge_kind(&image, (unsigned long)(i + 1), "image", (unsigned long)r.w[0],
+                             (long)(LONG)r.w[1], CONF_FREE_SESSIONS, d, CONF_DETAIL_MAX) ||
+            !free_judge_kind(&audio, (unsigned long)(i + 1), "audio", (unsigned long)r.w[2],
+                             (long)(LONG)r.w[3], CONF_FREE_SESSIONS, d, CONF_DETAIL_MAX)) {
             pass_fail(idx, 0, d);
             return;
         }
     }
-    conf_detailf(d, "%lu runs: the last opened %lu image and %lu audio sessions%s", (unsigned long)RUNS,
-                 (unsigned long)images, (unsigned long)audios,
-                 (r.w[1] || r.w[3]) ? " (a kind without a codec is not counted)" : "");
+    conf_detailf(d, "%lu runs: the last opened %lu image and %lu audio sessions%s%s", (unsigned long)RUNS,
+                 (unsigned long)r.w[0], (unsigned long)r.w[2],
+                 image.unavailable ? " (no image codec: AAR_E_NOSYS)" : "",
+                 audio.unavailable ? " (no audio codec: AAR_E_NOSYS)" : "");
     pass_fail(idx, 1, d);
 }
 

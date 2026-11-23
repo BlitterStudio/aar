@@ -335,21 +335,32 @@ static void variant_sharedhog(void)
 
 static uint8_t tile[4096] __attribute__((aligned(64)));
 
+/* Opens CONF_FREE_SESSIONS decode sessions of each kind and exits without closing
+ * them. A kind is tried with its codecs in turn: a codec whose first open is
+ * AAR_E_NOSYS is not implemented and the next one is tried; the first codec that
+ * answers anything else is the one counted. The message carries, per kind, the
+ * sessions opened and the result of the open that stopped it (0 when all opened,
+ * AAR_E_NOSYS only when every codec said so). */
 static void variant_services(void)
 {
     static const uint32_t image_codecs[] = { AAR_IMAGE_JPEG, AAR_IMAGE_PNG, AAR_IMAGE_WEBP };
     static const uint32_t audio_codecs[] = { AAR_AUDIO_MP3, AAR_AUDIO_FLAC, AAR_AUDIO_VORBIS };
     uint32_t image_ok = 0;
     uint32_t audio_ok = 0;
+    int image_rc = AAR_E_NOSYS;
+    int audio_rc = AAR_E_NOSYS;
     uint32_t k;
 
-    for (k = 0; k < sizeof image_codecs / sizeof image_codecs[0] && image_ok == 0; k++) {
+    for (k = 0; k < sizeof image_codecs / sizeof image_codecs[0]; k++) {
         uint32_t i;
 
+        image_ok = 0;
+        image_rc = 0;
         for (i = 0; i < CONF_FREE_SESSIONS; i++) {
             aar_image_params p;
             aar_image_result r;
             uint32_t session = 0;
+            int rc;
 
             p.codec = image_codecs[k];
             p.output_format = AAR_FMT_BGRA8888;
@@ -359,23 +370,35 @@ static void variant_services(void)
             p.flags = 0;
             p.tile = tile;
             r.image_width = 0;
-            if (aar_image_open(&p, &session, &r) != AAR_OK)
+            rc = aar_image_open(&p, &session, &r);
+            if (rc != AAR_OK) {
+                image_rc = rc;
                 break;
+            }
             image_ok++;
         }
+        if (!(image_ok == 0 && image_rc == AAR_E_NOSYS))
+            break;
     }
-    for (k = 0; k < sizeof audio_codecs / sizeof audio_codecs[0] && audio_ok == 0; k++) {
+    for (k = 0; k < sizeof audio_codecs / sizeof audio_codecs[0]; k++) {
         uint32_t i;
 
+        audio_ok = 0;
+        audio_rc = 0;
         for (i = 0; i < CONF_FREE_SESSIONS; i++) {
             uint32_t session = 0;
+            int rc = aar_audio_decode_open(audio_codecs[k], &session);
 
-            if (aar_audio_decode_open(audio_codecs[k], &session) != AAR_OK)
+            if (rc != AAR_OK) {
+                audio_rc = rc;
                 break;
+            }
             audio_ok++;
         }
+        if (!(audio_ok == 0 && audio_rc == AAR_E_NOSYS))
+            break;
     }
-    send_words(CONF_MSG_FREE_SVC, image_ok, image_ok == 0, audio_ok, audio_ok == 0);
+    send_words(CONF_MSG_FREE_SVC, image_ok, (uint32_t)image_rc, audio_ok, (uint32_t)audio_rc);
 }
 
 static void variant_display(void)

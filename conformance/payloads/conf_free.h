@@ -25,9 +25,10 @@
 
 #define CONF_MSG_FREE_HEAP    "CONF-FREE-HEAP"    /* w0: MiB of heap granted */
 #define CONF_MSG_FREE_SHARED  "CONF-FREE-SHRD"   /* w0: KiB of shared blocks granted */
-#define CONF_MSG_FREE_SVC     "CONF-FREE-SVC"     /* w0 image sessions opened, w1 1 if no image
-                                                   * codec answered, w2 audio sessions opened,
-                                                   * w3 1 if no audio codec answered */
+#define CONF_MSG_FREE_SVC     "CONF-FREE-SVC"     /* w0 image sessions opened, w1 the result of the open
+                                                   * that stopped them (0 when all opened, AAR_E_NOSYS
+                                                   * only when every image codec said so), w2 audio
+                                                   * sessions opened, w3 the same for audio */
 #define CONF_MSG_FREE_DISPLAY "CONF-FREE-DISP"   /* w0: the result of aar_display_open */
 #define CONF_MSG_FREE_AUDIO   "CONF-FREE-AUDIO"   /* w0: the result of aar_audio_open */
 
