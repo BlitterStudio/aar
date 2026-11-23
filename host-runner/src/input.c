@@ -5,9 +5,10 @@
  * 0x22/0x12/0x23) also enqueue AAR_EV_BREAK with codes 4/5/6. Window close and
  * Ctrl-C enqueue one AAR_EV_STOP and set the stop flag. The queue holds 256
  * events and drops the newest when full; AAR_EV_STOP and AAR_EV_LOW_MEMORY are never
- * dropped: each waits in a latch and aar_event_poll delivers it ahead of the queue. The
- * poll delivers the lifecycle events and, as this runner has the input group, the input
- * events.
+ * dropped: they wait outside the queue and aar_event_poll delivers them ahead of it. A stop
+ * is a request and gives one event; a low-memory notification is one per crossing of the
+ * low-water mark (spec 4.1), so it is a count. The poll delivers the lifecycle events and,
+ * as this runner has the input group, the input events.
  *
  * --input FILE injects scripted events before the app starts. Lines:
  *   key down|up <raw> [qualifiers]
@@ -52,7 +53,9 @@ static uint32_t q_head, q_tail;
 static uint32_t drops;
 static uint16_t mouse_buttons;
 static int stop_event_sent;
-static int stop_pending, low_pending; /* AAR_EV_STOP and AAR_EV_LOW_MEMORY wait here */
+static int stop_pending;           /* AAR_EV_STOP waits here: one event per stop request */
+static uint32_t low_pending;       /* AAR_EV_LOW_MEMORY waits here: one per crossing */
+#define HOST_LOW_PENDING_MAX 255u  /* bounds the count, as the ring depth bounds the queue */
 static SDL_Joystick *joys[2];
 static uint32_t joy_last[2];
 static int joy_valid[2];
@@ -246,7 +249,8 @@ static void note_stop(void)
 /* The heap pool fell below its low-water mark (memory.c). */
 static void low_memory_event(void)
 {
-    low_pending = 1;
+    if (low_pending < HOST_LOW_PENDING_MAX)
+        low_pending++;
 }
 
 static void on_key(const SDL_KeyboardEvent *key)
@@ -460,11 +464,11 @@ static int api_event_poll(aar_event *out, uint32_t max, uint32_t *out_n)
         n++;
         stop_pending = 0;
     }
-    if (n < max && low_pending) {
+    while (n < max && low_pending) {
         memset(&out[n], 0, sizeof out[n]);
         out[n].type = AAR_EV_LOW_MEMORY; /* no field but its type (spec 4.1) */
         n++;
-        low_pending = 0;
+        low_pending--;
     }
     while (n < max && q_tail != q_head) {
         out[n++] = queue[q_tail & (HOST_INPUT_CAP - 1u)];
@@ -506,7 +510,7 @@ int host_input_selftest(void)
     int keypad = 0;
     SDL_Event ev;
     uint32_t low_seen;
-    aar_event got[4];
+    aar_event got[8];
     uint32_t n = 0;
     int saw_key = 0;
     int saw_break = 0;
@@ -575,6 +579,47 @@ int host_input_selftest(void)
     }
     if (low_seen != 0u)
         return 15;
+    /* Spec 4.1: one AAR_EV_LOW_MEMORY per crossing of the low-water mark, queued again only
+     * after the pool has risen above the high-water mark. Two crossings give two events, a
+     * poll takes them both and a second poll finds none. */
+    {
+        aar_api heap_api;
+        aar_heap_info hi;
+        void *brk = 0;
+        uint64_t all;
+
+        memset(&heap_api, 0, sizeof heap_api);
+        host_memory_bind(&heap_api);
+        if (heap_api.heap_info(&hi) != AAR_OK)
+            return 16;
+        all = hi.limit - hi.committed;
+        if (heap_api.heap_grow(all, &brk) != AAR_OK)
+            return 17;
+        if (heap_api.heap_shrink(all / 2u, &brk) != AAR_OK)
+            return 18;
+        if (heap_api.heap_grow(all / 2u, &brk) != AAR_OK)
+            return 19;
+        if (heap_api.heap_shrink(all, &brk) != AAR_OK)
+            return 20;
+        if (api_event_poll(got, 8u, &n) != AAR_OK)
+            return 21;
+        low_seen = 0;
+        for (i = 0; i < n; i++) {
+            if (got[i].type == AAR_EV_LOW_MEMORY)
+                low_seen++;
+        }
+        if (low_seen != 2u)
+            return 22;
+        if (api_event_poll(got, 8u, &n) != AAR_OK || n != 0u)
+            return 23;
+    }
+    /* A stop is a request, not a crossing: one event for it, however often it is made. */
+    note_stop();
+    note_stop();
+    if (api_event_poll(got, 8u, &n) != AAR_OK || n != 1u || got[0].type != AAR_EV_STOP)
+        return 24;
+    if (api_event_poll(got, 8u, &n) != AAR_OK || n != 0u)
+        return 25;
     return 0;
 }
 
