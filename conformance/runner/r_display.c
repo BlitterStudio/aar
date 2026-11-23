@@ -157,10 +157,18 @@ static void on_open(const struct conf_run *run, LONG rc, const AARStatusInfo *st
     gfx.h = run->h;
 }
 
+/* The runner's table serves CLUT8 surfaces and palettes, and the platform grants CLUT8 only to a
+ * client that says so (AAR_TAG_CLIENT_CAPS): without it C-DISPLAY.15 would pass without a palette. */
+static const struct TagItem client_caps[] = {
+    { AAR_TAG_CLIENT_CAPS, AAR_CCAP_DISPLAY_CLUT8 },
+    { TAG_DONE, 0 }
+};
+
 static void prep_std(struct conf_run *run)
 {
     gfx_reset();
     run->display = &gfx_ops;
+    run->tags = client_caps;
     run->timeout_s = 120;
 }
 

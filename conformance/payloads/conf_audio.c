@@ -265,7 +265,7 @@ static void test_consumption(void)
     if (t2 == 0) {
         conf_check(&t5, 0, "the measurement did not finish in 6 s");
     } else {
-        uint64_t got = (uint64_t)(r2 - r1) * 100u * 1000000u;
+        uint64_t got = (uint64_t)(r2 - r1) * 1000000u; /* frames per second times dt */
         uint64_t want = (uint64_t)a.rate * (t2 - t1);
 
         if ((got < want * 75u / 100u || got > want * 125u / 100u) && conf_fail_first(&t5)) {

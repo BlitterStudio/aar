@@ -324,7 +324,9 @@ static void test_stop(void)
     posted = await_type(AAR_EV_STOP, 3000000u);
     conf_check(&t, posted, "an AAR_EV_STOP posted with AARPostEvent did not arrive");
     (void)conf_peer_send(CONF_MSG_STOP);
-    stopped = await_type(AAR_EV_STOP, 5000000u);
+    /* The stop grace is 500 ms on the ZZ9000 (AARInfo.stop_grace_ms): an app that waits longer
+     * is forced before it can report. The event is delivered at once when it is delivered. */
+    stopped = await_type(AAR_EV_STOP, 250000u);
     conf_check(&t, stopped, "the stop request of AARStop did not arrive as AAR_EV_STOP");
     conf_buf_str(&t.note, "AAR_EV_STOP by AARPostEvent and by AARStop");
     conf_end(&t);
