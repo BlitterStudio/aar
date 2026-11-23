@@ -95,7 +95,7 @@
 
 #define CONF_LIFE_LR_MAGIC 0x4C494645u /* "LIFE": the lr the fault variants set */
 /* The address the fault variants touch (unmapped in any app's address space [spec
- * question 32]), as the low and high word. */
+ * question 41]), as the low and high word. */
 #define CONF_LIFE_FAULT_ADDR_LO32 0xDEAD0000u
 #define CONF_LIFE_FAULT_ADDR_HI32 0x00000000u
 #define CONF_LIFE_FAULT_ADDR_LO64 0x00000000u
