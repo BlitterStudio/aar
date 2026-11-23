@@ -23,7 +23,8 @@ $CC $F -c client/tests/amiga/leak_plat.c -o "$OUT/leak_plat.o"
 $CC $F -c client/src/aar_shell.c -o "$OUT/aar_shell.o"
 $CC $F -c client/src/aar_core.c -o "$OUT/aar_core.o"
 $CC $F -c client/src/aar_probe.c -o "$OUT/aar_probe.o"
-$CC -noixemul -nostartfiles -Os -m68020 "$OUT/aar_shell.o" "$OUT/aar_core.o" "$OUT/aar_probe.o" \
+$CC $F -c loader/aar_image.c -o "$OUT/aar_image.o"
+$CC -noixemul -nostartfiles -Os -m68020 "$OUT/aar_shell.o" "$OUT/aar_core.o" "$OUT/aar_probe.o" "$OUT/aar_image.o" \
     "$OUT/refplat.o" "$OUT/leak_plat.o" -o "$OUT/aar.library"
 $CC $F client/tests/amiga/aarleak.c -o "$OUT/aarleak"
 ls -l "$OUT/aar.library" "$OUT/aarleak"

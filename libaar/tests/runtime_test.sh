@@ -46,7 +46,7 @@ build runtime_test libaar/tests/runtime_test.c 0
 build freestanding_test libaar/tests/freestanding_test.c 1
 # shellcheck disable=SC2086
 "$HOSTCC" -static $LOADER_FLAGS -O1 -Wall -Wextra -Werror -I"$SDK/include" \
-  "$SDK/libaar/tests/loader.c" -o "$WORK/loader"
+  "$SDK/libaar/tests/loader.c" "$SDK/loader/aar_load.c" "$SDK/loader/aar_image.c" -o "$WORK/loader"
 
 run() { # label expected-text env... -- app
   label=$1; want=$2; shift 2

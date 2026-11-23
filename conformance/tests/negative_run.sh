@@ -33,7 +33,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 # shellcheck disable=SC2086
 "$HOSTCC" -static $LOADER_FLAGS -O1 -Wall -Wextra -Werror -I"$SDK/include" \
-  "$SDK/libaar/tests/loader.c" -o "$WORK/loader"
+  "$SDK/libaar/tests/loader.c" "$SDK/loader/aar_load.c" "$SDK/loader/aar_image.c" -o "$WORK/loader"
 
 ran=0
 checked=0

@@ -136,6 +136,30 @@ jobs:
       - name: The test scripts stop when a program they run fails
         run: sh client/tests/scripts_test.sh
 
+  # The reference loader (loader/, MIT, the code another platform takes to load
+  # an app image): plan and place on images built in memory (relocations of A32
+  # REL and RELA and of A64 RELA, the bss, a write base unlike the run address,
+  # the memory limit, damaged plans and images), the C-ELF corpus of the
+  # conformance suite for both profiles against its MANIFEST, the corpus of
+  # tests/aar_check_test.py and its mutations against tools/aar-check, and a
+  # bounded mutation fuzz run. 64-bit, -m32 and with the address and undefined
+  # behaviour sanitizers. The loader also loads every image of make check-runtime
+  # (sdk-image job), under qemu, for both profiles; client-m68k compiles it for
+  # the 68k (the probe of aar.library is built on the same image rules).
+  loader-host:
+    name: reference loader host tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install a multilib compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            gcc gcc-multilib python3
+      - name: Loader tests (64-bit, -m32, sanitizers)
+        run: sh loader/tests/run_host.sh
+
   # The client headers, the library sources (core, probe, shell, reference
   # platform), the serving loop and the launcher with the cross compiler that
   # builds zz9k.library (the image the firmware SDK pins by digest), compile
@@ -215,7 +239,7 @@ jobs:
   publish:
     name: Publish the SDK image
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-    needs: [lint, sdk-image, abi-host, client-host, client-m68k, conformance, docs, host]
+    needs: [lint, sdk-image, abi-host, client-host, loader-host, client-m68k, conformance, docs, host]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -7,11 +7,14 @@
  * ELF header of the profile, the program headers, the PT_DYNAMIC and section
  * relocation tables (only RELATIVE entries are allowed), the entry point, and
  * the AAR note (exactly one, in a PT_NOTE segment and in the .note.aar
- * section, with every descriptor rule of spec 2.3). The probe and aar-check
- * give the same decision for every image; client/tests/probe_corpus.py proves
- * it on the corpus of tests/aar_check_test.py. The note is judged against the
- * API this library was built with (AAR_API_MAJOR, AAR_API_MINOR), as aar-check
- * judges it against the SDK's header.
+ * section, with every descriptor rule of spec 2.3). The rules themselves are
+ * the image rules of the AAR standard in loader/aar_image.c, shared with the
+ * reference loader (loader/aar_load.h); the probe asks for the section checks
+ * as well (AAR_IMAGE_SECTIONS), which is what aar-check does. The probe and
+ * aar-check give the same decision for every image; client/tests/probe_corpus.py
+ * proves it on the corpus of tests/aar_check_test.py. The note is judged
+ * against the API this library was built with (AAR_API_MAJOR, AAR_API_MINOR),
+ * as aar-check judges it against the SDK's header.
  *
  * It does not judge the platform: the profile is reported, and a launcher
  * compares it and the group masks with what AARQuery returns.
