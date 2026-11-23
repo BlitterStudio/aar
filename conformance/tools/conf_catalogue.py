@@ -253,7 +253,7 @@ def cmd_check(version, tests, errors):
                               % (rid, t.area, f, t.area[2:].lower()))
         if t is None:
             errors.append("%s is in the runner sources but not in TESTS.md" % rid)
-        elif t.judge != "runner":
+        elif t.judge not in ("runner", "operator"):
             errors.append("%s is in the runner sources but TESTS.md says judged"
                           " by %s" % (rid, t.judge))
         elif t.impl != "yes":
