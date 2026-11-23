@@ -166,10 +166,13 @@ static void test_range_info(void)
     rc = heap_info_now(&hi);
     conf_check(&t, rc == AAR_OK, "heap_info failed");
     conf_check(&t, base != 0, "heap_range returned a NULL base");
-    if (rc == AAR_OK && len != hi.committed && conf_fail_first(&t)) {
+    /* The heap is part of the private memory (4.1: image, stack and heap), and
+     * heap_info.committed counts all of it, so the heap is at most that
+     * [spec question 55]. C-MEM.2, .6 and .8 judge committed by its changes. */
+    if (rc == AAR_OK && len > hi.committed && conf_fail_first(&t)) {
         conf_buf_str(&t.why, "heap_range length ");
         put_u64(&t.why, len);
-        conf_buf_str(&t.why, " differs from heap_info.committed ");
+        conf_buf_str(&t.why, " is more than heap_info.committed ");
         put_u64(&t.why, hi.committed);
     }
     conf_buf_str(&t.note, "length ");
@@ -183,16 +186,19 @@ static void test_grow_one(void)
     uint8_t *base0 = heap_base_now();
     uint64_t len0 = heap_len_now();
     uint8_t *ob = 0;
-    aar_heap_info hi;
+    aar_heap_info hi, h0;
+    int h0_ok;
     uint8_t *nb = 0;
 
     conf_begin(&t, "C-MEM.2");
+    h0_ok = heap_info_now(&h0) == AAR_OK;
+    conf_check(&t, h0_ok, "heap_info failed");
     if (grow_ok(&t, GRAN, &ob, "one granule")) {
         conf_check(&t, ob == base0 + len0,
                    "the old break is not the previous end (base plus length)");
         conf_check(&t, heap_len_now() == len0 + GRAN,
                    "heap_range did not grow by one granule");
-        conf_check(&t, heap_info_now(&hi) == AAR_OK && hi.committed == len0 + GRAN,
+        conf_check(&t, heap_info_now(&hi) == AAR_OK && hi.committed == h0.committed + GRAN,
                    "heap_info.committed did not grow by one granule");
         (void)shrink_ok(&t, GRAN, &nb, "undoing the grow");
     }
@@ -299,16 +305,19 @@ static void test_shrink(void)
     uint8_t *nb = 0;
     uint64_t len0 = heap_len_now();
     uint64_t end0 = heap_end_now();
-    aar_heap_info hi;
+    aar_heap_info hi, h0;
+    int h0_ok;
 
     conf_begin(&t, "C-MEM.6");
+    h0_ok = heap_info_now(&h0) == AAR_OK;
+    conf_check(&t, h0_ok, "heap_info failed");
     if (grow_ok(&t, 2u * GRAN, &ob, "two granules")) {
         if (shrink_ok(&t, GRAN, &nb, "a shrink of one granule")) {
             conf_check(&t, (uint64_t)(uintptr_t)nb == end0 + 2u * GRAN - GRAN,
                        "the new break is not the old end minus the request");
             conf_check(&t, heap_len_now() == len0 + GRAN,
                        "heap_range did not shrink by one granule");
-            conf_check(&t, heap_info_now(&hi) == AAR_OK && hi.committed == len0 + GRAN,
+            conf_check(&t, heap_info_now(&hi) == AAR_OK && hi.committed == h0.committed + GRAN,
                        "heap_info.committed did not shrink by one granule");
         }
         if (shrink_ok(&t, GRAN, &nb, "the second shrink"))
@@ -412,20 +421,23 @@ static void test_exhaust(void)
     uint64_t len0 = heap_len_now();
     uint64_t end0 = heap_end_now();
     uint8_t *nb = 0;
-    aar_heap_info hi;
+    aar_heap_info hi, hi0;
+    int hi0_ok;
     int rc = AAR_OK;
 
     conf_begin(&t, "C-MEM.8");
+    hi0_ok = heap_info_now(&hi0) == AAR_OK;
+    conf_check(&t, hi0_ok, "heap_info failed");
     exhaust(&t, &added, &rc, 0);
     if (rc != AAR_E_NOMEM && conf_fail_first(&t)) {
         conf_buf_str(&t.why, "the grow that ended the loop returned ");
         conf_buf_i64(&t.why, rc);
         conf_buf_str(&t.why, ", not AAR_E_NOMEM");
     }
-    if (heap_info_now(&hi) == AAR_OK) {
+    if (heap_info_now(&hi) == AAR_OK && hi0_ok) {
         conf_check(&t, hi.committed <= hi.limit, "committed exceeds limit at the end");
-        conf_check(&t, hi.committed == len0 + added,
-                   "heap_info.committed is not the start plus what was granted");
+        conf_check(&t, hi.committed == hi0.committed + added,
+                   "heap_info.committed did not grow by what was granted");
         conf_buf_str(&t.note, "grew ");
         put_mib(&t.note, added);
         conf_buf_str(&t.note, ", limit ");

@@ -161,7 +161,7 @@ because the registers differ.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-MEM.1 | 4.1 | MUST | core | any | payload | yes | `heap_range` returns a base and a length; the length equals `heap_info.committed` |
+| C-MEM.1 | 4.1 | MUST | core | any | payload | yes | `heap_range` returns a base and a length, and the length is at most `heap_info.committed` (the private memory also holds the image and the stack) [spec question 55] |
 | C-MEM.2 | 4.1 | MUST | core | any | payload | yes | `heap_grow` of one granule returns `AAR_OK` and an old break equal to the previous end (base plus length) |
 | C-MEM.3 | 4.1 | MUST | core | any | payload | yes | successive grows are contiguous: each old break equals the previous end |
 | C-MEM.4 | 4.1 | MUST | core | any | payload | yes | new heap memory is zeroed, also after a shrink and a grow of the same range |
@@ -803,3 +803,9 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     a platform without depth testing fails that row.
 54. **Bad pointer in a `void` GL call** (8.5): "return `AAR_E_FAULT` plus `GL_INVALID_VALUE`" is
     not observable through a `void` `gl*` wrapper; C-GL.8 checks `glGetError` only.
+55. **What `heap_info.committed` counts** (3.4, 4.1): "private memory currently
+    committed" and the limit that caps it are about private memory, which 4.1 says is
+    "its image, stack and a heap", while `heap_range` reports only the heap. The ZZ9000
+    reports the whole of it (4 MiB for an app with 3 MiB of heap, image and a 1 MiB
+    stack frame). C-MEM.1 requires only that the heap is not larger than `committed`;
+    C-MEM.2, .6 and .8 judge `committed` by how it changes. Say which figure it is.
