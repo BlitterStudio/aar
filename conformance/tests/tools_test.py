@@ -144,6 +144,10 @@ expect("a FAIL of a MUST test gives DOES-NOT-CONFORM", check_report(
 expect("a SKIP without a reason is rejected", check_report(
     report(override={"C-TIME.2": ("SKIP", "")})) != 0)
 expect("an a64 report skips the a32 tests", check_report(report(profile="a64")) == 0)
+expect("an unknown profile is rejected, also for a report that would conform",
+       check_report(report(profile="a16"), "--require-conforms") != 0)
+expect("an unknown profile is rejected without --require-conforms",
+       check_report(report(profile="x86")) != 0)
 
 # A suite where every test passes conforms: flip the impl flags in memory.
 for t in tests:

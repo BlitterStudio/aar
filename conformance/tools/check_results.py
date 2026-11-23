@@ -150,6 +150,11 @@ def check_report(args):
         profile = "a32"
     else:
         profile = suite[1]
+        if profile not in ("a32", "a64"):
+            # The coverage below depends on the profile: a report that names another
+            # one would be checked against too few tests.
+            problems.append("unknown profile %r in the suite line (a32 or a64)" % profile)
+            profile = "a32"
         if suite[0] != version:
             problems.append("suite version %s, the catalogue is %s"
                             % (suite[0], version))
