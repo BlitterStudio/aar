@@ -148,6 +148,12 @@ expect("an unknown profile is rejected, also for a report that would conform",
        check_report(report(profile="a16"), "--require-conforms") != 0)
 expect("an unknown profile is rejected without --require-conforms",
        check_report(report(profile="x86")) != 0)
+# The case of the review: a mistyped profile in the suite line, with only the tests that
+# apply to every profile in the report, must not pass as conforming.
+expect("a23 is rejected, with --require-conforms",
+       check_report(report(profile="a23"), "--require-conforms") != 0)
+expect("a23 is rejected, without it", check_report(report(profile="a23")) != 0)
+expect("an empty profile is rejected", check_report(report(profile="")) != 0)
 
 # A suite where every test passes conforms: flip the impl flags in memory.
 for t in tests:

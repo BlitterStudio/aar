@@ -62,6 +62,17 @@ int main(void)
            judge(none, nonec, 3, why) == 0);
     expect("zero opens with another code fails at once", judge(nomem_first, nomem_firstc, 2, why) == 1);
     expect("a kind that says NOSYS and then opens is inconsistent", judge(late, latec, 2, why) == 2);
+    {
+        /* The scenario of the review: four sessions on the first run, every slot leaked
+         * at exit, AAR_E_NOMEM on every later run. Zero opens with NOMEM is a failure,
+         * never an exemption. */
+        static const unsigned long leaked[] = { 4, 0, 0, 0 };
+        static const long leakedc[] = { 0, -3, -3, -3 };
+
+        expect("four sessions, then NOMEM with none open, fails at the second run",
+               judge(leaked, leakedc, 4, why) == 2);
+        expect("the failure carries the code", strstr(why, "-3") != NULL);
+    }
 
     if (failures) {
         printf("%d free judge tests failed\n", failures);
