@@ -20,7 +20,8 @@ on a runtime that maps pages, and an image that is meant to be refused has no
 other defect than the one it names. The runner starts the accepted images and
 reads the exit code.
 
-The accepted images whose point is a relocation (C-ELF.16, C-ELF.17, C-ELF.18) have
+The accepted images whose point is a relocation (C-ELF.16, C-ELF.17, C-ELF.18, and
+C-ELF.23 for a target in the bss tail) have
 different entry code: it loads the word at the relocation target and exits with 3
 only if that word is the runtime address of the code itself, which a RELATIVE
 relocation with the right addend makes it at any load base, and with 4 otherwise. A
@@ -48,8 +49,11 @@ does not list.
 
     gen_negative.py            write the corpus
     gen_negative.py --check    check that the files are what the generator makes,
-                               that tools/aar-check agrees with the probe column,
-                               and that every C-ELF row with an image has one
+                               that the probe column is what the rules of spec 2.2
+                               and 2.3 say (as the loader applies them) and that
+                               tools/aar-check, the lint, agrees (it also demands
+                               section headers), and that every C-ELF row with an
+                               image has one
 """
 import importlib.util
 import os
@@ -71,6 +75,14 @@ checkmod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(checkmod)
 build_image = checkmod.build
 note_bytes = checkmod.note_bytes
+_pspec = importlib.util.spec_from_file_location(
+    "probe_corpus", os.path.join(ROOT, "client", "tests", "probe_corpus.py"))
+probe_corpus = importlib.util.module_from_spec(_pspec)
+_pspec.loader.exec_module(probe_corpus)
+
+# Images that the runtime rules accept and the lint aar-check refuses, because
+# they have no section headers (spec 2.2 rule 4 lets an image have none).
+NEEDS_NO_SECTIONS = ("ok-nosections",)
 
 # Entry code, called with the table in r0 / x0: exit(EXIT_CODE) through the exit
 # slot at offset 16 of the table (spec 3.3).
@@ -88,7 +100,6 @@ CODE = {
 OTHER = {"a32": "a64", "a64": "a32"}
 PN = {"a32": 1, "a64": 2}
 REFUSE = "PROFILE|INVAL"
-MAYBE = "PROFILE|INVAL|MAYBE"  # refused, or loaded (the spec states no rule: spec question 61)
 
 
 def img(profile, **o):
@@ -176,7 +187,7 @@ def corpus(p):
     # pointer and exits with EXIT_CODE only if it is the runtime address of the code
     # itself (EXIT_CODE + 1 otherwise), so a loader that ignores or misapplies the
     # relocations fails the image.
-    add("ok-nosections", reloc_img(p, strip_sections=True), ["C-ELF.16"], "OK", "any")
+    add("ok-nosections", reloc_img(p, strip_sections=True), ["C-ELF.16"], "OK", "ok")
     if not a64:
         add("ok-rel", reloc_img(p, reloc_kind="rel"), ["C-ELF.17"], "OK", "ok")
         add("ok-rela", reloc_img(p, reloc_kind="rela"), ["C-ELF.18"], "OK", "ok")
@@ -215,7 +226,7 @@ def corpus(p):
     huge = 0x4000000000 if a64 else 0xE0000000
     add("segment-huge", img(p, load1_memsz=huge), ["C-ELF.14"],
         "PROFILE|INVAL|NOMEM", "any")
-    add("no-dynamic", img(p, no_dynamic=True), ["C-ELF.15"], MAYBE)
+    add("no-dynamic", img(p, no_dynamic=True), ["C-ELF.15"], REFUSE)
 
     # ---- C-ELF.19 to C-ELF.23: relocations
     odd = {"a32": [2, 21, 0, 1027], "a64": [257, 1025, 0, 23]}[p]
@@ -225,7 +236,16 @@ def corpus(p):
     add("reloc-symbol", img(p, reloc_sym=3), ["C-ELF.21"])
     add("reloc-misaligned-2", img(p, reloc_target=2), ["C-ELF.22"])
     add("reloc-misaligned-4", img(p, reloc_target=4 if a64 else 2), ["C-ELF.22"])
-    add("reloc-outside", img(p, reloc_target=0x10000), ["C-ELF.23"], MAYBE)
+    add("reloc-outside", img(p, reloc_target=0x10000), ["C-ELF.23"], REFUSE)
+    # The target lies inside p_memsz of a PT_LOAD with room for the whole word
+    # (spec 2.2 rule 5): a gap between two segments and the end of the memory do
+    # not count, the bss tail does.
+    add("reloc-gap", img(p, load1_gap=0x1000, reloc_target=0x800), ["C-ELF.23"], REFUSE)
+    add("reloc-memsz-end", img(p, reloc_target=48), ["C-ELF.23"], REFUSE)
+    add("reloc-straddle", img(p, load1_memsz=52 if a64 else 50, reloc_target=48),
+        ["C-ELF.23"], REFUSE)
+    add("ok-reloc-bss", reloc_img(p, reloc_kind="rela", reloc_target=32), ["C-ELF.23"],
+        "OK", "ok")
 
     # ---- C-ELF.24 and C-ELF.25: the entry point
     add("entry-outside", img(p, entry=0x40000), ["C-ELF.24"])
@@ -236,14 +256,14 @@ def corpus(p):
     # ---- C-ELF.26 to C-ELF.29, C-ELF.38: the note
     add("no-note", img(p, note=None), ["C-ELF.26"])
     add("note-type-2", img(p, note=note(ntype=2)), ["C-ELF.26"])
-    add("note-owner-zzapp", img(p, note=struct.pack("<III", 6, 24, 1)
-                                + b"ZZAPP\x00\x00\x00"
+    add("note-owner-other", img(p, note=struct.pack("<III", 6, 24, 1)
+                                + b"OTHER\x00\x00\x00"
                                 + struct.pack("<6I", 0x50505A41, 0, 0, 0, 8, 0)),
         ["C-ELF.26"])
     add("note-not-in-pt-note", img(p, no_pt_note=True), ["C-ELF.26"])
     add("two-notes", img(p, second_note=note()), ["C-ELF.27"])
     add("note-magic-bad", img(p, note=note(magic=0x11111111)), ["C-ELF.28"])
-    add("note-magic-zzapp", img(p, note=note(magic=0x50505A41)), ["C-ELF.28"])
+    add("note-magic-other", img(p, note=note(magic=0x50505A41)), ["C-ELF.28"])
     add("note-magic-swapped", img(p, note=note(magic=0x4141524E)), ["C-ELF.28"])
     add("note-version-0", img(p, note=note(version=0)), ["C-ELF.29"])
     add("note-version-2", img(p, note=note(version=2)), ["C-ELF.29"])
@@ -264,6 +284,15 @@ def corpus(p):
         "NOGROUP", "ok")
     add("group-experimental-31", img(p, note=note(req=1 << 31)), ["C-ELF.37"],
         "NOGROUP", "ok")
+    # Reserved bits 5 to 27 are for later versions of the standard, and no platform
+    # sets one: a required one is refused like any group the platform lacks. An
+    # unknown bit of groups_optional is only a hint (spec 8.1).
+    add("group-reserved-5", img(p, note=note(req=1 << 5)), ["C-ELF.37"],
+        "NOGROUP", "ok")
+    add("group-reserved-27", img(p, note=note(req=1 << 27)), ["C-ELF.37"],
+        "NOGROUP", "ok")
+    add("group-optional-unknown", img(p, note=note(opt=(1 << 5) | (1 << 27) | (1 << 28))),
+        ["C-ELF.37"], "OK", "ok")
     add("note-namesz-8", img(p, note=note(owner=b"AAR\x00", namesz=8,
                                           name_pad=b"\x00" * 4)), ["C-ELF.38"])
     add("note-name-no-nul", img(p, note=note(owner=b"AAR", namesz=3)), ["C-ELF.38"])
@@ -271,8 +300,13 @@ def corpus(p):
     add("note-desc-36", img(p, note=note(descsz=36)), ["C-ELF.38"])
     add("note-desc-41", img(p, note=note(descsz=41)), ["C-ELF.38"])
 
-    # ---- C-ELF.40: more heap than any platform commits
-    add("heap-4095", img(p, note=note(heap=4095)), ["C-ELF.40"], "NOMEM|NORESOURCE", "ok")
+    # ---- C-ELF.40: more heap than any platform commits. min_heap_mib is a 32-bit
+    # count of MiB with no maximum (spec 4.1). 0xFFFFFFFF is the largest word;
+    # 0x10000001 MiB is 1 MiB when converted to bytes in 32 bits.
+    add("heap-max", img(p, note=note(heap=0xFFFFFFFF)), ["C-ELF.40"],
+        "NOMEM|NORESOURCE", "ok")
+    add("heap-wrap", img(p, note=note(heap=0x10000001)), ["C-ELF.40"],
+        "NOMEM|NORESOURCE", "ok")
 
     # ---- C-ELF.41 only: files that are not images at all
     add("not-elf", b"not an elf at all", [], REFUSE)
@@ -355,8 +389,7 @@ def check():
             for name, blob, ids, load, probe in corpus(p):
                 if load != "OK" and load != "ANY":
                     for code in load.split("|"):
-                        if code not in ("PROFILE", "INVAL", "NOGROUP", "NOMEM", "NORESOURCE",
-                                        "MAYBE"):
+                        if code not in ("PROFILE", "INVAL", "NOGROUP", "NOMEM", "NORESOURCE"):
                             errors.append("%s/%s: unknown load code %s" % (p, name, code))
                 for i in ids:
                     if i not in rows:
@@ -368,11 +401,19 @@ def check():
                     path = os.path.join(tmp, "%s-%s%s" % (p, name, EXT))
                     with open(path, "wb") as fh:
                         fh.write(blob)
+                    # The probe applies the rules of spec 2.2 and 2.3 as the loader
+                    # does (no section headers needed): aar-check's functions
+                    # without the section rules say what that is.
+                    runtime_ok = probe_corpus.spec_check(blob)[0] == probe_corpus.OK
+                    if runtime_ok != (probe == "ok"):
+                        errors.append("%s/%s: the runtime rules %s it, the manifest says %s"
+                                      % (p, name, "accept" if runtime_ok else "refuse", probe))
+                    # aar-check, a lint for build output, also demands section headers.
                     rc = aar_check(path, p)
-                    want = 0 if probe == "ok" else 1
+                    want = 0 if probe == "ok" and name not in NEEDS_NO_SECTIONS else 1
                     if rc != want:
-                        errors.append("%s/%s: aar-check says %d, the manifest says %s"
-                                      % (p, name, rc, probe))
+                        errors.append("%s/%s: aar-check says %d, want %d (manifest probe %s)"
+                                      % (p, name, rc, want, probe))
     # Every row that a corpus can show has an image for each profile it applies to.
     need = [i for i in rows if int(i.split(".")[1]) <= 38 or i == "C-ELF.40"]
     for i in sorted(need, key=lambda s: int(s.split(".")[1])):

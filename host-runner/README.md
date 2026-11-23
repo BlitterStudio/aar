@@ -109,8 +109,8 @@ stop
 
 `key` takes an Amiga raw code and optional qualifier bits. `break` is
 `AAR_EV_BREAK` (`4`, `5`, `6` for Ctrl-D/E/F). `stop` sets the stop flag and
-enqueues `AAR_EV_STOP`. `lowmem` enqueues `AAR_EV_LOW_MEMORY`, because the host
-has no memory pool that could cross a mark. `resize` enqueues `AAR_EV_RESIZE`,
+enqueues `AAR_EV_STOP`. `lowmem` enqueues an `AAR_EV_LOW_MEMORY` at once, for
+an app that does not exhaust the heap. `resize` enqueues `AAR_EV_RESIZE`,
 which a real runtime never sends in 0.5; it is only there to test an app's
 handling of an event it should ignore.
 
@@ -219,8 +219,11 @@ port); joystick 1 is port 0. `dx`/`dy` are `-1`, `0`, or `1`. Fire is button
   `AAR_E_NOMEM`. A zero or non-MiB size is `AAR_E_INVAL`. `aar_get_heap_info`
   reports the commit, that limit, and the uncommitted remainder as `pool_free`.
   `aar_alloc` and `aar_free` sit on the host `malloc`; an app that uses
-  `malloc` directly never touches the arena. No heap crossing raises
-  `AAR_EV_LOW_MEMORY`; use the input script.
+  `malloc` directly never touches the arena. The arena is the pool for
+  `AAR_EV_LOW_MEMORY`: the event is queued when the free pool falls below
+  1 MiB (low-water mark), and again only after it has risen above 2 MiB
+  (high-water mark). An app that grows the heap until `AAR_E_NOMEM` gets one
+  event; the input script can also enqueue one.
 - **Services.** SHA-256 is implemented, including an empty buffer.
   `aar_decompress`, `aar_image_open` / `aar_image_decode` / `aar_image_close`,
   and `aar_audio_decode_open` / `aar_audio_decode` / `aar_audio_decode_close`

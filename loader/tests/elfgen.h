@@ -36,6 +36,7 @@ struct gen {
     uint32_t data_vaddr;  /* default 0x4000 */
     uint32_t text_extra;  /* added to the memsz of the text segment */
     int no_note_segment;  /* no PT_NOTE: the image must be refused */
+    uint64_t first_target; /* when not 0: where the first relocation lands, instead of its slot */
 };
 
 struct gen_slot {
@@ -234,6 +235,8 @@ static inline void gen_image(uint8_t *b, const struct gen *g, struct gen_out *o)
                                  : (uint64_t)dv + words + 8u * k;
         uint64_t addend = is_bss && in_rel ? 0 : gen_addend(a64, k);
         uint32_t ent_off = (in_rel ? t0 + idx * relent : t1 + idx * relaent) + doff;
+        if (k == 0 && g->first_target)
+            target = g->first_target;
 
         if (a64) {
             gen_put64(b, ent_off, target);

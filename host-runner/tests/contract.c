@@ -206,7 +206,8 @@ static int test_reject(void)
     if (!saw_dir)
         return fail(21, "list did not report foo as a directory");
     fd = aar_file_open("round.bin",
-                       AAR_FILE_WRITE | AAR_FILE_CREATE | AAR_FILE_TRUNCATE);
+                       AAR_FILE_READ | AAR_FILE_WRITE | AAR_FILE_CREATE |
+                       AAR_FILE_TRUNCATE);
     if (fd < 0)
         return fail(17, "create");
     if (aar_file_write(fd, "abcd", 4u, &n) != AAR_OK || n != 4u)
@@ -224,6 +225,19 @@ static int test_reject(void)
     }
     if (read_all(fd, buf, 3u) != AAR_OK || memcmp(buf, "bcd", 3) != 0)
         return fail(20, "read after seek");
+    aar_file_close(fd);
+    /* An id remembers how it was opened (spec 7.1). */
+    fd = aar_file_open("round.bin", AAR_FILE_READ);
+    if (fd < 0)
+        return fail(192, "open read-only");
+    if (aar_file_write(fd, "x", 1u, &n) != AAR_E_BADF)
+        return fail(192, "write through a read-only id");
+    aar_file_close(fd);
+    fd = aar_file_open("round.bin", AAR_FILE_WRITE);
+    if (fd < 0)
+        return fail(193, "open write-only");
+    if (aar_file_read(fd, buf, 1u, &n) != AAR_E_BADF)
+        return fail(193, "read through a write-only id");
     aar_file_close(fd);
     (void)n;
     return 0;

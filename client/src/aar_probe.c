@@ -1,10 +1,11 @@
 /*
  * The image probe. See aar_probe.h. The checks are the image rules of the AAR
- * standard in loader/aar_image.c, applied the way tools/aar-check applies them
- * (AAR_IMAGE_SECTIONS: the section headers are required and checked as well).
- * The probe reports the note in the structure of aar.library and does not load
- * anything. client/tests/probe_corpus.py runs it and aar-check over the corpus
- * of tests/aar_check_test.py and over mutations of it.
+ * standard in loader/aar_image.c, applied as the loader applies them: the
+ * section headers are neither required nor read, so an image without them is
+ * accepted. The probe reports the note in the structure of aar.library and does
+ * not load anything. client/tests/probe_corpus.py runs it over the corpus of
+ * tests/aar_check_test.py and over mutations of it, against the rules of
+ * tools/aar-check that do not read section headers.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -46,10 +47,12 @@ static int run(struct source *src, uint32_t length, AARImageInfo *info,
         *why = NULL;
     if (!info || info->size < 4)
         return AAR_E_INVAL;
-    rc = aar_image_check(source_read, src, length, AAR_IMAGE_SECTIONS, &image, why);
+    rc = aar_image_check(source_read, src, length, 0, &image, why);
     if (rc != AAR_OK) {
-        /* The profile is not judged: every refusal is AAR_E_INVAL, except
-         * that a failing reader is AAR_E_IO. */
+        /* The loader's rules, one code: every refusal is AAR_E_INVAL, including
+         * a note whose profile word is not the ELF class (the loader says
+         * AAR_E_PROFILE there); a failing reader is AAR_E_IO. The platform's
+         * profiles are not consulted, so the probe never says AAR_E_PROFILE. */
         return rc == AAR_E_IO ? AAR_E_IO : AAR_E_INVAL;
     }
     memset(&full, 0, sizeof(full));

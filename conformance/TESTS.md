@@ -54,15 +54,15 @@ checks that the handle can be closed and that a new claim succeeds.
 | C-ELF.12 | 2.2.3 | MUST | core | any | runner | yes | `p_memsz` smaller than `p_filesz` refused |
 | C-ELF.13 | 2.2.3 | MUST | core | any | runner | yes | overlapping `PT_LOAD` segments refused |
 | C-ELF.14 | 2.2.3 | MUST | core | any | runner | yes | a segment larger than any memory the runtime offers refused (`AAR_E_NOMEM` is also accepted) |
-| C-ELF.15 | 2.2.4 | MUST | core | any | runner | yes | image with no `PT_DYNAMIC` is refused, or loads (not started) [spec question 61] |
-| C-ELF.16 | 2.2.4 | MUST | core | any | runner | yes | image with no section headers loads and runs (relocations come from `PT_DYNAMIC`); `AARProbeFile` may refuse it [spec question 39] |
+| C-ELF.15 | 2.2.4 | MUST | core | any | runner | yes | image with no `PT_DYNAMIC` is refused with `AAR_E_INVAL` [spec question 61] |
+| C-ELF.16 | 2.2.4 | MUST | core | any | runner | yes | image with no section headers loads and runs (relocations come from `PT_DYNAMIC`), and `AARProbeFile` accepts it [spec question 39] |
 | C-ELF.17 | 2.2.5 | MUST | core | a32 | runner | yes | a `REL` table loads and runs |
 | C-ELF.18 | 2.2.5 | MUST | core | a32 | runner | yes | a `RELA` table loads and runs |
 | C-ELF.19 | 2.2.5 | MUST | core | any | runner | yes | a relocation type other than `RELATIVE` refused |
 | C-ELF.20 | 2.2.5 | MUST | core | any | runner | yes | `DT_RELR` refused |
 | C-ELF.21 | 2.2.5 | MUST | core | any | runner | yes | a relocation with symbol index other than 0 refused |
 | C-ELF.22 | 2.2.5 | MUST | core | any | runner | yes | a relocation with a misaligned target refused |
-| C-ELF.23 | 2.2.5 | MUST | core | any | runner | yes | a relocation target outside the image is refused, or the image loads (not started) [spec question 61] |
+| C-ELF.23 | 2.2.5 | MUST | core | any | runner | yes | a relocation target outside the memory (`p_memsz`) of every `PT_LOAD` is refused: in a gap between segments, at the end of the memory, or without room for the whole word; a target in the bss tail loads and runs [spec question 61] |
 | C-ELF.24 | 2.2.6 | MUST | core | any | runner | yes | entry point outside an executable segment refused |
 | C-ELF.25 | 2.2.6 | MUST | core | a32 | runner | yes | entry point with bit 0 set refused |
 | C-ELF.26 | 2.2.7 | MUST | core | any | runner | yes | image with no AAR note refused |
@@ -76,10 +76,10 @@ checks that the handle can be closed and that a new claim succeeds.
 | C-ELF.34 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` below 64 KiB refused |
 | C-ELF.35 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` that is not a multiple of 16 refused |
 | C-ELF.36 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` 0, 64 KiB and 1 MiB all load and run |
-| C-ELF.37 | 2.3 | MUST | core | any | runner | yes | `groups_required` with a reserved experimental bit (bit 28) refused with `AAR_E_NOGROUP` |
+| C-ELF.37 | 2.3 | MUST | core | any | runner | yes | `groups_required` with a bit that no platform sets (reserved bit 5 or 27, experimental bit 28 or 31) refused with `AAR_E_NOGROUP`; unknown bits of `groups_optional` are ignored: the image loads and runs [spec question 4] |
 | C-ELF.38 | 2.3 | MUST | core | any | runner | yes | a note with wrong name or descriptor padding is not an AAR note: refused |
 | C-ELF.39 | 5.2 | MUST | core | any | runner | yes | `AARInfo.max_image_bytes` is at least 16 MiB |
-| C-ELF.40 | 4.1 | MUST | core | any | runner | yes | `min_heap_mib` above anything the platform can commit: `AAR_E_NOMEM` from the load call, or `AAR_E_NORESOURCE` with a reason in `AARStatusInfo.reason` (the image asks for 4095 MiB) [spec questions 40 and 60] |
+| C-ELF.40 | 4.1 | MUST | core | any | runner | yes | `min_heap_mib` above anything the platform can commit (0xFFFFFFFF, and 0x10000001, which wraps to 1 MiB in 32-bit bytes): `AAR_E_NOMEM` from the load call, or `AAR_E_NORESOURCE` with a reason in `AARStatusInfo.reason` [spec questions 40 and 60] |
 | C-ELF.41 | 5.2 | MUST | core | any | runner | yes | every load refusal is one of `AAR_E_PROFILE`, `AAR_E_NOGROUP`, `AAR_E_INVAL`, `AAR_E_NOMEM` (or `AAR_E_NORESOURCE` with a reason, spec question 60); checked over the whole corpus |
 | C-ELF.42 | 2.2 | MUST | core | any | runner | yes | the same image loaded with `AARLoadMemory` gives the same result as `AARLoadFile` (accept and refuse alike) |
 | C-ELF.43 | 2.4 | MUST | core | any | none | todo | not tested: `tools/aar-check` is a tool of this repository, tested by `tests/aar_check_test.py` in CI |
@@ -573,9 +573,11 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
    "EL0, AArch64" cannot be read from user mode: `MRS CPSR` in user mode returns
    only the APSR bits, and `CurrentEL` and `DAIF` trap at EL0. Either name an
    observable consequence or drop the sentence from the test surface.
-4. **Group bits** (8.1). Bits 5 to 27 are neither defined nor reserved. Say
-   whether a platform may set them (this suite cannot tell experiments, bits 28
-   to 31, from a wrong declaration).
+4. **Group bits** (8.1). Bits 5 to 27 were neither defined nor reserved.
+   settled: spec 0.5, 8.1: bits 5 to 27 are reserved for later versions and no
+   platform sets one, bits 28 to 31 are for experiments of a platform; a required
+   group the platform lacks is `AAR_E_NOGROUP` whether the bit is defined, reserved
+   or experimental, and unknown bits of `groups_optional` are ignored (C-ELF.37).
 5. **LOW_MEMORY** (4.1) has no thresholds ("once per low-water crossing", "high-water
    mark"). A test has to exhaust the pool, which the host runner cannot do
    (heap arena fixed at 8 MiB with no trigger), so C-MEM.12 cannot pass there
@@ -724,19 +726,20 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     C-SERVICES.5 follow zzapp 0.x; a platform with another framing fails them
     until the standard says what is meant.
 39. **What the probe refuses** (9.2, 2.2): `AARProbeFile` "reads the note without
-    loading", and says nothing about an image that breaks a rule of 2.2 or 2.3.
-    The reference library applies every rule of `tools/aar-check`, which also
-    demands section headers, while 2.2.4 says section headers MAY be absent: the
-    probe refuses an image that loads. C-ELF takes "a negative code for an image
-    that breaks a rule" as the probe's duty, accepts either answer for an image
-    without section headers, and does not judge the probe against the platform
-    (profile, groups, memory).
-40. **An unsatisfiable heap** (4.1, 2.3): `min_heap_mib` "committed at load" has no
+    loading", and said nothing about an image that breaks a rule of 2.2 or 2.3. The
+    reference library applied every rule of `tools/aar-check`, which also demands
+    section headers, while 2.2.4 says section headers MAY be absent.
+    settled: spec 0.5, 9.2: the probe applies the image rules of 2.2 and 2.3 as the
+    loader does, with or without section headers, and does not judge the image
+    against the platform. `tools/aar-check` stays a stricter lint for build output
+    (2.4). C-ELF.16 requires the probe to accept the image without section headers.
+40. **An unsatisfiable heap** (4.1, 2.3): `min_heap_mib` "committed at load" had no
     limit in the text, and a platform that converts MiB to bytes in 32 bits wraps
-    at 4096. C-ELF.40 asks for 4095 MiB, the largest value that does not wrap,
-    and assumes no platform has that much private memory. A platform with more
-    needs an image built for its size; say whether the standard wants a defined
-    maximum.
+    at 4096.
+    settled: spec 0.5, 4.1: the word is a 32-bit count with no maximum, and a runtime
+    compares it without a conversion that can wrap. C-ELF.40 uses `heap-max`
+    (0xFFFFFFFF) and `heap-wrap` (0x10000001, which is 1 MiB in 32-bit bytes); both
+    are refused with `AAR_E_NOMEM` or `AAR_E_NORESOURCE`.
 41. **An address that no app can map** (5.3): the fault tests need an address that is
     unmapped in every app's address space. The standard does not say what the
     address space of an app holds beyond the image, heap and stack. C-LIFE.9 uses
@@ -844,12 +847,14 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     `AAR_REASON_MEMORY` to a heap it can never commit. C-ELF.40 and C-ELF.41 accept
     both. Say whether a request that can never be satisfied is `AAR_E_NOMEM` and a
     shortage of the moment `AAR_E_NORESOURCE`.
-61. **Rules the loader is not told to enforce** (2.2): the spec does not say that an
+61. **Rules the loader is not told to enforce** (2.2): the spec did not say that an
     image without `PT_DYNAMIC` or a relocation whose target lies outside every
-    `PT_LOAD` is refused (`tools/aar-check` and the library's probe do), and for a
-    class or machine that the platform does not run it allows `AAR_E_PROFILE` or
-    `AAR_E_INVAL`. C-ELF.15 and C-ELF.23 accept a refusal or a load, C-ELF.31 accepts
-    either code.
+    `PT_LOAD` is refused, and for a class or machine that the platform does not run it
+    allowed `AAR_E_PROFILE` or `AAR_E_INVAL`.
+    settled: spec 0.5, 2.2: an image has exactly one `PT_DYNAMIC`, every relocation
+    target lies inside `p_memsz` of a `PT_LOAD` with room for the whole word, and both
+    are refused with `AAR_E_INVAL`. C-ELF.15 and C-ELF.23 accept a refusal only;
+    C-ELF.31 accepts `AAR_E_PROFILE` or `AAR_E_INVAL`, as 2.2 says.
 62. **SQ full and the message reserve** (10.3, 10.4): `sq_full` counts "a post that finds the SQ
     full", but a message post is refused one entry early (the reserve for a request, 6), when
     the queue is not yet full. The ZZ9000 does not count that refusal. C-QUEUE.8 fills the

@@ -43,40 +43,10 @@ sys.path.insert(0, os.path.join(ROOT, "client", "tests"))
 import probe_corpus as pc  # noqa: E402  (the corpus and the aar-check module)
 
 tool = pc.tool
-CRASHES = [0]
+CRASHES = pc.CRASHES
 
-OK, INVAL, PROFILE = 0, 1, 2
+OK, INVAL, PROFILE = pc.OK, pc.INVAL, pc.PROFILE
 FIELDS = 13
-
-
-def code_of(exc):
-    """A refusal of aar-check as the module's code."""
-    return PROFILE if str(exc).startswith("note profile ") else INVAL
-
-
-def spec_tables(img):
-    """parse_tables without the section headers."""
-    blob, lay = img.blob, img.lay
-    if img.phentsize < lay["phdr"].size:
-        tool.fail("unexpected ELF header size")
-    if img.phoff + img.phnum * img.phentsize > len(blob):
-        tool.fail("truncated ELF program headers")
-    img.phdrs = []
-    for i in range(img.phnum):
-        f = lay["phdr"].unpack_from(blob, img.phoff + i * img.phentsize)
-        if img.cls == tool.ELFCLASS32:
-            p_type, off, vaddr, _, filesz, memsz, flags, align = f
-        else:
-            p_type, flags, off, vaddr, _, filesz, memsz, align = f
-        img.phdrs.append((p_type, flags, off, vaddr, filesz, memsz, align))
-
-
-def spec_check_note(img):
-    """check_note without the .note.aar section: the one section it asks for is
-    replaced by one that covers the whole file."""
-    whole = (0, tool.SHT_NOTE, tool.SHF_ALLOC, 0, 0, len(img.blob), 0, 0, 0, 0)
-    img.section = lambda wanted: [whole]
-    tool.check_note(img)
 
 
 def reloc_tables(img):
@@ -96,36 +66,9 @@ def reloc_tables(img):
 
 def decide(blob):
     """(strict code, spec code, overflow, fields) as aar-check decides."""
-    strict = OK
-    try:
-        img = tool.Image(blob)
-        img.check_header()
-        img.parse_tables()
-        loads = tool.check_segments(img)
-        tool.check_dynamic(img, loads)
-        tool.check_section_relocs(img, loads)
-        tool.check_entry(img, loads)
-        tool.check_note(img)
-    except tool.CheckError as exc:
-        strict = code_of(exc)
-    except Exception:  # aar-check raises on some damaged input
-        CRASHES[0] += 1
-        strict = INVAL
-
-    spec, overflow, fields = OK, 0, [0] * FIELDS
-    try:
-        img = tool.Image(blob)
-        img.check_header()
-        spec_tables(img)
-        loads = tool.check_segments(img)
-        tool.check_dynamic(img, loads)
-        tool.check_entry(img, loads)
-        spec_check_note(img)
-    except tool.CheckError as exc:
-        spec = code_of(exc)
-    except Exception:
-        CRASHES[0] += 1
-        spec = INVAL
+    strict = pc.strict_code(blob)
+    spec, img, loads = pc.spec_check(blob)
+    overflow, fields = 0, [0] * FIELDS
     if spec == OK:
         _pos, _name, _namesz, _ntype, _descsz, desc = tool.find_aar_notes(img)[0]
         (_magic, version, profile, major, minor, stack, heap, req, opt,

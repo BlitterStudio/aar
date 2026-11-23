@@ -494,6 +494,126 @@ static void test_images(void)
     }
 }
 
+static int plan_of(const uint8_t *b, size_t len, struct aar_load_plan *plan, const char **why)
+{
+    struct mem m;
+
+    mem_init(&m, b, len, 512);
+    return aar_load_plan(mem_read, &m, len, BOTH, plan, why);
+}
+
+/* The group and heap words of the note are reported, never judged: the platform
+ * answers AAR_E_NOGROUP for a required group it lacks, whether the bit is
+ * defined, reserved (5 to 27) or experimental (28 to 31), and ignores unknown
+ * bits of groups_optional (spec 8.1). min_heap_mib is a 32-bit count with no
+ * maximum (spec 4.1). */
+static void test_note_words(void)
+{
+    const uint32_t words[] = { 1u << 5, 1u << 27, 0x0FFFFFE0u, 1u << 28, 1u << 31, 0xFFFFFFFFu };
+    const uint32_t heaps[] = { 4095u, 4096u, 0x10000001u, 0xFFFFFFFFu };
+    uint32_t p, i;
+
+    for (p = 0; p < 2; p++) {
+        struct gen g;
+        struct gen_out o;
+        uint8_t b[GEN_CAP];
+        struct aar_load_plan plan;
+        const char *why;
+        uint32_t ehsz = p ? 64u : 52u, phsz = p ? 56u : 32u;
+        uint32_t note_off = (ehsz + 4u * phsz + 7u) & ~7u;
+
+        memset(&g, 0, sizeof(g));
+        g.a64 = (int)p;
+        for (i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
+            gen_image(b, &g, &o);
+            gen_put32(b, note_off + 44, words[i]);
+            why = "unset";
+            CHECK(plan_of(b, o.len, &plan, &why) == AAR_OK);
+            CHECK(plan.groups_required == words[i]);
+            CHECK(plan.groups_optional == 4);
+            gen_image(b, &g, &o);
+            gen_put32(b, note_off + 48, words[i]);
+            CHECK(plan_of(b, o.len, &plan, &why) == AAR_OK);
+            CHECK(plan.groups_optional == words[i]);
+            CHECK(plan.groups_required == 1);
+        }
+        for (i = 0; i < sizeof(heaps) / sizeof(heaps[0]); i++) {
+            gen_image(b, &g, &o);
+            gen_put32(b, note_off + 40, heaps[i]);
+            CHECK(plan_of(b, o.len, &plan, &why) == AAR_OK);
+            CHECK(plan.min_heap_mib == heaps[i]);
+        }
+    }
+}
+
+/* spec 2.2 rule 4: exactly one PT_DYNAMIC, even when the image has no
+ * relocations. Rule 5: every relocation target, with room for the whole word,
+ * lies inside the memory (p_memsz, so the bss counts) of a PT_LOAD. */
+static void test_dynamic_and_targets(void)
+{
+    uint32_t p;
+
+    for (p = 0; p < 2; p++) {
+        struct gen g;
+        struct gen_out o;
+        uint8_t b[GEN_CAP];
+        struct aar_load_plan plan;
+        const char *why;
+        uint32_t ehsz = p ? 64u : 52u, phsz = p ? 56u : 32u;
+        uint32_t dyn_type_at = ehsz + 2u * phsz;
+        uint64_t word = p ? 8u : 4u;
+        uint64_t span;
+
+        memset(&g, 0, sizeof(g));
+        g.a64 = (int)p;
+
+        /* No PT_DYNAMIC, and two. */
+        gen_image(b, &g, &o);
+        gen_put32(b, dyn_type_at, 0);
+        why = NULL;
+        CHECK(plan_of(b, o.len, &plan, &why) == AAR_E_INVAL);
+        CHECK(why != NULL && strstr(why, "PT_DYNAMIC") != NULL);
+        gen_image(b, &g, &o);
+        gen_put32(b, ehsz + 3u * phsz, 2); /* the PT_NOTE entry becomes a second PT_DYNAMIC */
+        why = NULL;
+        CHECK(plan_of(b, o.len, &plan, &why) == AAR_E_INVAL);
+        CHECK(why != NULL && strstr(why, "PT_DYNAMIC") != NULL);
+
+        /* A target in the gap between the segments, past the end of the last one,
+         * and in the bss tail. */
+        g.first_target = 0x2000;
+        gen_image(b, &g, &o);
+        why = NULL;
+        CHECK(plan_of(b, o.len, &plan, &why) == AAR_E_INVAL);
+        CHECK(why != NULL && strstr(why, "outside every PT_LOAD") != NULL);
+        g.first_target = o.span;
+        gen_image(b, &g, &o);
+        CHECK(plan_of(b, o.len, &plan, &why) == AAR_E_INVAL);
+        g.first_target = o.span - word;
+        gen_image(b, &g, &o);
+        why = "unset";
+        CHECK(plan_of(b, o.len, &plan, &why) == AAR_OK);
+        CHECK(why == NULL);
+
+        /* The last word of the memory is not whole: p_memsz ends two (A32) or
+         * four (A64) bytes after an aligned address. */
+        memset(&g, 0, sizeof(g));
+        g.a64 = (int)p;
+        g.bss = p ? 0x7FCu : 0x7FEu;
+        gen_image(b, &g, &o);
+        span = o.span;
+        CHECK(span % word == (p ? 4u : 2u));
+        g.first_target = span - (p ? 4u : 2u);
+        gen_image(b, &g, &o);
+        why = NULL;
+        CHECK(plan_of(b, o.len, &plan, &why) == AAR_E_INVAL);
+        CHECK(why != NULL && strstr(why, "outside every PT_LOAD") != NULL);
+        g.first_target = span - (p ? 12u : 6u);
+        gen_image(b, &g, &o);
+        CHECK(plan_of(b, o.len, &plan, &why) == AAR_OK);
+    }
+}
+
 int main(void)
 {
     size_t i;
@@ -503,5 +623,7 @@ int main(void)
         test_variant(&variants[i]);
     test_profiles();
     test_images();
+    test_note_words();
+    test_dynamic_and_targets();
     return finish("place_test");
 }

@@ -17,7 +17,8 @@
  *   stop
  *   resize <w> <h>
  * Numbers accept a 0x prefix. '#' starts a comment. lowmem enqueues
- * AAR_EV_LOW_MEMORY, which the host has no pool to raise by itself. resize
+ * AAR_EV_LOW_MEMORY at once (the heap raises it too, when its free pool falls
+ * below the low-water mark, memory.c). resize
  * enqueues AAR_EV_RESIZE, which a runtime never sends on its own.
  *
  * SPDX-License-Identifier: MIT
@@ -225,7 +226,8 @@ static void push_event(uint16_t type, uint16_t code, int16_t dx, int16_t dy,
     ev->dx = dx;
     ev->dy = dy;
     ev->buttons = buttons;
-    ev->time_ms = host_time_ms();
+    /* AAR_EV_LOW_MEMORY has no field but its type (spec 4.1). */
+    ev->time_ms = type == AAR_EV_LOW_MEMORY ? 0u : host_time_ms();
     q_head++;
 }
 
@@ -236,6 +238,12 @@ static void note_stop(void)
         push_event(AAR_EV_STOP, 0, 0, 0, 0);
         stop_event_sent = 1;
     }
+}
+
+/* The heap pool fell below its low-water mark (memory.c). */
+static void low_memory_event(void)
+{
+    push_event(AAR_EV_LOW_MEMORY, 0, 0, 0, 0);
 }
 
 static void on_key(const SDL_KeyboardEvent *key)
@@ -535,6 +543,7 @@ int host_input_init(void)
     drops = 0;
     mouse_buttons = 0;
     stop_event_sent = 0;
+    host_memory_set_low_notify(low_memory_event);
     for (i = 0; i < 2; i++) {
         joys[i] = 0;
         joy_valid[i] = 0;
@@ -550,6 +559,7 @@ void host_input_shutdown(void)
 {
     int i;
 
+    host_memory_set_low_notify(0);
     for (i = 0; i < 2; i++) {
         if (joys[i])
             SDL_JoystickClose(joys[i]);
