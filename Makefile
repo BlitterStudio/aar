@@ -196,6 +196,7 @@ $(foreach p,$(PROFILES),$(eval $(call GUARD_RULE,$(p))))
 check-conf-catalogue:
 	$(PYTHON) $(AAR_SDK)/conformance/tools/conf_catalogue.py check
 	$(PYTHON) $(AAR_SDK)/conformance/tests/tools_test.py
+	$(PYTHON) $(AAR_SDK)/conformance/negative/gen_negative.py --check
 
 # Every conformance payload built for every profile and checked by aar-check.
 check-conf-payloads: $(foreach p,$(PROFILES),$(foreach a,$(CONF_APPS),check-$(p)-$(a)))
