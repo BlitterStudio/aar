@@ -352,11 +352,21 @@ static const struct conf_r_test tests[] = {
     { "C-MSG.15", t_capacity },
 };
 
+/* Judged by on_end while the variant runs; those variants carry no payload ids (the app
+ * only cooperates). */
+static const struct conf_needs needs[] = {
+    { "C-MSG.5", "inbox", 1 },
+    { "C-MSG.7", "inbox", 1 },
+    { "C-MSG.14", "exitmsgs", 1 },
+};
+
 const struct conf_area conf_area_msg = {
     .name = "C-MSG",
     .tests = tests,
     .test_count = CONF_COUNT(tests),
     .variants = variants,
     .variant_count = CONF_COUNT(variants),
+    .needs = needs,
+    .need_count = CONF_COUNT(needs),
     .on_end = on_end,
 };

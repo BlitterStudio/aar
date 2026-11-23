@@ -344,6 +344,12 @@ static void on_end(const struct conf_run *run, const struct conf_outcome *out,
     conf_record("C-INPUT.9", ok, d);
 }
 
+/* C-INPUT.9 is judged by on_end while the variant overfull runs; that variant carries no
+ * payload ids of its own. */
+static const struct conf_needs needs[] = {
+    { "C-INPUT.9", "overfull", 1 },
+};
+
 const struct conf_area conf_area_input = {
     .name = "C-INPUT",
     .peers = peers,
@@ -352,5 +358,7 @@ const struct conf_area conf_area_input = {
     .variant_count = CONF_COUNT(variants),
     .operators = operators,
     .operator_count = CONF_COUNT(operators),
+    .needs = needs,
+    .need_count = CONF_COUNT(needs),
     .on_end = on_end,
 };

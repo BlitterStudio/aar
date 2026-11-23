@@ -1,6 +1,6 @@
 /*
- * Decisions of the runner core, apart from the Amiga code so that a host test can
- * run them (conformance/tests/select_test.c).
+ * Two decisions of the runner core, apart from the Amiga code so that a host test
+ * can run them (conformance/tests/select_test.c).
  *
  * SPDX-License-Identifier: MIT
  */
@@ -22,6 +22,18 @@ static inline int conf_update_allowed(int locked, int old_status, int new_status
     if (old_status != CONF_R_NONE && new_status != CONF_R_FAIL)
         return 0;
     return 1;
+}
+
+/* Does a variant of an area's payload run?
+ *   normal   a payload test of the area is selected and still without a result
+ *   pending  a runner-judged test that is judged while this variant runs (a peer
+ *            handler or an observer records it) is selected and without a result
+ *   solo     the variant carries no payload ids: it exists only for those tests
+ * A solo variant runs only for its pending tests, so a test of an undeclared group
+ * (already skipped) does not make it run for the core tests of the area. */
+static inline int conf_variant_runs(int normal, int pending, int solo)
+{
+    return pending || (normal && !solo);
 }
 
 #endif

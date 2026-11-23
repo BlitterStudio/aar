@@ -774,10 +774,50 @@ static void ask_procedures(void)
     }
 }
 
+/* The runner-judged tests of `def` that are judged while a variant runs (conf_needs):
+ * for the variant (NULL: the single run), whether one is selected and without a result
+ * (`pending`) and whether the variant carries no payload ids (`solo`). */
+static void variant_needs(const struct conf_area *def, const char *variant, int *pending,
+                          int *solo)
+{
+    unsigned k;
+
+    *pending = 0;
+    *solo = 0;
+    for (k = 0; def && k < def->need_count; k++) {
+        const struct conf_needs *n = &def->needs[k];
+        int idx;
+
+        if ((n->variant == NULL) != (variant == NULL) ||
+            (n->variant && strcmp(n->variant, variant) != 0))
+            continue;
+        if (n->solo)
+            *solo = 1;
+        idx = conf_find_test(n->id);
+        if (idx >= 0 && selected[idx] && results[idx].status == CONF_R_NONE)
+            *pending = 1;
+    }
+}
+
+/* Any needs entry of `def` selected and without a result. */
+static int needs_pending(const struct conf_area *def)
+{
+    unsigned k;
+
+    for (k = 0; def && k < def->need_count; k++) {
+        int idx = conf_find_test(def->needs[k].id);
+
+        if (idx >= 0 && selected[idx] && results[idx].status == CONF_R_NONE)
+            return 1;
+    }
+    return 0;
+}
+
 /* Run the payload of one area (once per variant) and fill the results of its
  * expected ids. A variant that shows something to a person runs only with
- * INTERACTIVE and only when its operator test is selected; the other variants run
- * when a payload test of the area is selected. */
+ * INTERACTIVE and only when its operator test is selected; a variant with pending
+ * needs runs for them; the other variants run when a payload test of the area is
+ * selected (a solo variant, which carries no payload ids, does not). */
 static void run_area(int area)
 {
     const char *name = conf_areas[area];
@@ -796,7 +836,8 @@ static void run_area(int area)
     }
     if (def && def->variant_count)
         nvariants = def->variant_count;
-    if (!normal && !(def && def->operator_count && conf_g.interactive))
+    if (!normal && !needs_pending(def) &&
+        !(def && def->operator_count && conf_g.interactive))
         return;
 
     for (v = 0; v < nvariants && !conf_g.aborted && !stop_area; v++) {
@@ -816,8 +857,13 @@ static void run_area(int area)
             if (!conf_g.interactive || opidx < 0 || !selected[opidx] ||
                 results[opidx].status != CONF_R_NONE)
                 continue;
-        } else if (!normal) {
-            continue;
+        } else {
+            int pend;
+            int solo;
+
+            variant_needs(def, var ? var->name : NULL, &pend, &solo);
+            if (!conf_variant_runs(normal, pend, solo))
+                continue;
         }
         do {
             struct conf_run run;

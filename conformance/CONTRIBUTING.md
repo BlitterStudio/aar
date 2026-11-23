@@ -108,6 +108,16 @@ The file defines one `const struct conf_area conf_area_<area>` (see the stubs an
   `run->on_finished` (called after the serving loop returned, with the handle still
   open: the messages and the status are readable). It is also the place to
   prepare fixture files under `conf_g.root`.
+- **Runner tests judged inside a payload run** (`needs`): a row judged `runner` that has
+  no function of its own, because a peer handler or `on_end` records it while a variant
+  runs (C-INPUT.9, C-SHARED.15/.17 to .20, C-MSG.5/.7/.14), is listed in the area's
+  `needs` table as `{ "C-AREA.n", "<variant>", solo }` (variant NULL for an area with one
+  run). The core then runs that variant when the id is selected (`ONLY=C-INPUT.9` runs the
+  overfull variant and nothing else of the area). `solo` is 1 for a variant that carries no
+  payload ids: it runs only for its listed tests, so a skipped test (a group the platform
+  does not declare) does not make it run for the area's other tests. A planned skip is
+  locked: nothing changes it. `conf_catalogue.py check` fails for a runner id that is in
+  no `tests[]` or `needs[]` table (C-LIFE.1 to .3 are observed on every run).
 - **Console modes** (slow output and scripted input) are in the core, in
   `run->con`: `write_hold_ticks` delays the completion of each console write (the
   output backs up in the app, which parks), `input` and `input_len` script what

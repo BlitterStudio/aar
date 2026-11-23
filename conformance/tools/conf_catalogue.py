@@ -266,6 +266,26 @@ def cmd_check(version, tests, errors):
         if t.judge == "runner" and t.id not in runner_found:
             errors.append("%s is impl yes but no r_<area>.c prints it" % t.id)
 
+    # A runner-judged id needs a function in a tests[] table (it runs when selected) or a
+    # needs[] entry (it is judged while a variant of the area's payload runs, and the core
+    # runs that variant when the id is selected). Without one, ONLY=<id> would leave it
+    # without a result. The observer ids are judged on every payload run (r_life.c).
+    observed = {"C-LIFE.1", "C-LIFE.2", "C-LIFE.3"}
+    tabled = set()
+    for path in runner_sources():
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        for m in re.finditer(
+                r"static const struct conf_(?:r_test|needs) \w+\[\] = \{(.*?)\n\};", text,
+                re.S):
+            tabled |= set(re.findall(r'"(C-[A-Z]+\.[0-9]+)"', m.group(1)))
+    for t in tests:
+        if t.judge == "runner" and t.impl == "yes" and t.id not in tabled \
+                and t.id not in observed:
+            errors.append("%s is judged by the runner but is in no tests[] or needs[] table of"
+                          " its r_%s.c: ONLY=%s would leave it without a result"
+                          % (t.id, t.area[2:].lower(), t.id))
+
     # Markers: conf_<area>.host and conf_<area>.qemu need their payload.
     for suffix in (".host", ".qemu"):
         for f in sorted(os.listdir(PAYLOAD_DIR)):

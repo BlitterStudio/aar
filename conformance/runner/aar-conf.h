@@ -34,7 +34,8 @@
 
 /* ---- Globals ------------------------------------------------------------------ */
 
-/* CONF_R_NONE, CONF_R_PASS, CONF_R_FAIL, CONF_R_SKIP and conf_update_allowed. */
+/* CONF_R_NONE, CONF_R_PASS, CONF_R_FAIL, CONF_R_SKIP and the two decisions of the core
+ * (conf_update_allowed, conf_variant_runs). */
 #include "conf_select.h"
 
 struct conf_globals {
@@ -199,6 +200,20 @@ struct conf_variant {
     void (*prepare)(struct conf_run *run);
 };
 
+/* A runner-judged test with no function of its own: it is judged while a variant of
+ * the area's payload runs, by a peer handler or by on_end (C-INPUT.9, C-SHARED.15 and
+ * so on). Listing it makes the core run that variant when the test is selected (ONLY,
+ * or a full run) and still without a result, so that selecting just this id runs the
+ * right payload and variant. `variant` is the variant's name, or NULL for the area's
+ * single run. `solo` is 1 when the variant carries no payload ids: it then runs only
+ * for the tests listed here, and a test that was skipped (an undeclared group) does
+ * not make it run for the other tests of the area. */
+struct conf_needs {
+    const char *id;
+    const char *variant;
+    int solo;
+};
+
 /* An operator test (judge `operator` in TESTS.md) that a variant of the payload run
  * shows to a person: a picture, a screen to touch, a tone. The core runs the variant
  * only with INTERACTIVE and only when the test is selected (so ONLY=<id> runs just
@@ -228,6 +243,8 @@ struct conf_area {
     unsigned variant_count;
     const struct conf_operator *operators;  /* operator tests shown by a variant */
     unsigned operator_count;
+    const struct conf_needs *needs;         /* runner tests judged while a variant runs */
+    unsigned need_count;
     /* Observers: called for every payload run of every area. */
     void (*on_open)(const struct conf_run *run, LONG status_rc,
                     const AARStatusInfo *status);        /* after AAROpen */

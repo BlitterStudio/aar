@@ -1,7 +1,7 @@
 /*
- * Host test of the decisions of the runner core (conformance/runner/conf_select.h):
+ * Host test of two decisions of the runner core (conformance/runner/conf_select.h):
  * a planned skip of an undeclared group cannot be changed by a payload line or an
- * observer.
+ * observer, and a variant that exists only for a runner test runs only for it.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -21,6 +21,7 @@ static void expect(const char *name, int cond)
 
 int main(void)
 {
+    /* Results. */
     expect("a first result is taken", conf_update_allowed(0, CONF_R_NONE, CONF_R_PASS));
     expect("a first FAIL is taken", conf_update_allowed(0, CONF_R_NONE, CONF_R_FAIL));
     expect("a FAIL replaces a PASS", conf_update_allowed(0, CONF_R_PASS, CONF_R_FAIL));
@@ -37,6 +38,17 @@ int main(void)
     /* Without the lock the old rule let FAIL replace the SKIP: the case that was wrong. */
     expect("an unlocked SKIP is still replaced by FAIL (the old rule)",
            conf_update_allowed(0, CONF_R_SKIP, CONF_R_FAIL));
+
+    /* Variants: normal = a payload test of the area is selected, pending = a runner test
+     * that this variant judges is selected, solo = the variant has no payload ids. */
+    expect("a variant with payload ids runs for the area's tests", conf_variant_runs(1, 0, 0));
+    expect("a variant runs for its pending runner test", conf_variant_runs(0, 1, 0));
+    expect("a solo variant runs for its pending test", conf_variant_runs(0, 1, 1));
+    expect("a solo variant runs for its pending test beside payload tests", conf_variant_runs(1, 1, 1));
+    expect("a solo variant does not run for the area's other tests (C-INPUT.1 and .2 without the "
+           "input group must not run overfull)", !conf_variant_runs(1, 0, 1));
+    expect("nothing selected: nothing runs", !conf_variant_runs(0, 0, 0));
+    expect("nothing selected: a solo variant does not run", !conf_variant_runs(0, 0, 1));
 
     if (failures) {
         printf("%d select tests failed\n", failures);

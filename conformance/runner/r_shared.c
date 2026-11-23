@@ -458,6 +458,16 @@ static const struct conf_r_test tests[] = {
     { "C-SHARED.27", t_limit_too_big },
 };
 
+/* Judged by peer_map while the app's CONF-SHARED-MAP message is served (variant default,
+ * which also carries payload ids). */
+static const struct conf_needs needs[] = {
+    { "C-SHARED.15", CONF_SHARED_VARIANT_DEFAULT, 0 },
+    { "C-SHARED.17", CONF_SHARED_VARIANT_DEFAULT, 0 },
+    { "C-SHARED.18", CONF_SHARED_VARIANT_DEFAULT, 0 },
+    { "C-SHARED.19", CONF_SHARED_VARIANT_DEFAULT, 0 },
+    { "C-SHARED.20", CONF_SHARED_VARIANT_DEFAULT, 0 },
+};
+
 const struct conf_area conf_area_shared = {
     .name = "C-SHARED",
     .tests = tests,
@@ -466,4 +476,6 @@ const struct conf_area conf_area_shared = {
     .peer_count = CONF_COUNT(peers),
     .variants = variants,
     .variant_count = CONF_COUNT(variants),
+    .needs = needs,
+    .need_count = CONF_COUNT(needs),
 };
