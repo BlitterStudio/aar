@@ -530,7 +530,7 @@ matrix cases map onto C-GL.6.
 | C-SERVICES.3 | 8.6 | MUST | services | any | payload | yes | `AAR_COMPRESS_NONE` and unknown algorithm numbers (11, 99, 0xFFFFFFFF) are refused with `AAR_E_INVAL`; `AAR_E_NOSYS` is also accepted, as the call description of `aar_decompress` allows |
 | C-SERVICES.4 | 8.6 | MUST | services | any | payload | yes | for each implemented algorithm whose stream ends itself (not LHA, which has no end marker [spec question 38]): a destination that is too small gives an error and writes nothing beyond `dst_bytes` (guard bytes intact); a truncated stream gives an error |
 | C-SERVICES.5 | 8.6 | MUST | services | any | payload | yes | PNG decode through an image session is exact (a 24x16 image in one BGRA8888 tile, fed whole, then drained with the end-of-input flag 1 [spec question 38]); a codec that is not implemented gives `AAR_E_NOSYS` from `image_open` |
-| C-SERVICES.6 | 8.6 | MUST | services | any | payload | yes | JPEG and WebP decode of known images stay within 3 per channel of the reference pixels (decoders differ in rounding) |
+| C-SERVICES.6 | 8.6 | MUST | services | any | payload | yes | JPEG decode of a known image stays within 6 per channel and WebP decode within 3 of the reference pixels (decoders differ in rounding, a fast integer IDCT by up to 4 on the vector) [spec question 64] |
 | C-SERVICES.7 | 8.6 | MUST | services | any | payload | yes | FLAC decode is exact; MP3 and Vorbis decode stay within a root-mean-square error of 64 of the reference PCM; a codec that is not implemented gives `AAR_E_NOSYS` |
 | C-SERVICES.8 | 8.6 | MUST | services | any | payload | yes | at least four image sessions and four audio sessions can be open at once (`AAR_MIN_DECODE_SESSIONS`), with the first implemented codec of each kind; the first refusal beyond is `AAR_E_NOMEM` |
 | C-SERVICES.9 | 8.6 | MUST | services | any | payload | yes | session calls with an unknown session id are `AAR_E_INVAL` (`AAR_E_NOSYS` where the kind has no codec); a closed session id is refused |
@@ -863,3 +863,8 @@ as written. Each has a number that the tables refer to. Slice 13 decides them.
     and no counter, however many it posts. C-INPUT.9 takes the guarantees that are stated
     (the first 64 kept in order, the client's own refusals counted); C-INPUT.10 keeps the
     sum rule of 9.6 ("never lost silently") and fails on such a platform.
+64. **Tolerance of lossy image decode** (8.6): the text gives none and does not fix the
+    IDCT or the chroma upsampling. The reference pixels are those of libjpeg's accurate
+    integer IDCT and libwebp; the ZZ9000 uses the fast integer IDCT (`JDCT_IFAST`), which
+    is off by 4 on the 16x16 test image. C-SERVICES.6 accepts 6 for JPEG and 3 for WebP.
+    Say which error a conforming decoder may have, or require the accurate IDCT.

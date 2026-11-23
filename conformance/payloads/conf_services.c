@@ -28,6 +28,9 @@ AAR_NOTE(0, 0, AAR_GROUP_SERVICES, 0)
 #define GUARD 64u
 #define OUT_BYTES (VEC_PLAIN_BYTES + 16u + GUARD)
 #define SESSIONS_TRIED 12u
+/* The fast integer IDCT (libjpeg JDCT_IFAST, what the ZZ9000 uses) is off by 4 on
+ * the vector where the accurate one is exact; 6 leaves room [spec question 64]. */
+#define JPEG_TOLERANCE 6u
 #define EOF_FLAG 1u              /* the image session's end-of-input flag */
 
 static uint8_t plain[VEC_PLAIN_BYTES];
@@ -507,7 +510,7 @@ static void test_jpeg_webp(void)
 
     conf_begin(&t, "C-SERVICES.6");
     conf_buf_clear(&why);
-    r = image_run(AAR_IMAGE_JPEG, vec_jpeg, sizeof vec_jpeg, VEC_SMOOTH, VEC_SMOOTH, vec_jpeg_ref, 3, &why);
+    r = image_run(AAR_IMAGE_JPEG, vec_jpeg, sizeof vec_jpeg, VEC_SMOOTH, VEC_SMOOTH, vec_jpeg_ref, JPEG_TOLERANCE, &why);
     if (r == 2 && conf_fail_first(&t)) {
         conf_buf_str(&t.why, "JPEG: ");
         conf_buf_str(&t.why, why.b);
@@ -534,7 +537,7 @@ static void test_jpeg_webp(void)
         conf_buf_str(&t.note, why.b);
     conf_buf_str(&t.note, "; ");
     conf_buf_u64(&t.note, (uint64_t)impl);
-    conf_buf_str(&t.note, " of JPEG and WebP decode within 3 per channel, the rest not implemented");
+    conf_buf_str(&t.note, " of JPEG (within 6) and WebP (within 3) decode, the rest not implemented");
     conf_end(&t);
 }
 
