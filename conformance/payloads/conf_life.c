@@ -400,7 +400,7 @@ static int v_fill_shared(void)
 static int v_burst(uint32_t count)
 {
     uint8_t m[CONF_LIFE_MSG_BYTES];
-    uint32_t wrote = 0;
+    aar_stat st;
     uint32_t i;
 
     if (count == 0)
@@ -410,7 +410,9 @@ static int v_burst(uint32_t count)
         report(CONF_LIFE_MSG, i, 0);
     if (!wait_message(m, 10000000u))
         return 9;
-    (void)aar_console_write("x", 1, &wrote);
+    /* A file call parks the app until the client answers; a console write does not
+     * (the ZZ9000 buffers it), and the app would end before the request is served. */
+    (void)aar_file_stat("conf-life-none", &st);
     return 0;
 }
 

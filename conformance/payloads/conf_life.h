@@ -56,8 +56,9 @@
  * every byte stayed, 1 when one changed. */
 #define CONF_LIFE_V_FILL_SHARED "fill-shared"
 /* Sleeps 500 ms, sends conf:ms (at least 1) CONF_LIFE_MSG messages, waits for a
- * message of the runner (10 s), writes "x" to the console (a service request that
- * the client has to serve) and returns 0 (9 without the runner's message). */
+ * message of the runner (10 s), makes a file call (aar_file_stat of a name that does not
+ * exist: a request that parks the app until the client answers it) and returns 0 (9
+ * without the runner's message). */
 #define CONF_LIFE_V_BURST "burst"
 /* Answers every message of the runner with CONF_LIFE_PONG until the stop request,
  * then returns 0. */
