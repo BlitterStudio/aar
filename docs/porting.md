@@ -310,7 +310,8 @@ To run it in the SDK image (the qemu and Linux cross-compiler packages are
 installed on top, as the CI does):
 
 ```sh
-arm-linux-gnueabihf-gcc -static -marm -O1 -I include libaar/tests/loader.c -o /tmp/loader
+arm-linux-gnueabihf-gcc -static -marm -O1 -I include \
+  libaar/tests/loader.c loader/aar_load.c loader/aar_image.c -o /tmp/loader
 make build-a32-conf_entry
 ENTRY_CONTRACT=1 HEAP_INIT_MIB=2 qemu-arm /tmp/loader build/a32/conf_entry.elf
 ```
