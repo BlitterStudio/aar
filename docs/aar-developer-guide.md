@@ -21,9 +21,8 @@ The public headers are in `include/aar/`: `app.h` (the table, the types, the
 wrappers), `note.h` (`AAR_NOTE`), `gl.h` (the GL table and wrappers) and
 `ext_zz9000.h` (ZZ9000-only extras). The call reference is
 [aar-api.md](aar-api.md). `transport.h` is for platform implementers and is
-described in [transport.md](transport.md); an app does not include it. Code
-that came from the old `zzapp` SDK is mapped name by name in
-[zzapp-to-aar.md](zzapp-to-aar.md).
+described in [transport.md](transport.md); an app does not include it. The
+normative text is the [specification](../spec/aar.md).
 
 ## Profiles
 
@@ -530,13 +529,10 @@ program run:
 ## Running on the ZZ9000
 
 The ZZ9000 is the reference platform. Its firmware runs apps on the card's ARM
-cores. An AAR 0.5 image needs firmware that implements AAR 0.5; the firmware
-cutover is a separate step, and a card that still runs `zzapp` 0.4 does not
-accept these images. The firmware side of the runtime, the launcher window
-layout it uses today and the slot protocol are described in
+cores. An AAR 0.5 image needs firmware that implements AAR 0.5. The firmware
+side of the runtime is described in
 [app-runtime.md](https://github.com/BlitterStudio/zz9000-firmware/blob/master/docs/app-runtime.md)
-in the firmware repository. The `zz9k.library` client calls are in
-[zz9k-library.md](https://github.com/BlitterStudio/zz9000-firmware/blob/master/sdk/docs/zz9k-library.md#arm-app-client).
+in the firmware repository.
 This repository does not include firmware headers; do not include any firmware
 header in an app.
 
@@ -545,8 +541,7 @@ MIT). It is built on `aar.library` ([client API](aar-client-api.md)) and the
 serving loop `aar_serve` ([serve API](aar-serve-api.md)), is a Shell command and
 a Workbench tool, and runs on any platform that has an `aar.library`. Its
 [manual](../client/run/README.md) has the arguments, ToolTypes, exit codes and
-platform notes; this section is what an app author needs. It was called ZZRun
-before the rename and no old name is kept. On the ZZ9000 it needs a Zorro III
+platform notes; this section is what an app author needs. On the ZZ9000 it needs a Zorro III
 board, `zz9k.library` and, for a display, Picasso96.
 
 Shell:
@@ -591,19 +586,15 @@ intervals. `STATUS` and `RELEASE` need the platform's extension table and print
 
 ### The client library
 
-`zz9k.library` exposes the same runtime without aar-run: `ZZ9KAppOpen`,
-`ZZ9KAppLoadFile`, `ZZ9KAppLoadMemory`, `ZZ9KAppStart`, `ZZ9KAppStop`,
-`ZZ9KAppStatus`, `ZZ9KAppSendMessage`, `ZZ9KAppGetMessage`,
-`ZZ9KAppMessageSignal`, `ZZ9KAppClose` and `ZZ9KAppSetLimits`. A handle belongs
-to the task that opened it; do not use or close it from another task. A task
-that dies holding a handle loses it within about a second. `ZZ9KAppStart`
-passes `argv` unchanged, so put the program name in `argv[0]` if the app
-expects the aar-run convention. `notify_port` receives at most one outstanding
-event (message, completion or fault). Before closing a handle, drain the notify
-port and read messages until none is queued. The firmware docs linked above are
-the reference for these calls until `aar.library` replaces them. The
-replacement calls are in [aar-client-api.md](aar-client-api.md). There a task has
-one signal bit shared by all its handles, not one per handle.
+`aar.library` ([aar-client-api.md](aar-client-api.md)) is the client library on
+every platform, for programs that run apps without aar-run. A handle belongs to
+the task that opened it; do not use or close it from another task. A task that
+dies holding a handle loses it within about a second. `AARStart` passes `argv`
+unchanged, so put the program name in `argv[0]` if the app expects the aar-run
+convention. `notify_port` receives at most one outstanding event (message,
+completion or fault). Before closing a handle, drain the notify port and read
+messages until none is queued. A task has one signal bit shared by all its
+handles, not one per handle.
 
 `zz9k-app-ringtest` and `templates/ringflood.c` are the message ring
 conformance test. The app starts quiet and answers pings; on request it floods
@@ -614,11 +605,11 @@ cache-inhibited mapping and ends in `PASS` or `FAIL`. See step 12 of
 
 ### Scheduling and shared resources on the card
 
-**ZZ9000, today.** The card runs apps on one ARM core, next to its own system
+**ZZ9000.** The card runs apps on one ARM core, next to its own system
 thread. Service work (the SDK tasks, MiniGL, launcher processing, audio
 feeding) runs before apps. Runnable apps share the remaining time in 5 ms
-quanta. Parked apps use no CPU. The firmware currently runs up to four apps at
-once, and the queue-pair cutover removes that limit. Two direct card-audio
+quanta. Parked apps use no CPU. The number of apps is bounded by the card's
+resources, not by a constant (specification 5.6). Two direct card-audio
 streams may be open across all apps, and one app at a time may bind GL. Release
 a resource promptly so another app can use it. A GL call does not return until
 that call's RasterIX work has drained. Do not stay inside one GL call for long:
@@ -817,8 +808,7 @@ through the table.
 ## Versioning
 
 The table is append-only. A new call is a new field at the end and a minor bump.
-`AAR_API_MINOR` is 5. API 0.5 is the first AAR version and continues after
-zzapp 0.4; the mapping is in [zzapp-to-aar.md](zzapp-to-aar.md). Before 1.0 any
+`AAR_API_MINOR` is 5. API 0.5 is the first AAR version. Before 1.0 any
 minor may break, and 1.0 is cut when a second platform passes conformance.
 
 Gate every appended slot with `AAR_API_COVERS` and a non-NULL function pointer.

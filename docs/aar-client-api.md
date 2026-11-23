@@ -123,7 +123,8 @@ other for other handles.
 ### Notification
 
 Every owner task has one signal bit, allocated at its first `AAROpen` and
-freed at its last close. All its handles share it. `AARMessageSignal` returns
+freed when the task closes its last `aar.library` base, not at its last
+`AARClose`. All its handles share it. `AARMessageSignal` returns
 the mask. The signal is set when the app has sent a message, ended (exit or
 fault) or queued a service request. After the signal, poll each handle:
 `AARGetMessage` until `AAR_E_BUSY`, `AARServiceNext` until `AAR_E_BUSY`, and
@@ -472,15 +473,21 @@ LONG AARProbeFile(const char *path, AARImageInfo *info);
 ```
 
 Reads the AAR note of an image without loading it. It needs no handle. The
-probe applies the image rules of `tools/aar-check` and returns what the note
-says. The note's API numbers are judged against the API this library was built
-with: a note for another major, or one that needs a newer minor, is refused.
+probe applies the image rules of the specification (2.2 and 2.3) as the
+platform's loader does: an image that breaks one is refused, and an image the
+loader would accept is accepted, with or without section headers.
+`tools/aar-check` is stricter: it also requires the section headers and compares
+them with the segments, which is a check of build output. The probe does not
+judge the image against the platform: profile, groups, heap and stack are
+reported, not checked. The note's API numbers are judged against the API this
+library was built with: a note for another major, or one that needs a newer
+minor, is refused.
 
 | Error | Cause |
 |---|---|
 | `AAR_E_NOENT` | the file cannot be opened |
 | `AAR_E_IO` | the file cannot be read |
-| `AAR_E_INVAL` | not a little-endian ELF32 or ELF64 file, a header, relocation or note rule broken, no AAR note or more than one |
+| `AAR_E_INVAL` | not a little-endian ELF32 or ELF64 file, a header, relocation or note rule broken, no AAR note or more than one, a note with a wrong magic or version, or a profile word that differs from the ELF class |
 
 `AAR_E_PROFILE` is not returned. The probe reports the `profile`, and the
 launcher chooses.
@@ -549,7 +556,8 @@ load may be tried on it.
 LONG AARStart(AARHandle *handle, const char *const *argv, ULONG argc);
 ```
 
-Starts the loaded image with `argc` strings, at most `AARInfo.max_args`, each
+Starts the loaded image with `argc` strings, at most `AARInfo.max_args`
+(`argv[0]` included), each
 under `AARInfo.max_arg_bytes` bytes with its NUL. The first is the program
 name. `argv` may be NULL when `argc` is 0. Returns `AAR_E_INVAL` for a bad
 argument, or when no image is loaded (a load that failed or was cut short counts as
@@ -686,7 +694,10 @@ Posts the completion for a request: its `op`, `id`, `result`, `reply_flags` and
 needs one, including those that do not park the app, because the completion
 releases the request's staging storage. Returns `AAR_E_BUSY` when the
 completion queue is full: keep the request and try again. A reply whose `op`
-and `id` match no outstanding request is `AAR_E_INVAL`. The library notes an
+and `id` match no outstanding request is `AAR_E_INVAL` and changes nothing: the
+app is not resumed and no storage is released. The late completion of a request
+the app has given up on (a timeout) is not such a reply: it is accepted and
+releases the storage. The library notes an
 `AAR_OP_AUDIO_OPEN` completion with `AAR_OK` to attach the audio ring for
 `AARAudioRead`, and `AAR_OP_AUDIO_CLOSE` to detach it. If the ring does not
 check out (a bad header, a frame count that is not a power of two or does not
@@ -697,7 +708,9 @@ client learns that the ring was refused. The request is answered either way and
 must not be replied to again.
 
 The library does not know which ops the client serves. A client that serves
-only some must answer the others with `AAR_E_NOSYS` itself. `aar_serve` does.
+only some must answer the others with `AAR_E_NOSYS` itself, and should do the
+same for an op code it does not know. `aar_serve` does. A request that nobody
+completes leaves the app parked until it stops or its own wait ends.
 
 ### AARPostEvent
 
@@ -707,8 +720,11 @@ LONG AARPostEvent(AARHandle *handle, const aar_event *event);
 
 Pushes an input event to the app: a key, the mouse, a joystick, a stop request
 or a break. It takes the app's event structure from `aar/app.h`, not an
-`AAREvent`. Mouse motion is merged while the queue is full or an event is
-pending. Returns `AAR_E_BUSY` when a full queue drops the event; the library
+`AAREvent`. The event reaches the app as given (the reserved word is 0). Mouse
+motion is merged while the queue is full or an event is pending, or counted
+when it is dropped, never lost without a count. A posted `AAR_EV_STOP` is an
+event only: it does not stop the app, which `AARStop` does. Returns
+`AAR_E_BUSY` when a full queue drops the event; the library
 counts the drop in `AARStatusInfo.events_dropped`. A merged mouse event that the
 queue had no room for is posted by the library's dispatcher as soon as there is
 room (within a vertical blank); the client does not have to call again.
@@ -735,9 +751,15 @@ underrun. `dst` may be NULL then. `got` is always required.
 LONG AARSharedToken(AARHandle *handle, const void *ptr, ULONG bytes, ULONG *token);
 ```
 
-The inverse of `AARSharedMap`: gives the token of a 68k address in the
-platform's shared aperture, for a reply that names the client's own memory (the
-bitmap of a display). `AAR_E_INVAL` for an address outside it.
+The inverse of `AARSharedMap`: gives the token of a range of client memory in
+the platform's shared aperture, for a reply that names the client's own memory
+(the surfaces of a display open). For the base of a range that `AARSharedMap`
+mapped, the token equals `map.haddr`. `AAR_E_INVAL` for NULL, zero bytes or an
+address outside the aperture; `AAR_E_NOSYS` where the platform cannot name host
+memory to the app. Where the aperture is not ordinary Amiga memory (the ZZ9000:
+the card's memory), the pixel memory of a bitmap that the platform's own display
+driver allocated is in it and `AllocVec` memory is not; a platform documents
+which Amiga memory is in its aperture.
 
 ### AARExt
 
@@ -851,30 +873,6 @@ characters. `AARZZ9000Stats` is 68 bytes: `size`, `requests`, `replies`,
 `msgs_sent`, `logs`, `logs_unclaimed`, `events_posted`, `events_merged`,
 `events_dropped`, `kicks`, `kicks_coalesced` and `maps`.
 
-The table has no log sink. It had a `set_log_sink` field and the type
-`AARZZ9000LogSink` while the log sink was a ZZ9000 call; both are gone, and the
-sink is set with [`AARSetLogSink`](#aarsetlogsink) on any platform. A program
-that tested `AAR_CLIENT_EXT_ZZ9000_COVERS(ext, set_log_sink)` no longer
-compiles. The table now ends at `lease_pause`; as before, a table grows only at
-the end.
-
-## Where this differs from the draft in spec 9
-
-The spec draft listed 22 calls. The library has 25: `AARSharedToken`, `AARExt`
-and `AARSetLogSink` are new. The other changes:
-
-- The launcher's own policy (root directory, absolute paths, console in and out,
-  screen mode) is not a tag. It is configuration of the serving code.
-- There is one signal bit per owner task, not one per handle. A task has only
-  about a dozen free bits.
-- The library version is the API major, 0 for now.
-- `AARPostEvent` takes the app's `aar_event`. The draft named `AAREvent`, which
-  is the notify message.
-- `struct AARSharedMap` has no typedef.
-- The notification types are `AAR_NOTIFY_*`, and there is a fourth for a queued
-  request.
-- `AARStatusInfo` has the fields of the control block that a launcher reads
-  (`progress`, `reason`, `lease_period_ms`, the accounting and the counters),
-  and `AARServiceReq` has `flags`, `reply_flags` and `ptr`.
-- The library cannot answer requests of an op the client does not serve, because
-  it does not know which ops those are. The serving code does.
+The table has no log sink: the sink is set with
+[`AARSetLogSink`](#aarsetlogsink) on any platform. The table ends at
+`lease_pause`; a table grows only at the end.

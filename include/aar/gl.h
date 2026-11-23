@@ -20,9 +20,10 @@
  * are unsigned char, GLfloat and GLclampf are float, GLdouble and GLclampd
  * are double. gluPerspective takes four doubles.
  *
- * An isolated runtime validates client-array pointers at draw time and
- * returns AAR_E_FAULT (through the call that failed) plus GL_INVALID_VALUE
- * for a bad range.
+ * An isolated runtime validates client-array pointers at draw time. For a bad
+ * range it does not draw and the next glGetError returns GL_INVALID_VALUE; it
+ * does not fault or stop the app. AAR_E_FAULT is the runtime's own status for
+ * the failed call.
  *
  * Debug and platform bind flags are not part of the standard. The ZZ9000
  * keeps them in its extension table (aar/ext_zz9000.h).

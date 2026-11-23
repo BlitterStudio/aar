@@ -4,7 +4,7 @@
  *     aar_ext(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_MAIN)
  *
  * Only the ZZ9000 runtime provides it. An app that uses it is not portable.
- * It holds what zzapp.h 0.x had in the app table and the standard does not
+ * It holds what is specific to the ZZ9000 and that the standard does not
  * keep: the GL bind flags (use aar_zz9000_gl_bind_flags) and the two source
  * revision strings.
  *

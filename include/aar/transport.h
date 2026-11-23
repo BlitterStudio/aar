@@ -390,7 +390,9 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
  *   0x40 read_frame   free-running frame count, the consumer advances
  *   0x44 underruns    cumulative, the consumer counts
  *   0x80 samples, interleaved S16LE, `frames` frames
- * aar_audio.write_frame and .read_frame point at the first two words.
+ * The three pointers of aar_audio point into one mapping of the ring: with
+ * `ring` the address of its first byte, write_frame is ring, read_frame is
+ * ring + 0x40 and samples is ring + 0x80.
  */
 #define AAR_AUDIO_RING_WRITE_FRAME 0x00u
 #define AAR_AUDIO_RING_RATE        0x04u
