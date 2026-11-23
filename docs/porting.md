@@ -115,15 +115,16 @@ tested against each other:
 | `client/src/aar_probe.c` | portable C | reads the note and checks the image without loading it; the AmigaOS library uses it so that a launcher can pick the right image |
 | `loader/` | portable C99, MIT | the reference loader: the same checks, and then the placing of the image |
 
-`loader/` arrives with its own pull request. It is a module a runtime compiles
-in, as it is: portable C99, no OS calls, no allocation, both profiles in one
-build, for 32-bit and 64-bit hosts. The rules themselves are in
+`loader/` is a module a runtime compiles in, as it is: portable C99, no OS
+calls, no allocation, both profiles in one build, for 32-bit and 64-bit hosts.
+Take its four files (`aar_image.[ch]`, `aar_load.[ch]`) and the headers of
+`include/aar`; nothing else is needed. The rules themselves are in
 `loader/aar_image.c`, which the loader and the image probe of `aar.library`
 share, so they cannot drift apart; `aar-check` stays the independent second
 implementation. The loader reads the relocations from `PT_DYNAMIC` only and
-accepts an image without section headers, as the standard allows. It does not
-know where memory is or how the platform maps
-it; the runtime tells it. The interface is `loader/aar_load.h`:
+never reads section headers, so an image without them loads, as the standard
+allows. It does not know where memory is or how the platform maps it; the
+runtime tells it. The interface is `loader/aar_load.h`:
 
 ```c
 typedef int (*aar_load_read_fn)(void *user, uint64_t offset, void *dst, uint32_t count);
@@ -137,9 +138,12 @@ int aar_load_place(const struct aar_load_plan *plan, aar_load_read_fn read, void
 ```
 
 **Reading.** Every byte of the image comes through the read callback, which
-returns `AAR_OK` or a negative `AAR_E_*`. The module never assumes the whole
-file is in memory, and every size it reads from the file is treated as
-untrusted: the arithmetic does not wrap and no read goes outside `length`.
+returns `AAR_OK` or a negative `AAR_E_*` (the loader then returns `AAR_E_IO`).
+The module never assumes the whole file is in memory. Every size and offset it
+reads from the file is untrusted: the arithmetic does not wrap, no read goes
+outside `length` (below 2^62), and `aar_load_place` writes nowhere outside the
+memory it was given. `aar_load_plan` reads headers and tables in pieces of at
+most 512 bytes; `aar_load_place` reads whole segments.
 
 **Planning.** `aar_load_plan` applies every rule of 2.2 and 2.3 and fills
 `struct aar_load_plan`:
@@ -147,41 +151,67 @@ untrusted: the arithmetic does not wrap and no read goes outside `length`.
 | Field | Meaning |
 |---|---|
 | `profile` | `AAR_PROFILE_A32` or `AAR_PROFILE_A64` |
-| `span`, `align` | the bytes from the lowest address to the end of the last segment, and the alignment the image needs |
-| `entry_offset` | the entry point, relative to the start of the span |
-| `nsegments`, `seg[4]` | per segment `offset`, `filesz`, `memsz`, `vaddr` and `flags` (`AAR_LOAD_R`, `AAR_LOAD_W`, `AAR_LOAD_X`), for the platform's MMU |
-| the relocation table | where it is, how many entries and their size |
-| the note | the API major and minor, `stack_bytes`, `min_heap_mib`, `groups_required`, `groups_optional`, as `AARImageInfo` of the probe has them |
+| `length` | the image length the plan was made from |
+| `span`, `align` | the bytes the app needs from its base, up to the end of the last segment including its BSS (not rounded to a page), and the alignment of the base (the largest power-of-two `p_align`, or 1). A platform that maps pages rounds `span` up and uses at least its page size as alignment. The standard bounds neither number: compare `span` with the memory you offer |
+| `entry_offset` | the entry point as an offset from the base, inside an executable segment, even on A32 |
+| `nsegments`, `seg[]` | up to 4 segments, each with `offset`, `filesz`, `memsz`, `vaddr` (relative to the base) and `flags` (`AAR_LOAD_R`, `AAR_LOAD_W`, `AAR_LOAD_X`). Every segment is readable, none is writable and executable, none overlaps another |
+| `nrelocs`, `reloc[]` | up to 2 relocation tables (`offset`, `size`, `count`, `entsize`, `rela`); every entry is RELATIVE, so `aar_load_place` applies them and the platform need not |
+| the note | `note_version`, `api_major`, `api_minor_required`, `stack_bytes` (0 is the default of 1 MiB), `min_heap_mib`, `groups_required`, `groups_optional` |
 
-`profiles` is the set of `AAR_PROFILE_*` bits the platform runs. The result is
-`AAR_OK`, `AAR_E_PROFILE` for an image of a profile that is not in `profiles`
-(or a note with another profile), `AAR_E_INVAL` for a broken rule, or
-`AAR_E_IO` when the callback failed. `why` points to a short text that names
-the rule, for the platform's log. Planning writes nothing, so it can run
-before any memory is reserved, which is the right time to refuse an image.
+`profiles` is the set of `AAR_PROFILE_*` values the platform runs, or-ed
+together. The result is:
 
-The note's API is judged against the headers the module was built with: a
-different major, or a required minor above the header's, is refused (standard,
-section 2.3). What the plan does not decide is the platform's: whether the
-groups the note requires are available (`AAR_E_NOGROUP`) and whether the stack
-and the heap the note asks for fit (`AAR_E_NOMEM`).
+| Result | Meaning |
+|---|---|
+| `AAR_OK` | the plan is filled |
+| `AAR_E_PROFILE` | the image is acceptable but its profile is not in `profiles`, or the note names a profile that does not match the ELF class |
+| `AAR_E_INVAL` | a rule is broken |
+| `AAR_E_IO` | the callback failed |
 
-**Placing.** The runtime reserves `span` bytes aligned to `align`, then calls
-`aar_load_place`. It copies each segment, zeroes the part of the segment that is
-not in the file (`memsz` above `filesz`), and applies the RELATIVE relocations
-against `app_base`, the address the app will run at. `write_base` is where the
-loader stores. The two differ when a runtime writes the image through one
+The rules are checked before the profile, so an image that breaks a rule is
+`AAR_E_INVAL` whatever `profiles` is. `why`, when not NULL, receives a static
+text that names the rule, for the platform's log. Planning writes nothing, so it
+can run before any memory is reserved, which is the right time to refuse an
+image.
+
+The note's own rules are judged here: magic, version, profile, the API against
+the headers the module was built with (a different major, or a required minor
+above the header's, is refused, standard section 2.3), the stack size and the
+group bits. What the plan does not decide is the platform's: whether the groups
+the note requires are available (`AAR_E_NOGROUP`), and whether the stack and
+the heap the note asks for fit (`AAR_E_NOMEM`).
+
+**Placing.** The runtime reserves memory for `span` bytes, then calls
+`aar_load_place` with the plan of the same image:
+
+| Argument | Meaning |
+|---|---|
+| `write_base` | where this call writes: `limit_bytes` writable bytes, at least `span` of them |
+| `app_base` | the address the app runs at. The relocations are made against it: every RELATIVE target becomes `app_base` plus its addend. It should be a multiple of `align`. On A32 the image must end below 4 GiB |
+| `limit_bytes` | the size of the memory at `write_base`. Nothing is written at or beyond `write_base + limit_bytes` |
+
+`write_base` and `app_base` differ when a runtime writes the image through one
 mapping and runs it through another: a card that writes to its own memory
-through a window and runs the app at another address, or an emulator that
-loads into host memory and runs at a guest address. When they are the same,
-pass the same value. `limit_bytes` is the room the runtime has reserved at
-`write_base`; a plan that does not fit is refused with `AAR_E_INVAL`. On
-success `*entry` is `app_base` plus the entry offset. Cache maintenance
-between the write and the first instruction is the platform's job.
+through a window and runs the app at another address, or an emulator that loads
+into host memory and runs at a guest address. When they are the same, pass the
+same value. The whole of `[write_base, write_base + span)` is written: the
+bytes of the segments, zero for the BSS and for the gaps between segments, then
+the relocations. On `AAR_OK`, `*entry` is `app_base` plus the entry offset.
 
-The plan's segment flags tell the platform what to map: read and execute for
-code and read-only data, read and write for data and the BSS. No segment is
-both.
+| Result | Meaning |
+|---|---|
+| `AAR_OK` | placed |
+| `AAR_E_NOMEM` | `span` does not fit in `limit_bytes` (or the host's address space); nothing was written |
+| `AAR_E_INVAL` | the plan is not one `aar_load_plan` makes, or the image does not fit the address space at `app_base` |
+| `AAR_E_IO` | the callback failed |
+
+After `AAR_E_INVAL` or `AAR_E_IO` the memory holds a partly loaded image and
+must not be used.
+
+The platform does the rest of what loading means: it maps the segments with the
+permissions of the plan (read and execute for code and read-only data, read
+and write for data and the BSS), makes the instruction and data caches agree
+over the code, and enters the app.
 
 A minimal use, for a platform that has the whole file in memory:
 
