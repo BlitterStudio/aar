@@ -68,6 +68,10 @@ struct fake {
     int write_zero;       /* a write that stores nothing and reports no error */
     int set_size_lost;    /* SetFileSize loses its packet */
     int set_size_unsupported;
+    int seek_model;       /* 0 FFS: refuses with ERROR_SEEK_ERROR; 1 refuses with Res2 0;
+                           * 2 ram-handler: accepts a target before the start and moves
+                           * the position negative, refuses past the end */
+    int seek_refusals;
     int close_undelivered;
     int fail_transport_lock; /* lock_rel of this leaf name loses its packet */
     char fail_transport_name[24];
@@ -466,15 +470,20 @@ static int32_t f_fh_seek(void *ctx, uintptr_t fh, int32_t offset, int whence,
 {
     struct ffh *h = fh_get(fh);
     struct fnode *n = &fk.nodes[h->node];
-    int64_t base = whence == 0 ? 0 : (whence == 1 ? h->pos : n->size);
+    int64_t base = whence == 0 ? 0 : (whence == 1 ? (int64_t)(int32_t)h->pos : (int64_t)n->size);
     int64_t target = base + offset;
     int32_t old = (int32_t)h->pos;
 
     (void)ctx;
     *transport_ok = 1;
     *io = 0;
+    if (fk.seek_model == 2 && target < 0) {
+        h->pos = (uint32_t)(int32_t)target;
+        return old;
+    }
     if (target < 0 || target > (int64_t)n->size) {
-        *io = AAR_SERVE_IOERR_SEEK_ERROR;
+        fk.seek_refusals++;
+        *io = fk.seek_model == 1 ? 0 : AAR_SERVE_IOERR_SEEK_ERROR;
         return -1;
     }
     h->pos = (uint32_t)target;
@@ -905,6 +914,46 @@ static void test_write_seek_and_stat(void)
     assert(do_stat("dir/nothing", &d) == AAR_E_NOENT);
     assert(do_stat("", &d) == AAR_E_INVAL);
     fixture_free();
+}
+
+/* A seek before the start is AAR_E_INVAL whatever Res2 the handler leaves, and
+ * the position stays put (C-FILE.19 on ram-handler). */
+static void test_seek_refusal_is_inval_whatever_res2(void)
+{
+    static const uint8_t text[] = "0123456789";
+    uint8_t one = 0xffu;
+    uint32_t count = 0;
+    uint32_t pos = 99u;
+    int model;
+
+    for (model = 0; model <= 2; model++) {
+        fixture(0);
+        fk.seek_model = model;
+        assert(do_open(5, W | C | T, "seek.bin") == AAR_OK);
+        assert(do_write(5, text, 10u, &count) == AAR_OK && count == 10u);
+        assert(do_seek(5, 0, AAR_SEEK_SET, &pos) == AAR_OK && pos == 0u);
+        /* CUR before the start from position 0 */
+        assert(do_seek(5, -1, AAR_SEEK_CUR, &pos) == AAR_E_INVAL);
+        assert(do_read(5, 1u, &one, 1u, &count) == AAR_OK && count == 1u &&
+               one == '0');
+        /* CUR before the start from the middle: the position stays at 1 */
+        assert(do_seek(5, -5, AAR_SEEK_CUR, &pos) == AAR_E_INVAL);
+        assert(do_read(5, 1u, &one, 1u, &count) == AAR_OK && count == 1u &&
+               one == '1');
+        /* END with a negative offset larger than the size */
+        assert(do_seek(5, -11, AAR_SEEK_END, &pos) == AAR_E_INVAL);
+        assert(do_read(5, 1u, &one, 1u, &count) == AAR_OK && count == 1u &&
+               one == '2');
+        /* past the end is a refusal too, and also leaves the position */
+        assert(do_seek(5, 1, AAR_SEEK_END, &pos) == AAR_E_INVAL);
+        assert(do_seek(5, 11, AAR_SEEK_SET, &pos) == AAR_E_INVAL);
+        assert(do_read(5, 1u, &one, 1u, &count) == AAR_OK && count == 1u &&
+               one == '3');
+        /* only the two past-the-end seeks reach the handler as refusals */
+        assert(fk.seek_refusals == 2);
+        assert(do_close(5) == AAR_OK);
+        fixture_free();
+    }
 }
 
 static void test_each_open_plan_acts_on_the_file_it_should(void)
@@ -2375,6 +2424,7 @@ int main(void)
     test_read_in_chunks_and_past_the_end();
     test_read_stops_at_a_break_with_the_bytes_so_far();
     test_write_seek_and_stat();
+    test_seek_refusal_is_inval_whatever_res2();
     test_each_open_plan_acts_on_the_file_it_should();
     test_exclusive_create_refuses_an_existing_file();
     test_root_confinement();

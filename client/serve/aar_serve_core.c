@@ -647,6 +647,81 @@ static int32_t serve_write(struct aar_serve_files *f, const struct aar_serve_req
     return err;
 }
 
+/* The current position and the size of an open file. ACTION_SEEK answers with
+ * the old position, so the position is seek(0, CUR) and the size is
+ * seek(0, END) followed by seek(cur, BEGINNING), which answers with the end
+ * and leaves the position where it was. *size is read only when want_size. */
+static int32_t seek_bounds(struct aar_serve_files *f, uintptr_t fh,
+                           int want_size, int32_t *cur, int32_t *size,
+                           int32_t *io)
+{
+    const struct aar_serve_dos_ops *d = f->dos;
+    int transport_ok = 0;
+
+    *cur = d->fh_seek(d->ctx, fh, 0, 1, &transport_ok, io);
+    if (!transport_ok)
+        return AAR_E_IO;
+    if (*cur < 0)
+        return aar_serve_errno_from_io(*io) == AAR_OK ?
+               AAR_E_IO : aar_serve_errno_from_io(*io);
+    if (!want_size)
+        return AAR_OK;
+    if (d->fh_seek(d->ctx, fh, 0, 2, &transport_ok, io) < 0)
+        return AAR_E_IO;
+    *size = d->fh_seek(d->ctx, fh, *cur, 0, &transport_ok, io);
+    if (!transport_ok || *size < 0)
+        return AAR_E_IO;
+    return AAR_OK;
+}
+
+/* A position before the start is AAR_E_INVAL (spec 7.1) and leaves the
+ * position unchanged. Handlers do not agree on it: FFS refuses, but
+ * ram-handler accepts the seek and leaves the handle at a negative position,
+ * which no later call can tell from an error. So a seek that goes backwards
+ * from the current position or the end is checked here, before it reaches the
+ * handler. Returns AAR_OK when the seek may go on. */
+static int32_t seek_precheck(struct aar_serve_files *f, uintptr_t fh, int mode,
+                             int32_t offset)
+{
+    int32_t cur = 0;
+    int32_t size = 0;
+    int32_t io = 0;
+    int32_t err;
+
+    if (offset >= 0 || mode == 0)
+        return AAR_OK;
+    err = seek_bounds(f, fh, mode == 2, &cur, &size, &io);
+    if (err != AAR_OK)
+        return err;
+    if ((int64_t)(mode == 1 ? cur : size) + offset < 0)
+        return AAR_E_INVAL;
+    return AAR_OK;
+}
+
+/* Why a handler refused a seek whose target is not before the start. Past the
+ * end is AAR_E_INVAL whatever Res2 the handler leaves (FFS and ram-handler give
+ * ERROR_SEEK_ERROR, others none). A refusal for a target inside the file is a
+ * real error: the handler's own code, or AAR_E_IO when it gave none. */
+static int32_t seek_refused(struct aar_serve_files *f, uintptr_t fh, int mode,
+                            int64_t offset, int32_t io)
+{
+    int32_t refused = aar_serve_errno_from_io(io);
+    int32_t cur = 0;
+    int32_t size = 0;
+    int32_t err;
+    int64_t base;
+
+    if (refused == AAR_OK)
+        refused = AAR_E_IO;
+    err = seek_bounds(f, fh, 1, &cur, &size, &io);
+    if (err != AAR_OK)
+        return err;
+    base = mode == 0 ? 0 : (mode == 1 ? (int64_t)cur : (int64_t)size);
+    if (base + offset < 0 || base + offset > (int64_t)size)
+        return AAR_E_INVAL;
+    return refused;
+}
+
 static int32_t serve_seek(struct aar_serve_files *f, const struct aar_serve_req *req,
                           struct aar_serve_done *done)
 {
@@ -678,17 +753,22 @@ static int32_t serve_seek(struct aar_serve_files *f, const struct aar_serve_req 
     }
     if (target > 2147483647LL || target < -2147483647LL)
         return AAR_E_INVAL;
+    err = seek_precheck(f, f->fh[index], mode, (int32_t)target);
+    if (err != AAR_OK)
+        return err;
     pos = d->fh_seek(d->ctx, f->fh[index], (int32_t)target, mode,
                      &transport_ok, &io);
     if (!transport_ok)
         return AAR_E_IO;
     if (pos < 0)
-        return lock_errno(io);
+        return seek_refused(f, f->fh[index], mode, target, io);
     current = d->fh_seek(d->ctx, f->fh[index], 0, 1, &transport_ok, &io);
     if (!transport_ok)
         return AAR_E_IO;
-    if (current < 0)
-        return lock_errno(io);
+    if (current < 0) {
+        err = aar_serve_errno_from_io(io);
+        return err == AAR_OK ? AAR_E_IO : err;
+    }
     done->out[AAR_R_FILE_POS_HI] = 0;
     done->out[AAR_R_FILE_POS_LO] = (uint32_t)current;
     return AAR_OK;
