@@ -65,7 +65,7 @@ checks that the handle can be closed and that a new claim succeeds.
 | C-ELF.20 | 2.2.5 | MUST | core | any | runner | yes | `DT_RELR` refused |
 | C-ELF.21 | 2.2.5 | MUST | core | any | runner | yes | a relocation with symbol index other than 0 refused |
 | C-ELF.22 | 2.2.5 | MUST | core | any | runner | yes | a relocation with a misaligned target refused |
-| C-ELF.23 | 2.2.5 | MUST | core | any | runner | yes | a relocation target outside the memory (`p_memsz`) of every `PT_LOAD` is refused: in a gap between segments, at the end of the memory, or without room for the whole word; a target in the bss tail loads and runs [spec question 61] |
+| C-ELF.23 | 2.2.5 | MUST | core | any | runner | yes | a relocation target outside the memory (`p_memsz`) of every `PT_LOAD` is refused: in a gap between segments, at the end of the memory, or without room for a full word; a target in the bss tail loads and runs [spec question 61] |
 | C-ELF.24 | 2.2.6 | MUST | core | any | runner | yes | entry point outside an executable segment refused |
 | C-ELF.25 | 2.2.6 | MUST | core | a32 | runner | yes | entry point with bit 0 set refused |
 | C-ELF.26 | 2.2.7 | MUST | core | any | runner | yes | image with no AAR note refused |
@@ -83,7 +83,7 @@ checks that the handle can be closed and that a new claim succeeds.
 | C-ELF.38 | 2.3 | MUST | core | any | runner | yes | a note with wrong name or descriptor padding is not an AAR note: refused |
 | C-ELF.39 | 5.2 | MUST | core | any | runner | yes | `AARInfo.max_image_bytes` is at least 16 MiB |
 | C-ELF.40 | 4.1 | MUST | core | any | runner | yes | `min_heap_mib` above anything the platform can commit (0xFFFFFFFF, and 0x10000001, which wraps to 1 MiB in 32-bit bytes): `AAR_E_NOMEM` from the load call, or `AAR_E_NORESOURCE` with a reason in `AARStatusInfo.reason` [spec questions 40 and 60] |
-| C-ELF.41 | 5.2 | MUST | core | any | runner | yes | every load refusal is one of `AAR_E_PROFILE`, `AAR_E_NOGROUP`, `AAR_E_INVAL`, `AAR_E_NOMEM` (or `AAR_E_NORESOURCE` with a reason, spec question 60); checked over the whole corpus |
+| C-ELF.41 | 5.2 | MUST | core | any | runner | yes | every load refusal is one of `AAR_E_PROFILE`, `AAR_E_NOGROUP`, `AAR_E_INVAL`, `AAR_E_NOMEM` (or `AAR_E_NORESOURCE` with a reason, spec question 60); checked over every image in the corpus |
 | C-ELF.42 | 2.2 | MUST | core | any | runner | yes | the same image loaded with `AARLoadMemory` gives the same result as `AARLoadFile` (accept and refuse alike) |
 | C-ELF.43 | 2.4 | MUST | core | any | none | todo | not tested: `tools/aar-check` is a tool of this repository, tested by `tests/aar_check_test.py` in CI |
 | C-ELF.44 | 2.1 | SHOULD | core | any | none | todo | not tested: a launcher picks `.a32` or `.a64` with `AARProbeFile`; probe behaviour is C-CLIENT |
@@ -147,8 +147,8 @@ because the registers differ.
 | C-TABLE.17 | 3.4 | MUST | core | any | payload | yes | `max_files` is at least 16 |
 | C-TABLE.18 | 3.4 | MUST | core | any | payload | yes | `shared_limit` is `shared_default_mib` MiB (16 MiB, `AAR_SHARED_DEFAULT_MIB`) when the client set none, and `shared_used` does not exceed it |
 | C-TABLE.19 | 3.4 | MUST | core | any | payload | yes | `aar_heap_info` fills `committed`, `limit` and `pool_free`; `committed` does not exceed `limit` |
-| C-TABLE.20 | 8.7 | MUST | core | a32 | payload | yes | every `AAR_CPU_A32_*` bit that is set in `cpu_features` is honest: the app executes a VFPv4 fused multiply-add, an integer divide, a half-precision convert as advertised without a fault |
-| C-TABLE.21 | 8.7 | MUST | core | a64 | payload | yes | every `AAR_CPU_A64_*` bit that is set is honest: CRC32, LSE atomics, AES, SHA, dot product, FP16 execute without a fault |
+| C-TABLE.20 | 8.7 | MUST | core | a32 | payload | yes | every `AAR_CPU_A32_*` bit set in `cpu_features` identifies a supported feature: the app executes a VFPv4 fused multiply-add, an integer divide, a half-precision convert as advertised without a fault |
+| C-TABLE.21 | 8.7 | MUST | core | a64 | payload | yes | every `AAR_CPU_A64_*` bit set identifies a supported feature: CRC32, LSE atomics, AES, SHA, dot product, FP16 execute without a fault |
 | C-TABLE.22 | 8.8 | MUST | core | any | payload | yes | `aar_ext` with an unknown platform id or extension id returns NULL |
 | C-TABLE.23 | 8.8 | MUST | zz9000 | any | payload | yes | `aar_ext(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_MAIN)` returns a table whose `size` covers `build_id`; `gl_bind_flags` is NULL when the GL group is absent |
 | C-TABLE.24 | 3.5 | MUST | core | any | payload | yes | the error codes a call returns are the ones of section 3.5: over a battery of failing calls the payload makes (files, heap, shared buffers, groups, absent slots), no code is outside -1 to -17 |
@@ -317,7 +317,7 @@ path) and checks the files the payload leaves behind.
 | C-FILE.31 | 7.1 | MUST | core | any | runner | yes | after the app exited with files and lists still open, the runner can delete and rename those files (the client released every lock and handle) |
 | C-FILE.32 | 7.1 | MAY | core | any | none | todo | not tested: a platform MAY return `AAR_E_NOSYS` from `aar_map_file` (accepted by C-FILE.29) |
 | C-FILE.33 | 7.1 | MUST | core | any | none | todo | not tested: AmigaDOS has no atomic exclusive create; the check-then-create in the serving loop is only exclusive among the apps one client serves; C-FILE.13 tests what the standard promises |
-| C-FILE.34 | 7.1 | MUST | zz9000 | any | none | todo | not tested: the mapping of `READ`, `WRITE`, `CREATE` and `TRUNCATE` onto `MODE_OLDFILE`, `MODE_READWRITE`, `MODE_NEWFILE` is an implementation detail of the ZZ9000 client; its effects are C-FILE.9 to C-FILE.13 |
+| C-FILE.34 | 7.1 | MUST | zz9000 | any | none | todo | not tested: mapping `READ`, `WRITE`, `CREATE` and `TRUNCATE` onto AmigaDOS open modes is an implementation detail of the reference serving loop; its effects are C-FILE.9 to C-FILE.13 |
 | C-FILE.35 | 3.8 | MUST | core | any | none | todo | not tested: `fopen`, `O_CREAT`, `O_TRUNC`, `O_EXCL`, `O_APPEND` and `EOVERFLOW` in the libc glue belong to libaar, tested by `libaar/tests/runtime_test.sh` |
 | C-FILE.36 | 7.1 | SHOULD | core | any | none | todo | not tested: "a short write means the client stopped early; the caller may retry" is advice to the caller; the stop case is C-FILE.6 |
 | C-FILE.37 | 7.1 | MUST | core | any | payload | yes | a write through an id opened `AAR_FILE_READ` and a read through an id opened `AAR_FILE_WRITE` are `AAR_E_BADF`, and the file's bytes are unchanged afterwards (the payload reads the file back; spec 7.1, 3.5) |
@@ -480,7 +480,7 @@ from it; with a real screen the picture is judged by the operator.
 | C-INPUT.4 | 8.3 | MUST | input | any | payload | yes | mouse events arrive in order with `dx`, `dy` and button bits intact (type 3) |
 | C-INPUT.5 | 8.3 | MUST | input | any | payload | yes | joystick events arrive with axes in -1, 0, 1 and fire in bit 0 (type 4) |
 | C-INPUT.6 | 8.3 | MUST | input | any | payload | yes | Ctrl-D, Ctrl-E and Ctrl-F signalled to the runner task arrive as `AAR_EV_BREAK` with codes 4, 5 and 6 (the serving loop's break mask) |
-| C-INPUT.7 | 8.3 | MUST | input | any | payload | yes | `AAR_EV_RESIZE` (6) is never delivered during the whole input test |
+| C-INPUT.7 | 8.3 | MUST | input | any | payload | yes | `AAR_EV_RESIZE` (6) is never delivered during the input test |
 | C-INPUT.8 | 8.3 | MUST | input | any | payload | yes | the runtime retains at least 64 events: 64 key events posted while the app does not poll all arrive in order |
 | C-INPUT.9 | 8.3 | MUST | input | any | runner | yes | with the queue overfull the client drops the new events, never the old ones: the app finds the first (at least 64) events in order, and `AARStatusInfo.events_dropped` equals the number of posts the client was refused (events that the runtime discards beyond its own 64 are not counted by it, spec 8.3) |
 | C-INPUT.10 | 9.6 | MUST | input | any | payload | yes | mouse motion posted while the queue is full: the sum of `dx` received plus `events_dropped` equals the sum posted (merged or counted as dropped, never lost silently; the reference library merges, spec 8.3) |
@@ -692,12 +692,11 @@ developers.
     returns is `LOADING` or `STARTING`; C-LIFE.1 tests only `CLAIMED` after open
     and the end states.
     settled: spec 5.1 (the load calls leave the state `LOADING` until `AARStart` is accepted)
-28. **Revoking a claim** (5.5, 11.2): the lease, stale-handle and late-write rules
-    can only be provoked through a platform's own administrative call (the
-    ZZ9000 `AARExt` release and lease pause), because the standard has no
-    call that revokes a claim or pauses the lease. C-LIFE.22 and C-LIFE.23 are
-    therefore group `zz9000`; for another platform the rules stay untested
-    until the standard offers a way, or the platform brings its own tests.
+28. **Revoking a claim** (5.5, 11.2): stale-handle and late-write tests need a
+    platform administrative call that revokes a claim or pauses its lease.
+    C-LIFE.22 and C-LIFE.23 use the ZZ9000 client extension of spec 8.8 and
+    9.2. Spec 11.2 describes how another platform uses its administrative
+    calls or reports that those rules are untested.
     settled: spec 5.5, 11.2 (rules 4 and 5 are tested through a platform's own administrative calls; asked in section 13)
 29. **Unsatisfiable limits** (4.2): "a request the platform could never satisfy
     fails the load (`AAR_E_NOMEM`)" does not say when a limit is unsatisfiable
@@ -712,15 +711,10 @@ developers.
     and say whether `aar_sleep_us` has to look at the stop request when it is
     entered with one already pending.
     settled: spec 3.7, 7.3 (a sleep ends early only for a stop, also one that is pending at entry)
-31. **`max_apps` of 0** (5.6, 9.2): the spec says `AARInfo.max_apps` is 0 when the
-    number of loaded apps is bounded only by platform resources, "the ZZ9000", and
-    the platform's own ceiling otherwise. A platform whose claims come from a fixed
-    table of process records (231 records, for example) has a ceiling even though
-    the number of apps is also limited by memory. The text does not say which side
-    a fixed record table is on, so 0 and 231 are both defensible. Say that a fixed
-    table is a ceiling and must be reported, or say that 0 may also mean "no
-    ceiling the platform wants to name". C-QUEUE.12 accepts either (it opens claims
-    until the first refusal).
+31. **`max_apps` of 0** (5.6, 9.2): the question was whether a process-record
+    table sized from memory at start counts as a fixed app ceiling.
+    C-QUEUE.12 opens claims until the first refusal and checks either
+    resource-limited admission or the platform's reported ceiling.
     settled: spec 5.6 (0 means bounded only by resources, a record table sized from memory included; a fixed ceiling is reported and refused with `AAR_REASON_LIMIT`)
 32. **Slots of a group that is not declared** (3.3 rule 2): the text says that a set
     group bit means every slot the table covers is non-NULL, not the converse. A
@@ -767,7 +761,7 @@ developers.
     raw stream), the LHA streams (no end marker, so the destination size is the
     decode length and a destination that is too small ends the decode without an
     error; `bytes_consumed` is not defined), whether a destination larger than
-    the output is allowed for the other algorithms, and the whole image-session
+    the output is allowed for the other algorithms, and the image-session
     protocol: what `aar_image_decode` `flags` mean (bit 0 ends the input), when
     a tile is complete, how a drain with no new input is made, what
     `bytes_written` counts, the result flags. C-SERVICES.2 to C-SERVICES.5
@@ -819,7 +813,7 @@ developers.
     parked.
     settled: spec 9.6 (a reply that matches no outstanding request is `AAR_E_INVAL`; the late completion after a timeout is accepted)
 46. **Log drops under a rate limit** (7.2, 10.4): a platform MAY rate-limit `aar_log`
-    (the ZZ9000: 32 records per second to the client), and the platform counts a
+    (see C-CON.10 for the ZZ9000 limits), and the platform counts a
     dropped record in `log_dropped`. It is not said whether a record that the rate
     limit discards is a dropped record. C-QUEUE.9 requires `log_dropped` above 0
     whenever fewer records than were written reached the client.
@@ -867,7 +861,7 @@ developers.
 55. **What `heap_info.committed` counts** (3.4, 4.1): "private memory currently
     committed" and the limit that caps it are about private memory, which 4.1 says is
     "its image, stack and a heap", while `heap_range` reports only the heap. The ZZ9000
-    reports the whole of it (4 MiB for an app with 3 MiB of heap, image and a 1 MiB
+    reports all private memory (4 MiB for an app with 3 MiB of heap, image and a 1 MiB
     stack frame). C-MEM.1 requires only that the heap is not larger than `committed`;
     C-MEM.2, .6 and .8 judge `committed` by how it changes. Say which figure it is.
     settled: spec 3.4, 4.1 (`committed` counts image, stack and heap, so the heap is smaller than `committed`)
@@ -914,7 +908,7 @@ developers.
     image without `PT_DYNAMIC` or a relocation whose target lies outside every
     `PT_LOAD` is refused, and for a class or machine that the platform does not run it
     allowed `AAR_E_PROFILE` or `AAR_E_INVAL`.
-    settled: spec 2.2 (an image has exactly one `PT_DYNAMIC`, every relocation target lies inside `p_memsz` of a `PT_LOAD` with room for the whole word, and both are refused with `AAR_E_INVAL`; C-ELF.15 and C-ELF.23 accept a refusal only; C-ELF.31 accepts `AAR_E_PROFILE` or `AAR_E_INVAL`, as 2.2 says)
+    settled: spec 2.2 (an image has exactly one `PT_DYNAMIC`, every relocation target lies inside `p_memsz` of a `PT_LOAD` with room for a full word, and both are refused with `AAR_E_INVAL`; C-ELF.15 and C-ELF.23 accept a refusal only; C-ELF.31 accepts `AAR_E_PROFILE` or `AAR_E_INVAL`, as 2.2 says)
 62. **SQ full and the message reserve** (10.3, 10.4): `sq_full` counts "a post that finds the SQ
     full", but a message post is refused one entry early (the reserve for a request, 6), when
     the queue is not yet full. The ZZ9000 does not count that refusal. C-QUEUE.8 fills the

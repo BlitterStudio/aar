@@ -1,7 +1,8 @@
 /*
  * Exercises the app address-space boundary of an isolated runtime without
- * touching app resources. The two addresses are ZZ9000 firmware memory and
- * an ungranted host heap page; they mean nothing on another platform.
+ * touching app resources.
+ * ZZ9000 note: the address probes below target its firmware memory and an
+ * ungranted host heap page. Select addresses for the platform under test.
  *
  * SPDX-License-Identifier: MIT
  */

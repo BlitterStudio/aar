@@ -36,10 +36,8 @@ make check
 ```
 
 ELFs land in `build/<profile>/<name>.elf`. `make PROFILES=a32` limits the
-profiles. `make check` also runs the checker's own tests, the header layout
-and `AAR_NOTE` checks of both compilers, the floating-point code generation
-test, the mode switch test, the freestanding guard, and `aar-check
---expect-note` on the templates whose note is fixed:
+profiles. The [root README](../README.md#building-apps) lists what `make check`
+runs and the checks that need separate targets. These templates have fixed notes:
 
 | Template | stack | min heap | groups required | groups optional |
 | --- | --- | --- | --- | --- |
@@ -75,7 +73,8 @@ CMake. The image sets `AAR_SDK`, `AAR_SYSROOT_A32`, `AAR_SYSROOT_A64` and
 
 ```text
 docker build -f docker/Dockerfile -t aar-sdk .
-docker run --rm -v "$PWD":/src -w /src aar-sdk make check
+docker run --rm -v "$PWD:/src:ro" aar-sdk sh -c \
+  'cp -r /src /w && cd /w && make AAR_SDK=/w check'
 ```
 
 `ghcr.io/blitterstudio/aar-sdk` is pushed only on tag pushes and manual workflow
@@ -87,12 +86,10 @@ entry points are the same.
 
 ## Check
 
-`tools/aar-check` rejects an image the loader would reject: not a little-endian
-ARM PIE of its profile, a relocation the profile does not allow, `PT_INTERP`,
-`DT_NEEDED`, a writable and executable segment, a soft-float A32 image, or an
-AAR note that is missing, doubled, has the wrong magic, an api major other than
-0, an unknown group bit, or a stack other than 0 or 64 KiB to 1 MiB aligned to
-16.
+`tools/aar-check` checks build output against
+[spec sections 2.2 and 2.3](../spec/aar.md), including the ELF profile,
+segments, relocations and note. It also checks section headers; a runtime
+loader may accept an image without them.
 
 `aar-check --no-libc app.map` checks the link map of a freestanding build and
 fails if any archive other than `libaar.a` and `libgcc.a` was linked.
@@ -110,12 +107,9 @@ way, checks its link map, and links a fixture (`tests/freestanding_leak.c` with
 
 ## Host runner
 
-`host-runner/` builds `hello`, `console`, `filter`, `freestanding`,
-`ringflood`, `echo`, `pixels`, `tone` and `memhog` as native programs against
-`libaar-host`, with SDL2 standing in for the platform, and tests most of them.
-See `host-runner/README.md`. The runner has no GL group, no compression and no
-decoders, so `mgl-conformance` only links there, and the instruction-level
-templates are Arm only.
+The [host-runner manual](../host-runner/README.md) lists its native builds and
+differences from an ARM target. Instruction-level templates need the target
+instruction set.
 
 ## Templates
 
@@ -123,23 +117,21 @@ templates are Arm only.
 - `pixels.c`: opens a display surface and handles input. It ends on stop or a
   key; the key needs the input group, which the note lists as optional.
 - `fault.c`: deliberately faults for lifecycle testing (UDF on both profiles).
-- `isolate.c`: faults on forbidden stores, execution, or host heap access; its
-  `svc` mode verifies that a text pointer is rejected by a pointer-taking call
-  with `AAR_E_FAULT`. The addresses are the ZZ9000's.
+- `isolate.c`: faults on forbidden stores, execution, or ungranted shared
+  memory; its `svc` mode checks that a text pointer returns `AAR_E_FAULT`.
+  See the ZZ9000 notes below before using its address probes elsewhere.
 - `spin.c`: CPU-bound scheduler fairness probe; run it as `spin [name]`.
 - `memhog.c`: allocates and touches 1 MiB blocks until `malloc` fails, reports
   each 16 MiB and low-memory events, holds the memory until Ctrl-C, then frees
   every block and exits normally.
-- `svcbench.c`: times table calls in `aar_time_us` batches and reports 667 MHz
-  timer-derived cycle estimates because PMU access is unavailable in user
-  mode. It times `should_stop`, `time_us` and `aar_get_info`.
-- `svcprobe.c`: on A32 with firmware built with its SVC probe option, times
-  individual SVC path boundaries with PMCCNTR; then, on both profiles, times
-  three table calls with the cycle counter. The probes are a ZZ9000 firmware
-  option and have no A64 form.
+- `svcbench.c`: times `should_stop`, `time_us` and `aar_get_info` in
+  `aar_time_us` batches. Its cycle estimates assume the ZZ9000 clock; see below.
+- `svcprobe.c`: times three table calls with the cycle counter on both
+  profiles. User-mode counter access must be enabled by the platform.
+  Its optional A32 SVC boundary probe is ZZ9000-specific; see below.
 - `membench.c`: memory bandwidth benchmark. It times sequential and
-  pointer-chase traffic with `aar_time_us`. PMU, SCTLR/ACTLR, and PL310/DDRC
-  registers are not available to apps. The display region is optional.
+  pointer-chase traffic with `aar_time_us`, without PMU or device-register
+  access. The display region is optional.
 - `filter.c`: file-in/file-out Shell template. It maps an input through the
   client's file calls (`aar_map_file`, an optional call: the template fails
   with 10 where it is absent), computes SHA-256 with the services group, and
@@ -149,11 +141,12 @@ templates are Arm only.
   440 Hz square wave. It is route-agnostic: it asks for 22050 Hz and derives
   the period from the rate it was granted.
 - `echo.c`: echoes each fixed 32-byte client message. It parks in
-  `aar_msg_wait` between messages and replies with `aar_msg_send`; use it with
-  the `zz9k.library` app-client smoke tool.
-- `console.c`: Shell console example. Prints its arguments to stdout and a
-  line to stderr, echoes each stdin line in upper case, reports Ctrl-D/E/F
-  break events, and exits at EOF (Ctrl-\ in a Shell window).
+  `aar_msg_wait` between messages and replies with `aar_msg_send`; use a client
+  that drains messages (see [aar_serve](../docs/aar-serve-api.md)).
+- `console.c`: prints its arguments to stdout and a line to stderr, echoes
+  stdin lines in upper case, reports Ctrl-D/E/F break events, and exits at EOF.
+  See the [aar-run console notes](../client/run/README.md#console-and-audio-routes)
+  for redirecting input and stopping a keyboard read.
 - `freestanding.c`: no newlib. A bump allocator over `aar_heap_range` and
   `aar_heap_grow`, a hand-written hash, and its own number formatting; build
   it with `AAR_FREESTANDING=1`. The host runner builds it too and a test
@@ -171,11 +164,24 @@ templates are Arm only.
   shared buffer on every loop; `aar_publish` makes each store visible before
   the message that carries the same value is sent. The INFO message carries the
   buffer's token (`aar_shared.haddr`). CTRL QUIET stops it. Its message layout
-  is in the file header. Use it with the `zz9k-app-ringtest` tool; `ringflood
-  N` on the host runner leaves the flood after N data messages, and the host
-  tests check its output against an independent implementation of the
-  pattern.
+  is in the file header. `ringflood N` on the host runner leaves the flood after
+  N data messages, and the host tests check its output against an independent
+  implementation of the pattern.
 - `mgl_conformance.c`: MiniGL texture-environment conformance probe through
   `aar_gl_bind`; see `mgl-conformance-README.md`.
 - `sbrk_smoke.c`: a link fixture, not a template. It pulls newlib `malloc` so
   the relocation check sees more than the `hello` pointer.
+
+## ZZ9000 notes
+
+`isolate.c` hard-codes firmware and ungranted host-heap addresses from the
+ZZ9000. Change those addresses for another isolated platform; they are not
+part of the AAR contract.
+
+`svcbench.c` uses a 667 MHz clock assumption for its timer-derived cycle
+estimates. Use its time measurements on other platforms.
+
+The A32 SVC boundary probes in `svcprobe.c` require the ZZ9000 firmware's
+probe build option; they have no A64 form. The
+[firmware SDK smoke guide](https://github.com/BlitterStudio/zz9000-firmware/blob/master/sdk/docs/zz9k-release-smoke.md)
+describes the platform's message-ring test tools.

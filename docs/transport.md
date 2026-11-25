@@ -9,11 +9,10 @@ This page is for people who implement the standard on a platform, or who write
 a client library over an existing transport. App authors do not need it: an
 app sees only the table described in the [API reference](aar-api.md).
 
-The contract is `include/aar/transport.h`. The header pins every layout as a
-byte offset and carries a reference model of the producer and the consumer
-that the firmware, the Amiga library and the host tests share. This page
-explains the layouts and the rules. When the two disagree, the header and
-its tests (`tests/transport_model_test.c`) are right and this page has a bug.
+The normative contract is [spec section 10](../spec/aar.md).
+`include/aar/transport.h` pins the layouts as byte offsets and carries the
+reference producer and consumer model. This page explains that header;
+`tests/transport_model_test.c` checks its queue and barrier behaviour.
 
 ## What a platform supplies
 
@@ -333,13 +332,12 @@ single-threaded test.
 2. Read the entry.
 3. Run the release barrier, then write the new head.
 
-The release barrier before the head write is **stricter than the one-line rule
-of the standard** ("the consumer reads the tail, then a load barrier, then the
-entry, then writes the head"). ARMv7 and ARMv8 may reorder a load with a later
-store to a different address. Without the barrier the producer could see the
-freed slot and overwrite an entry the consumer is still reading. The same
-reason is why the producer runs an acquire barrier after it reads the head and
-before it writes the entry. On the 68k the hooks are NULL or a no-op.
+The release barrier before the head write follows spec section 10.4.
+ARMv7 and ARMv8 may reorder a load with a later store to a different address.
+Without the barrier the producer could see the freed slot and overwrite an
+entry the consumer is still reading. The producer's acquire barrier after
+reading the head protects the reuse of the slot. On the 68k the hooks are
+NULL or a no-op.
 
 An index is only ever written by its owner, so an owner may read its own index
 without a barrier. Every index is a free-running `uint32_t`; a count above
@@ -524,16 +522,18 @@ about the CPU; it does not clean or invalidate caches. Prove the platform's
 mapping with a probe and a negative control (the same test with the shared
 attribute removed must fail) before the runtime relies on it.
 
-**ZZ9000.** The control block and queues come from the ordinary host-visible
-heap with the normal write-back shareable mapping, which the Zorro master
-reaches coherently through the Zynq ACP. The ARM side orders data before the
-index with barriers and needs no cache maintenance. The 68k side maps them
-cache-inhibited. A probe with this layout passed on an A4000 with a 68060 in
-November 2026: firmware code on both ARM cores wrote and read 64-entry rings
-of 64-byte entries and a control block in host-visible memory, idle and under
-load, with no stale index, torn entry or wrong word on either side, while the
-same firmware with the shared attribute removed from the host-visible mapping
-failed at once.
+**ZZ9000 note.** The control block, queues and shared buffers come from the
+host-visible heap with the normal write-back shareable mapping. Tokens are
+board-relative Zorro III offsets. The Zorro master reaches that memory
+coherently through the Zynq ACP, which snoops the ARM caches. The ARM side
+orders stores before publishing an index or message with barriers and needs
+no cache maintenance. The ACP does not reach the 68k data cache; the client
+maps these ranges cache-inhibited, and unmapping does not restore the prior
+cache mode. Draw into private memory or a surface back buffer rather than
+using a shared buffer as framebuffer scratch space.
+
+The control-structure probe and its negative control are recorded in
+[spec section 10.5](../spec/aar.md).
 
 ## Doorbell
 
@@ -545,9 +545,9 @@ platform that can only poll is correct, and a platform that can raise an
 interrupt or a signal is faster. The ring carries no data, and it is not part
 of the control block.
 
-**ZZ9000.** The client-to-ARM ring is a mailbox write that names the handle.
-The ARM-to-client direction is a vertical-blank poll of the queue indices today;
-an interrupt is possible.
+**ZZ9000 note.** The client-to-ARM ring is a mailbox write that names the handle.
+The ARM-to-client direction uses the library's vertical-blank poll, narrowed by
+event counts; no Amiga interrupt is defined by the transport.
 
 ## Event counts (optional)
 
@@ -571,7 +571,7 @@ when it differs, the client reads the group counts and looks at the handles of t
 groups that changed. A client that ignores the counts is still correct: they
 carry no data and the indices stay authoritative.
 
-**ZZ9000.** The block is 64 bytes from the host-visible heap, written with the
+**ZZ9000 note.** The block is 64 bytes from the host-visible heap, written with the
 normal write-back shareable mapping and zero-filled at start: big-endian word 0
 is the global count and words 1 to 15 the counts of groups 0 to 14 (records 0 to
 479). The QUERY reply carries its board offset at offset 48 (0 when absent); a
@@ -587,33 +587,18 @@ context, so that a requester that blocks the owner task does not stop the app.
 Every request names the handle, and a stale generation fails with
 `AAR_E_STALE`. After a lease loss, a platform that shares memory with the client
 must not reuse that memory for another app while the old client could still
-write to it. The ZZ9000 keeps the app's control block, queues and shared buffers
-allocated until the old client's next stale request or an explicit release.
+write to it.
+
+**ZZ9000 note.** The platform keeps the app's control block, queues and shared
+buffers allocated until the old client's next stale request or an explicit release.
 
 ## Reusing the library core
 
-The internal transport interface is not part of the standard. It is named here
-so that a port can reuse the shared library code above it:
+The internal platform interface is `client/src/aar_plat.h`; it is not part
+of the standard. The [porting guide](porting.md#aarlibrary) describes the
+operations a port supplies.
 
-| Operation | Purpose |
-|---|---|
-| `claim` | Admission. Returns the handle and the tokens, or a refusal with a reason. |
-| `release` | Frees the record, tables, control block and queues after teardown. |
-| `load_begin`, `load_chunk`, `load_end` | Stream the image through a shared buffer, with progress in the control block. |
-| `start`, `stop` | Control calls. |
-| `status` | Reads the control block. |
-| `queue_post`, `queue_pop` | Produce and consume entries with the barriers above. |
-| `resolve` | Turns a token into a 68k pointer and sets the 68k cache mode. |
-| `cache_publish`, `cache_acquire` | 68k data cache maintenance, or a no-op. |
-| `lease_renew` | One store into `AAR_CB_LEASE_COUNTER`, from the timer or interrupt context. The reference library core does it, so a platform supplies nothing. |
-| `doorbell_ring`, `doorbell_arm` | The doorbell, where the platform can raise an interrupt or a signal. |
-| `events_sample`, `claim_news` | Optional event counts: the sample reads the global count once per pass (and the group counts if it changed); `claim_news` says, with no card access, whether a claim's group changed. A platform without them leaves both NULL. |
-
-In the library's source the platform interface is `client/src/aar_plat.h`: a
-table of operations (attach, query, claim, release, the three load steps, start,
-stop, map and token, the doorbell, the extension table and the barriers) and a
-set of constants. The library core reads and writes the control block and the
-queues itself with the accessors of `transport.h`, so a platform does not hide
-them. The library renews the lease itself, from a vertical-blank interrupt, for
-every live handle. The handle's owner and the one signal bit per owner task are
-the library's business and not the platform's.
+The core reads and writes the control block and queues itself with the
+`transport.h` accessors, and the AmigaOS shell renews the leases from a
+vertical-blank interrupt. Handle ownership and the one signal bit per owner
+task belong to the library, not to the platform layer.

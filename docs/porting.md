@@ -16,8 +16,9 @@ this guide and the specification differ, the specification is right.
 
 A platform implements one or more profiles, **A32** and **A64**, and the two
 are treated alike here. Where the text says "the profile", read it once for
-each profile the platform runs. The ZZ9000 is the existing implementation (A32
-only, Cortex-A9); nothing on this page depends on it.
+each profile the platform runs.
+
+**ZZ9000 note.** The reference platform runs A32 on Cortex-A9.
 
 ## What a platform provides
 
@@ -60,12 +61,11 @@ The layouts are byte offsets in `aar/transport.h`, not C structures, and every
 word is big-endian. `aar_cb_init`, `aar_cb_check` and the `aar_queue_*`
 functions are the reference code. Use them on the ARM side with the
 byte-reversing accessors rather than writing the offsets again. The host test
-`tests/transport_model_test.c` exercises the model, including the barrier
-order (acquire after reading the other side's index, release before writing
-your own).
-A platform whose memory is not coherent between the two sides has to map the
-control structures non-cacheable on the ARM side, or provide real `aar_publish`
-and `aar_acquire`.
+`tests/transport_model_test.c` exercises the model, including its acquire and
+release barriers (see [transport ordering](transport.md#ordering-and-barriers)).
+A platform whose memory is not coherent between the two sides maps the control
+structures non-cacheable on the ARM side or performs cache maintenance
+internally; see [visibility](transport.md#visibility-of-the-control-structures).
 
 If the app and the Amiga side run in the same machine and share RAM (an
 emulator, for example), the transport is simple: a token is an Amiga address,
@@ -84,31 +84,26 @@ interface, `client/src/aar_plat.h`, which a platform fills in:
 |---|---|
 | `claim`, `release` | admission of an app (the handle, the tokens of the control block and the queues, or a refusal with a reason) and the release of all of it |
 | `load_begin`, `load_chunk`, `load_end` | move the image to the ARM side with progress in the control block |
-| `start`, `stop`, `status` | the control calls |
+| `start`, `stop` | the control calls; the core reads status from the control block |
 | `map`, `token` | tokens and 68k pointers |
 | `kick`, `poll` | the doorbell toward the app, and the housekeeping that retires a finished doorbell request |
 | `cache_publish`, `cache_acquire` | 68k data cache maintenance, or nothing |
 | `ext`, `events_sample`, `claim_news` | platform extensions and the optional event counts |
 
-`client/src/refplat.c` is a complete platform on plain memory. It is the best
-short example of what each operation has to do, and the host tests of the core
-run on it (`client/tests/`). The calls the library offers to Amiga programs
-are in [aar-client-api.md](aar-client-api.md). `aar-run` (`client/run/`) and
+`client/src/refplat.c` is an in-memory test platform with fault injection. It
+shows how each operation is called, and the core's host tests run on it
+(`client/tests/`). It is not an ARM runtime or a conformance target.
+The library's calls are in [aar-client-api.md](aar-client-api.md). `aar-run` (`client/run/`) and
 the serving loop `aar_serve` (`client/serve/`) are built on the library and
 need no change for a new platform: they serve the app's files, console,
 display, input and audio through it.
 
 ## The image rules and `loader/`
 
-An app is a position-independent ELF of one profile. The rules a runtime must
-apply to it are the ELF rules and the AAR note of the standard (sections 2.2
-and 2.3): the type, class, machine and flags of the profile, no interpreter,
-no needed libraries, at most four load segments, none writable and executable,
-no overlap, relocations only from the dynamic segment and only of the RELATIVE
-kind, an entry point inside an executable segment, and exactly one valid note.
+An app is a position-independent ELF of one profile. Apply the
+[ELF and note rules in spec sections 2.2 and 2.3](../spec/aar.md).
 
-Three implementations of these rules exist in this repository, and they are
-tested against each other:
+The checker is independent of the C validator; the probe and loader share it:
 
 | Implementation | Language | Use |
 |---|---|---|
@@ -140,11 +135,12 @@ int aar_load_place(const struct aar_load_plan *plan, aar_load_read_fn read, void
 
 **Reading.** Every byte of the image comes through the read callback, which
 returns `AAR_OK` or a negative `AAR_E_*` (the loader then returns `AAR_E_IO`).
-The module never assumes the whole file is in memory. Every size and offset it
-reads from the file is untrusted: the arithmetic does not wrap, no read goes
+The module does not require the file to be resident in memory.
+Every size and offset it reads from the file is untrusted: no arithmetic wraps,
+and no read goes
 outside `length` (below 2^62), and `aar_load_place` writes nowhere outside the
 memory it was given. `aar_load_plan` reads headers and tables in pieces of at
-most 512 bytes; `aar_load_place` reads whole segments.
+most 512 bytes; `aar_load_place` copies segments in pieces of at most 256 MiB.
 
 **Planning.** `aar_load_plan` applies every rule of 2.2 and 2.3 and fills
 `struct aar_load_plan`:
@@ -169,18 +165,16 @@ together. The result is:
 | `AAR_E_INVAL` | a rule is broken |
 | `AAR_E_IO` | the callback failed |
 
-The rules are checked before the profile, so an image that breaks a rule is
-`AAR_E_INVAL` whatever `profiles` is. `why`, when not NULL, receives a static
-text that names the rule, for the platform's log. Planning writes nothing, so it
-can run before any memory is reserved, which is the right time to refuse an
-image.
+The rules are checked before the platform profile mask, so a broken rule is
+`AAR_E_INVAL` (or `AAR_E_PROFILE` for a note/ELF profile mismatch), whatever
+`profiles` is. `why`, when not NULL, receives static text that names the rule.
+Planning writes no image memory, so it can run before any memory is reserved
+and refuse an image at that point.
 
-The note's own rules are judged here: magic, version, profile, the API against
-the headers the module was built with (a different major, or a required minor
-above the header's, is refused, standard section 2.3), the stack size and the
-group bits. What the plan does not decide is the platform's: whether the groups
-the note requires are available (`AAR_E_NOGROUP`), and whether the stack and
-the heap the note asks for fit (`AAR_E_NOMEM`).
+The validator judges the note against the API of the headers it was built with.
+It reports group bits without rejecting unknown ones. The platform decides
+whether all required groups are available (`AAR_E_NOGROUP`) and whether the
+stack and minimum heap fit (`AAR_E_NOMEM`).
 
 **Placing.** The runtime reserves memory for `span` bytes, then calls
 `aar_load_place` with the plan of the same image:
@@ -195,7 +189,7 @@ the heap the note asks for fit (`AAR_E_NOMEM`).
 mapping and runs it through another: a card that writes to its own memory
 through a window and runs the app at another address, or an emulator that loads
 into host memory and runs at a guest address. When they are the same, pass the
-same value. The whole of `[write_base, write_base + span)` is written: the
+same value. The range `[write_base, write_base + span)` is written: the
 bytes of the segments, zero for the BSS and for the gaps between segments, then
 the relocations. On `AAR_OK`, `*entry` is `app_base` plus the entry offset.
 
@@ -214,7 +208,7 @@ permissions of the plan (read and execute for code and read-only data, read
 and write for data and the BSS), makes the instruction and data caches agree
 over the code, and enters the app.
 
-A minimal use, for a platform that has the whole file in memory:
+A minimal use, for a platform that keeps the file in memory:
 
 ```c
 static int read_mem(void *user, uint64_t offset, void *dst, uint32_t count)
@@ -256,33 +250,15 @@ runner does the same through the platform's own `aar.library` (area C-ELF).
 
 ## The entry contract
 
-The runtime starts the app by entering `e_entry` (the loaded entry point of the
-image) with this state; the standard (section 3.2) is the reference. Every
-other general and vector register is 0.
+The runtime enters `e_entry` with the state defined in
+[spec section 3.2](../spec/aar.md). `libaar`'s crt0 runs constructors and
+calls `aar_main`; the runtime does not run constructors itself. The
+argument limits are reported by the client library in `AARInfo`, not by the
+app's `aar_info`.
 
-| | A32 | A64 |
-|---|---|---|
-| Table pointer | `r0` | `x0` |
-| `argc` | `r1` | `w1` |
-| `argv` | `r2` | `x2` |
-| Stack pointer | top of the app stack, 8-byte aligned | top of the app stack, 16-byte aligned |
-| Link register | 0 | `x30 = 0` and `x29 = 0` |
-| Mode | user, A32 state, little-endian, interrupts enabled | EL0, AArch64, little-endian |
-| Float state | `FPSCR = 0`; VFP and NEON enabled; `d0` to `d31` are 0 | `FPCR = 0`, `FPSR = 0`; ASIMD enabled; `v0` to `v31` are 0 |
-| Memory | image loaded and relocated, BSS zeroed, the `argv` strings in app memory | same |
-
-`argv[0]` is the name of the image file. The runtime supports at least 16
-arguments of up to 127 bytes each and reports the exact limit in `aar_info`.
-The stack is `stack_bytes` of the note (1 MiB when it is 0). The runtime runs
-no constructors: `crt0` of `libaar` does, then calls `aar_main`.
-
-None of this is an accident of the reference platform. The conformance payload
-`conf_entry` (area C-ENTRY) reads the registers at the first instruction and
-judges every line of the table, so a platform that enters the app with leftover
-state fails there. Two points are easy to miss: the floating-point control
-registers must be 0 (an app can rely on round to nearest with flush-to-zero
-off), and the vector registers must be 0 as well, which also means the
-platform must not leak the previous app's state.
+The conformance payload `conf_entry` (area C-ENTRY) samples the registers at
+its entry stub. Use it to check integer and floating-point state before
+running ordinary apps.
 
 ### A worked example: `libaar/tests/loader.c`
 
@@ -369,26 +345,9 @@ and enter one:
 
 ### The bundle
 
-CI builds the whole suite for a platform developer and uploads it as the
-artifact **`aar-conformance-bundle`** of every run of the CI workflow (the
-`conf-bundle` job; download it from the run's page or with `gh run download`).
-Locally, `make conf-bundle` in the SDK image stages the payloads and the
-corpus, `AAR_CONF_OUT=<file> sh client/tests/m68k_check.sh` in the m68k image
-builds the runner, and `python3 conformance/tools/conf_bundle.py manifest`
-writes the manifest. The layout:
-
-```
-aar-conf                  the runner, an m68k program
-a32/conf_<area>.elf       the 16 payloads of profile A32
-a64/conf_<area>.elf       the 16 payloads of profile A64
-negative/MANIFEST         the C-ELF image corpus and the list of allowed refusals
-negative/a32/*.aarimg
-negative/a64/*.aarimg
-MANIFEST.txt              suite version, source commit, run commands, sha256 of every file
-```
-
-`MANIFEST.txt` carries the commands, so it is the page to start from. Check the
-download with `grep -E '^[0-9a-f]{64}  ' MANIFEST.txt | sha256sum -c`.
+Download the CI artifact `aar-conformance-bundle` or assemble it locally.
+The [conformance manual](../conformance/README.md#the-bundle) defines its
+contents, manifest checks and assembly commands.
 
 ### Running it
 
@@ -415,26 +374,11 @@ each prompt shows and what the evidence rule is for C-INPUT.11.
 
 ### What `CONFORMS` needs
 
-The standard (section 11.1) says a platform conforms to a profile at an API
-version when:
-
-1. it passes every MUST test of that profile and of every group it declares;
-2. it does not declare a group it does not pass;
-3. the suite ran with the platform's own `aar.library` and the unmodified
-   payloads of the bundle, and the results are in the standard format with
-   the suite version and the platform's `AARInfo` dump;
-4. every SKIP has a reason, and a SKIP is only for a test of an undeclared
-   group or a SHOULD test.
-
-The runner prints the verdict. `python3 conformance/tools/check_results.py
-report conf-a64.txt --require-conforms` checks the report: the suite line, the
-`AARInfo` lines, one line for every test of the profile, a summary that
-matches the lines, and a verdict that follows from them. A `SKIP host:` line
-is allowed in the host runner and the qemu runs only, never in the report of a
-platform. A test marked `todo` in the catalogue prints
-`SKIP suite: not implemented`, which a MUST test cannot have, so the verdict
-of a suite that is not complete is `DOES-NOT-CONFORM` whatever the platform
-does; read the PASS and FAIL lines then.
+The conformance requirements are in [spec section 11.1](../spec/aar.md);
+the [conformance manual](../conformance/README.md#what-passing-means)
+describes verdicts and the permitted skips, including optional audio routes.
+`python3 conformance/tools/check_results.py report conf-a64.txt --require-conforms`
+validates a report and fails if its verdict is not `CONFORMS`.
 
 ### Reporting
 

@@ -1,7 +1,7 @@
 /*
- * Core-1 memory bandwidth benchmark for a user-mode app on the ZZ9000.
+ * Memory bandwidth benchmark for a user-mode app.
  * Timed loops stay in app memory and the report goes out through aar_log.
- * PMU, system control registers, and device MMIO are not available to apps.
+ * It does not use PMU, system control registers or device MMIO.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -294,9 +294,9 @@ static int wants_tune(int argc, char **argv)
     return 0;
 }
 
-/* aar_log truncates one call at AAR_LOG_MAX bytes and the ZZ9000 passes at
- * most 8 lines per second to the UART: send the report one line per call,
- * 150 ms apart.  The runtime adds the line ending. */
+/* Send one report line per aar_log call, 150 ms apart, to stay below the
+ * ZZ9000 UART rate limit documented in conformance/TESTS.md (C-CON.10).
+ * The runtime adds the line ending. */
 static void log_lines(const char *text)
 {
     while (*text != '\0') {

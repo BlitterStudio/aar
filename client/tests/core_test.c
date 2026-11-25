@@ -315,6 +315,7 @@ static void test_query(void)
     CHECK(info.max_image_bytes == 0x01000000u && info.max_args == 16 && info.max_arg_bytes == 128);
     CHECK(info.queue_depth == 64 && info.msg_capacity == 63);
     CHECK(info.weight_max == 256 && info.shared_max_mib == 4095);
+    CHECK(info.stall_limit_ms == 10000u); /* spec 3.4 minimum */
     CHECK(info.platform[AAR_ZZ9000_INFO_RECORDS_FREE] == REFPLAT_CLAIMS);
     CHECK(info.platform[AAR_ZZ9000_INFO_CAPS] == AAR_ZZ9000_CAP_Z3);
     CHECK(info.reserved0 == 0 && info.reserved1[0] == 0 && info.reserved1[3] == 0);

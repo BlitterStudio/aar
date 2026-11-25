@@ -220,7 +220,7 @@ not passed to the app. A bad value prints the usage and returns 10.
 
 | Word | Effect |
 | --- | --- |
-| `POLL=<us>` | The heartbeat of the loop, in microseconds. The default is 1000 (one wake-up per millisecond, the latency the launcher has always had). `POLL=20000` suits a program that is happy with a vertical-blank wake-up; `POLL=0` turns the heartbeat off and waits on the library's signal and on a few timed wakes (10 ms while a stop is pending, 20 ms for the joysticks of a display, 1 ms for completions waiting for the completion queue, 250 ms to see a revoked claim); it is refused with `AUDIO=AHI`. The value is below 1000000. A slower heartbeat costs latency for DOS and audio work, not correctness. |
+| `POLL=<us>` | The heartbeat of the loop, in microseconds. The default is 1000. The parser accepts 0 to 999999 (`AAR_RUN_POLL_US_LIMIT` in `aar_run_policy.h`). `POLL=20000` suits a program that is happy with a vertical-blank wake-up. `POLL=0` turns the heartbeat off and waits on the library's signal and timed wakes: 10 ms while a stop is pending, 20 ms for display joysticks, 1 ms for completions waiting for queue space, and 250 ms to see a revoked claim. With `AUDIO=AHI`, the serving loop requires 1 to 20000 us instead; other values fail at startup with `AAR_E_NOSYS` (currently reported as `timer.device is required.`). A slower heartbeat costs latency for DOS and audio work. |
 | `DISPLAY=<BUFFERS\|PAN3\|PAN2\|SINGLE>` | The display strategy aar-run starts with, and the fallbacks after it. `BUFFERS` (the default) uses screen buffers, then a three page tall screen, a two page one and one buffer. `PAN3` starts at the three page tall screen, `PAN2` at the two page one, and `SINGLE` uses one buffer the platform copies each frame. A strategy the screen cannot open falls back to the next one, as in the default order. |
 
 ```text
@@ -236,11 +236,11 @@ an app after a stop, read by `aar_serve`), the supported `profiles` and
 `groups`. A launch the platform cannot run is refused before it claims anything.
 
 **ZZ9000.** The first platform behind `aar.library`. It needs a Zorro III board
-with firmware that has the AAR queue transport (app ABI 0.5), `zz9k.library`
-revision 36 or later (only to reach the board's mailbox) and `mmu.library` 41
-or later, because the board's shared buffers must be mapped cache-inhibited.
-The platform takes 16 strings of 127 bytes (so 15 app arguments), a `WEIGHT`
-from 1 to 256, a `HOSTMEM` up to 4095 MiB and a 16 MiB shared default. aar-run
+with firmware that implements AAR API 0.5, `zz9k.library` revision 36 or later
+(only to reach the board's mailbox) and `mmu.library` 41 or later, because the
+board's shared buffers must be mapped cache-inhibited. The platform takes 16
+strings of 127 bytes (so 15 app arguments), a `WEIGHT` from 1 to 256, and
+`HOSTMEM` up to 62 MiB (`shared_max_mib`), with a 16 MiB shared default. aar-run
 prints `caps <hex>` after the `runtime api` line, from the platform words of
 `AARInfo`, and a note when the board is not a Zorro III board (the library then
 decides at the claim). `STATUS` and `RELEASE` are available through the
@@ -253,7 +253,7 @@ firmware SDK package ships `C/aar-run`, its icon and `Docs/aar-run.guide`.
 aar-run calls `aar.library`, the resident AAR client library of the platform
 (`LIBS:aar.library`). The library implements the AAR transport contract
 (`aar/transport.h`): it owns the claim, the control block and queue pair, the
-doorbell, the cache-inhibited maps and the lease. aar-run links none of that.
+doorbell, shared-memory mappings and lease. aar-run links none of that.
 Every claim has its own control block and queue pair, and the platform names
 each buffer it wants aar-run to use in the request that needs it.
 
@@ -343,17 +343,17 @@ finished, aar-run prints one line, `log records not shown: <n> dropped by the
 runtime (its queue was full), <m> by the launcher's console queue.`, when
 either count is not zero.
 For `AUDIO=AHI`, the summary also prints the ring's underrun count (summed over
-streams) and the heartbeat. AHI requires `POLL` between 1 and 20000 us; the
-default is 1000 us.
+streams) and the heartbeat. See [Diagnostics](#diagnostics) for the AHI `POLL`
+bound and the parser's separate limit.
 aar-run does not write to stderr while the app is running.
 
 aar-run takes the app's messages itself: the serving loop drains them with
 `AARGetMessage`, drops them and counts them, so an app that sends more than the
 library's inbox holds cannot hang itself behind an unread message. After the
 run aar-run prints `dropped <n> app messages.` when it dropped any. Apps that
-exchange custom messages need a client that takes them: the SDK echo and
-ringtest tools, or a program of its own that creates `aar_serve` with
-`AAR_SERVEF_KEEP_MESSAGES` (`docs/aar-serve-api.md`).
+exchange custom messages need a client that takes them: for example a program
+that creates `aar_serve` with `AAR_SERVEF_KEEP_MESSAGES` (see the
+[serve API](../../docs/aar-serve-api.md)).
 
 ### Console and audio routes
 
@@ -454,18 +454,18 @@ and data in buffers the platform names. The app has up to 16 open files and 16 o
 directory lists. A short read is end of file. Raw AmigaDOS Examine packets
 return length-prefixed BCPL names; aar-run converts them to NUL-terminated
 names in the request buffer before posting the list completion. The end of a
-list is `ENOENT`.
+list is `AAR_E_NOENT`.
 
 The open request carries the AAR file flags: `READ` 1, `WRITE` 2, `CREATE` 4,
 `TRUNCATE` 8, and `EXCL` 16. aar-run refuses an invalid combination with
-`EINVAL` (-2) before it touches AmigaDOS: neither `READ` nor `WRITE`, `CREATE`
+`AAR_E_INVAL` (-2) before it touches AmigaDOS: neither `READ` nor `WRITE`, `CREATE`
 or `TRUNCATE` without `WRITE`, `EXCL` without `CREATE`, or an unknown bit.
 Valid combinations open as follows.
 
-- `READ`: `MODE_OLDFILE`; a missing file is `ENOENT` (-5).
+- `READ`: `MODE_OLDFILE`; a missing file is `AAR_E_NOENT` (-5).
 - `WRITE` or `READ|WRITE`: the file must exist (aar-run probes with `Lock`,
   because `MODE_READWRITE` creates a missing file); then `MODE_READWRITE`. A
-  missing file is `ENOENT`.
+  missing file is `AAR_E_NOENT`.
 - `WRITE|TRUNCATE`: as above, then the file is set to size 0 with
   `ACTION_SET_FILE_SIZE`. A handler without that action gets `MODE_NEWFILE`
   after the probe.
@@ -473,21 +473,21 @@ Valid combinations open as follows.
   `MODE_NEWFILE` if it is missing.
 - `WRITE|CREATE|TRUNCATE`: `MODE_NEWFILE`; create, or replace an existing file.
 - `WRITE|CREATE|EXCL`, with or without `TRUNCATE`: aar-run probes with `Lock`. An
-  existing file is `EEXIST` (-11), including one that another program holds
+  existing file is `AAR_E_EXIST` (-11), including one that another program holds
   open exclusively (the handler refuses the lock with `ERROR_OBJECT_IN_USE`),
   for relative and `ABS` paths alike; otherwise `MODE_NEWFILE`.
 
 `READ` may be added to any of the `WRITE` entries. AmigaDOS has no atomic exclusive
-create, so `EXCL` is exclusive against the other apps aar-run serves, which share
-one serving loop, but not against other Amiga programs that create the same name
-between the probe and the open.
+create. Within one serving loop the check and create do not interleave with
+another request, but another Amiga program or aar-run instance can create the
+same name between the probe and the open.
 
 With `ABS` on a multi-directory assign, the probe finds the directory that holds
 the file and the open, `SetFileSize` and `MODE_NEWFILE` fallback all go to that
 same directory, so an existing file is updated, truncated, kept or replaced
 where it is rather than shadowed by a new file in the first directory. Every
 step that can create, truncate, replace or write a file is skipped, and answers
-`EIO`, once the request is no longer wanted: the claim was revoked, any stop is
+`AAR_E_IO`, once the request is no longer wanted: the claim was revoked, any stop is
 under way (Ctrl-C, `aar_serve_stop`, a stop from the app's window, the platform
 ending the app), or an earlier wait for AmigaDOS was abandoned.
 
@@ -516,9 +516,8 @@ restart or a lost lease is reported the same way and returns 20. A forced stop
 caused by Ctrl-C returns the app's normal exit code when it has one. Every exit
 path closes opened files and directory handles, restores the public screen,
 closes the claim (`AARClose`, which stops an app that still runs and releases
-it) and releases its Amiga-side resources. The library inhibits caching on the
-shared buffers it maps and does not restore the previous cache mode; those
-pages stay cache-inhibited.
+it) and releases its Amiga-side resources. For the ZZ9000 mapping policy, see
+the [transport note](../../docs/transport.md#visibility-of-the-control-structures).
 
 ## Building
 

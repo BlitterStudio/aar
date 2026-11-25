@@ -47,12 +47,10 @@ aar_host_executable(myapp SOURCES myapp.c)
 nothing in a build for the host, because the compiler is not an Arm target;
 define `AAR_HOST` when an Arm-hosted compiler builds the runner.
 
-The tests run the templates that fit (`hello`, `console`, `filter`,
-`freestanding`, `ringflood`, `echo`, `pixels`, `tone`, plus the `nogl` check on
-`mgl-conformance`), the contract program in `tests/contract.c`, the unit tests
-that include a runner source file (`files_unit`, `memory_unit`, `sleep_unit`),
-and the freestanding tests of libaar. `tests/check_runner.py` drives them with
-the SDL dummy drivers.
+CTest runs the native template tests, marked conformance payloads, contract
+and queue/display fixtures, source-level unit tests and libaar's freestanding
+tests. `host-runner/CMakeLists.txt` lists the cases; the Python drivers use SDL's
+dummy video and audio drivers.
 
 ## Run
 
@@ -109,10 +107,10 @@ stop
 
 `key` takes an Amiga raw code and optional qualifier bits. `break` is
 `AAR_EV_BREAK` (`4`, `5`, `6` for Ctrl-D/E/F). `stop` sets the stop flag and
-enqueues `AAR_EV_STOP`. `lowmem` enqueues an `AAR_EV_LOW_MEMORY` at once, for
+latches `AAR_EV_STOP`. `lowmem` latches an `AAR_EV_LOW_MEMORY` at once, for
 an app that does not exhaust the heap. `resize` enqueues `AAR_EV_RESIZE`,
-which a real runtime never sends in 0.5; it is only there to test an app's
-handling of an event it should ignore.
+which a runtime never sends in API 0.5; it tests handling of an event the app
+should ignore.
 
 ### Message script
 
@@ -140,9 +138,11 @@ alt `0x0010`/`0x0020`, left/right Amiga (GUI) `0x0040`/`0x0080`, numeric pad
 `0x0100`, repeat `0x0200`.
 
 Ctrl-D/E/F (raw `0x22`/`0x12`/`0x23`) also enqueue `AAR_EV_BREAK` with codes
-`4`/`5`/`6`, on key-down only. Window close and Ctrl-C enqueue one
-`AAR_EV_STOP` and set the stop flag. Unmapped scancodes are ignored. The queue
-holds 256 events and drops the newest when full. `aar_event_poll` never blocks.
+`4`/`5`/`6`, on key-down only. Window close and Ctrl-C set the stop flag and
+latch one `AAR_EV_STOP`. Unmapped scancodes are ignored. The queue holds
+256 ordinary events and drops the newest when full. `AAR_EV_STOP` and
+`AAR_EV_LOW_MEMORY` are separate latches: a full queue cannot drop them, and
+`aar_event_poll` delivers them before queued input. It never blocks.
 
 | SDL | Raw | SDL | Raw |
 | --- | --- | --- | --- |
@@ -206,9 +206,9 @@ port); joystick 1 is port 0. `dx`/`dy` are `-1`, `0`, or `1`. Fire is button
   `--root`, a parent step above it or a leading `/` that would leave it is
   `AAR_E_ACCES`, a `:` is `AAR_E_ACCES` unless `--abs`. `//` is a parent step,
   as in an AmigaDOS path. `aar_map_file` reads at most 16 MiB into a
-  runtime-owned shared block, so the file counts against the shared limit as
-  it does on the ZZ9000; a larger file is `AAR_E_NOSPC`, and a zero-length file
-  is `AAR_E_NOMEM`.
+  runtime-owned shared block, so the file counts against the shared limit;
+  a larger file is `AAR_E_NOSPC`,
+  and a zero-length file is `AAR_E_NOMEM`.
 - **Console.** `printf` uses the host C library. On a target, newlib routes fd
   1 and fd 2 through the console calls. `aar_console_write` writes stdout;
   `aar_console_read` reads stdin and returns `AAR_OK` with zero bytes at end
@@ -227,8 +227,6 @@ port); joystick 1 is port 0. `dx`/`dy` are `-1`, `0`, or `1`. Fire is button
 - **Services.** SHA-256 is implemented, including an empty buffer.
   `aar_decompress`, `aar_image_open` / `aar_image_decode` / `aar_image_close`,
   and `aar_audio_decode_open` / `aar_audio_decode` / `aar_audio_decode_close`
-  return `AAR_E_NOSYS`, which the services group allows. The in-tree decoders
-  are GPL firmware glue, downloaded third-party trees, or an LHA decoder with
-  its own licence.
+  return `AAR_E_NOSYS`, which the services group allows for unavailable codecs.
 - **Isolation.** The host is not an isolated runtime. A bad pointer crashes the
   process instead of returning `AAR_E_FAULT`, and `isolate` does not run here.
