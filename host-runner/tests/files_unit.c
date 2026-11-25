@@ -194,6 +194,46 @@ static void test_seek_out_pos_is_optional(void)
     host_files_shutdown();
 }
 
+/* An id remembers how it was opened (spec 7.1): a write through an id opened
+ * without AAR_FILE_WRITE and a read through an id opened without AAR_FILE_READ
+ * fail with AAR_E_BADF and change nothing. */
+static void test_access_mode_is_kept_per_id(void)
+{
+    char buf[8];
+    uint32_t n = 99;
+    int ro, wo, rw;
+
+    host_files_init(UNIT_ROOT, 0);
+    put_file("mode.bin", "abcdef");
+    ro = api_file_open("mode.bin", AAR_FILE_READ);
+    wo = api_file_open("mode.bin", AAR_FILE_WRITE);
+    rw = api_file_open("mode.bin", AAR_FILE_READ | AAR_FILE_WRITE);
+    assert(ro >= HOST_FD_BASE && wo >= HOST_FD_BASE && rw >= HOST_FD_BASE);
+
+    assert(api_file_write(ro, "XY", 2, &n) == AAR_E_BADF);
+    assert(n == 99u);
+    assert(api_file_read(wo, buf, sizeof buf, &n) == AAR_E_BADF);
+    assert(n == 99u);
+    /* The refused calls moved no position and wrote no byte. */
+    assert(api_file_read(ro, buf, sizeof buf, &n) == AAR_OK);
+    assert(n == 6u && memcmp(buf, "abcdef", 6) == 0);
+    assert(api_file_write(wo, "XY", 2, &n) == AAR_OK && n == 2u);
+    assert(api_file_close(wo) == AAR_OK); /* flushes */
+    assert(api_file_seek(rw, 0, AAR_SEEK_SET, NULL) == AAR_OK);
+    assert(api_file_read(rw, buf, 6, &n) == AAR_OK);
+    assert(n == 6u && memcmp(buf, "XYcdef", 6) == 0);
+    assert(api_file_seek(rw, 0, AAR_SEEK_SET, NULL) == AAR_OK);
+    assert(api_file_write(rw, "Z", 1, &n) == AAR_OK && n == 1u);
+    assert(api_file_seek(rw, 0, AAR_SEEK_SET, NULL) == AAR_OK);
+    assert(api_file_read(rw, buf, 6, &n) == AAR_OK);
+    assert(n == 6u && memcmp(buf, "ZYcdef", 6) == 0);
+
+    assert(api_file_close(ro) == AAR_OK);
+    assert(api_file_close(rw) == AAR_OK);
+    assert(file_size("mode.bin") == 6);
+    host_files_shutdown();
+}
+
 static void test_close_reports_flush_failure(void)
 {
 #ifndef _WIN32
@@ -242,6 +282,7 @@ int main(void)
     test_lists_have_their_own_table();
     test_seek_out_pos_is_optional();
     test_close_reports_flush_failure();
+    test_access_mode_is_kept_per_id();
     test_map_file_is_a_runtime_block();
     return 0;
 }

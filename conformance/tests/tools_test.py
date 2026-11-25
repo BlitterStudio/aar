@@ -111,7 +111,9 @@ def report(groups=0x17, platform=0, omit=(), override=None, summary_verdict=None
         else:
             verdict, detail = "SKIP", "suite: not implemented"
         counts[verdict] += 1
-        if t.level == "MUST" and declared and verdict != "PASS":
+        route_ok = getattr(t, "route_skip", False) and detail.startswith("no PLATFORM route")
+        if (t.level == "MUST" and declared and verdict != "PASS" and
+                not (verdict == "SKIP" and route_ok)):
             must_bad = True
         lines.append("AAR-CONF %s %s %s" % (t.id, verdict, detail))
     lines.append("AAR-CONF-SUMMARY pass=%d fail=%d skip=%d verdict=%s" % (
@@ -162,6 +164,28 @@ conf_text = report()
 expect("an all-PASS report conforms", "verdict=CONFORMS" in conf_text)
 expect("... and is accepted with --require-conforms",
        check_report(conf_text, "--require-conforms") == 0)
+
+# A MUST row may skip for the optional PLATFORM audio route, with that reason and no other.
+route_skip = {"C-AUDIO.%d" % i: ("SKIP", "no PLATFORM route: audio_open returned AAR_E_NOSYS")
+              for i in range(1, 9)}
+expect("a skip for the missing PLATFORM route conforms",
+       check_report(report(override=route_skip), "--require-conforms") == 0)
+expect("... and the verdict says so", "verdict=CONFORMS" in report(override=route_skip))
+other_skip = {"C-AUDIO.1": ("SKIP", "host: no mixer")}
+expect("a MUST skip with another reason does not conform",
+       check_report(report(override=other_skip), "--require-conforms") != 0)
+expect("... and the verdict says so", "verdict=DOES-NOT-CONFORM" in report(override=other_skip))
+# ... but only for the rows the catalogue marks (C-AUDIO.1 to C-AUDIO.9): any other MUST row
+# skipped with that reason fails the verdict, and a report that says CONFORMS is wrong.
+marked = sorted(t.id for t in tests if getattr(t, "route_skip", False))
+expect("exactly C-AUDIO.1 to C-AUDIO.9 allow the route skip",
+       marked == ["C-AUDIO.%d" % i for i in range(1, 10)])
+any_row = {"C-TIME.1": ("SKIP", "no PLATFORM route: not an audio row")}
+expect("the route skip of another MUST row does not conform",
+       check_report(report(override=any_row), "--require-conforms") != 0)
+expect("... and the verdict says so", "verdict=DOES-NOT-CONFORM" in report(override=any_row))
+expect("... a report that calls it CONFORMS is rejected",
+       check_report(report(override=any_row, summary_verdict="CONFORMS")) != 0)
 
 if failures:
     print("%d conformance tool tests failed" % len(failures))

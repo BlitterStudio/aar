@@ -22,7 +22,10 @@ A platform conforms to a profile at an API major.minor when (spec 11.1):
    payloads, and the results are in the standard format (below), with the
    suite version and the platform's `AARInfo` dump;
 4. every SKIP has a reason, and a SKIP is only for a test of an undeclared
-   group or a SHOULD test.
+   group or a SHOULD test, or for a MUST row that the catalogue lets skip for an
+   optional route (C-AUDIO.1 to C-AUDIO.9 with the reason `no PLATFORM route`, when
+   the platform has no mixer of its own and refuses the route PLATFORM with
+   `AAR_E_NOSYS`, spec 8.4).
 
 The host runner (`host-runner/`) passes the payloads that build for it and is the
 reference for app semantics. It does not count as a platform. A test that needs a

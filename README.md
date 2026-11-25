@@ -20,9 +20,10 @@ transport contract, and a host runner that runs an app natively on a PC.
 ## Status
 
 Version 0.x. The app API is **0.5**, the first AAR version, and may still
-change before 1.0. It replaces the `zzapp` 0.4 SDK that this repository
-started from: nothing of the old API shipped, so there is no compatibility
-layer. [docs/zzapp-to-aar.md](docs/zzapp-to-aar.md) maps every old name.
+change before 1.0. The specification is [spec/aar.md](spec/aar.md) (review
+draft 1). It is the normative text: what the standard requires of an app, a
+runtime, the Amiga library and a platform. Comments and questions are welcome
+as issues in this repository.
 
 The firmware in [BlitterStudio/zz9000-firmware](https://github.com/BlitterStudio/zz9000-firmware)
 pins the commit of this repository it builds against in `sdk/AAR_REF`.
@@ -41,9 +42,10 @@ pins the commit of this repository it builds against in `sdk/AAR_REF`.
 | `tools/aar-check` | Checks a finished ELF against the load contract |
 | `templates/` | Example apps; `templates/README.md` describes each one |
 | `host-runner/` | An SDL2 runner for apps on a PC; see `host-runner/README.md` |
+| `spec/` | `aar.md`, the specification of the standard |
 | `conformance/` | The conformance suite: the test catalogue (`TESTS.md`), the payload apps, the `aar-conf` runner for the Amiga, and the scripts that check them; see `conformance/README.md` |
 | `tests/` | Tests for the checker, the headers and the transport model, the link map check, FP code generation and mode switching. The client library's tests are in `client/tests/` |
-| `docs/` | The API reference, the developer guide, the porting guide, the transport contract, the zzapp mapping, and the script that checks the reference covers every public symbol |
+| `docs/` | The API reference, the developer guide, the porting guide, the transport contract, and the script that checks the reference covers every public symbol |
 | `Makefile` | Builds every template and runs the checks (`make check`) |
 
 ## Building apps
@@ -103,6 +105,8 @@ card.
 
 ## Documentation
 
+- [spec/aar.md](spec/aar.md): the specification, the normative text. The
+  documents below are reference and guides.
 - [docs/aar-api.md](docs/aar-api.md): the API reference, every call, type and
   constant.
 - [docs/aar-client-api.md](docs/aar-client-api.md): the Amiga client library,
@@ -114,8 +118,6 @@ card.
 - [docs/porting.md](docs/porting.md): the guide for a platform implementer: what a
   platform provides, the image rules and the loader, the entry contract, and how
   to run the conformance suite (the CI bundle) and report.
-- [docs/zzapp-to-aar.md](docs/zzapp-to-aar.md): the old `zzapp` names and what
-  replaced them.
 
 ## License
 

@@ -6,12 +6,12 @@
  * The note asks for 2 MiB of private heap at load (C-MEM.10). Every test leaves
  * the heap as it found it, so the later tests see the same start. Run without a
  * runner (host runner, qemu loader) the payload does the `main` tests that make
- * sense there and skips C-MEM.9 and C-MEM.12, which need the runner's tags and a
- * pool that can be exhausted.
+ * sense there and skips C-MEM.9, which needs the runner's tags; C-MEM.12 runs against the
+ * fixture's own pool.
  *
  * Assumption of C-MEM.12 for the card run: with no client cap the limit is the
- * pool, so a heap_grow loop exhausts the pool and the runtime raises its
- * low-water event.
+ * pool or above it, so a heap_grow loop exhausts the pool and the runtime raises its
+ * low-water event; a limit below the pool passes with "cap below pool, not provoked".
  *
  * SPDX-License-Identifier: MIT
  */
@@ -153,31 +153,48 @@ static void ensure_heap(void)
 
 /* ---- C-MEM.1 to C-MEM.7 --------------------------------------------------------------- */
 
-static void test_range_info(void)
+/* heap_info.committed counts all the private memory, the image and the stack as well as the
+ * heap (spec 3.4, 4.1), so the heap that heap_range reports is strictly smaller. A fixture that
+ * is not a platform (host runner, qemu loader: `strict` is 0) may count the heap only; the test
+ * then skips with a reason that starts with "host:". C-MEM.2, .6 and .8 judge committed by its
+ * changes. */
+static void test_range_info(int strict)
 {
     struct conf_test t;
     void *base = 0;
     uint64_t len = 0;
     aar_heap_info hi;
     int rc;
+    int heap_only = 0;
 
     conf_begin(&t, "C-MEM.1");
     aar_heap_range(&base, &len);
     rc = heap_info_now(&hi);
     conf_check(&t, rc == AAR_OK, "heap_info failed");
     conf_check(&t, base != 0, "heap_range returned a NULL base");
-    /* The heap is part of the private memory (4.1: image, stack and heap), and
-     * heap_info.committed counts all of it, so the heap is at most that
-     * [spec question 55]. C-MEM.2, .6 and .8 judge committed by its changes. */
     if (rc == AAR_OK && len > hi.committed && conf_fail_first(&t)) {
         conf_buf_str(&t.why, "heap_range length ");
         put_u64(&t.why, len);
         conf_buf_str(&t.why, " is more than heap_info.committed ");
         put_u64(&t.why, hi.committed);
     }
+    if (rc == AAR_OK && len == hi.committed) {
+        if (strict) {
+            if (conf_fail_first(&t)) {
+                conf_buf_str(&t.why, "heap_range length ");
+                put_u64(&t.why, len);
+                conf_buf_str(&t.why, " equals heap_info.committed: the image and the stack count too");
+            }
+        } else {
+            heap_only = 1;
+        }
+    }
     conf_buf_str(&t.note, "length ");
     put_mib(&t.note, len);
-    conf_end(&t);
+    if (heap_only && !t.failed)
+        conf_skip(t.id, "host: heap_info.committed counts the heap only");
+    else
+        conf_end(&t);
 }
 
 static void test_grow_one(void)
@@ -331,11 +348,13 @@ static void test_shrink(void)
 static void test_not_whole(void)
 {
     struct conf_test t;
-    static const uint64_t sizes[] = { 1u, 4096u, GRAN - 1u, GRAN + 1u, GRAN + GRAN / 2u };
+    static const uint64_t sizes[] = { 0u, 1u, 4096u, GRAN - 1u, GRAN + 1u, GRAN + GRAN / 2u };
     uint64_t len0 = heap_len_now();
     uint64_t end0 = heap_end_now();
     uint32_t i;
 
+    /* Zero is not a whole number of granules either (spec 4.1: AAR_E_INVAL, as for 3.5's
+     * "zero or oversize length"). */
     conf_begin(&t, "C-MEM.7");
     for (i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
         void *p = 0;
@@ -657,10 +676,22 @@ static void test_low_memory(void)
     uint8_t *nb = 0;
     uint64_t len0 = heap_len_now();
     uint32_t c1, c1b, c2;
+    aar_heap_info hi0;
     int rc1 = AAR_OK;
     int rc2 = AAR_OK;
 
     conf_begin(&t, "C-MEM.12");
+    /* With a client cap or a platform cap below the pool, the grow loop stops at the cap and
+     * never reaches the low-water mark: the pool is not provoked (spec 4.1). */
+    if (heap_info_now(&hi0) != AAR_OK) {
+        conf_check(&t, 0, "heap_info failed");
+        conf_end(&t);
+        return;
+    }
+    if (hi0.limit < hi0.committed + hi0.pool_free) {
+        conf_pass(t.id, "cap below pool, not provoked");
+        return;
+    }
     drain_events();
     low_events = 0; /* anything pending before this test is not its business */
 
@@ -767,7 +798,7 @@ int aar_main(int argc, char **argv)
 
     test_min_heap(len_at_entry);
     ensure_heap();
-    test_range_info();
+    test_range_info(mode == MODE_MAIN);
     test_grow_one();
     test_contiguous();
     test_zeroed();
@@ -778,7 +809,8 @@ int aar_main(int argc, char **argv)
     test_isolated();
     if (mode == MODE_HOST) {
         conf_skip("C-MEM.9", "host: needs the runner's AAR_TAG_PRIVATE_MIB");
-        conf_skip("C-MEM.12", "host: the pool cannot be exhausted here, and a low-water crossing cannot be provoked");
+        /* The host runner and the qemu loader raise the low-water event for their own pool. */
+        test_low_memory();
     } else if (heap_info_now(&hi) == AAR_OK) {
         send_limit(hi.limit);
     }

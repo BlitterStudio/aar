@@ -178,11 +178,6 @@ static int image_path(char *out, ULONG size, const char *name)
     return conf_util_image_path(out, size, conf_g.profile_name, name);
 }
 
-static int library_code(LONG rc)
-{
-    return rc < 0 && rc >= AAR_E_OWNER;
-}
-
 static const char *const image_argv[] = { "conf_client" };
 
 /* Opens a claim, loads the image (from the file path or from memory), starts it and
@@ -314,9 +309,11 @@ static void t_probe(int idx)
     FreeVec(data);
 }
 
-/* A probe that has to fail with a code of 3.5 and leave the caller's structure alone. */
+/* A probe that has to fail with the code `want` (spec 9.2: AAR_E_INVAL for anything that is
+ * not a valid image, AAR_E_NOENT for a file that cannot be opened) and leave the caller's
+ * structure alone. */
 static int bad_probe(const char *what, const char *path, const UBYTE *data, ULONG len,
-                     char *d)
+                     LONG want, char *d)
 {
     AARImageInfo info;
     AARImageInfo before;
@@ -326,8 +323,8 @@ static int bad_probe(const char *what, const char *path, const UBYTE *data, ULON
     info.size = sizeof info;
     before = info;
     rc = path ? AARProbeFile(path, &info) : AARProbeMemory(data, len, &info);
-    if (!library_code(rc)) {
-        conf_detailf(d, "%s: the probe returned %ld", what, (long)rc);
+    if (rc != want) {
+        conf_detailf(d, "%s: the probe returned %ld, %ld is due", what, (long)rc, (long)want);
         return 0;
     }
     if (memcmp(&info, &before, sizeof info) != 0) {
@@ -356,8 +353,8 @@ static void t_probe_bad(int idx)
             pass_fail(idx, 0, d);
             return;
         }
-        ok = bad_probe(names[i], path, NULL, 0, d) &&
-             bad_probe(names[i], NULL, data, len, d);
+        ok = bad_probe(names[i], path, NULL, 0, AAR_E_INVAL, d) &&
+             bad_probe(names[i], NULL, data, len, AAR_E_INVAL, d);
         FreeVec(data);
         if (!ok) {
             pass_fail(idx, 0, d);
@@ -365,11 +362,11 @@ static void t_probe_bad(int idx)
         }
     }
     if (!image_path(path, sizeof path, "no-such-image") ||
-        !bad_probe("a missing file", path, NULL, 0, d)) {
+        !bad_probe("a missing file", path, NULL, 0, AAR_E_NOENT, d)) {
         pass_fail(idx, 0, d);
         return;
     }
-    pass_fail(idx, 1, "not an ELF, truncated and missing: negative codes, nothing changed");
+    pass_fail(idx, 1, "not an ELF and truncated: AAR_E_INVAL; a missing file: AAR_E_NOENT; nothing changed");
 }
 
 /* ---- C-CLIENT.11 to C-CLIENT.14: open and options ------------------------------------------------ */
@@ -1348,20 +1345,36 @@ static void t_null_handle(int idx)
     rc[10] = AARSharedUnmap(NULL, &map);
     rc[11] = AARServiceNext(NULL, &req);
     rc[12] = AARServiceReply(NULL, &req);
-    for (i = 0; i < 13; i++) {
-        if (rc[i] != AAR_E_INVAL && rc[i] != AAR_E_STALE) {
-            conf_detailf(d, "%s(NULL) returned %ld, AAR_E_INVAL or AAR_E_STALE is due [spec question 24]",
-                         names[i], (long)rc[i]);
+    {
+        char codes[96];
+        size_t used = 0;
+
+        codes[0] = '\0';
+        for (i = 0; i < 13; i++) {
+            int n = snprintf(codes + used, sizeof codes - used, "%s%ld", i ? " " : "", (long)rc[i]);
+
+            if (n > 0 && (size_t)n < sizeof codes - used)
+                used += (size_t)n;
+        }
+        for (i = 0; i < 13; i++) {
+            if (rc[i] != AAR_E_STALE) {
+                conf_detailf(d, "%s(NULL) returned %ld, AAR_E_STALE is due (spec 10.2); the 13 "
+                                "codes: %s", names[i], (long)rc[i], codes);
+                pass_fail(idx, 0, d);
+                return;
+            }
+        }
+        if (memcmp(&st, &st_before, sizeof st) != 0 || memcmp(&m, &m_before, sizeof m) != 0 ||
+            map.base != NULL) {
+            conf_detailf(d, "a call with a NULL handle changed the caller's structure (the 13 "
+                            "codes: %s)", codes);
             pass_fail(idx, 0, d);
             return;
         }
+        conf_detailf(d, "13 calls with a NULL handle returned AAR_E_STALE, nothing written "
+                        "(codes %s)", codes);
+        pass_fail(idx, 1, d);
     }
-    if (memcmp(&st, &st_before, sizeof st) != 0 || memcmp(&m, &m_before, sizeof m) != 0 ||
-        map.base != NULL) {
-        pass_fail(idx, 0, "a call with a NULL handle changed the caller's structure");
-        return;
-    }
-    pass_fail(idx, 1, "13 calls with a NULL handle refused, nothing written");
 }
 
 /* ---- C-CLIENT.27 to C-CLIENT.29: extensions and tokens --------------------------------------------- */

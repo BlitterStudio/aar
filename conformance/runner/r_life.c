@@ -682,6 +682,7 @@ static struct child {
     volatile LONG done;
     LONG rc;
     AARHandle *h;
+    volatile LONG go;
     char path[256];
 } child;
 
@@ -1185,6 +1186,187 @@ static void g_close_running(void)
     }
 }
 
+/* ---- C-LIFE.36: the state after the load and after the start ------------------------------------ */
+
+/* Spec 5.1: AARLoadFile does not change the state, it is LOADING from the start of the load
+ * until AARStart is accepted; after AARStart it is STARTING or RUNNING (it can be RUNNING
+ * already, STARTING lasts only until the entry). */
+static void g_load_state(void)
+{
+    static const char *const argv[] = { "conf_life.elf", "conf:variant=" CONF_LIFE_V_WAIT_MSG };
+    AARHandle *h = NULL;
+    AARStatusInfo st;
+    struct conf_util_end end;
+    char path[256];
+    char d[CONF_DETAIL_MAX];
+    ULONG reason = 0;
+    ULONG after_load;
+    LONG rc;
+
+    if (!conf_util_payload_path(path, sizeof path, "conf_life.elf")) {
+        life_note("C-LIFE.36", 0, "payload path too long");
+        return;
+    }
+    rc = AAROpen(&h, NULL, &reason);
+    if (rc != AAR_OK) {
+        conf_detailf(d, "AAROpen returned %ld (reason %lu)", (long)rc, (unsigned long)reason);
+        life_note("C-LIFE.36", 0, d);
+        return;
+    }
+    rc = AARLoadFile(h, path);
+    if (rc != AAR_OK) {
+        conf_detailf(d, "AARLoadFile returned %ld", (long)rc);
+        life_note("C-LIFE.36", 0, d);
+        (void)AARClose(h);
+        return;
+    }
+    memset(&st, 0, sizeof st);
+    st.size = sizeof st;
+    rc = AARStatus(h, &st);
+    after_load = st.state;
+    if (rc != AAR_OK || after_load != AAR_STATE_LOADING) {
+        conf_detailf(d, "after AARLoadFile returned AAR_OK: AARStatus %ld, state %lu, "
+                        "AAR_STATE_LOADING (%lu) is due", (long)rc, (unsigned long)after_load,
+                     (unsigned long)AAR_STATE_LOADING);
+        life_note("C-LIFE.36", 0, d);
+        (void)AARClose(h);
+        return;
+    }
+    rc = AARStart(h, argv, 2);
+    if (rc != AAR_OK) {
+        conf_detailf(d, "AARStart returned %ld", (long)rc);
+        life_note("C-LIFE.36", 0, d);
+        (void)AARClose(h);
+        return;
+    }
+    memset(&st, 0, sizeof st);
+    st.size = sizeof st;
+    rc = AARStatus(h, &st);
+    if (rc != AAR_OK || (st.state != AAR_STATE_STARTING && st.state != AAR_STATE_RUNNING)) {
+        conf_detailf(d, "after AARStart: AARStatus %ld, state %lu, STARTING (%lu) or RUNNING (%lu) "
+                        "is due", (long)rc, (unsigned long)st.state,
+                     (unsigned long)AAR_STATE_STARTING, (unsigned long)AAR_STATE_RUNNING);
+        life_note("C-LIFE.36", 0, d);
+    } else {
+        conf_detailf(d, "LOADING after the load, %s after AARStart",
+                     st.state == AAR_STATE_STARTING ? "STARTING" : "RUNNING");
+        life_note("C-LIFE.36", 1, d);
+    }
+    (void)AARStop(h);
+    conf_util_wait_end(h, 5UL * CONF_TICKS_PER_SECOND, &end);
+    (void)AARClose(h);
+}
+
+/* ---- C-LIFE.37: the card's own view of the release (ZZ9000) ---------------------------------- */
+
+/* Spec 5.5 rule 3: the base API shows the release only as a stale handle and a free claim; the
+ * ZZ9000 extension shows more: the claim list no longer holds the old handle word and the
+ * records free (AARInfo.platform[AAR_ZZ9000_INFO_RECORDS_FREE]) are back to their value before
+ * the open. The child process starts an app, and lives on until the parent has read the card's
+ * handle word, then ends without AARClose. */
+static void child_dies_held(void)
+{
+    child_start();
+    child.done = 1;
+    (void)conf_util_wait_flag(&child.go, 8);
+}
+
+static ULONG records_free(void)
+{
+    AARInfo ai;
+
+    memset(&ai, 0, sizeof ai);
+    ai.size = sizeof ai;
+    if (AARQuery(&ai) != AAR_OK)
+        return 0xFFFFFFFFUL;
+    return ai.platform[AAR_ZZ9000_INFO_RECORDS_FREE];
+}
+
+static int claim_listed(const aar_client_ext_zz9000 *x, ULONG word)
+{
+    ULONG now[ZZ_SNAP];
+    ULONG n = snapshot(x, now);
+    ULONG i;
+
+    for (i = 0; i < n; i++) {
+        if (now[i] == word)
+            return 1;
+    }
+    return 0;
+}
+
+static void g_release_listing(void)
+{
+    const aar_client_ext_zz9000 *x;
+    ULONG before[ZZ_SNAP];
+    ULONG nbefore;
+    ULONG free_before, free_during, free_after = 0;
+    ULONG word;
+    AARZZ9000List li;
+    char d[CONF_DETAIL_MAX];
+    ULONG t0;
+    int gone = 0;
+
+    x = zz_ext(d);
+    if (!x) {
+        life_note("C-LIFE.37", 0, d);
+        return;
+    }
+    memset(&child, 0, sizeof child);
+    if (!conf_util_payload_path(child.path, sizeof child.path, "conf_life.elf")) {
+        life_note("C-LIFE.37", 0, "payload path too long");
+        return;
+    }
+    nbefore = snapshot(x, before);
+    free_before = records_free();
+    if (!conf_util_spawn("aar-conf-child", child_dies_held)) {
+        life_note("C-LIFE.37", 0, "cannot create the child process");
+        return;
+    }
+    if (!conf_util_wait_flag(&child.done, 15)) {
+        life_note("C-LIFE.37", 0, "the child process did not finish");
+        child.go = 1;
+        return;
+    }
+    if (child.rc != AAR_OK) {
+        conf_detailf(d, "the child could not start the app: %ld", (long)child.rc);
+        life_note("C-LIFE.37", 0, d);
+        child.go = 1;
+        return;
+    }
+    word = new_claim(x, before, nbefore, &li);
+    free_during = records_free();
+    child.go = 1;
+    if (!word) {
+        life_note("C-LIFE.37", 0, "the card does not list the claim of the child's app");
+        return;
+    }
+    t0 = conf_ticks();
+    for (;;) {
+        gone = !claim_listed(x, word);
+        free_after = records_free();
+        if ((gone && free_after == free_before) ||
+            conf_ticks() - t0 > 12UL * CONF_TICKS_PER_SECOND)
+            break;
+        Delay(10);
+    }
+    if (!gone) {
+        conf_detailf(d, "after %lu ms the claim list still holds the handle %lx of the dead owner",
+                     (unsigned long)ms_of(conf_ticks() - t0), (unsigned long)word);
+        life_note("C-LIFE.37", 0, d);
+    } else if (free_after != free_before) {
+        conf_detailf(d, "the handle left the claim list but the records free are %lu, %lu before "
+                        "the open (%lu while it was open)", (unsigned long)free_after,
+                     (unsigned long)free_before, (unsigned long)free_during);
+        life_note("C-LIFE.37", 0, d);
+    } else {
+        conf_detailf(d, "the handle left the claim list after %lu ms; records free %lu while open, "
+                        "%lu before and after", (unsigned long)ms_of(conf_ticks() - t0),
+                     (unsigned long)free_during, (unsigned long)free_before);
+        life_note("C-LIFE.37", 1, d);
+    }
+}
+
 /* ---- The table ---------------------------------------------------------------------------------- */
 
 #define GROUP(name)                                  \
@@ -1217,6 +1399,8 @@ GROUP(revoke)
 GROUP(late_writes)
 GROUP(relaunch)
 GROUP(close_running)
+GROUP(load_state)
+GROUP(release_listing)
 
 static const struct conf_r_test tests[] = {
     { "C-LIFE.4", t_exit_codes },
@@ -1241,6 +1425,8 @@ static const struct conf_r_test tests[] = {
     { "C-LIFE.23", t_late_writes },
     { "C-LIFE.25", t_relaunch },
     { "C-LIFE.26", t_close_running },
+    { "C-LIFE.36", t_load_state },
+    { "C-LIFE.37", t_release_listing },
 };
 
 const struct conf_area conf_area_life = {

@@ -264,9 +264,10 @@ static void test_long_path(void)
     if (fd >= 0) {
         (void)aar_file_close(fd);
         conf_check(&t, 0, "a path of 256 bytes was opened");
+    } else if (fd != AAR_E_INVAL) {
+        fail_rc(&t, "open of a path of 256 bytes (AAR_E_INVAL is due)", fd);
     } else {
-        conf_buf_str(&t.note, "a path of 256 bytes, which exists, is refused with ");
-        conf_buf_i64(&t.note, fd);
+        conf_buf_str(&t.note, "a path of 256 bytes, which exists, is refused with AAR_E_INVAL");
     }
     conf_end(&t);
 }
@@ -511,7 +512,55 @@ static void test_modes(void)
                    "after WRITE the file is not HELLO world");
         (void)aar_file_close(fd);
     }
-    conf_buf_str(&t.note, "READ reads, WRITE overwrites in place and keeps the rest [spec question 37]");
+    conf_buf_str(&t.note, "READ reads, WRITE overwrites in place and keeps the rest (the wrong direction is C-FILE.37)");
+    conf_end(&t);
+}
+
+/* ---- C-FILE.37: an id is used only for the direction it was opened for ------------------------------ */
+
+static void test_directions(void)
+{
+    struct conf_test t;
+    const char *file = sc("t37.tmp");
+    uint8_t buf[32];
+    uint32_t n = 77;
+    int fd;
+    int rc;
+
+    conf_begin(&t, "C-FILE.37");
+    rc = put(file, "hello world", 11);
+    if (rc != AAR_OK) {
+        fail_rc(&t, "creating the scratch file", rc);
+        conf_end(&t);
+        return;
+    }
+    fd = aar_file_open(file, AAR_FILE_READ);
+    if (fd < 0) {
+        fail_rc(&t, "open READ of an existing file", fd);
+    } else {
+        rc = aar_file_write(fd, "HELLO", 5, &n);
+        expect(&t, rc, AAR_E_BADF, "a write through a READ id");
+        (void)aar_file_close(fd);
+    }
+    fd = aar_file_open(file, AAR_FILE_WRITE);
+    if (fd < 0) {
+        fail_rc(&t, "open WRITE of an existing file", fd);
+    } else {
+        n = 0;
+        rc = aar_file_read(fd, buf, sizeof buf, &n);
+        expect(&t, rc, AAR_E_BADF, "a read through a WRITE id");
+        (void)aar_file_close(fd);
+    }
+    /* The refused calls changed nothing. */
+    fd = aar_file_open(file, AAR_FILE_READ);
+    if (fd >= 0) {
+        n = 0;
+        rc = aar_file_read(fd, buf, sizeof buf, &n);
+        conf_check(&t, rc == AAR_OK && n == 11 && buf[0] == 'h' && buf[4] == 'o' && buf[10] == 'd',
+                   "after the refused calls the file is not hello world");
+        (void)aar_file_close(fd);
+    }
+    conf_buf_str(&t.note, "a write through READ and a read through WRITE are AAR_E_BADF; the file is unchanged");
     conf_end(&t);
 }
 
@@ -1365,6 +1414,7 @@ int aar_main(int argc, char **argv)
     test_many();
     test_bad_ids();
     test_modes();
+    test_directions();
     test_create_truncate();
     test_create();
     test_truncate();

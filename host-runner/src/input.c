@@ -4,8 +4,10 @@
  * Qualifiers sit in buttons using the Amiga IEQUALIFIER bits. Ctrl-D/E/F (raw
  * 0x22/0x12/0x23) also enqueue AAR_EV_BREAK with codes 4/5/6. Window close and
  * Ctrl-C enqueue one AAR_EV_STOP and set the stop flag. The queue holds 256
- * events and drops the newest when full. aar_event_poll delivers the lifecycle
- * events and, as this runner has the input group, the input events.
+ * events and drops the newest when full; AAR_EV_STOP and AAR_EV_LOW_MEMORY are never
+ * dropped: each waits in a latch and aar_event_poll delivers it ahead of the queue. The
+ * poll delivers the lifecycle events and, as this runner has the input group, the input
+ * events.
  *
  * --input FILE injects scripted events before the app starts. Lines:
  *   key down|up <raw> [qualifiers]
@@ -17,7 +19,8 @@
  *   stop
  *   resize <w> <h>
  * Numbers accept a 0x prefix. '#' starts a comment. lowmem enqueues
- * AAR_EV_LOW_MEMORY, which the host has no pool to raise by itself. resize
+ * AAR_EV_LOW_MEMORY at once (the heap raises it too, when its free pool falls
+ * below the low-water mark, memory.c). resize
  * enqueues AAR_EV_RESIZE, which a runtime never sends on its own.
  *
  * SPDX-License-Identifier: MIT
@@ -49,6 +52,7 @@ static uint32_t q_head, q_tail;
 static uint32_t drops;
 static uint16_t mouse_buttons;
 static int stop_event_sent;
+static int stop_pending, low_pending; /* AAR_EV_STOP and AAR_EV_LOW_MEMORY wait here */
 static SDL_Joystick *joys[2];
 static uint32_t joy_last[2];
 static int joy_valid[2];
@@ -225,7 +229,8 @@ static void push_event(uint16_t type, uint16_t code, int16_t dx, int16_t dy,
     ev->dx = dx;
     ev->dy = dy;
     ev->buttons = buttons;
-    ev->time_ms = host_time_ms();
+    /* AAR_EV_LOW_MEMORY has no field but its type (spec 4.1). */
+    ev->time_ms = type == AAR_EV_LOW_MEMORY ? 0u : host_time_ms();
     q_head++;
 }
 
@@ -233,9 +238,15 @@ static void note_stop(void)
 {
     host_request_stop();
     if (!stop_event_sent) {
-        push_event(AAR_EV_STOP, 0, 0, 0, 0);
+        stop_pending = 1;
         stop_event_sent = 1;
     }
+}
+
+/* The heap pool fell below its low-water mark (memory.c). */
+static void low_memory_event(void)
+{
+    low_pending = 1;
 }
 
 static void on_key(const SDL_KeyboardEvent *key)
@@ -418,7 +429,7 @@ static int load_input(const char *path)
                    parse_i(tok[1], &a) && parse_i(tok[2], &b)) {
             push_event(AAR_EV_RESIZE, 0, (int16_t)a, (int16_t)b, 0);
         } else if (ntok == 1 && strcmp(tok[0], "lowmem") == 0) {
-            push_event(AAR_EV_LOW_MEMORY, 0, 0, 0, 0);
+            low_memory_event();
         } else if (ntok == 1 && strcmp(tok[0], "stop") == 0) {
             note_stop();
         } else {
@@ -434,12 +445,27 @@ static int load_input(const char *path)
     return 0;
 }
 
+/* The lifecycle events are latches, not queue entries: a full queue cannot drop them (spec
+ * 8.3). They are delivered ahead of the queue, each once per occurrence. */
 static int api_event_poll(aar_event *out, uint32_t max, uint32_t *out_n)
 {
     uint32_t n = 0;
 
     if (!out_n || (max && !out))
         return AAR_E_INVAL;
+    if (n < max && stop_pending) {
+        memset(&out[n], 0, sizeof out[n]);
+        out[n].type = AAR_EV_STOP;
+        out[n].time_ms = host_time_ms();
+        n++;
+        stop_pending = 0;
+    }
+    if (n < max && low_pending) {
+        memset(&out[n], 0, sizeof out[n]);
+        out[n].type = AAR_EV_LOW_MEMORY; /* no field but its type (spec 4.1) */
+        n++;
+        low_pending = 0;
+    }
     while (n < max && q_tail != q_head) {
         out[n++] = queue[q_tail & (HOST_INPUT_CAP - 1u)];
         q_tail++;
@@ -479,6 +505,7 @@ int host_input_selftest(void)
     uint16_t raw = 0;
     int keypad = 0;
     SDL_Event ev;
+    uint32_t low_seen;
     aar_event got[4];
     uint32_t n = 0;
     int saw_key = 0;
@@ -523,6 +550,31 @@ int host_input_selftest(void)
     }
     if (!saw_key || !saw_break)
         return 11;
+    /* Spec 8.3: the runtime never discards AAR_EV_LOW_MEMORY. With the queue full of other
+     * events it still arrives, first and once. */
+    n = 1;
+    while (n) {
+        if (api_event_poll(got, 4u, &n) != AAR_OK)
+            return 12;
+    }
+    for (i = 0; i < HOST_INPUT_CAP; i++)
+        push_event(AAR_EV_KEY_DOWN, 0x45u, 0, 0, 0);
+    low_memory_event();
+    if (api_event_poll(got, 1u, &n) != AAR_OK || n != 1u || got[0].type != AAR_EV_LOW_MEMORY)
+        return 13;
+    low_seen = 0;
+    for (;;) {
+        if (api_event_poll(got, 4u, &n) != AAR_OK)
+            return 14;
+        if (n == 0)
+            break;
+        for (i = 0; i < n; i++) {
+            if (got[i].type == AAR_EV_LOW_MEMORY)
+                low_seen++;
+        }
+    }
+    if (low_seen != 0u)
+        return 15;
     return 0;
 }
 
@@ -535,6 +587,9 @@ int host_input_init(void)
     drops = 0;
     mouse_buttons = 0;
     stop_event_sent = 0;
+    stop_pending = 0;
+    low_pending = 0;
+    host_memory_set_low_notify(low_memory_event);
     for (i = 0; i < 2; i++) {
         joys[i] = 0;
         joy_valid[i] = 0;
@@ -550,6 +605,7 @@ void host_input_shutdown(void)
 {
     int i;
 
+    host_memory_set_low_notify(0);
     for (i = 0; i < 2; i++) {
         if (joys[i])
             SDL_JoystickClose(joys[i]);

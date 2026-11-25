@@ -133,7 +133,7 @@ templates are Arm only.
 - `svcbench.c`: times table calls in `aar_time_us` batches and reports 667 MHz
   timer-derived cycle estimates because PMU access is unavailable in user
   mode. It times `should_stop`, `time_us` and `aar_get_info`.
-- `svcprobe.c`: on A32 with firmware built using `ZZAPP_SVC_PROBES=1`, times
+- `svcprobe.c`: on A32 with firmware built with its SVC probe option, times
   individual SVC path boundaries with PMCCNTR; then, on both profiles, times
   three table calls with the cycle counter. The probes are a ZZ9000 firmware
   option and have no A64 form.

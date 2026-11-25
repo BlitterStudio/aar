@@ -4,14 +4,16 @@
  *   probe_test CORPUS
  *
  * CORPUS is written by client/tests/probe_corpus.py: images with the decision
- * that tools/aar-check makes about each, and for an accepted image the note
- * fields read independently by the Python tool. The test checks that the C
- * probe
+ * that the rules of spec 2.2 and 2.3 make about each (tools/aar-check without
+ * the rules that read section headers), and for an accepted image the note
+ * fields read independently by
+ * the Python tool. The test checks that the C probe
  *   - decides the same on every image, from memory and through a read
  *     callback that hands out at most the bytes asked for and never reads
  *     outside the image,
  *   - returns the same fields for an accepted image from both sources,
- *   - refuses every truncation of an accepted image,
+ *   - refuses every prefix of an accepted image that cuts into what the rules
+ *     read, and accepts the prefix without the section headers,
  *   - honours the caller's `size`,
  *   - leaves the structure alone when it refuses.
  * Build it with -fsanitize=address,undefined as well: every image of the
@@ -43,6 +45,7 @@ struct image {
     uint32_t fields[9]; /* profile, api_major, api_minor_required, stack, heap,
                          * groups_required, groups_optional, note_version,
                          * image_bytes */
+    uint32_t need;      /* the shortest prefix that is still accepted */
     uint32_t len;
     uint8_t *data;
 };
@@ -132,8 +135,8 @@ static void run_image(const struct image *img)
         check_fields(img, &mem);
     }
     if ((rc_mem == AAR_OK) != (img->expect_ok != 0))
-        printf("  case: %s (probe %d, aar-check %s)\n", img->name, rc_mem,
-               img->expect_ok ? "accepts" : "refuses");
+        printf("  case: %s (probe %d, runtime rules %s)\n", img->name, rc_mem,
+               img->expect_ok ? "accept" : "refuse");
 
     /* Through the callback: same decision, same fields, sane reads. */
     rd.data = img->data;
@@ -150,23 +153,30 @@ static void run_image(const struct image *img)
     CHECK(rd.calls <= img->len + 1);
 }
 
+/* Every prefix shorter than what the runtime rules read is refused. The bytes
+ * after that (the section headers and their string table, which no runtime reads)
+ * are not needed: a prefix that keeps everything before them is accepted. */
 static void run_truncations(const struct image *img)
 {
     uint32_t n;
 
     if (!img->expect_ok)
         return;
+    CHECK(img->need <= img->len);
     for (n = 0; n < img->len; n++) {
         AARImageInfo info;
         struct reader rd;
+        int want = n < img->need ? AAR_E_INVAL : AAR_OK;
 
         fill_pattern(&info);
-        CHECK(aar_probe_memory(img->data, n, &info) == AAR_E_INVAL);
+        CHECK(aar_probe_memory(img->data, n, &info) == want);
+        if (want == AAR_OK)
+            CHECK(info.image_bytes == n);
         rd.data = img->data;
         rd.len = n;
         rd.calls = 0;
         rd.bad_use = 0;
-        CHECK(aar_probe_source(checked_read, &rd, n, &info, NULL) == AAR_E_INVAL);
+        CHECK(aar_probe_source(checked_read, &rd, n, &info, NULL) == want);
         CHECK(!rd.bad_use);
     }
 }
@@ -245,12 +255,15 @@ static int read_corpus(const char *path, struct image **out, uint32_t *count)
             return -1;
         if (fread(&flag, 1, 1, fp) != 1)
             return -1;
-        v[i].expect_ok = flag;
+        v[i].expect_ok = flag == 1;
         for (k = 0; k < 9; k++) {
             if (fread(b, 1, 4, fp) != 4)
                 return -1;
             v[i].fields[k] = get_u32(b);
         }
+        if (fread(b, 1, 4, fp) != 4)
+            return -1;
+        v[i].need = get_u32(b);
         if (fread(b, 1, 4, fp) != 4)
             return -1;
         v[i].len = get_u32(b);
@@ -267,7 +280,7 @@ static int read_corpus(const char *path, struct image **out, uint32_t *count)
 int main(int argc, char **argv)
 {
     struct image *v;
-    uint32_t n, i, accepted = 0, truncated = 0;
+    uint32_t n, i, accepted = 0, truncated = 0, stripped = 0;
 
     if (argc != 2) {
         fprintf(stderr, "usage: probe_test CORPUS\n");
@@ -279,6 +292,8 @@ int main(int argc, char **argv)
     }
     for (i = 0; i < n; i++) {
         run_image(&v[i]);
+        if (v[i].expect_ok && strncmp(v[i].name, "stripped section headers", 24) == 0)
+            stripped++;
         if (v[i].expect_ok) {
             accepted++;
             /* Truncating and the size rules are the same for every accepted
@@ -290,6 +305,9 @@ int main(int argc, char **argv)
             }
         }
     }
+    /* The image rules are the loader's: an image without section headers is
+     * accepted (one per profile). */
+    CHECK(stripped >= 2);
     for (i = 0; i < n; i++)
         free(v[i].data);
     free(v);

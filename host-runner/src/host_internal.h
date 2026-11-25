@@ -106,6 +106,9 @@ int host_services_selftest(void);
 void host_memory_init(void);
 void host_memory_shutdown(void);
 void host_memory_bind(aar_api *api);
+/* Called when the free pool falls below its low-water mark (AAR_EV_LOW_MEMORY);
+ * input.c sets it to queue the event. */
+void host_memory_set_low_notify(void (*fn)(void));
 
 /* Shared blocks owned by the runtime itself (file maps): charged to the shared
  * limit but not counted toward the app's blocks. */

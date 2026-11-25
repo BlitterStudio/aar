@@ -499,8 +499,9 @@ completion. A 64-bit value is `_HI` then `_LO`.
 The shared buffer that the runtime allocates at audio open and names in the
 request's `buf`; the completion echoes it in `AAR_R_AUDIO_OPEN_RING`. Unlike the control block it
 is **little-endian**. Each index has its own line and one writer.
-`aar_audio.write_frame` and `aar_audio.read_frame` point at the first two
-words.
+The three pointers of `aar_audio` point into one mapping of the ring: if `ring`
+is the address of its first byte, `write_frame` is `ring`, `read_frame` is
+`ring + 0x40` and `samples` is `ring + 0x80`.
 
 | Symbol | Offset | Meaning |
 |---|---|---|

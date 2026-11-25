@@ -148,7 +148,7 @@ def build(profile="a32", **o):
     entry = o.get("entry", data_off + 4 if o.get("entry_in_data") else text_off)
     load0_flags = 5
     load1_flags = 7 if o.get("wx") else 6
-    load1_vaddr = o.get("load1_vaddr", data_off)
+    load1_vaddr = o.get("load1_vaddr", data_off + o.get("load1_gap", 0))
     load1_memsz = o.get("load1_memsz", data_len + 16)
     phdr_rows = []
     for kind_name in phs:
@@ -268,6 +268,15 @@ def elf_rules():
            build(profile, note=note_bytes(profile, req=0x1F, opt=0x1F, heap=4)))
         ok("experimental group bits [%s]" % profile,
            build(profile, note=note_bytes(profile, opt=0x80000000)))
+        # Spec 8.1: the group words are not judged. A platform refuses a required
+        # group it lacks (AAR_E_NOGROUP), whether the bit is defined, reserved or
+        # experimental; unknown optional bits are a hint.
+        ok("reserved group bits 5 to 27, required [%s]" % profile,
+           build(profile, note=note_bytes(profile, req=0x0FFFFFE0)))
+        ok("reserved group bits 5 to 27, optional [%s]" % profile,
+           build(profile, note=note_bytes(profile, opt=0x0FFFFFE0)))
+        ok("experimental group bits, required [%s]" % profile,
+           build(profile, note=note_bytes(profile, req=0xF0000000)))
         ok("api minor 0 [%s]" % profile,
            build(profile, note=note_bytes(profile, minor=0)))
         ok("two relocations, PT_LOAD with BSS [%s]" % profile,
@@ -309,6 +318,16 @@ def elf_rules():
             if profile == "a32" else "not 8-byte aligned")
         bad("relocation target outside the image [%s]" % profile,
             build(profile, reloc_target=0x10000), "outside every PT_LOAD")
+        # Spec 2.2 rule 5: the target is inside p_memsz of a PT_LOAD (the bss
+        # counts, a gap between segments does not) with room for the whole word.
+        bad("relocation target in a gap between segments [%s]" % profile,
+            build(profile, load1_gap=0x1000, reloc_target=0x800),
+            "outside every PT_LOAD")
+        ok("relocation target in the bss tail [%s]" % profile,
+           build(profile, reloc_target=32))
+        bad("relocation target without room for the whole word [%s]" % profile,
+            build(profile, load1_memsz=50 if profile == "a32" else 52,
+                  reloc_target=48), "outside every PT_LOAD")
         bad("relocation section with a stray name [%s]" % profile,
             build(profile, reloc_section=".rel.plt"),
             "allocated relocation is named .rel.plt")
@@ -372,7 +391,7 @@ def note_rules():
                 build(profile, note=note_bytes(profile, **kw)), needle)
 
         case("bad magic", "note magic", magic=0x11111111)
-        case("the old ZZAPP magic", "note magic", magic=0x50505A41)
+        case("a foreign note magic", "note magic", magic=0x50505A41)
         case("note version 2", "note version 2", version=2)
         case("note version 0", "note version 0", version=0)
         case("A32 note in an A64 image" if profile == "a64" else
@@ -384,8 +403,6 @@ def note_rules():
         case("stack below 64 KiB", "note stack", stack=(64 << 10) - 16)
         case("stack above 1 MiB", "note stack", stack=(1 << 20) + 16)
         case("stack not a multiple of 16", "note stack", stack=(64 << 10) + 8)
-        case("unknown required group bit", "groups_required 0x20", req=0x20)
-        case("reserved group bit 5 to 27", "groups_optional 0x100", opt=0x100)
         case("reserved word set", "reserved word", reserved=1)
         case("namesz 8 owner", "note owner", owner=b"AAR\x00",
              namesz=8, name_pad=b"\x00" * 4)
@@ -393,8 +410,8 @@ def note_rules():
         case("note type 2", "note type 2", ntype=2)
         case("descriptor 36 bytes", "descriptor is 36 bytes", descsz=36)
         case("descriptor 41 bytes", "runs past its segment", descsz=41)
-        bad("owner ZZAPP only [%s]" % profile,
-            build(profile, note=struct.pack("<III", 6, 24, 1) + b"ZZAPP\x00\x00\x00"
+        bad("owner other than AAR only [%s]" % profile,
+            build(profile, note=struct.pack("<III", 6, 24, 1) + b"OTHER\x00\x00\x00"
                   + struct.pack("<6I", 0x50505A41, 0, 0, 0, 8, 0)),
             "no AAR note")
         bad("no note [%s]" % profile, build(profile, note=None),
@@ -404,7 +421,7 @@ def note_rules():
         bad("no .note.aar section [%s]" % profile,
             build(profile, no_note_section=True), "0 .note.aar sections")
         bad("note section misnamed [%s]" % profile,
-            build(profile, note_section=".note.zzapp"), "0 .note.aar sections")
+            build(profile, note_section=".note.other"), "0 .note.aar sections")
         bad("note truncated by the segment size [%s]" % profile,
             build(profile, note_filesz=len(note_bytes(profile)) - 4),
             "runs past its segment")
@@ -547,8 +564,8 @@ def map_rules():
             A32_MAP, "C:\\\\sysroot\\\\arm-none-eabi\\\\lib\\\\libnosys.a(_exit.o)\n"
             "                              (_exit)\n"),
          1, b"libnosys.a"),
-        ("the old libzzapp.a archive", A32_MAP.replace("libaar.a", "libzzapp.a"),
-         1, b"libzzapp.a"),
+        ("an archive that is not libaar.a", A32_MAP.replace("libaar.a", "libother.a"),
+         1, b"libother.a"),
         ("not a link map", "Memory Configuration\n", 1, b"not a GNU ld link map"),
     ]
     for name, text, rc_want, needle in cases:

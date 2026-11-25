@@ -4,8 +4,10 @@
  * whether a file is an acceptable app image. The loader (aar_load.h) builds on
  * it, and the image probe of aar.library (client/src/aar_probe.c) is a thin
  * layer over it. tools/aar-check stays the independent second implementation:
- * client/tests/probe_corpus.py and loader/tests/loader_corpus.py prove that the
- * two decide the same on a corpus and on mutations of it.
+ * client/tests/probe_corpus.py and loader/tests/loader_corpus.py prove that
+ * the two decide the same on a corpus and on mutations of it, apart from the
+ * rules that read section headers (AAR_IMAGE_SECTIONS), which only aar-check
+ * applies to a build.
  *
  * Portable C99 with no OS calls and no allocation (the SDK header <aar/app.h>
  * it includes has C11's _Static_assert, which GCC and Clang take in C99 mode).
@@ -51,8 +53,9 @@ typedef int (*aar_image_read_fn)(void *user, uint64_t offset, void *dst,
  * section headers are present, the relocation sections and dynamic sections
  * they list obey the same rules as the tables of PT_DYNAMIC, and the note is
  * inside the one .note.aar section. Spec 2.2 rule 4 says the loader reads
- * PT_DYNAMIC only and section headers MAY be absent, so a loader does not set
- * this. The image probe of aar.library sets it, to give aar-check's verdict.
+ * PT_DYNAMIC only and section headers MAY be absent, so neither a loader nor
+ * the image probe of aar.library sets this. The tests that compare the rules
+ * with tools/aar-check, a lint for build output, set it.
  */
 #define AAR_IMAGE_SECTIONS 0x1u
 
@@ -107,7 +110,9 @@ struct aar_image_info {
  *                  ELF64 file, a header, segment, relocation or note rule, no
  *                  note or more than one
  *   AAR_E_IO       `read` failed
- * The profile itself is not judged against a platform; aar_load_plan does that.
+ * The profile, the groups, the heap and the stack are not judged against a
+ * platform (aar_load_plan reports them and the platform decides): the group
+ * words are reported as they are, including bits that no group uses.
  * `why`, when not NULL, receives a static string that names the rule that
  * failed (NULL on success). When the call fails, the contents of *info are
  * unspecified.

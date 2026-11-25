@@ -34,6 +34,20 @@ def applies(test, profile):
     return test.profile in ("any", profile)
 
 
+def _must_skip_reason():
+    """The reason a payload may skip a MUST row with: CONF_SKIP_NO_PLATFORM_ROUTE of
+    payloads/conf_proto.h, the text the runner accepts too (runner/conf_select.h)."""
+    path = os.path.join(conf_catalogue.PAYLOAD_DIR, "conf_proto.h")
+    with open(path, encoding="utf-8") as fh:
+        m = re.search(r'#define CONF_SKIP_NO_PLATFORM_ROUTE "([^"]+)"', fh.read())
+    if not m:
+        raise SystemExit("conf_proto.h has no CONF_SKIP_NO_PLATFORM_ROUTE")
+    return m.group(1)
+
+
+MUST_SKIP_OK = _must_skip_reason()
+
+
 def run_payload(args):
     version, tests, errors = conf_catalogue.load()
     if errors:
@@ -193,7 +207,8 @@ def check_report(args):
         if verdict == "SKIP":
             if not detail:
                 problems.append("%s SKIP without a reason" % t.id)
-            if t.level == "MUST" and declared(t):
+            if t.level == "MUST" and declared(t) and not (
+                    t.route_skip and detail.startswith(MUST_SKIP_OK)):
                 must_skip += 1
     conforms = must_fail == 0 and must_skip == 0
     if summary is None:

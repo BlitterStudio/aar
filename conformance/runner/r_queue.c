@@ -12,8 +12,8 @@
  *     late completion of C-QUEUE.6 and C-QUEUE.7, whose lines it relays);
  *   - tests that open claims or run several apps (C-QUEUE.12 to C-QUEUE.16).
  *
- * Assumptions for the card run: a console write need not park the app (if it does the
- * rule of C-QUEUE.5 holds trivially and the detail says so); AARPostEvent accepts a key
+ * Assumptions for the card run: a console write of 16 bytes does not park the app (C-QUEUE.5
+ * fails if it does); AARPostEvent accepts a key
  * event while the app is parked in a file call; the file wait of an app is 30 s (the
  * runner waits up to 45 s for the app's report).
  *
@@ -243,7 +243,7 @@ static void stage_park(void)
     }
     conf_detailf(d, "wrong id: reply returned %ld, app %s; right reply resumed it",
                  (long)rc_id, resumed_id ? "RESUMED" : "stayed parked");
-    res_set(R3, !resumed_id, d);
+    res_set(R3, !resumed_id && rc_id == AAR_E_INVAL, d);
 
     /* C-QUEUE.4, second half: a duplicate of a completed request, while the app is parked
      * on the next one. */
@@ -267,7 +267,7 @@ static void stage_park(void)
     conf_detailf(d, "wrong op: reply returned %ld, app %s; duplicate: reply returned %ld, app %s",
                  (long)rc_op, resumed_op ? "RESUMED" : "stayed parked", (long)rc_dup,
                  resumed_dup ? "RESUMED" : "stayed parked");
-    res_set(R4, !resumed_op && !resumed_dup, d);
+    res_set(R4, !resumed_op && !resumed_dup && rc_op == AAR_E_INVAL && rc_dup == AAR_E_INVAL, d);
 
     /* C-QUEUE.5: a reply to a request that did not park the app (a console write) must not
      * resume the app, which is parked on the request behind it. */
@@ -279,12 +279,14 @@ static void stage_park(void)
     mq_answer(&a, &rcon);
     a.stash_console = 0;
     if (parked_console) {
+        /* Spec 9.6: a console write of 16 bytes returns at once. Let the app go on, so that the
+         * stages behind it still run, and fail the id. */
         if (!wait_marker(&a, '5', 4000, NULL) || !mq_wait_request(&a, &r3, 5000)) {
             res_set(R5, 0, "the app did not go on after the console write");
             goto out;
         }
-        res_set(R5, 1, "the console write parks the app on this platform: a reply to it "
-                       "resumes it, as it must; nothing to misdirect");
+        res_set(R5, 0, "a console write of 16 bytes parked the app until its request was "
+                       "answered (spec 9.6: it returns at once)");
     } else {
         /* The app went past the console write and parked on the stat behind it. */
         if (!mq_wait_request(&a, &r3, 5000) || r3.op != AAR_OP_FILE_STAT) {
@@ -296,7 +298,8 @@ static void stage_park(void)
             res_set(R5, 0, "the reply to the console write resumed the app parked on another request");
             goto out;
         }
-        res_set(R5, 1, "the reply to a console write left the app parked on its stat");
+        res_set(R5, 1, "a console write of 16 bytes did not park the app; the reply to it left "
+                       "the app parked on its stat");
     }
     good = r3;
     good.result = AAR_E_NOENT;
@@ -503,20 +506,29 @@ static void t_admission(int idx)
     /* Run A: open to the limit, close all, open again. */
     n1 = fill_claims(hs, limit, &rc, &reason);
     capped = rc == AAR_OK;
+    /* Spec 5.6: with max_apps 0 there is no stated ceiling, the first refusal carries a reason
+     * from 1 to 3 (resources) and nothing else is asserted. With max_apps above 0 the refusal
+     * comes at exactly max_apps claims, with AAR_REASON_LIMIT. */
     if (ceiling) {
-        ok12 = !capped && rc == AAR_E_NORESOURCE && reason >= AAR_REASON_MEMORY &&
-               reason <= AAR_REASON_LIMIT && n1 <= conf_g.info.max_apps;
+        ok12 = !capped && rc == AAR_E_NORESOURCE && reason == AAR_REASON_LIMIT &&
+               n1 == conf_g.info.max_apps;
         conf_detailf(d12, "%lu opened, then %ld reason %lu; platform ceiling %lu",
                      (unsigned long)n1, (long)rc, (unsigned long)reason,
                      (unsigned long)conf_g.info.max_apps);
+    } else if (conf_g.info.max_apps != 0) {
+        ok12 = capped;
+        conf_detailf(d12, "max_apps %lu is above the test limit; %lu opened, then %ld reason %lu",
+                     (unsigned long)conf_g.info.max_apps, (unsigned long)n1, (long)rc,
+                     (unsigned long)reason);
     } else if (capped) {
         ok12 = 1;
         conf_detailf(d12, "no refusal in %lu opens (the test stops there); max_apps is 0",
                      (unsigned long)n1);
     } else {
-        ok12 = rc == AAR_E_NORESOURCE && reason >= AAR_REASON_MEMORY && reason <= AAR_REASON_LIMIT;
-        conf_detailf(d12, "%lu opened, then %ld reason %lu", (unsigned long)n1, (long)rc,
-                     (unsigned long)reason);
+        ok12 = rc == AAR_E_NORESOURCE && reason >= AAR_REASON_MEMORY &&
+               reason <= AAR_REASON_HOSTHEAP;
+        conf_detailf(d12, "%lu opened, then %ld reason %lu; max_apps is 0", (unsigned long)n1,
+                     (long)rc, (unsigned long)reason);
     }
     close_claims(hs, n1);
     n2 = fill_claims(hs, limit, &rc, &reason);

@@ -57,6 +57,12 @@ class Test:
     def tested(self):
         return self.judge != "none"
 
+    @property
+    def route_skip(self):
+        """The row lets a MUST test skip with the reason `no PLATFORM route` (the optional
+        audio route, spec 8.4). TESTS.md says so in the check text; nothing else may."""
+        return "`SKIP no PLATFORM route`" in self.check
+
 
 def load(path=TESTS_MD):
     tests = []
@@ -182,6 +188,7 @@ def generate(version, tests):
     out.append("    unsigned char impl;     /* 1: the suite prints it today */")
     out.append("    unsigned short group;")
     out.append("    const char *prompt;     /* check text of operator tests, else \"\" */")
+    out.append("    unsigned char route_skip; /* a MUST row that may skip for the optional route */")
     out.append("};")
     out.append("")
     out.append("/* Area names; the payload of area C-X is conf_x.elf. */")
@@ -202,10 +209,10 @@ def generate(version, tests):
     out.append("const struct conf_test conf_tests[] = {")
     for t in tests:
         prompt = t.check if t.judge == "operator" else ""
-        out.append("    { %s, %d, CONF_%s, CONF_J_%s, %d, %d, 0x%03xu, %s }," % (
+        out.append("    { %s, %d, CONF_%s, CONF_J_%s, %d, %d, 0x%03xu, %s, %d }," % (
             c_string(t.id), areas.index(t.area), t.level, t.judge.upper(),
             PROFILES[t.profile], 1 if t.impl == "yes" else 0, GROUPS[t.group],
-            c_string(prompt)))
+            c_string(prompt), 1 if t.route_skip else 0))
     out.append("};")
     out.append("#endif")
     out.append("")

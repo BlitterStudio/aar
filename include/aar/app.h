@@ -19,8 +19,7 @@
  *     table is at offset 16 on both profiles.
  *   - _Static_assert checks at the end of this file hold for both data models.
  *
- * The old zzapp.h 0.x API maps onto this one as listed in
- * docs/zzapp-to-aar.md. API 0.5 continues after zzapp 0.4. Pre-1.0, any minor
+ * The specification is spec/aar.md in the aar repository. Pre-1.0, any minor
  * may break.
  *
  * SPDX-License-Identifier: MIT
@@ -66,11 +65,10 @@ extern "C" {
 /* ---- Error codes (spec 3.5) ----------------------------------------------- */
 
 /* One code space for the table, the client library and the transport. Calls
- * return AAR_OK or a negative value. The first thirteen keep the numbers of
- * zzapp.h 0.x. */
+ * return AAR_OK or a negative value. */
 #define AAR_OK           0
 #define AAR_E_IO        -1  /* failed; control block or queue corrupt; wait cancelled by stop */
-#define AAR_E_INVAL     -2  /* bad argument, unknown flag, zero or oversize length, unknown id */
+#define AAR_E_INVAL     -2  /* bad argument, unknown flag, unknown format, zero or oversize length, unknown id */
 #define AAR_E_NOMEM     -3  /* memory, quota, table or session limit */
 #define AAR_E_BUSY      -4  /* queue full, resource in use, flip pending */
 #define AAR_E_NOENT     -5  /* no such file, or no further directory entry */
@@ -78,12 +76,12 @@ extern "C" {
 #define AAR_E_NOSYS     -7  /* slot absent or NULL; codec or format not implemented */
 #define AAR_E_TIMEDOUT  -8  /* file wait expired, or msg_wait timeout */
 #define AAR_E_FAULT     -9  /* bad pointer in a call (isolated runtimes only) */
-#define AAR_E_NOSPC    -10
-#define AAR_E_EXIST    -11
-#define AAR_E_BADF     -12
+#define AAR_E_NOSPC    -10  /* a result does not fit */
+#define AAR_E_EXIST    -11  /* the file exists and AAR_FILE_EXCL was set */
+#define AAR_E_BADF     -12  /* bad id, or an id used for a direction it was not opened for */
 #define AAR_E_PROFILE  -13  /* image profile or note not acceptable on this platform */
 #define AAR_E_NOGROUP  -14  /* image requires a group the runtime lacks */
-#define AAR_E_NORESOURCE -15 /* admission refused; the reason is an AAR_REASON_* code */
+#define AAR_E_NORESOURCE -15 /* admission or load refused; the reason is an AAR_REASON_* code */
 #define AAR_E_STALE    -16  /* the handle's generation no longer names a live app */
 #define AAR_E_OWNER    -17  /* handle used by a task that does not own it */
 
@@ -158,7 +156,8 @@ extern "C" {
 #define AAR_GROUP_GL       (1u << 3)
 #define AAR_GROUP_SERVICES (1u << 4)
 #define AAR_GROUPS_DEFINED 0x0000001Fu
-/* Bits 28 to 31 are reserved for experiments. */
+/* Bits 5 to 27 are reserved for later versions of the standard: a platform
+ * must not set them. Bits 28 to 31 are for experiments of a platform. */
 #define AAR_GROUPS_EXPERIMENTAL 0xF0000000u
 
 /* ---- Limits the standard fixes ------------------------------------------------- */
@@ -256,7 +255,7 @@ typedef struct aar_shared {
 /* 16 bytes on both profiles. code: Amiga raw key (up bit removed), or
  * AAR_BREAK_*; dx, dy: mouse deltas or joystick axes -1, 0, 1; buttons: key
  * qualifiers, mouse buttons in bits 0 to 2 (left, right, middle), or joystick
- * fire in bit 0; time_ms: client timestamp. */
+ * fire in bit 0; time_ms: a timestamp in milliseconds that the client chooses. */
 typedef struct aar_event {
     uint16_t type, code;
     int16_t  dx, dy;
@@ -323,8 +322,7 @@ typedef struct aar_dirent {
 #define AAR_DISPCAP_CLUT8  (1u << 2) /* CLUT8 surfaces and palettes work */
 
 /* Non-pointer fields first; front is at offset 32 on both profiles. front and
- * back are the app mapping, NULL if the app does not draw that buffer. The
- * physical card addresses of zzapp.h 0.x are gone. */
+ * back are the app mapping, NULL if the app does not draw that buffer. */
 typedef struct aar_surface {
     uint32_t id;
     uint32_t width, height;
@@ -366,7 +364,7 @@ typedef struct aar_audio_stats {
 
 /* ---- Services (spec 8.6) ------------------------------------------------------------------------ */
 
-/* Algorithm and codec numbers are those of zzapp.h 0.x. */
+/* Algorithm and codec numbers. AAR_COMPRESS_NONE is never valid. */
 #define AAR_COMPRESS_NONE        0u /* never valid: a bad algorithm */
 #define AAR_COMPRESS_DEFLATE_RAW 1u
 #define AAR_COMPRESS_ZLIB        2u
@@ -440,9 +438,10 @@ typedef struct aar_audio_decode_result {
  * A slot exists if `size` covers it (AAR_API_COVERS). A slot that exists and is
  * NULL means "not implemented".
  *
- * Calls park on files, console, display flip, msg_wait and sleep, and return
- * when the work completes, on stop (AAR_E_IO), or on their own timeout. No call
- * is reentrant: an app has one thread. No call takes variable arguments.
+ * Calls park on files, console, display flip and msg_wait, and return when the
+ * work completes, on stop (AAR_E_IO), or on their own timeout. A sleep is also
+ * ended by a stop and has no return value. No call is reentrant: an app has one
+ * thread. No call takes variable arguments.
  */
 typedef struct aar_api {
     uint32_t size;          /* sizeof of the table the runtime built */
