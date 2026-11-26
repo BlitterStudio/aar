@@ -136,7 +136,7 @@ static void check_plan(const struct variant *v, const struct gen_out *o,
     CHECK(total == o->nslots);
     CHECK(plan->note_version == AAR_NOTE_VERSION);
     CHECK(plan->api_major == AAR_API_MAJOR);
-    CHECK(plan->api_minor_required == 0);
+    CHECK(plan->api_minor_required == AAR_API_MINOR);
     CHECK(plan->stack_bytes == 0);
     CHECK(plan->min_heap_mib == 2);
     CHECK(plan->groups_required == 1);

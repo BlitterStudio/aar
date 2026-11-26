@@ -189,7 +189,7 @@ static inline void gen_image(uint8_t *b, const struct gen *g, struct gen_out *o)
     gen_put32(b, note_off + 20, AAR_NOTE_VERSION);
     gen_put32(b, note_off + 24, a64 ? AAR_PROFILE_A64 : AAR_PROFILE_A32);
     gen_put32(b, note_off + 28, AAR_API_MAJOR);
-    gen_put32(b, note_off + 32, 0);
+    gen_put32(b, note_off + 32, AAR_API_MINOR);
     gen_put32(b, note_off + 36, 0);
     gen_put32(b, note_off + 40, 2);   /* min_heap_mib */
     gen_put32(b, note_off + 44, 1);   /* groups_required: display */

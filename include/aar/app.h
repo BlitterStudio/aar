@@ -40,6 +40,11 @@ extern "C" {
 
 #define AAR_API_MAJOR 0u
 #define AAR_API_MINOR 6u
+/* The oldest minor whose table layout this header describes. Before 1.0 a
+ * minor may move slots (0.6 did), so a runtime built from this header refuses
+ * a note with an api_minor_required below this value as well as one above
+ * AAR_API_MINOR (spec 3.6). */
+#define AAR_API_MINOR_OLDEST 6u
 #define AAR_API_VERSION ((AAR_API_MAJOR << 16) | AAR_API_MINOR)
 
 /* True when the table names a runtime of this major and at least `minor`. The

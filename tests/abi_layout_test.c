@@ -25,7 +25,7 @@
 
 /* On a host build this expands to nothing. */
 AAR_NOTE(0, 0, AAR_GROUP_DISPLAY, AAR_GROUP_AUDIO)
-AAR_NOTE_EX(5, 65536, 4, 0, 0)
+AAR_NOTE_EX(6, 65536, 4, 0, 0)
 
 static unsigned long checks;
 static unsigned long failures;
@@ -383,6 +383,7 @@ static void test_constants(void)
     CHECK_EQ(AAR_API_MAJOR, 0);
     CHECK_EQ(AAR_API_MINOR, 6);
     CHECK_EQ(AAR_API_VERSION, 6);
+    CHECK_EQ(AAR_API_MINOR_OLDEST, 6);
     CHECK_EQ(AAR_PROFILE_A32, 1);
     CHECK_EQ(AAR_PROFILE_A64, 2);
 

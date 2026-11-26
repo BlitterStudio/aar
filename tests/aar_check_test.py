@@ -277,10 +277,8 @@ def elf_rules():
            build(profile, note=note_bytes(profile, opt=0x0FFFFFE0)))
         ok("experimental group bits, required [%s]" % profile,
            build(profile, note=note_bytes(profile, req=0xF0000000)))
-        ok("api minor 0 [%s]" % profile,
-           build(profile, note=note_bytes(profile, minor=0)))
-        ok("api minor 5 [%s]" % profile,
-           build(profile, note=note_bytes(profile, minor=5)))
+        ok("api minor of the header [%s]" % profile,
+           build(profile, note=note_bytes(profile, minor=6)))
         ok("two relocations, PT_LOAD with BSS [%s]" % profile,
            build(profile, reloc_count=2))
         bad("big-endian [%s]" % profile, build(profile, ei_data=2),
@@ -401,6 +399,8 @@ def note_rules():
         case("unknown profile word", "does not match", prof=9)
         case("api major 1", "note api major 1 is not 0", major=1)
         case("api minor 7", "above 6", minor=7)
+        case("api minor 5", "below 6", minor=5)
+        case("api minor 0", "below 6", minor=0)
         case("stack 4", "note stack 4", stack=4)
         case("stack below 64 KiB", "note stack", stack=(64 << 10) - 16)
         case("stack above 1 MiB", "note stack", stack=(1 << 20) + 16)
@@ -482,7 +482,7 @@ def expect_note_rules():
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "app.elf")
             with open(path, "wb") as fh:
-                fh.write(build(profile, note=note_bytes(profile, minor=3)))
+                fh.write(build(profile, note=note_bytes(profile, minor=5)))
             proc = subprocess.run(
                 [sys.executable, CHECK, "--expect-note", path, "0", "0", "0", "0"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -637,6 +637,7 @@ def header_constants():
     pairs = [
         ("AAR_API_MAJOR", tool.AAR_API_MAJOR),
         ("AAR_API_MINOR", tool.AAR_API_MINOR),
+        ("AAR_API_MINOR_OLDEST", tool.AAR_API_MINOR_OLDEST),
         ("AAR_NOTE_MAGIC", tool.NOTE_MAGIC),
         ("AAR_NOTE_VERSION", tool.NOTE_VERSION),
         ("AAR_NOTE_TYPE", tool.NOTE_TYPE),
