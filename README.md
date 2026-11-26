@@ -19,7 +19,7 @@ The ZZ9000 is the reference platform (A32, Cortex-A9); see the
 
 ## Status
 
-Version 0.x. The app API is **0.5**, the first AAR version, and may still
+Version 0.x. The app API is **0.6**, and 0.5 was the first AAR version. It may still
 change before 1.0. The specification is [spec/aar.md](spec/aar.md) (review
 draft 1). It is the normative text and states what the standard requires of an
 app, a runtime, the Amiga library and a platform. Comments and questions are
