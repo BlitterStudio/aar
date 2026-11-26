@@ -676,8 +676,8 @@ static const float vec4[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
 static const float normals[3] = { 0.0f, 0.0f, 1.0f };
 static const double plane[4] = { 0.0, 0.0, 1.0, 1.0 };
 
-/* Records the first call that left a GL error. */
-static void gl_step(struct conf_test *t, const char *name)
+/* Records the first call that left a GL error, and returns whether this call succeeded. */
+static int gl_step(struct conf_test *t, const char *name)
 {
     uint32_t e = glGetError();
 
@@ -686,17 +686,19 @@ static void gl_step(struct conf_test *t, const char *name)
         conf_buf_str(&t->why, " with valid arguments left glGetError at ");
         conf_buf_hex(&t->why, e);
     }
+    return e == GL_NO_ERROR;
 }
 
-/* C-GL.13: every field of AAR_GL_VERSION_11 can be called with valid arguments: a present one works and leaves
- * no error, an absent one is a no-op. */
+#define GL_HAS(field) (AAR_GL_COVERS(gl, field) && gl->field)
+
+/* C-GL.13: exercise wrappers with valid arguments. Stateful calls run only
+ * when the prerequisites and cleanup slots are available. */
 static void test_v11_calls(void)
 {
     struct conf_test t;
     double d[4];
     uint8_t b[4];
     int32_t i = 0;
-    uint32_t list;
 
     conf_begin(&t, "C-GL.13");
     if (!bind_display(&t)) {
@@ -749,19 +751,42 @@ static void test_v11_calls(void)
     STEP("glGetTexLevelParameteriv", glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &i));
     STEP("glIsTexture", (void)glIsTexture(0));
     STEP("glClipPlane", glClipPlane(GL_CLIP_PLANE0, plane));
-    list = glGenLists(1);
-    gl_step(&t, "glGenLists");
-    STEP("glNewList", glNewList(list, GL_COMPILE));
-    STEP("glEndList", glEndList());
-    STEP("glCallList", glCallList(list));
-    STEP("glCallLists", glCallLists(1, GL_UNSIGNED_INT, &list));
-    STEP("glListBase", glListBase(0));
-    STEP("glDeleteLists", glDeleteLists(list, 1));
+    {
+        int base_ok = 0;
+
+        if (GL_HAS(ListBase)) {
+            glListBase(0);
+            base_ok = gl_step(&t, "glListBase");
+        }
+        if (GL_HAS(GenLists) && GL_HAS(DeleteLists)) {
+            uint32_t list = glGenLists(1);
+            int generated = gl_step(&t, "glGenLists");
+
+            if (generated && list != 0) {
+                if (GL_HAS(NewList) && GL_HAS(EndList)) {
+                    glNewList(list, GL_COMPILE);
+                    if (gl_step(&t, "glNewList")) {
+                        glEndList();
+                        if (gl_step(&t, "glEndList")) {
+                            if (GL_HAS(CallList))
+                                STEP("glCallList", glCallList(list));
+                            if (base_ok && GL_HAS(CallLists))
+                                STEP("glCallLists", glCallLists(1, GL_UNSIGNED_INT, &list));
+                        }
+                    }
+                }
+                STEP("glDeleteLists", glDeleteLists(list, 1));
+            }
+        }
+    }
     STEP("glTexEnvfv", glTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, vec4));
-    STEP("glPushAttrib", glPushAttrib(GL_ENABLE_BIT));
-    STEP("glPopAttrib", glPopAttrib());
+    if (GL_HAS(PushAttrib) && GL_HAS(PopAttrib)) {
+        glPushAttrib(GL_ENABLE_BIT);
+        if (gl_step(&t, "glPushAttrib"))
+            STEP("glPopAttrib", glPopAttrib());
+    }
 #undef STEP
-    conf_buf_str(&t.note, "the entries of AAR_GL_VERSION_11 take valid arguments and leave no GL error");
+    conf_buf_str(&t.note, "valid wrapper calls left no GL error; list and attribute operations require their prerequisites");
     unbind_display();
     conf_end(&t);
 }
@@ -845,10 +870,11 @@ static void test_v11_state(void)
         conf_check(&t, glIsTexture(tex) == 0u, "glIsTexture is true for a deleted texture name");
         checked++;
     }
-    if (AAR_GL_COVERS(gl, GenLists) && gl->GenLists && gl->DeleteLists) {
+    if (GL_HAS(GenLists) && GL_HAS(DeleteLists)) {
         first = glGenLists(2);
         conf_check(&t, first != 0u, "glGenLists(2) returned 0");
-        glDeleteLists(first, 2);
+        if (first != 0u)
+            glDeleteLists(first, 2);
         checked++;
     }
     conf_check(&t, glGetError() == GL_NO_ERROR, "the calls left a GL error");

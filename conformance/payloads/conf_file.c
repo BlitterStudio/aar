@@ -1356,7 +1356,8 @@ static void test_delete_protected(void)
         return;
     }
     rc = aar_file_set_protect(file, AAR_PROT_DELETE);
-    if (not_served(&t, rc, "file_set_protect")) {
+    if (not_served(&t, rc, "file_set_protect(DELETE)")) {
+        expect_file(&t, file, 3, "file after the unsupported protection request");
         (void)aar_file_delete(file);
         conf_end(&t);
         return;
@@ -1660,24 +1661,21 @@ static void test_set_protect(void)
         return;
     }
     rc = aar_file_stat(file, &st);
-    if (rc == AAR_OK && st.protect > 0xFFu && conf_fail_first(&t)) {
-        conf_buf_str(&t.why, "stat reports protection bits above bit 7: ");
-        conf_buf_u64(&t.why, st.protect);
-    }
-    rc = aar_file_set_protect(file, AAR_PROT_ARCHIVE | AAR_PROT_SCRIPT);
-    if (not_served(&t, rc, "file_set_protect")) {
+    if (rc != AAR_OK) {
+        fail_rc(&t, "stat before changing protection", rc);
         (void)aar_file_delete(file);
         conf_end(&t);
         return;
     }
-    expect(&t, rc, AAR_OK, "file_set_protect with ARCHIVE and SCRIPT");
-    rc = aar_file_stat(file, &st);
-    if (rc != AAR_OK || (st.protect & (AAR_PROT_ARCHIVE | AAR_PROT_SCRIPT)) !=
-                            (AAR_PROT_ARCHIVE | AAR_PROT_SCRIPT))
-        fail_rc(&t, "stat after file_set_protect with ARCHIVE and SCRIPT: result", rc);
+    conf_check(&t, st.protect <= 0xFFu, "stat reports protection bits above bit 7");
+    rc = aar_file_set_protect(file, AAR_PROT_WRITE | AAR_PROT_DELETE);
+    if (not_served(&t, rc, "file_set_protect(WRITE | DELETE)")) {
+        (void)aar_file_delete(file);
+        conf_end(&t);
+        return;
+    }
+    expect(&t, rc, AAR_OK, "file_set_protect with WRITE and DELETE denied");
     /* Bits 0 to 3 deny. */
-    expect(&t, aar_file_set_protect(file, AAR_PROT_WRITE | AAR_PROT_DELETE), AAR_OK,
-           "file_set_protect with WRITE and DELETE denied");
     rc = aar_file_stat(file, &st);
     if (rc != AAR_OK || (st.protect & 0xFu) != (AAR_PROT_WRITE | AAR_PROT_DELETE))
         fail_rc(&t, "stat after file_set_protect with WRITE and DELETE denied: result", rc);
@@ -1685,6 +1683,21 @@ static void test_set_protect(void)
     rc = aar_file_stat(file, &st);
     if (rc != AAR_OK || (st.protect & 0xFu) != 0u)
         fail_rc(&t, "stat after file_set_protect with 0: result", rc);
+    rc = aar_file_set_protect(file, AAR_PROT_ARCHIVE | AAR_PROT_SCRIPT);
+    if (rc == AAR_E_NOSYS) {
+        aar_stat after;
+
+        conf_check(&t, aar_file_stat(file, &after) == AAR_OK &&
+                        after.protect == st.protect,
+                   "an unsupported protection mask changed the file");
+        conf_buf_str(&t.note, "ARCHIVE | SCRIPT not supported; ");
+    } else {
+        expect(&t, rc, AAR_OK, "file_set_protect with ARCHIVE and SCRIPT");
+        rc = aar_file_stat(file, &st);
+        if (rc != AAR_OK || (st.protect & (AAR_PROT_ARCHIVE | AAR_PROT_SCRIPT)) !=
+                                (AAR_PROT_ARCHIVE | AAR_PROT_SCRIPT))
+            fail_rc(&t, "stat after file_set_protect with ARCHIVE and SCRIPT: result", rc);
+    }
     /* A bit that no AAR_PROT_* constant names. */
     expect(&t, aar_file_set_protect(file, 0x100u), AAR_E_INVAL, "file_set_protect with bit 8");
     expect(&t, aar_file_set_protect(file, 0x80000000u), AAR_E_INVAL, "file_set_protect with bit 31");
@@ -1914,21 +1927,27 @@ static void test_stop(void)
     int wfd;
     int fd;
     int rc;
+    int stopped;
 
     if (!peer) {
         conf_skip("C-FILE.6", "host: no runner to stop the app");
+        conf_skip("C-FILE.49", "host: no runner to stop the app");
         return;
     }
     conf_begin(&t, "C-FILE.6");
+    conf_begin(&t49, "C-FILE.49");
     rc = put(keep, "keep", 4);
-    wfd = aar_file_open(wfile, FILE_NEW);
+    wfd = rc == AAR_OK ? aar_file_open(wfile, FILE_NEW) : rc;
     if (rc != AAR_OK || wfd < 0) {
-        fail_rc(&t, "preparing the files for the stop test", rc != AAR_OK ? rc : wfd);
+        fail_rc(&t, "preparing the files for the stop test", wfd);
         conf_end(&t);
+        fail_rc(&t49, "preparing the files for the shared stop test", wfd);
+        conf_end(&t49);
         return;
     }
-    conf_begin(&t49, "C-FILE.49");
     rc49 = stop49_prepare(&s49);
+    if (rc49 != AAR_OK)
+        fail_rc(&t49, "preparing the files for the stop test", rc49);
     rc = conf_peer_send(CONF_MSG_STOP);
     if (rc != AAR_OK) {
         conf_check(&t, 0, "the stop request message was not accepted");
@@ -1938,7 +1957,9 @@ static void test_stop(void)
         return;
     }
     aar_sleep_us(5000000u);
-    conf_check(&t, aar_should_stop() == 1, "the client did not stop the app");
+    stopped = aar_should_stop() == 1;
+    conf_check(&t, stopped, "the client did not stop the app");
+    conf_check(&t49, stopped, "the client did not stop the app");
     /* After the stop request a parked call can be ended by the stop (AAR_E_IO),
      * and the call after it can find the abandoned request still open (AAR_E_BUSY):
      * every answer is negative. What the client did with the requests is judged
@@ -1969,8 +1990,6 @@ static void test_stop(void)
     conf_end(&t);
     if (rc49 == AAR_OK)
         stop49_run(&t49, &s49);
-    else
-        fail_rc(&t49, "preparing the files for the stop test", rc49);
     conf_end(&t49);
 }
 
