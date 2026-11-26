@@ -969,6 +969,52 @@ def check_api06_pads(exe):
     api06_run(exe, ["pads"])
 
 
+def check_api06_window(exe):
+    # The software window the way a developer runs it: the X11 driver on a real
+    # display, or on Xvfb. Headless runs have no renderer, so the texture and
+    # logical size paths of the display run only here.
+    merged = os.environ.copy()
+    merged["SDL_AUDIODRIVER"] = "dummy"
+    merged.pop("SDL_VIDEODRIVER", None)
+    prefix = []
+    if sys.platform.startswith("linux") and not (
+        merged.get("DISPLAY") or merged.get("WAYLAND_DISPLAY")
+    ):
+        import shutil
+
+        xvfb = shutil.which("xvfb-run")
+        if not xvfb:
+            gl_missing(subprocess.CompletedProcess([], 77, b"", b""), "api06_window (no display, no xvfb-run)")
+        prefix = [xvfb, "-a"]
+        merged["SDL_VIDEODRIVER"] = "x11"
+        merged["LIBGL_ALWAYS_SOFTWARE"] = "1"
+    with tempfile.TemporaryDirectory() as root:
+        script = os.path.join(root, "input.txt")
+        with open(script, "w", encoding="ascii") as fh:
+            fh.write("resize 80 60\n")
+        runs = [
+            (["display"], []),
+            (["present"], []),
+            (["resize"], ["--input", script]),
+            (["resize"], ["--input", script, "--scale", "2"]),
+            (["events"], []),
+            (["events_nocap"], []),
+            (["events_scaled"], ["--scale", "2"]),
+            (["clip"], []),
+        ]
+        for mode, options in runs:
+            proc = subprocess.run(
+                [*prefix, exe, *options, "--", *mode],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=merged,
+                timeout=60,
+                check=False,
+            )
+            if proc.returncode != 0:
+                show(proc)
+                raise SystemExit(f"api06 {' '.join(mode)} in a window: exit {proc.returncode}")
+
 
 CHECKS = {
     "ringflood": check_ringflood,
@@ -1006,6 +1052,7 @@ CHECKS = {
     "api06_events": check_api06_events,
     "api06_input": check_api06_input,
     "api06_pads": check_api06_pads,
+    "api06_window": check_api06_window,
 }
 
 
