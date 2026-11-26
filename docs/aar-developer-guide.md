@@ -547,11 +547,15 @@ program run:
   The path rules of the client apply. For a directory use `aar_file_list_open`,
   `aar_file_list_next` and `aar_file_list_close`, and for a path use
   `aar_file_stat`, which reports a 64-bit size.
-  `stat` and `fstat` also give permission bits: the owner's read, write and
+  `stat` also gives permission bits and the date: the owner's read, write and
   execute bits are set when `AAR_PROT_READ`, `AAR_PROT_WRITE` and
   `AAR_PROT_EXECUTE` are clear in `aar_stat.protect`, and group and other get
   the owner's read and execute bits. A file made with default AmigaDOS bits
   therefore shows 0755.
+  `fstat` does not have them: the descriptor carries only its size, so `fstat`
+  reports a regular file with the mode 0644 and the date 0, and this does not
+  change when the path is renamed, replaced or deleted meanwhile. Call `stat`
+  on the path for the real bits.
 - Changing files and directories uses the calls of API 0.6 and needs a client
   that serves them (`errno` is `ENOSYS` when it does not). `unlink` and `remove`
   delete a file or an empty directory; a directory that is not empty is

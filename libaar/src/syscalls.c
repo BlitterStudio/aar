@@ -22,8 +22,9 @@
  * are aar_dir_create, aar_file_delete, aar_file_truncate, aar_file_set_protect
  * and aar_file_set_date. `chmod` maps the owner bits of the mode onto the
  * AmigaDOS bits (see mode_to_protect) and keeps the archive, pure, script and
- * hold bits; `_stat` maps them back. `_fstat` reads the same bits through the
- * path the descriptor was opened with.
+ * hold bits; `_stat` maps them back. `_fstat` knows only the descriptor: it
+ * gives the size from the descriptor, a regular-file mode with the default
+ * permission bits and the date 0, whatever the path names by then.
  *
  * Time. `_gettimeofday` (and so `time`) is aar_time_unix_us. `_times` (and so
  * `clock`) counts aar_time_us from the start of the program, in
@@ -241,27 +242,6 @@ static void fd_set_append(int fd, int on)
         append_fds[fd / 32] &= ~(1u << (fd % 32));
 }
 
-/* The path each descriptor was opened with, for _fstat, which reads the
- * protection bits and the date through aar_file_stat because the table has no
- * stat on an id. A descriptor whose path could not be kept (no memory, or an
- * id past the map) is reported with default bits. */
-static char *fd_paths[APPEND_FD_LIMIT];
-
-static void fd_set_path(int fd, const char *path)
-{
-    if (fd < 0 || fd >= APPEND_FD_LIMIT)
-        return;
-    free(fd_paths[fd]);
-    fd_paths[fd] = NULL;
-    if (path) {
-        size_t n = strlen(path) + 1;
-
-        fd_paths[fd] = malloc(n);
-        if (fd_paths[fd])
-            memcpy(fd_paths[fd], path, n);
-    }
-}
-
 int _open(const char *path, int flags, ...)
 {
     int access = flags & O_ACCMODE;
@@ -316,7 +296,6 @@ int _open(const char *path, int flags, ...)
         }
         fd_set_append(fd, 1);
     }
-    fd_set_path(fd, path);
     return fd;
 }
 
@@ -327,10 +306,8 @@ int _close(int fd)
     if (is_console(fd))
         return 0;
     rc = aar_file_close(fd);
-    if (rc == AAR_OK) {
+    if (rc == AAR_OK)
         fd_set_append(fd, 0);
-        fd_set_path(fd, NULL);
-    }
     return rc == AAR_OK ? 0 : fail(rc);
 }
 
@@ -481,8 +458,9 @@ static void fill_stat(struct stat *st, const aar_stat *as)
 }
 
 /* The table has no fstat: the size is found by seeking, then the position is
- * put back. The mode and the date come from a stat of the path the descriptor
- * was opened with, when that still names a file. */
+ * put back. The descriptor carries no other data, so the mode is always a
+ * regular file with default permission bits and the date is 0; the real
+ * permission bits and the date are those of a stat of the path. */
 int _fstat(int fd, struct stat *st)
 {
     int64_t pos = 0;
@@ -507,12 +485,6 @@ int _fstat(int fd, struct stat *st)
     }
     st->st_mode = S_IFREG | 0644;
     st->st_blksize = 4096;
-    if (fd < APPEND_FD_LIMIT && fd_paths[fd]) {
-        aar_stat as;
-
-        if (aar_file_stat(fd_paths[fd], &as) == AAR_OK && as.mode == AAR_MODE_FILE)
-            fill_stat(st, &as);
-    }
     st->st_size = (off_t)end;
     return 0;
 }

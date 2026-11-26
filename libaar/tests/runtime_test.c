@@ -419,8 +419,10 @@ static int test_modes(void)
     CHECK(chmod("m.txt", 0644) == 0 && perm_of("m.txt") == 0644);
     CHECK(chmod("m.txt", 0444) == 0 && perm_of("m.txt") == 0444);
     fd = open("m.txt", O_RDONLY);
+    /* fstat knows only the descriptor: a regular file with the default
+     * permission bits and no date. The real bits are those of stat. */
     CHECK(fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode));
-    CHECK((st.st_mode & 0777) == 0444 && st.st_size == 1);
+    CHECK((st.st_mode & 0777) == 0644 && st.st_size == 1 && st.st_mtime == 0);
     CHECK(close(fd) == 0);
     /* The client refuses to delete what is write protected. */
     errno = 0;
@@ -442,6 +444,44 @@ static int test_modes(void)
 
     CHECK(mkdir("md", 0755) == 0 && stat("md", &st) == 0 && S_ISDIR(st.st_mode));
     CHECK(rmdir("md") == 0 && unlink("m.txt") == 0);
+    return 0;
+}
+
+/* fstat describes the descriptor, not the path: after the path was renamed
+ * and replaced, and after it was deleted and made again, fstat still gives
+ * the size of the open file and the default bits, while stat of the path
+ * gives the replacement's size and date. The raw AAR calls do the renaming,
+ * so nothing in the libc layer can track it. */
+static int test_fstat_descriptor(void)
+{
+    struct stat st;
+    struct utimbuf ub;
+    int fd;
+
+    CHECK(write_text("fd-open.txt", "12345") == 0);
+    fd = open("fd-open.txt", O_RDONLY);
+    CHECK(fd >= 0 && fstat(fd, &st) == 0 && st.st_size == 5);
+
+    /* The path is renamed away and a dated file of another size takes its
+     * name. */
+    CHECK(aar_file_rename("fd-open.txt", "fd-moved.txt", 0) == AAR_OK);
+    CHECK(write_text("fd-repl.txt", "abcdefg") == 0);
+    ub.actime = 1500000000;
+    ub.modtime = 1500000000;
+    CHECK(utime("fd-repl.txt", &ub) == 0);
+    CHECK(aar_file_rename("fd-repl.txt", "fd-open.txt", AAR_RENAME_REPLACE) == AAR_OK);
+    CHECK(fstat(fd, &st) == 0 && st.st_size == 5 && (st.st_mode & 0777) == 0644 &&
+          st.st_mtime == 0);
+    CHECK(stat("fd-open.txt", &st) == 0 && st.st_size == 7 && st.st_mtime == 1500000000);
+    CHECK(lseek(fd, 0, SEEK_END) == 5);
+
+    /* The path is deleted and made again with other contents. */
+    CHECK(aar_file_delete("fd-open.txt") == AAR_OK);
+    CHECK(write_text("fd-open.txt", "x") == 0);
+    CHECK(fstat(fd, &st) == 0 && st.st_size == 5);
+    CHECK(stat("fd-open.txt", &st) == 0 && st.st_size == 1);
+    CHECK(close(fd) == 0);
+    CHECK(unlink("fd-open.txt") == 0 && unlink("fd-moved.txt") == 0);
     return 0;
 }
 
@@ -570,7 +610,8 @@ int aar_main(int argc, char **argv)
     CHECK(aar_api_ptr != NULL);
     if (test_init_arrays() || test_heap() || test_files() ||
         test_open_flags() || test_big_size() || test_wrappers() ||
-        test_names() || test_truncate() || test_modes() || test_utime() ||
+        test_names() || test_truncate() || test_modes() || test_fstat_descriptor() ||
+        test_utime() ||
         test_clock() || test_env())
         return 1;
     printf("printf %d %s %5.2f\n", 42, "ok", 3.14159);
