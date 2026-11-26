@@ -2219,6 +2219,7 @@ HX_UNUSED static void hx_free_bitmap(struct BitMap *bm)
     hx_bitmaps_live--;
 }
 
+HX_UNUSED static int hx_p96_outside_arena;           /* the next surfaces are outside the arena */
 /* Picasso96 bitmaps: in the arena, so that AARSharedToken names them */
 HX_UNUSED static struct BitMap *hx_p96_alloc_bitmap(ULONG w, ULONG h, ULONG depth, ULONG flags,
                                                     struct BitMap *friend, ULONG rgb)
@@ -2233,7 +2234,16 @@ HX_UNUSED static struct BitMap *hx_p96_alloc_bitmap(ULONG w, ULONG h, ULONG dept
     bm = hx_alloc(sizeof(*bm), 1);
     if (!bm)
         return NULL;
-    bm->Planes[0] = hx_gfx_mem(pitch * (uint32_t)h);
+    if (hx_p96_outside_arena) {
+        /* memory the platform cannot see: AARSharedToken refuses it */
+        static uint8_t outside[16384];
+
+        if (pitch * (uint32_t)h > sizeof(outside))
+            HX_FAIL("the fake outside bitmap is too small");
+        bm->Planes[0] = outside;
+    } else {
+        bm->Planes[0] = hx_gfx_mem(pitch * (uint32_t)h);
+    }
     if (flags & BMF_CLEAR)
         memset(bm->Planes[0], 0, pitch * (uint32_t)h);
     bm->Rows = (UWORD)h;
@@ -2606,6 +2616,7 @@ HX_UNUSED static void hx_reset(void)
     hx_pub_mode_id = 0x50002UL;
     memset(&hx_pub_screen, 0, sizeof(hx_pub_screen));
     hx_p96_fail_alloc_bitmap = 0;
+    hx_p96_outside_arena = 0;
     hx_p96_bitmaps_live = hx_bitmaps_live = hx_pointers_live = hx_locks_live = 0;
     hx_pwa_calls = hx_rectfills = hx_locks_taken = 0;
     hx_ptr_kind = 0;
