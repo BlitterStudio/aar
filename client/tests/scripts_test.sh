@@ -74,12 +74,19 @@ case " $* " in
     printf 'x.c:1:1:f\t16\tstatic\n' > "${out%.o}.su" ;;
 esac
 EOF
+# Generate a complete disassembly fixture from the library's vector list.
+FAKE_LAST_LVO=$(awk '
+    /^##bias[[:space:]]/ { lvo = $2 - 6 }
+    /^AAR[[:alnum:]_]*\(/ { lvo += 6 }
+    END { if (lvo < 30) exit 1; print lvo }
+' client/fd/aar_lib.fd) || exit 1
+export FAKE_LAST_LVO
 cat > "$OUT/fakeobjdump" <<'EOF'
 #!/bin/sh
 lvo=30
-while [ "$lvo" -le 174 ]; do
+while [ "$lvo" -le "$FAKE_LAST_LVO" ]; do
     # FAKE_FAIL=lvo: a header that lacks the last vector.
-    if [ "${FAKE_FAIL:-}" = lvo ] && [ "$lvo" -eq 174 ]; then
+    if [ "${FAKE_FAIL:-}" = lvo ] && [ "$lvo" -eq "$FAKE_LAST_LVO" ]; then
         break
     fi
     echo "   0:	4eae ffe2 	jsr a6@(-$lvo)"
@@ -149,7 +156,7 @@ export FAKE_FAIL
 FAKE_FAIL=none
 expect_pass "m68k_check.sh with working tools" m68k
 FAKE_FAIL=lvo
-expect_stop "m68k_check.sh: the 25th vector is not called" "missing call through LVO -174" m68k
+expect_stop "m68k_check.sh: the last vector is not called" "missing call through LVO -$FAKE_LAST_LVO" m68k
 FAKE_FAIL=nm
 expect_stop "m68k_check.sh: nm fails" "nm: cannot read" m68k
 FAKE_FAIL=nm-undefined
