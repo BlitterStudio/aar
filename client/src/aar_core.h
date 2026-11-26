@@ -190,11 +190,12 @@ struct AARHandle {
     uint32_t map_next;
 
     /* ---- limits and load ---- */
-    uint32_t private_mib, shared_mib, weight;
+    uint32_t private_mib, shared_mib, weight, profile_hz;
     struct aar_plat_load_opts opts;
     volatile uint8_t *load;
     uint32_t chunk_max, image_bytes;
     uint8_t load_state, started;
+    uint32_t prof_next;           /* the next profile sample AARReadProfile takes, modulo 2^32 */
 
     /* ---- messages from the app ---- */
     uint8_t inbox[AAR_CORE_INBOX][AAR_MSG_BYTES];
@@ -309,7 +310,7 @@ uint32_t aar_core_close_owner(aar_core *c);
  */
 struct aar_core_tags {
     uint32_t set;                 /* bit n: the tag with id AAR_TAG_BASE + n was given */
-    uint32_t private_mib, shared_mib, weight, lease_extended, audio_route, caps;
+    uint32_t private_mib, shared_mib, weight, lease_extended, audio_route, caps, profile_hz;
 };
 void aar_core_tags_init(struct aar_core_tags *t);
 int aar_core_tags_add(aar_core *c, struct aar_core_tags *t, uint32_t id, uint32_t data);
@@ -374,6 +375,27 @@ int aar_core_set_log_sink(aar_core *c, AARHandle *h, AARLogSink sink, APTR user)
 /* AARExt: the platform's table for `ext_id` when `platform_id` is the
  * platform's, else NULL. */
 const void *aar_core_ext(aar_core *c, ULONG platform_id, ULONG ext_id);
+
+/*
+ * AARReadStack: the stack snapshot of a fault or stall end (AAR_CB_STACK_*).
+ * Copies min(bytes, snapshot) bytes as they lie in app memory and sets *got to
+ * the count. bytes 0 sets *got to the size of the snapshot and copies nothing.
+ * AAR_E_NOENT when there is no snapshot, AAR_E_IO when its size is above
+ * AAR_CB_STACK_MAX, AAR_E_INVAL for a NULL `got`, or a NULL `buf` with bytes > 0.
+ */
+int aar_core_read_stack(aar_core *c, AARHandle *h, void *buf, ULONG bytes, ULONG *got);
+
+/*
+ * AARReadProfile: the pc samples the platform has written since the previous
+ * call (the first call starts at sample 0), at most `max_samples`, as 64-bit
+ * big-endian words copied from the ring as they are. *got is how many, *lost
+ * (may be NULL) how many were overwritten in the ring before this call took
+ * them. max_samples 0 sets *got to the number waiting and takes none.
+ * AAR_E_NOSYS when the platform granted no profile, AAR_E_IO for a ring that
+ * breaks the rules of AAR_CB_PROFILE_* or a head that went back.
+ */
+int aar_core_read_profile(aar_core *c, AARHandle *h, void *buf, ULONG max_samples,
+                          ULONG *got, ULONG *lost);
 
 /* ---- The ZZ9000 extension functions that belong to the core --------------------------------- */
 

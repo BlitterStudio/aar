@@ -466,7 +466,10 @@ static void test_tags(void)
     CHECK(aar_core_tags_add(&core, &t, AAR_TAG_AUDIO_ROUTE, 2) == AAR_E_INVAL);
     CHECK(aar_core_tags_add(&core, &t, AAR_TAG_CLIENT_CAPS, 8) == AAR_E_INVAL);
     CHECK(aar_core_tags_add(&core, &t, AAR_TAG_BASE + 0, 1) == AAR_E_INVAL);
-    CHECK(aar_core_tags_add(&core, &t, AAR_TAG_BASE + 7, 1) == AAR_E_INVAL);
+    CHECK(aar_core_tags_add(&core, &t, AAR_TAG_BASE + 8, 1) == AAR_E_INVAL);
+    CHECK(aar_core_tags_add(&core, &t, AAR_TAG_PROFILE_HZ, AAR_PROFILE_HZ_MAX) == AAR_OK);
+    CHECK(aar_core_tags_add(&core, &t, AAR_TAG_PROFILE_HZ, AAR_PROFILE_HZ_MAX + 1) == AAR_E_INVAL);
+    CHECK(t.profile_hz == AAR_PROFILE_HZ_MAX); /* the bad pair left the set as it was */
     CHECK(aar_core_tags_add(&core, &t, AAR_TAG_PLATFORM_BASE(1) + 1, 1) == AAR_E_INVAL);
     CHECK(aar_core_tags_add(&core, &t, TAG_USER + 5, 1) == AAR_E_INVAL);
     refplat.info.weight_max = 0;
@@ -479,6 +482,7 @@ static void test_tags(void)
     CHECK(aar_core_tags_add(&core, &t, AAR_TAG_LEASE_EXTENDED, 0) == AAR_OK);
     CHECK(aar_core_tags_add(&core, &t, AAR_TAG_AUDIO_ROUTE, AAR_AUDIO_ROUTE_AHI) == AAR_OK);
     CHECK(aar_core_tags_add(&core, &t, AAR_TAG_CLIENT_CAPS, AAR_CCAP_KNOWN) == AAR_OK);
+    CHECK(aar_core_tags_add(&core, &t, AAR_TAG_PROFILE_HZ, 250) == AAR_OK);
     CHECK(h->opts.lease_extended == 1); /* the default: the long lease */
     CHECK(aar_core_set_tags(&core, h, &t) == AAR_OK);
     CHECK(h->opts.lease_extended == 0 && h->opts.audio_route == AAR_AUDIO_ROUTE_AHI);
@@ -488,6 +492,7 @@ static void test_tags(void)
     CHECK(aar_core_load_begin(&core, h, 100, &staging, &chunk) == AAR_OK);
     CHECK(cb_word(h, AAR_CB_PRIVATE_MIB) == 64 && cb_word(h, AAR_CB_SHARED_MIB) == 32);
     CHECK(cb_word(h, AAR_CB_WEIGHT) == 4);
+    CHECK(cb_word(h, AAR_CB_PROFILE_HZ) == 250);
     CHECK(refplat.claims[slot].opts.client_caps == AAR_CCAP_KNOWN);
     CHECK(refplat.claims[slot].opts.lease_extended == 0);
     CHECK(refplat.claims[slot].opts.audio_route == AAR_AUDIO_ROUTE_AHI);
@@ -687,6 +692,11 @@ static void test_status(void)
     aar_put_be32(cb + AAR_CB_LOG_DROPPED, 8);
     aar_put_be32(cb + AAR_CB_EVENTS_DROPPED, 9);
     aar_put_be32(cb + AAR_CB_CQ_FULL, 10);
+    aar_put_be64(cb + AAR_CB_STACK_SP_HI, 0x0000000200003000ull);
+    aar_put_be32(cb + AAR_CB_STACK_BYTES, 128);
+    aar_put_be32(cb + AAR_CB_PROFILE_GRANTED_HZ, 200);
+    aar_put_be32(cb + AAR_CB_PROFILE_DROPPED, 11);
+    aar_put_be32(cb + AAR_CB_PROFILE_HEAD, 6);
     memset(&st, 0xEE, sizeof(st));
     st.size = sizeof(st);
     CHECK(aar_core_status(&core, h, &st) == AAR_OK);
@@ -702,6 +712,9 @@ static void test_status(void)
     CHECK(st.progress.hi == 1 && st.progress.lo == 1);
     CHECK(st.shared_used.lo == 4096 && st.private_committed.lo == 0x2000000u);
     CHECK(st.sq_full == 7 && st.log_dropped == 8 && st.events_dropped == 9 && st.cq_full == 10);
+    CHECK(st.stack_sp.hi == 2 && st.stack_sp.lo == 0x3000 && st.stack_bytes == 128);
+    CHECK(st.profile_hz == 200 && st.profile_dropped == 11);
+    CHECK(st.profile_samples == 6);
     CHECK(st.reason == AAR_REASON_NONE);
     /* size honouring: only that many bytes change, the rest of what is filled is zero. */
     memset(&g, 0xEE, sizeof(g));
@@ -2608,6 +2621,301 @@ static void test_work_list(void)
     finish();
 }
 
+/* ---- The stack snapshot and the profiler ------------------------------------------------------- */
+
+static uint64_t be64_at(const uint8_t *p)
+{
+    uint64_t v = 0;
+    int i;
+
+    for (i = 0; i < 8; i++)
+        v = (v << 8) | p[i];
+    return v;
+}
+
+static void test_stack(void)
+{
+    AARHandle *h;
+    AARStatusInfo st;
+    uint8_t data[AAR_CB_STACK_MAX], out[AAR_CB_STACK_MAX + 8];
+    ULONG got = 77;
+    unsigned i;
+    int slot;
+
+    setup("stack");
+    h = open1(1);
+    slot = slot_of(h);
+    for (i = 0; i < sizeof(data); i++)
+        data[i] = (uint8_t)(i * 3 + 1);
+    /* No snapshot: the block is zero until the platform writes one. */
+    CHECK(aar_core_read_stack(&core, h, out, sizeof(out), &got) == AAR_E_NOENT);
+    CHECK(got == 0);
+    memset(&st, 0xEE, sizeof(st));
+    st.size = sizeof(st);
+    CHECK(aar_core_status(&core, h, &st) == AAR_OK);
+    CHECK(st.stack_bytes == 0 && st.stack_sp.hi == 0 && st.stack_sp.lo == 0);
+    /* A snapshot of 64 bytes at an app address. */
+    refplat_app_set_stack(slot, 0x00000001BFFFF000ull, data, 64);
+    memset(out, 0xEE, sizeof(out));
+    CHECK(aar_core_read_stack(&core, h, out, sizeof(out), &got) == AAR_OK);
+    CHECK(got == 64 && memcmp(out, data, 64) == 0 && out[64] == 0xEE); /* as they lie, no swap */
+    memset(out, 0xEE, sizeof(out));
+    CHECK(aar_core_read_stack(&core, h, out, 10, &got) == AAR_OK); /* a smaller buffer: a prefix */
+    CHECK(got == 10 && memcmp(out, data, 10) == 0 && out[10] == 0xEE);
+    CHECK(aar_core_read_stack(&core, h, NULL, 0, &got) == AAR_OK && got == 64); /* the size */
+    CHECK(aar_core_read_stack(&core, h, NULL, 4, &got) == AAR_E_INVAL && got == 0);
+    CHECK(aar_core_read_stack(&core, h, out, 4, NULL) == AAR_E_INVAL);
+    memset(&st, 0xEE, sizeof(st));
+    st.size = sizeof(st);
+    CHECK(aar_core_status(&core, h, &st) == AAR_OK);
+    CHECK(st.stack_bytes == 64 && st.stack_sp.hi == 1 && st.stack_sp.lo == 0xBFFFF000u);
+    /* The largest snapshot. */
+    refplat_app_set_stack(slot, 0x1000, data, AAR_CB_STACK_MAX);
+    CHECK(aar_core_read_stack(&core, h, out, sizeof(out), &got) == AAR_OK);
+    CHECK(got == AAR_CB_STACK_MAX && memcmp(out, data, AAR_CB_STACK_MAX) == 0);
+    /* A size above the maximum is a corrupt block. */
+    aar_put_be32(refplat_cb(slot) + AAR_CB_STACK_BYTES, AAR_CB_STACK_MAX + 4);
+    CHECK(aar_core_read_stack(&core, h, out, sizeof(out), &got) == AAR_E_IO && got == 0);
+    /* Owner and stale rules. */
+    cur = 1;
+    CHECK(aar_core_read_stack(&core, h, out, 4, &got) == AAR_E_OWNER);
+    cur = 0;
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    CHECK(aar_core_read_stack(&core, h, out, 4, &got) == AAR_E_STALE);
+    finish();
+}
+
+/* The platform writes more samples while the client copies: from inside the
+ * cache maintenance call, which runs between the client's first read of the
+ * head and its copy. */
+static int hook_slot, hook_more;
+static uint64_t hook_pc;
+
+static void hook_push(void *user, const volatile void *ptr, uint32_t len)
+{
+    (void)user;
+    (void)ptr;
+    (void)len;
+    while (hook_more > 0) {
+        refplat_app_profile_push(hook_slot, hook_pc++);
+        hook_more--;
+    }
+}
+
+/* The platform has begun to store the next sample, into the slot of the oldest, and has
+ * not published the head. */
+static void hook_partial(void *user, const volatile void *ptr, uint32_t len)
+{
+    (void)user;
+    (void)ptr;
+    (void)len;
+    refplat_app_profile_partial(hook_slot, 0xDEADBEEFu);
+}
+
+static AARHandle *profile_open(uint32_t hz)
+{
+    struct aar_core_tags t;
+    AARHandle *h = open1(1);
+    volatile uint8_t *staging;
+    uint32_t chunk;
+
+    aar_core_tags_init(&t);
+    CHECK(aar_core_tags_add(&core, &t, AAR_TAG_PROFILE_HZ, hz) == AAR_OK);
+    CHECK(aar_core_set_tags(&core, h, &t) == AAR_OK);
+    CHECK(aar_core_load_begin(&core, h, 100, &staging, &chunk) == AAR_OK);
+    return h;
+}
+
+static void test_profile(void)
+{
+    AARHandle *h;
+    AARStatusInfo st;
+    uint8_t out[80 * 8];
+    ULONG got = 77, lost = 77;
+    uint64_t pc;
+    unsigned i;
+    int slot;
+
+    /* A platform without a profiler: the tag is accepted, nothing is granted. */
+    setup("profile_none");
+    h = profile_open(100);
+    slot = slot_of(h);
+    CHECK(cb_word(h, AAR_CB_PROFILE_HZ) == 100);
+    CHECK(cb_word(h, AAR_CB_PROFILE_GRANTED_HZ) == 0 && cb_word(h, AAR_CB_PROFILE_TOKEN) == 0);
+    CHECK(aar_core_read_profile(&core, h, out, 8, &got, &lost) == AAR_E_NOSYS);
+    CHECK(got == 0 && lost == 0);
+    memset(&st, 0xEE, sizeof(st));
+    st.size = sizeof(st);
+    CHECK(aar_core_status(&core, h, &st) == AAR_OK);
+    CHECK(st.profile_hz == 0 && st.profile_samples == 0);
+    (void)slot;
+    finish();
+
+    /* A profiler is there but none was asked for. */
+    setup("profile_off");
+    refplat.profile_max_hz = 1000;
+    h = profile_open(0);
+    CHECK(aar_core_read_profile(&core, h, out, 8, &got, &lost) == AAR_E_NOSYS);
+    finish();
+
+    /* A platform that grants a lower rate. */
+    setup("profile_granted");
+    refplat.profile_max_hz = 100;
+    h = profile_open(500);
+    CHECK(cb_word(h, AAR_CB_PROFILE_GRANTED_HZ) == 100);
+    memset(&st, 0xEE, sizeof(st));
+    st.size = sizeof(st);
+    CHECK(aar_core_status(&core, h, &st) == AAR_OK && st.profile_hz == 100);
+    finish();
+
+    /* Samples in order, taken in pieces, big-endian 64-bit words. */
+    setup("profile_read");
+    refplat.profile_max_hz = 1000;
+    h = profile_open(100);
+    slot = slot_of(h);
+    CHECK(aar_core_read_profile(&core, h, out, 8, &got, &lost) == AAR_OK && got == 0 && lost == 0);
+    for (i = 0; i < 10; i++)
+        refplat_app_profile_push(slot, 0x0000000100001000ull + i * 4u);
+    memset(&st, 0xEE, sizeof(st));
+    st.size = sizeof(st);
+    CHECK(aar_core_status(&core, h, &st) == AAR_OK);
+    CHECK(st.profile_hz == 100 && st.profile_samples == 10);
+    CHECK(aar_core_read_profile(&core, h, NULL, 0, &got, &lost) == AAR_OK && got == 10); /* the count */
+    CHECK(aar_core_read_profile(&core, h, out, 4, &got, &lost) == AAR_OK);
+    CHECK(got == 4 && lost == 0);
+    for (i = 0; i < 4; i++)
+        CHECK(be64_at(out + i * 8) == 0x0000000100001000ull + i * 4u);
+    CHECK(out[0] == 0 && out[3] == 1); /* the bytes of the ring, not converted */
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, NULL) == AAR_OK && got == 6);
+    for (i = 0; i < 6; i++)
+        CHECK(be64_at(out + i * 8) == 0x0000000100001000ull + (i + 4) * 4u);
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK && got == 0 && lost == 0);
+    CHECK(aar_core_read_profile(&core, h, NULL, 4, &got, &lost) == AAR_E_INVAL);
+    CHECK(aar_core_read_profile(&core, h, out, 4, NULL, &lost) == AAR_E_INVAL);
+    cur = 1;
+    CHECK(aar_core_read_profile(&core, h, out, 4, &got, &lost) == AAR_E_OWNER);
+    cur = 0;
+    finish();
+
+    /* The reader falls behind by more than the ring can give (63 of 64 samples are
+     * trusted): the oldest are lost and counted. */
+    setup("profile_lost");
+    refplat.profile_max_hz = 1000;
+    h = profile_open(100);
+    slot = slot_of(h);
+    for (pc = 0; pc < 210; pc++)
+        refplat_app_profile_push(slot, pc);
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK);
+    CHECK(got == 63 && lost == 147);
+    for (i = 0; i < 63; i++)
+        CHECK(be64_at(out + i * 8) == 147 + i);
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK && got == 0 && lost == 0);
+    /* A reader that is 63 behind loses nothing. */
+    for (pc = 210; pc < 273; pc++)
+        refplat_app_profile_push(slot, pc);
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK && got == 63 && lost == 0);
+    CHECK(be64_at(out) == 210);
+    /* A buffer smaller than what waits takes the oldest, the rest stays for the next call. */
+    for (pc = 273; pc < 300; pc++)
+        refplat_app_profile_push(slot, pc);
+    CHECK(aar_core_read_profile(&core, h, out, 10, &got, &lost) == AAR_OK && got == 10 && lost == 0);
+    CHECK(be64_at(out) == 273 && be64_at(out + 72) == 282);
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK && got == 17 && lost == 0);
+    CHECK(be64_at(out) == 283);
+    finish();
+
+    /* The platform overwrites the oldest samples while the client copies them. */
+    setup("profile_torn");
+    refplat.profile_max_hz = 1000;
+    refplat.map_mapf = 0; /* a cacheable map: the client calls cache_acquire before it copies */
+    h = profile_open(100);
+    slot = slot_of(h);
+    for (pc = 0; pc < 30; pc++)
+        refplat_app_profile_push(slot, pc);
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK && got == 30 && lost == 0);
+    for (pc = 30; pc < 80; pc++)
+        refplat_app_profile_push(slot, pc);
+    refplat.on_acquire = hook_push;
+    hook_slot = slot;
+    hook_more = 20;
+    hook_pc = 80;
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK);
+    refplat.on_acquire = NULL;
+    /* Head 100 at the end, the client started at 30: 70 samples, and only those from
+     * 100 - 63 = 37 on are trusted. */
+    CHECK(got == 43 && lost == 7);
+    for (i = 0; i < 43; i++)
+        CHECK(be64_at(out + i * 8) == 37 + i);
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK && got == 20 && lost == 0);
+    CHECK(be64_at(out) == 80);
+    finish();
+
+    /* A full ring behind: the platform has begun to store the next sample into the slot of
+     * the oldest and has not published the head. The half-written slot is not returned. */
+    setup("profile_partial");
+    refplat.profile_max_hz = 1000;
+    refplat.map_mapf = 0;
+    h = profile_open(100);
+    slot = slot_of(h);
+    for (pc = 0; pc < 64; pc++)
+        refplat_app_profile_push(slot, 0x1000 + pc);
+    refplat.on_acquire = hook_partial;
+    hook_slot = slot;
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK);
+    refplat.on_acquire = NULL;
+    CHECK(got == 63 && lost == 1);
+    for (i = 0; i < 63; i++)
+        CHECK(be64_at(out + i * 8) == 0x1000 + 1 + i);
+    finish();
+
+    /* The head is one 32-bit word: the count wraps at 2^32 and the reader follows. */
+    setup("profile_wrap");
+    refplat.profile_max_hz = 1000;
+    h = profile_open(100);
+    slot = slot_of(h);
+    aar_put_be32(refplat_cb(slot) + AAR_CB_PROFILE_HEAD, 0xFFFFFFF0u);
+    h->prof_next = 0xFFFFFFF0u;
+    for (pc = 0; pc < 32; pc++)
+        refplat_app_profile_push(slot, 0x5000 + pc);
+    CHECK(cb_word(h, AAR_CB_PROFILE_HEAD) == 0x10u);
+    memset(&st, 0xEE, sizeof(st));
+    st.size = sizeof(st);
+    CHECK(aar_core_status(&core, h, &st) == AAR_OK && st.profile_samples == 0x10u);
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK && got == 32 && lost == 0);
+    for (i = 0; i < 32; i++)
+        CHECK(be64_at(out + i * 8) == 0x5000 + i);
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK && got == 0 && lost == 0);
+    /* More than a ring across the wrap: the loss is counted across it too. */
+    for (pc = 0; pc < 100; pc++)
+        refplat_app_profile_push(slot, 0x6000 + pc);
+    CHECK(aar_core_read_profile(&core, h, out, 80, &got, &lost) == AAR_OK && got == 63 && lost == 37);
+    CHECK(be64_at(out) == 0x6000 + 37);
+    finish();
+
+    /* A ring that breaks the rules, and a head that goes back, are a corrupt block. */
+    setup("profile_corrupt");
+    refplat.profile_max_hz = 1000;
+    h = profile_open(100);
+    slot = slot_of(h);
+    refplat_app_profile_push(slot, 1);
+    CHECK(aar_core_read_profile(&core, h, out, 8, &got, &lost) == AAR_OK && got == 1);
+    aar_put_be32(refplat_cb(slot) + AAR_CB_PROFILE_BYTES, 100);
+    CHECK(aar_core_read_profile(&core, h, out, 8, &got, &lost) == AAR_E_IO && got == 0);
+    aar_put_be32(refplat_cb(slot) + AAR_CB_PROFILE_BYTES, 32);
+    CHECK(aar_core_read_profile(&core, h, out, 8, &got, &lost) == AAR_E_IO);
+    aar_put_be32(refplat_cb(slot) + AAR_CB_PROFILE_BYTES, 512);
+    CHECK(aar_core_read_profile(&core, h, out, 8, &got, &lost) == AAR_OK && got == 0);
+    aar_put_be32(refplat_cb(slot) + AAR_CB_PROFILE_HEAD, 0);
+    CHECK(aar_core_read_profile(&core, h, out, 8, &got, &lost) == AAR_E_IO);
+    aar_put_be32(refplat_cb(slot) + AAR_CB_PROFILE_HEAD, 1);
+    CHECK(aar_core_read_profile(&core, h, out, 8, &got, &lost) == AAR_OK && got == 0);
+    aar_put_be32(refplat_cb(slot) + AAR_CB_PROFILE_TOKEN, 0);
+    CHECK(aar_core_read_profile(&core, h, out, 8, &got, &lost) == AAR_E_NOSYS);
+    CHECK(aar_core_close(&core, h) == AAR_OK);
+    CHECK(aar_core_read_profile(&core, h, out, 8, &got, &lost) == AAR_E_STALE);
+    finish();
+}
+
 int main(void)
 {
     test_open_close_many();
@@ -2636,6 +2944,8 @@ int main(void)
     test_work_list();
     test_alloc_balance();
     test_open_failures();
+    test_stack();
+    test_profile();
     test_size_arithmetic();
     printf("core_test: %lu checks, %lu failures\n", checks, failures);
     return failures ? 1 : 0;

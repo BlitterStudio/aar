@@ -149,9 +149,11 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_CB_CQ_FULL        0x0C8u /* times the client found the CQ full */
 
 /* Fault record. Writer: platform. Valid once state is FAULTED or END_REASON is
- * AAR_END_USER_FAULT. Addresses are app virtual addresses; on A32 the high
- * word is 0. syndrome is the FSR (A32) or the low 32 bits of ESR_EL1 (A64);
- * pstate is the CPSR (A32) or the low 32 bits of PSTATE (A64). */
+ * AAR_END_USER_FAULT or AAR_END_STALL. Addresses are app virtual addresses; on
+ * A32 the high word is 0. syndrome is the FSR (A32) or the low 32 bits of
+ * ESR_EL1 (A64); pstate is the CPSR (A32) or the low 32 bits of PSTATE (A64).
+ * For AAR_END_STALL the record holds where the watchdog found the app: pc, sp
+ * and lr, with class AAR_FAULT_NONE and syndrome, pstate and addr 0. */
 #define AAR_CB_FAULT_CLASS    0x100u /* AAR_FAULT_* */
 #define AAR_CB_FAULT_SYNDROME 0x104u
 #define AAR_CB_FAULT_PSTATE   0x108u
@@ -172,6 +174,7 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_CB_PRIVATE_MIB    0x140u
 #define AAR_CB_SHARED_MIB     0x144u
 #define AAR_CB_WEIGHT         0x148u /* CPU share weight, default 1 */
+#define AAR_CB_PROFILE_HZ     0x14Cu /* sampling rate asked for, Hz; 0 (the default) is off */
 
 /* Accounting. Writer: platform. */
 #define AAR_CB_SHARED_USED_HI 0x180u
@@ -215,6 +218,60 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_QD_OFFSET      0x04u /* byte offset of the first entry in that buffer */
 #define AAR_QD_DEPTH       0x08u /* entries, a power of two */
 #define AAR_QD_ENTRY_BYTES 0x0Cu /* AAR_ENTRY_BYTES */
+
+/*
+ * Stack snapshot. Writer: platform, with the fault record, before the state and
+ * the end reason change. Its own 64-byte line, after the queue lines. A fault
+ * (AAR_END_USER_FAULT) or a stall (AAR_END_STALL) copies up to AAR_CB_STACK_MAX
+ * bytes of the app's stack, from the app's sp upward, into AAR_CB_STACK_DATA:
+ * the bytes as they lie in app memory (little-endian app words, never swapped,
+ * like message bytes). SP is the app virtual address of the first byte; on A32
+ * the high word is 0. Bytes the app cannot read are not copied, so BYTES may be
+ * less than the maximum. BYTES is written last and 0 means there is no
+ * snapshot (the block is zero-filled at admission): a reader reads BYTES first
+ * and then the bytes it names.
+ */
+#define AAR_CB_STACK_SP_HI    0x340u
+#define AAR_CB_STACK_SP_LO    0x344u
+#define AAR_CB_STACK_BYTES    0x348u
+#define AAR_CB_STACK_DATA     0x400u
+#define AAR_CB_STACK_MAX      512u
+
+/*
+ * Profiler. A platform that has one reads AAR_CB_PROFILE_HZ at load begin and
+ * samples the app's pc at that rate, or lower; one that has none leaves
+ * GRANTED_HZ 0. The platform allocates a shared buffer for the sample ring and
+ * names it in the profile line (writer: platform, once, at load begin, before
+ * the app runs): TOKEN is the buffer's shared-buffer token, BYTES its size, a
+ * power of two of at least 64, and the ring starts at byte 0 of the buffer.
+ * GRANTED_HZ is written last: a reader that reads it non-zero may use TOKEN and
+ * BYTES. DROPPED counts the ticks at which the platform could not record a
+ * sample.
+ *
+ * The ring holds BYTES / 8 samples, each a big-endian 64-bit app virtual pc
+ * (high word first, like a control block value). Sample number n (counted from
+ * 0 at the start of the run) is at byte (n & (BYTES / 8 - 1)) * 8. HEAD, on
+ * its own line (writer: platform), is one 32-bit word: the number of samples
+ * written, modulo 2^32. The platform stores the sample and then HEAD, with a
+ * release barrier between them, and HEAD is a single aligned store, so a reader
+ * never sees half of it. The reader keeps its own 32-bit count of what it has
+ * taken, never writes the ring, and works in modular arithmetic: behind =
+ * HEAD - taken. A value above 2^31 is a corrupt counter.
+ *
+ * Before it stores sample n the platform may already be writing slot
+ * n & (BYTES / 8 - 1), which holds sample n - BYTES / 8, and HEAD is still n.
+ * A reader therefore trusts only the BYTES / 8 - 1 newest samples: the ones with
+ * index >= HEAD - (BYTES / 8 - 1), where HEAD is read after the copy. Older
+ * samples that the reader had not taken, or took while HEAD moved past them,
+ * are lost, and the reader counts them itself.
+ */
+#define AAR_CB_PROFILE_GRANTED_HZ 0x380u
+#define AAR_CB_PROFILE_TOKEN      0x384u
+#define AAR_CB_PROFILE_BYTES      0x388u
+#define AAR_CB_PROFILE_DROPPED    0x38Cu
+#define AAR_CB_PROFILE_HEAD       0x3C0u
+#define AAR_PROFILE_SAMPLE_BYTES  8u
+#define AAR_PROFILE_RING_MIN_BYTES 64u
 
 /* ---- Queue entries (spec 10.4) ------------------------------------------------------------------- */
 
@@ -993,6 +1050,15 @@ AAR_STATIC_ASSERT(AAR_PAIR_SQ_OFFSET == AAR_CB_BYTES &&
                   "default pair layout");
 AAR_STATIC_ASSERT(AAR_AUDIO_RING_HDR_BYTES >= AAR_AUDIO_RING_UNDERRUNS + 4u,
                   "audio ring header");
+AAR_STATIC_ASSERT(AAR_CB_CQ_HEAD + AAR_CB_LINE_BYTES <= AAR_CB_STACK_SP_HI &&
+                  (AAR_CB_STACK_SP_HI % AAR_CB_LINE_BYTES) == 0u &&
+                  (AAR_CB_PROFILE_GRANTED_HZ % AAR_CB_LINE_BYTES) == 0u &&
+                  (AAR_CB_PROFILE_HEAD % AAR_CB_LINE_BYTES) == 0u &&
+                  AAR_CB_STACK_BYTES + 4u <= AAR_CB_PROFILE_GRANTED_HZ &&
+                  AAR_CB_PROFILE_DROPPED + 4u <= AAR_CB_PROFILE_HEAD &&
+                  AAR_CB_PROFILE_HEAD + 4u <= AAR_CB_STACK_DATA &&
+                  AAR_CB_STACK_DATA + AAR_CB_STACK_MAX <= AAR_CB_BYTES,
+                  "stack snapshot and profiler lines");
 
 #ifdef __cplusplus
 }

@@ -151,6 +151,11 @@ typedef struct AARStatusInfo {
     ULONG  log_dropped;       /* 124 log records dropped */
     ULONG  events_dropped;    /* 128 events the client dropped (CQ full) */
     ULONG  cq_full;           /* 132 times the client found the CQ full */
+    AARU64 stack_sp;          /* 136 app address of the first byte of the stack snapshot */
+    ULONG  stack_bytes;       /* 144 bytes of the snapshot, 0: none (AARReadStack) */
+    ULONG  profile_hz;        /* 148 sampling rate the platform granted, 0: none */
+    ULONG  profile_samples;   /* 152 samples the platform has written, modulo 2^32 (the ring's head) */
+    ULONG  profile_dropped;   /* 156 ticks at which the platform could not record a sample */
 } AARStatusInfo;
 
 /* Types of AAREvent.type. */
@@ -160,7 +165,7 @@ typedef struct AARStatusInfo {
 #define AAR_NOTIFY_REQUEST  4u /* a service request is queued */
 
 /*
- * What the library posts to the notify port given to AAROpen (164 bytes). The
+ * What the library posts to the notify port given to AAROpen (188 bytes). The
  * message is never replied: ReplyMsg is not needed and mn_ReplyPort is NULL.
  * `handle` names the app, so one port can serve several handles. Take the
  * event with GetMsg; the library posts the next only after that. Events
@@ -265,6 +270,11 @@ typedef void (*AARLogSink)(APTR user, const void *data, ULONG len);
 #define AAR_TAG_LEASE_EXTENDED (AAR_TAG_BASE + 4UL) /* BOOL, default TRUE: the long lease */
 #define AAR_TAG_AUDIO_ROUTE    (AAR_TAG_BASE + 5UL) /* ULONG AAR_AUDIO_ROUTE_*: AHI says the client serves audio */
 #define AAR_TAG_CLIENT_CAPS    (AAR_TAG_BASE + 6UL) /* ULONG mask of AAR_CCAP_* */
+#define AAR_TAG_PROFILE_HZ     (AAR_TAG_BASE + 7UL) /* ULONG samples per second of the app's pc, 0: off, above AAR_PROFILE_HZ_MAX is AAR_E_INVAL */
+
+/* The largest AAR_TAG_PROFILE_HZ the library accepts. A platform may grant
+ * less (AARStatusInfo.profile_hz), or 0 when it has no profiler. */
+#define AAR_PROFILE_HZ_MAX 10000UL
 
 /* What the client can serve, for AAR_TAG_CLIENT_CAPS. A platform that cannot
  * use a bit ignores it. They are the display capabilities that the serving
@@ -284,9 +294,12 @@ typedef void (*AARLogSink)(APTR user, const void *data, ULONG len);
 AAR_STATIC_ASSERT(sizeof(AARInfo) == 128, "AARInfo size");
 AAR_STATIC_ASSERT(offsetof(AARInfo, platform) == 80, "AARInfo.platform");
 AAR_STATIC_ASSERT(sizeof(AARImageInfo) == 48, "AARImageInfo size");
-AAR_STATIC_ASSERT(sizeof(AARStatusInfo) == 136, "AARStatusInfo size");
+AAR_STATIC_ASSERT(sizeof(AARStatusInfo) == 160, "AARStatusInfo size");
 AAR_STATIC_ASSERT(offsetof(AARStatusInfo, progress) == 96, "AARStatusInfo.progress");
-AAR_STATIC_ASSERT(sizeof(AAREvent) == 164, "AAREvent size");
+AAR_STATIC_ASSERT(offsetof(AARStatusInfo, stack_sp) == 136, "AARStatusInfo.stack_sp");
+AAR_STATIC_ASSERT(offsetof(AARStatusInfo, profile_samples) == 152, "AARStatusInfo.profile_samples");
+AAR_STATIC_ASSERT(offsetof(AARStatusInfo, profile_dropped) == 156, "AARStatusInfo.profile_dropped");
+AAR_STATIC_ASSERT(sizeof(AAREvent) == 188, "AAREvent size");
 AAR_STATIC_ASSERT(offsetof(AAREvent, status) == 28, "AAREvent.status");
 AAR_STATIC_ASSERT(sizeof(AARMessage) == 32, "AARMessage size");
 AAR_STATIC_ASSERT(sizeof(struct AARSharedMap) == 32, "AARSharedMap size");

@@ -456,7 +456,10 @@ static void test_transport_layout(void)
         AAR_CB_LOAD_BASE_LO, AAR_CB_PRIVATE_MIB, AAR_CB_SHARED_MIB,
         AAR_CB_WEIGHT, AAR_CB_SHARED_USED_HI, AAR_CB_SHARED_USED_LO,
         AAR_CB_PRIVATE_COMMITTED_HI, AAR_CB_PRIVATE_COMMITTED_LO,
-        AAR_CB_SQ_FULL, AAR_CB_LOG_DROPPED,
+        AAR_CB_SQ_FULL, AAR_CB_LOG_DROPPED, AAR_CB_PROFILE_HZ,
+        AAR_CB_STACK_SP_HI, AAR_CB_STACK_SP_LO, AAR_CB_STACK_BYTES,
+        AAR_CB_PROFILE_GRANTED_HZ, AAR_CB_PROFILE_TOKEN, AAR_CB_PROFILE_BYTES,
+        AAR_CB_PROFILE_DROPPED, AAR_CB_PROFILE_HEAD,
         AAR_CB_SQ_DESC + AAR_QD_TOKEN, AAR_CB_SQ_DESC + AAR_QD_OFFSET,
         AAR_CB_SQ_DESC + AAR_QD_DEPTH, AAR_CB_SQ_DESC + AAR_QD_ENTRY_BYTES,
         AAR_CB_SQ_TAIL, AAR_CB_SQ_HEAD,
@@ -479,6 +482,7 @@ static void test_transport_layout(void)
     CHECK_EQ(AAR_CB_FAULT_LR_LO, AAR_CB_FAULT_LR_HI + 4);
     CHECK_EQ(AAR_CB_FAULT_ADDR_LO, AAR_CB_FAULT_ADDR_HI + 4);
     CHECK_EQ(AAR_CB_LOAD_BASE_LO, AAR_CB_LOAD_BASE_HI + 4);
+    CHECK_EQ(AAR_CB_STACK_SP_LO, AAR_CB_STACK_SP_HI + 4);
     CHECK_EQ(AAR_CB_SHARED_USED_LO, AAR_CB_SHARED_USED_HI + 4);
     CHECK_EQ(AAR_CB_PRIVATE_COMMITTED_LO, AAR_CB_PRIVATE_COMMITTED_HI + 4);
 
@@ -490,6 +494,21 @@ static void test_transport_layout(void)
     CHECK_EQ(AAR_CB_LEASE_COUNTER, 0x0C0);
     CHECK_EQ(AAR_CB_MSG_CONSUMED, 0x05C);
     CHECK_EQ(AAR_CB_LAYOUT_VERSION, 1);
+    CHECK_EQ(AAR_CB_PROFILE_HZ, 0x14C);
+    CHECK_EQ(AAR_CB_STACK_SP_HI, 0x340);
+    CHECK_EQ(AAR_CB_STACK_BYTES, 0x348);
+    CHECK_EQ(AAR_CB_STACK_DATA, 0x400);
+    CHECK_EQ(AAR_CB_STACK_MAX, 512);
+    CHECK_EQ(AAR_CB_PROFILE_GRANTED_HZ, 0x380);
+    CHECK_EQ(AAR_CB_PROFILE_HEAD, 0x3C0);
+    CHECK(AAR_CB_STACK_DATA + AAR_CB_STACK_MAX <= AAR_CB_BYTES);
+    CHECK(AAR_CB_STACK_SP_HI >= AAR_CB_CQ_HEAD + AAR_CB_LINE_BYTES); /* after the queue lines */
+    /* The platform's stack, profile and head lines each have one writer: none
+     * holds a client word, and the stack and profile words are in three lines
+     * of their own. */
+    CHECK(AAR_CB_STACK_SP_HI / AAR_CB_LINE_BYTES != AAR_CB_PROFILE_GRANTED_HZ / AAR_CB_LINE_BYTES);
+    CHECK(AAR_CB_PROFILE_GRANTED_HZ / AAR_CB_LINE_BYTES != AAR_CB_PROFILE_HEAD / AAR_CB_LINE_BYTES);
+    CHECK(AAR_CB_PROFILE_HZ / AAR_CB_LINE_BYTES == AAR_CB_WEIGHT / AAR_CB_LINE_BYTES); /* the limits line */
 
     /* The message credit word has one writer, the platform: it sits in the
      * lifecycle line, and no word with another writer shares that line. The
@@ -499,7 +518,7 @@ static void test_transport_layout(void)
         static const unsigned client_words[] = {
             AAR_CB_STOP_REQUEST, AAR_CB_CLIENT_PRESENT, AAR_CB_LEASE_COUNTER,
             AAR_CB_EVENTS_DROPPED, AAR_CB_CQ_FULL, AAR_CB_PRIVATE_MIB,
-            AAR_CB_SHARED_MIB, AAR_CB_WEIGHT, AAR_CB_SQ_HEAD, AAR_CB_CQ_TAIL,
+            AAR_CB_SHARED_MIB, AAR_CB_WEIGHT, AAR_CB_PROFILE_HZ, AAR_CB_SQ_HEAD, AAR_CB_CQ_TAIL,
         };
 
         CHECK_EQ(AAR_CB_MSG_CONSUMED / AAR_CB_LINE_BYTES,

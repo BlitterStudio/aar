@@ -378,6 +378,37 @@ static __inline LONG __AARSetLogSinkInline(AARHandle *handle, AARLogSink sink, A
 }
 #define AARSetLogSink(handle, sink, user) __AARSetLogSinkInline((handle), (sink), (user))
 
+static __inline LONG __AARReadStackInline(AARHandle *handle, void *buf, ULONG bytes, ULONG *got)
+{
+  register ULONG aar_d0 __asm("d0") = bytes;
+  register struct Library *aar_a6 __asm("a6") = AARBase;
+  register AARHandle *aar_a0 __asm("a0") = handle;
+  register void *aar_a1 __asm("a1") = buf;
+  register ULONG *aar_a2 __asm("a2") = got;
+  __asm volatile("jsr -180(a6)"
+                 : "+r"(aar_d0), "+r"(aar_a0), "+r"(aar_a1)
+                 : "r"(aar_a6), "r"(aar_a2)
+                 : "cc", "memory", "d1");
+  return (LONG)aar_d0;
+}
+#define AARReadStack(handle, buf, bytes, got) __AARReadStackInline((handle), (buf), (bytes), (got))
+
+static __inline LONG __AARReadProfileInline(AARHandle *handle, void *buf, ULONG max_samples, ULONG *got, ULONG *lost)
+{
+  register ULONG aar_d0 __asm("d0") = max_samples;
+  register struct Library *aar_a6 __asm("a6") = AARBase;
+  register AARHandle *aar_a0 __asm("a0") = handle;
+  register void *aar_a1 __asm("a1") = buf;
+  register ULONG *aar_a2 __asm("a2") = got;
+  register ULONG *aar_a3 __asm("a3") = lost;
+  __asm volatile("jsr -186(a6)"
+                 : "+r"(aar_d0), "+r"(aar_a0), "+r"(aar_a1)
+                 : "r"(aar_a6), "r"(aar_a2), "r"(aar_a3)
+                 : "cc", "memory", "d1");
+  return (LONG)aar_d0;
+}
+#define AARReadProfile(handle, buf, max_samples, got, lost) __AARReadProfileInline((handle), (buf), (max_samples), (got), (lost))
+
 #ifdef __cplusplus
 }
 #endif

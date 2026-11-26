@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Name the code in a crash report of aar-run (CRASHLOG=<path>).
+
+  aar-symbolize crash.txt [app.elf] [--elf app.elf] [--cross PREFIX] [--no-addr2line]
+
+Prints the end reason and the registers, the pc and lr with the function they
+are in, and a backtrace. The ELF file is the one the report names (its `elf:`
+line) unless one is given.
+
+The names come from `<cross>addr2line -e app.elf -f -C` when that program is
+found (PREFIX is `arm-none-eabi-` for an A32 app and `aarch64-none-elf-` for an
+A64 app unless --cross or the environment variable AAR_CROSS says otherwise),
+which also gives the source line when the image has debug information. Without
+it the symbol table of the ELF file is read in Python and names the function.
+
+The backtrace is a guess. The app's stack is not unwound: the tool lists, in
+stack order, every word of the stack snapshot that points into an executable
+segment of the ELF file once the load base is subtracted. Such a word is often a
+saved return address, but it can be a stale one or a code pointer that is data.
+Frames of code without frame pointers or unwind tables cannot be told apart, so
+read the list from the top and trust the first entries most.
+
+Exit status: 0 the report was read, 1 the report or the ELF file could not be
+read, 2 usage error.
+"""
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from aar_elf import Elf, ElfError  # noqa: E402
+
+MAGIC = "aar-crash 1"
+DEFAULT_CROSS = {"a32": "arm-none-eabi-", "a64": "aarch64-none-elf-"}
+
+
+class CrashLogError(Exception):
+    pass
+
+
+class CrashLog:
+    def __init__(self):
+        self.fields = {}
+        self.stack = b""
+        self.stack_addr = 0
+
+    def number(self, key):
+        """The first word of a field as an integer (0x... or decimal)."""
+        try:
+            return int(self.fields[key].split()[0], 0)
+        except (KeyError, ValueError, IndexError):
+            raise CrashLogError("the report has no usable %s line" % key)
+
+    def text(self, key):
+        """What follows the number of a field, such as the name of the end reason."""
+        parts = self.fields.get(key, "").split(None, 1)
+        return parts[1] if len(parts) > 1 else ""
+
+    @property
+    def a64(self):
+        return self.fields.get("profile", "").split()[:1] == ["2"]
+
+
+def parse_crash_log(text):
+    log = CrashLog()
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != MAGIC:
+        raise CrashLogError("not a crash report of aar-run (the first line is not '%s')" % MAGIC)
+    in_stack = False
+    data = bytearray()
+    for line in lines[1:]:
+        if in_stack:
+            match = re.fullmatch(r"0x([0-9a-fA-F]+):((?: [0-9a-fA-F]+)*)", line.strip())
+            if not match:
+                raise CrashLogError("bad stack line: %r" % line)
+            if not data:
+                log.stack_addr = int(match.group(1), 16)
+            for word in match.group(2).split():
+                if len(word) % 2:
+                    raise CrashLogError("bad stack word %r" % word)
+                data += int(word, 16).to_bytes(len(word) // 2, "little")
+            continue
+        if line.strip() == "stack:":
+            in_stack = True
+            continue
+        key, sep, value = line.partition(":")
+        if not sep:
+            raise CrashLogError("bad line: %r" % line)
+        log.fields[key.strip()] = value.strip()
+    log.stack = bytes(data)
+    if "stack_sp" in log.fields and not data:
+        log.stack_addr = log.number("stack_sp")
+    return log
+
+
+def stack_words(log):
+    """(app address, value) of every whole word of the snapshot: 4 bytes for an
+    A32 app, 8 for an A64 app."""
+    size = 8 if log.a64 else 4
+    out = []
+    for at in range(0, len(log.stack) - size + 1, size):
+        out.append((log.stack_addr + at, int.from_bytes(log.stack[at:at + size], "little")))
+    return out
+
+
+def find_addr2line(cross, a64):
+    prefix = cross or os.environ.get("AAR_CROSS") or DEFAULT_CROSS["a64" if a64 else "a32"]
+    return shutil.which(prefix + "addr2line")
+
+
+def addr2line(tool, elf_path, addrs):
+    """[(function, 'file:line')] for the image-relative addresses, or None when
+    the program fails."""
+    if not addrs:
+        return []
+    try:
+        run = subprocess.run([tool, "-e", elf_path, "-f", "-C"] + ["0x%x" % a for a in addrs],
+                             capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    lines = run.stdout.splitlines()
+    if run.returncode != 0 or len(lines) != 2 * len(addrs):
+        return None
+    return [(lines[2 * i].strip(), lines[2 * i + 1].strip()) for i in range(len(addrs))]
+
+
+class Namer:
+    """Names image-relative addresses: addr2line first, the symbol table as the
+    fallback for an address it cannot name."""
+
+    def __init__(self, elf, tool):
+        self.elf = elf
+        self.tool = tool
+
+    def names(self, addrs):
+        found = addr2line(self.tool, self.elf.path, addrs) if self.tool else None
+        out = []
+        for i, addr in enumerate(addrs):
+            func, where = found[i] if found else ("??", "??:0")
+            if func != "??":
+                # addr2line names the function, not the offset into it.
+                sym = self.elf.lookup(addr)
+                off = "+0x%x" % sym[1] if sym and sym[0] == func else ""
+                text = func + off
+                if not where.startswith("??"):
+                    text += " (%s)" % where
+                out.append(text)
+                continue
+            sym = self.elf.lookup(addr)
+            if sym:
+                out.append("%s+0x%x" % sym)
+            elif self.elf.in_image(addr):
+                out.append("(no symbol)")
+            else:
+                out.append("(outside the image)")
+        return out
+
+
+def hexw(value, a64):
+    return "0x%016x" % value if a64 else "0x%08x" % value
+
+
+def report(log, elf, tool, out):
+    base = log.number("load_base")
+    a64 = log.a64
+    namer = Namer(elf, tool)
+    pc, lr, sp = log.number("pc"), log.number("lr"), log.number("sp")
+    out.write("end reason   %s\n" % (log.fields.get("end_reason", "?")))
+    out.write("fault class  %s\n" % (log.fields.get("fault_class", "?")))
+    out.write("load base    %s\n" % hexw(base, a64))
+    regs = [("pc", pc), ("lr", lr)]
+    names = namer.names([max(v - base, 0) for _, v in regs])
+    for (label, value), name in zip(regs, names):
+        out.write("%-12s%s  %s\n" % (label, hexw(value, a64), name if value >= base else "(below the load base)"))
+    out.write("sp           %s\n" % hexw(sp, a64))
+    if log.number("fault_addr"):
+        out.write("fault addr   %s\n" % hexw(log.number("fault_addr"), a64))
+    words = stack_words(log)
+    hits = []
+    for addr, value in words:
+        code = value & ~1 if not a64 else value  # an A32 return address may carry the Thumb bit
+        rel = code - base
+        if code >= base and elf.in_code(rel):
+            hits.append((addr, value, rel))
+    out.write("\nBacktrace (a guess: the words of the stack snapshot that point into code,\n"
+              "in stack order; %d of %d words)\n" % (len(hits), len(words)))
+    if not log.stack:
+        out.write("  there is no stack snapshot in the report\n")
+        return
+    if not hits:
+        out.write("  no word of the snapshot points into the code of %s\n" % elf.path)
+        return
+    for index, (addr, value, name) in enumerate(zip([h[0] for h in hits], [h[1] for h in hits],
+                                                    namer.names([h[2] for h in hits]))):
+        out.write("  #%-2d [sp+0x%03x] %s  %s\n" % (index, addr - log.stack_addr, hexw(value, a64), name))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="aar-symbolize", description="Name the code in an aar-run crash report.")
+    parser.add_argument("crashlog")
+    parser.add_argument("elf_positional", nargs="?", metavar="app.elf")
+    parser.add_argument("--elf", help="the ELF file (default: the elf: line of the report)")
+    parser.add_argument("--cross", help="toolchain prefix of addr2line, for example arm-none-eabi-")
+    parser.add_argument("--no-addr2line", action="store_true", help="use the symbol table only")
+    args = parser.parse_args(argv)
+    try:
+        with open(args.crashlog, encoding="utf-8", errors="replace") as f:
+            log = parse_crash_log(f.read())
+        elf_path = args.elf or args.elf_positional or log.fields.get("elf", "")
+        if not elf_path:
+            raise CrashLogError("the report names no ELF file; give one")
+        elf = Elf(elf_path)
+        log.number("load_base")
+    except (OSError, CrashLogError, ElfError) as exc:
+        sys.stderr.write("aar-symbolize: %s\n" % exc)
+        return 1
+    tool = None if args.no_addr2line else find_addr2line(args.cross, log.a64)
+    try:
+        report(log, elf, tool, sys.stdout)
+    except CrashLogError as exc:
+        sys.stderr.write("aar-symbolize: %s\n" % exc)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

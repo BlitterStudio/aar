@@ -41,11 +41,12 @@ pins the commit of this repository it builds against in `sdk/AAR_REF`.
 | `build_pic_newlib.sh` | Builds the position-independent newlib that apps link against (`AAR_PROFILE=a32` or `a64`) |
 | `docker/Dockerfile` | SDK image: Arm GNU Toolchain 15.3.rel2 for both profiles, PIC newlib for both, make, CMake, Python |
 | `tools/aar-check` | Checks a finished ELF against the load contract |
+| `tools/aar-symbolize`, `tools/aar-profile` | Name the code in an `aar-run` crash report, and print a flat profile from its sample file; see the developer guide, Debugging |
 | `templates/` | Example apps; `templates/README.md` describes each one |
 | `host-runner/` | An SDL2 runner for apps on a PC; see `host-runner/README.md` |
 | `spec/` | `aar.md`, the specification of the standard |
 | `conformance/` | The conformance suite: the test catalogue (`TESTS.md`), the payload apps, the `aar-conf` runner for the Amiga, and the scripts that check them; see `conformance/README.md` |
-| `tests/` | Tests for the checker, the headers and the transport model, the link map check, FP code generation and mode switching. The client library's tests are in `client/tests/` |
+| `tests/` | Tests for the checker, the debug tools, the headers and the transport model, the link map check, FP code generation and mode switching. The client library's tests are in `client/tests/` |
 | `docs/` | The API reference, the developer guide, the porting guide, the transport contract, and the script that checks the reference covers every public symbol |
 | `Makefile` | Builds every template and runs the checks (`make check`) |
 

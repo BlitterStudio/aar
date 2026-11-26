@@ -100,6 +100,9 @@ calls, console reads, a flip wait and `aar_msg_wait` are already inside an API
 call, and `aar_should_stop` and `aar_time_us` count too. A loop that only polls
 them is not a stall. A loop that only touches app memory is.
 
+A watchdog end (`AAR_END_STALL`) reports where the app was: the client reads `pc`,
+`sp` and `lr` and a stack snapshot, as for a fault (see [Debugging](#debugging)).
+
 **ZZ9000 note.** Its watchdog and scheduler choices are platform behaviour,
 not app guarantees; see [spec section 5.4](../spec/aar.md#54-watchdog).
 
@@ -598,9 +601,12 @@ target platform.
 ## Debugging
 
 On a fault the client can read the fault class, the raw syndrome, the processor
-state, `pc`, `sp`, `lr`, the fault address, the exit code and the load base.
-aar-run prints them; its [manual](../client/run/README.md#exit-codes) defines
-the launcher exit codes.
+state, `pc`, `sp`, `lr`, the fault address, the exit code and the load base. On a
+watchdog stall (`AAR_END_STALL`) it reads `pc`, `sp` and `lr` as the watchdog
+found them, with class `AAR_FAULT_NONE`. In both cases the platform also copies up
+to 512 bytes of the app's stack, from `sp` upward, which the client reads with
+`AARReadStack`. aar-run prints the registers; its
+[manual](../client/run/README.md#exit-codes) defines the launcher exit codes.
 
 Resolve `pc` and `lr` against the app ELF, not the firmware ELF. They are
 virtual addresses in the app's window. Subtract the load base that the status
@@ -610,6 +616,50 @@ reports if `addr2line` expects the ELF's unrelocated address:
 arm-none-eabi-addr2line -e app.elf -f -C <pc minus load base>
 aarch64-none-elf-addr2line -e app.elf -f -C <pc minus load base>
 ```
+
+### Crash log and symbolizer
+
+`aar-run app.elf CRASHLOG=RAM:crash.txt` writes the end reason, the registers, the
+load base, the ELF path and the stack words to a text file when the app faults or
+stalls. The format is in the [aar-run manual](../client/run/README.md#crashlog).
+Build the app with `-g` and keep the ELF that you ran, then:
+
+```text
+python3 tools/aar-symbolize crash.txt
+```
+
+`aar-symbolize` subtracts the load base, names `pc` and `lr` with
+`<cross>addr2line -e app.elf -f -C` when the cross toolchain is on the path (source
+file and line need `-g`), and with the ELF symbol table otherwise. `--elf` names the
+ELF when the report's path is not valid on the PC, `--cross` the toolchain prefix and
+`--no-addr2line` forces the symbol table.
+
+Its backtrace is a guess. The platform does not unwind the stack: the tool lists, in
+stack order, every word of the snapshot that falls inside an executable segment of
+the ELF after the load base is subtracted. Many of them are saved return addresses,
+and some are stale ones left by earlier calls or code pointers stored as data. Read
+it from the top, and trust it least where the code has no frame pointers.
+
+### Profiler
+
+To see where a program spends its time, ask the platform to sample the pc:
+
+```text
+aar-run app.elf PROFILE=100 PROFILEFILE=RAM:samples.bin
+python3 tools/aar-profile RAM:samples.bin
+```
+
+`PROFILE` is the rate in samples per second, which the platform may lower, or ignore
+when it has no profiler (aar-run says so). The tool prints one line per function with
+its samples and share, most sampled first, plus the rate, the load base and how many
+samples the ring lost before aar-run took them. A sample is a point in time: a
+function with a third of the samples held the pc about a third of the run. A client
+of its own does the same with `AAR_TAG_PROFILE_HZ` and `AARReadProfile`
+([client API](aar-client-api.md#aarreadprofile)).
+
+A live debugger (a GDB stub with breakpoints and single step) is not part of this
+change. The crash log and the profiler need nothing from the platform beyond the
+words of the [control block](transport.md).
 
 `aar_log` lines arrive at the client; platform sinks may have separate rate
 limits (see [C-CON.10](../conformance/TESTS.md#c-con-console-and-log-section-72-104)).

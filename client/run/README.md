@@ -271,14 +271,20 @@ document is too long.`
 | `MAXMEM=<MiB>` | Positive decimal MiB cap on the app's private memory (`AAR_TAG_PRIVATE_MIB`). |
 | `HOSTMEM=<MiB>` | Positive decimal MiB shared memory limit (`AAR_TAG_SHARED_MIB`), up to the platform's `shared_max_mib` and 4095. |
 | `WEIGHT=<n>` | Decimal CPU share weight from 1 to the platform's `weight_max` (`AAR_TAG_WEIGHT`). |
+| `CRASHLOG=<path>` | File that receives the crash report of a fault or a stall. See [Debugging and profiling](#debugging-and-profiling). |
+| `PROFILE=<hz>` | Samples per second of the app's program counter, 1 to `AAR_PROFILE_HZ_MAX` (`AAR_TAG_PROFILE_HZ`). Needs `PROFILEFILE`. |
+| `PROFILEFILE=<path>` | File that receives the samples. Needs `PROFILE`. |
 
 A value in the project icon replaces the one in aar-run's icon. That holds for
 a flag too: `ABS=NO` in the project icon turns off an `ABS` of aar-run's icon.
 The `ARGS` of the project replace the `ARGS` of aar-run's icon and are not
 added to them. A value that cannot be used prints `bad <key> ToolType` and the
 usage and returns 10: an `APP` or `ROOT` of 256 characters or more, a `MODE`
-that is not a number, an `AUDIO` other than `AHI`, and a `MAXMEM`, `HOSTMEM` or
-`WEIGHT` that is not a positive decimal number.
+that is not a number, an `AUDIO` other than `AHI`, a `MAXMEM`, `HOSTMEM` or
+`WEIGHT` that is not a positive decimal number, a `PROFILE` that is not 1 to
+`AAR_PROFILE_HZ_MAX`, and an empty `CRASHLOG` or `PROFILEFILE`. Each of the three
+is taken from the project icon when it sets it, else from aar-run's icon, so
+`PROFILE` and `PROFILEFILE` may come from different icons.
 
 In `ARGS`, a double quote starts a quoted part and the next double quote ends
 it. Spaces and tabs inside it belong to the argument. A quoted part may sit
@@ -311,6 +317,91 @@ not passed to the app. A bad value prints the usage and returns 10.
 ```text
 aar-run RAM:swquake.elf POLL=20000 DISPLAY=PAN2
 ```
+
+## Debugging and profiling
+
+```text
+aar-run <app.elf> [CRASHLOG=<path>] [PROFILE=<hz> PROFILEFILE=<path>]
+```
+
+In a Shell the three words are recognized after the ELF, in any case, and are not
+passed to the app. A Workbench start takes them from the ToolTypes above. A bad value, or `PROFILE` without `PROFILEFILE` or the other way round,
+prints the usage and returns 10. A live debugger (a GDB stub with breakpoints and
+single step) is not part of aar-run; what follows is post-mortem and sampling.
+
+### Faults and stalls
+
+A fault prints the class and `pc`, `sp` and `lr`, the fault address, the
+syndrome and the processor state. A stall (the platform's watchdog ended the
+app, `AAR_END_STALL`) prints `aar-run: stall watchdog` and the same `pc`, `sp`
+and `lr` line, which are where the app was when the watchdog fired. Both return 20.
+
+### CRASHLOG
+
+On a fault or a stall `CRASHLOG=<path>` writes a text report to the file, and
+aar-run says `crash report written to <path>`. The report is `key: value` lines
+and then the stack snapshot. The first word of `end_reason`, `fault_class` and
+`profile` is the number, the rest its name. Addresses are `0x` and 16 hex digits,
+the syndrome and the processor state `0x` and 8. `stack_bytes` may be 0 when the
+platform took no snapshot. The stack words are the snapshot's bytes read as
+little-endian 32-bit app words, four to a line, each line headed by the app
+address of its first byte. A last word of fewer than 4 bytes has 2 digits per byte.
+An A64 app's 64-bit words are two of them, low word first.
+
+```text
+aar-crash 1
+end_reason: 3 user fault
+fault_class: 1 data abort
+syndrome: 0x00000805
+pstate: 0x60000010
+pc: 0x0000000000011210
+lr: 0x0000000000011150
+sp: 0x00000000bffff000
+fault_addr: 0x0000000000000004
+load_base: 0x0000000000010000
+profile: 1 A32
+exit_code: -1
+elf: Work:Apps/game.elf
+stack_sp: 0x00000000bffff000
+stack_bytes: 24
+stack:
+0x00000000bffff000: 00000000 00011134 bffff040 000110c4
+0x00000000bffff010: 00013100 0001122c
+```
+
+`tools/aar-symbolize crash.txt` reads the report and the ELF file it names
+(`--elf` overrides) and names `pc`, `lr` and a backtrace guess. See the
+[developer guide](../../docs/aar-developer-guide.md#debugging).
+
+### PROFILE and PROFILEFILE
+
+`PROFILE=<hz>` asks the platform to sample the app's program counter that many
+times a second, and `PROFILEFILE=<path>` is the file the samples go to. The file
+is created before the load, so a path that cannot be written stops the launch with
+20. The platform may sample slower than asked, or not at all: aar-run then says
+`sampling the pc at <hz> Hz into <path>`, or that the platform grants no profile
+and removes the file. aar-run takes the samples out of the platform's ring every
+32 passes of its serving loop (about every 32 ms at the default heartbeat) and
+once at the end, so `POLL=0` can leave a ring to overflow while the app makes no
+requests. At the end it prints `profile: <n> samples at <hz> Hz, <n> lost, in
+<path>`. Lost samples are those that the ring overwrote before aar-run came.
+
+The file is binary and big-endian:
+
+| Offset | Size | Contents |
+| --- | --- | --- |
+| 0 | 4 | `AARP` |
+| 4 | 4 | version, 1 |
+| 8 | 4 | the rate the platform granted, Hz |
+| 12 | 4 | samples lost (written at the end) |
+| 16 | 8 | load base, high word then low word |
+| 24 | 4 | 0 |
+| 28 | 4 | length of the ELF path |
+| 32 | n | the ELF path, zero-padded to a multiple of 8 |
+| then | 8 each | one sample: the app address, high word then low word |
+
+The number of samples is the rest of the file over 8. `tools/aar-profile
+samples.bin` prints a flat per-function profile.
 
 ## Platform notes
 
