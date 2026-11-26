@@ -164,69 +164,100 @@ port); joystick 1 is port 0. `dx`/`dy` are `-1`, `0`, or `1`. Fire is button
 
 ## Differences from a target
 
-- **Info.** `aar_get_info` reports `profile` from the data model of the host
-  (A64 on a 64-bit host, A32 on a 32-bit one), `platform_id` 0
-  (`AAR_PLATFORM_NONE`), `AAR_INFOF_SHARED_COHERENT`, a 1 MiB heap granule, a
-  4 KiB shared granule, `msg_capacity` 63, a 1 ms sleep granule, a stall limit
-  of 10000 ms (the minimum, though the runner has no watchdog), a stop grace of
-  0 (the runner never forces a stop), no CPU features, a shared limit of 16 MiB
-  and 16 files. `aar_ext` returns NULL for every extension.
-- **Time.** Headless vsync does not wait for a 50/60 Hz blank. A windowed
-  renderer uses SDL vsync when the driver provides it. `aar_sleep_us` is
-  host-clock sleep, not a platform tick.
-- **Log.** `aar_log` is printed immediately, truncated to `AAR_LOG_MAX`, with
-  a line end added. There is no rate limit.
-- **Display.** Pitch is `width * bytes per pixel`; apps must use
-  `surface.pitch`. Layouts: RGB565 is `AAR_LAYOUT_RGB565_BE`, 32-bit is
-  `AAR_LAYOUT_BGRA8888`, 8-bit is `AAR_LAYOUT_CLUT8`. Palette entries are
-  `0x00RRGGBB`. There is one display, up to `AAR_DISPLAY_MAX_DIM` square. The
-  surface grants `AAR_DISPCAP_ASYNC` and `AAR_DISPCAP_CLUT8`.
-  `AAR_DISPLAY_LATEST` is granted (`AAR_DISPCAP_LATEST`) and uses three
-  buffers: a flip replaces the pending frame, counts it in
-  `aar_display_latest_dropped`, and `aar_display_flip_idle` stays 1. Without
-  it an async flip stays pending until `aar_yield` or `aar_display_vsync`, and
-  a flip or a refresh in the meantime is `AAR_E_BUSY`. `aar_display_flip_idle`
-  and `aar_display_vsync` without a display are `AAR_E_INVAL`.
-- **Audio.** Stereo S16LE with an 8192-frame ring at 22050, 44100 or 48000 Hz;
-  the granted rate is the requested one. `aar_audio_get_stats` counts an
-  underrun when the SDL callback finds the ring short of a buffer; with
-  `--audio-null` nothing underruns. The ring is plain host memory shared with
-  the SDL callback.
-- **Shared buffers.** `aar_shared_alloc` takes ordinary process memory under
-  a 16 MiB limit, in 4 KiB granules, and at most 64 app blocks. The memory is
-  zeroed. `haddr` is a synthetic token from a 32-bit space that starts at
-  `0x033F0000`, aligned to the block's alignment; the lowest free range is
-  reused after a free. The token is not an address in the process:
-  `aar_host_shared_resolve(haddr, offset, bytes, &p)` (header `aar_host.h`)
-  turns it back into the memory, as the client side of a real platform would.
-  The host is coherent, so `aar_publish` and `aar_acquire` are fences and
-  `AAR_SHAREDF_COHERENT` is set. An alignment is rounded up to the granule and
-  must then be a power of two.
-- **Files.** The path policy of the standard: relative paths stay under
-  `--root`, a parent step above it or a leading `/` that would leave it is
-  `AAR_E_ACCES`, a `:` is `AAR_E_ACCES` unless `--abs`. `//` is a parent step,
-  as in an AmigaDOS path. `aar_map_file` reads at most 16 MiB into a
-  runtime-owned shared block, so the file counts against the shared limit;
-  a larger file is `AAR_E_NOSPC`,
-  and a zero-length file is `AAR_E_NOMEM`.
-- **Console.** `printf` uses the host C library. On a target, newlib routes fd
-  1 and fd 2 through the console calls. `aar_console_write` writes stdout;
-  `aar_console_read` reads stdin and returns `AAR_OK` with zero bytes at end
-  of input.
-- **Heap.** `aar_heap_grow` and `aar_heap_shrink` commit and release whole 1
-  MiB frames inside a reserved 8 MiB arena. The range does not move. Growth
-  past that limit, or when the arena could not be reserved, returns
-  `AAR_E_NOMEM`. A zero or non-MiB size is `AAR_E_INVAL`. `aar_get_heap_info`
-  reports the commit, that limit, and the uncommitted remainder as `pool_free`.
-  `aar_alloc` and `aar_free` sit on the host `malloc`; an app that uses
-  `malloc` directly never touches the arena. The arena is the pool for
-  `AAR_EV_LOW_MEMORY`: the event is queued when the free pool falls below
-  1 MiB (low-water mark), and again only after it has risen above 2 MiB
-  (high-water mark). An app that grows the heap until `AAR_E_NOMEM` gets one
-  event; the input script can also enqueue one.
-- **Services.** SHA-256 is implemented, including an empty buffer.
-  `aar_decompress`, `aar_image_open` / `aar_image_decode` / `aar_image_close`,
-  and `aar_audio_decode_open` / `aar_audio_decode` / `aar_audio_decode_close`
-  return `AAR_E_NOSYS`, which the services group allows for unavailable codecs.
-- **Isolation.** The host is not an isolated runtime. A bad pointer crashes the
-  process instead of returning `AAR_E_FAULT`, and `isolate` does not run here.
+### Info
+
+`aar_get_info` reports `profile` from the data model of the host
+(A64 on a 64-bit host, A32 on a 32-bit one), `platform_id` 0
+(`AAR_PLATFORM_NONE`), `AAR_INFOF_SHARED_COHERENT`, a 1 MiB heap granule, a
+4 KiB shared granule, `msg_capacity` 63, a 1 ms sleep granule, a stall limit
+of 10000 ms (the minimum, though the runner has no watchdog), a stop grace of
+0 (the runner never forces a stop), no CPU features, a shared limit of 16 MiB
+and 16 files. `aar_ext` returns NULL for every extension.
+
+### Time
+
+Headless vsync does not wait for a 50/60 Hz blank. A windowed
+renderer uses SDL vsync when the driver provides it. `aar_sleep_us` is
+host-clock sleep, not a platform tick.
+
+### Log
+
+`aar_log` is printed immediately, truncated to `AAR_LOG_MAX`, with
+a line end added. There is no rate limit.
+
+### Display
+
+Pitch is `width * bytes per pixel`; apps must use
+`surface.pitch`. Layouts: RGB565 is `AAR_LAYOUT_RGB565_BE`, 32-bit is
+`AAR_LAYOUT_BGRA8888`, 8-bit is `AAR_LAYOUT_CLUT8`. Palette entries are
+`0x00RRGGBB`. There is one display, up to `AAR_DISPLAY_MAX_DIM` square. The
+surface grants `AAR_DISPCAP_ASYNC` and `AAR_DISPCAP_CLUT8`.
+`AAR_DISPLAY_LATEST` is granted (`AAR_DISPCAP_LATEST`) and uses three
+buffers. A flip replaces the pending frame, counts it in
+`aar_display_latest_dropped`, and `aar_display_flip_idle` stays 1. Without
+it an async flip stays pending until `aar_yield` or `aar_display_vsync`, and
+a flip or a refresh in the meantime is `AAR_E_BUSY`. `aar_display_flip_idle`
+and `aar_display_vsync` without a display are `AAR_E_INVAL`.
+
+### Audio
+
+Stereo S16LE with an 8192-frame ring at 22050, 44100 or 48000 Hz;
+the granted rate is the requested one. `aar_audio_get_stats` counts an
+underrun when the SDL callback finds the ring short of a buffer; with
+`--audio-null` nothing underruns. The ring is plain host memory shared with
+the SDL callback.
+
+### Shared buffers
+
+`aar_shared_alloc` takes ordinary process memory under
+a 16 MiB limit, in 4 KiB granules, and at most 64 app blocks. The memory is
+zeroed. `haddr` is a synthetic token from a 32-bit space that starts at
+`0x033F0000`, aligned to the block's alignment; the lowest free range is
+reused after a free. The token is not an address in the process.
+`aar_host_shared_resolve(haddr, offset, bytes, &p)` (header `aar_host.h`)
+turns it back into the memory, as the client side of a real platform would.
+The host is coherent, so `aar_publish` and `aar_acquire` are fences and
+`AAR_SHAREDF_COHERENT` is set. An alignment is rounded up to the granule and
+must then be a power of two.
+
+### Files
+
+The path policy of the standard applies. Relative paths stay under
+`--root`. A parent step above it or a leading `/` that would leave it is
+`AAR_E_ACCES`, and so is a `:` unless `--abs`. `//` is a parent step,
+as in an AmigaDOS path. `aar_map_file` reads at most 16 MiB into a
+runtime-owned shared block, so the file counts against the shared limit.
+A larger file is `AAR_E_NOSPC` and a zero-length file is `AAR_E_NOMEM`.
+
+### Console
+
+`printf` uses the host C library. On a target, newlib routes fd
+1 and fd 2 through the console calls. `aar_console_write` writes stdout;
+`aar_console_read` reads stdin and returns `AAR_OK` with zero bytes at end
+of input.
+
+### Heap
+
+`aar_heap_grow` and `aar_heap_shrink` commit and release whole 1
+MiB frames inside a reserved 8 MiB arena. The range does not move. Growth
+past that limit, or when the arena could not be reserved, returns
+`AAR_E_NOMEM`. A zero or non-MiB size is `AAR_E_INVAL`. `aar_get_heap_info`
+reports the commit, that limit, and the uncommitted remainder as `pool_free`.
+`aar_alloc` and `aar_free` use the host `malloc`; an app that uses
+`malloc` directly never touches the arena. The arena is the pool for
+`AAR_EV_LOW_MEMORY`. The event is queued when the free pool falls below
+1 MiB (low-water mark), and again only after it has risen above 2 MiB
+(high-water mark). An app that grows the heap until `AAR_E_NOMEM` gets one
+event; the input script can also enqueue one.
+
+### Services
+
+SHA-256 is implemented, including an empty buffer.
+`aar_decompress`, `aar_image_open` / `aar_image_decode` / `aar_image_close`,
+and `aar_audio_decode_open` / `aar_audio_decode` / `aar_audio_decode_close`
+return `AAR_E_NOSYS`, which the services group allows for unavailable codecs.
+
+### Isolation
+
+The host is not an isolated runtime. A bad pointer crashes the
+process instead of returning `AAR_E_FAULT`, and `isolate` does not run here.

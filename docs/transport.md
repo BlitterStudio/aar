@@ -6,11 +6,11 @@ SPDX-License-Identifier: MIT
 # The AAR transport contract
 
 This page is for people who implement the standard on a platform, or who write
-a client library over an existing transport. App authors do not need it: an
+a client library over an existing transport. App authors do not need it. An
 app sees only the table described in the [API reference](aar-api.md).
 
 The normative contract is [spec section 10](../spec/aar.md).
-`include/aar/transport.h` pins the layouts as byte offsets and carries the
+`include/aar/transport.h` pins the layouts as byte offsets and holds the
 reference producer and consumer model. This page explains that header;
 `tests/transport_model_test.c` checks its queue and barrier behaviour.
 
@@ -18,9 +18,9 @@ reference producer and consumer model. This page explains that header;
 
 A platform provides the ARM runtime (loader, table, limits), the host-side
 transport, and `aar.library` on top of the transport. The library's own calls
-are in [aar-client-api.md](aar-client-api.md). The transport is the
-same on every platform. Per app there is one **control block** and one
-**request/completion queue pair** in shared memory, large payloads travel as
+are in [aar-client-api.md](aar-client-api.md). The transport is the same on
+every platform. Per app there is one **control block** and one
+**request/completion queue pair** in shared memory. Large payloads travel as
 **shared-buffer tokens**, and each direction has a **doorbell**. A platform
 supplies three things:
 
@@ -38,12 +38,12 @@ supplies three things:
 Every word in the control block and in a queue entry is **big-endian**, so the
 68k reads native longs. The ARM side uses the byte-reversing accessors. A
 64-bit value is two words, **high word first** (a `_HI` offset, then a `_LO`
-offset). Nothing in the header is a C structure laid over shared memory:
-layouts are byte offsets, so they hold for any compiler and either profile.
+offset). Nothing in the header is a C structure laid over shared memory.
+Layouts are byte offsets, so they hold for any compiler and either profile.
 
 Two things are not big-endian. Message bytes (`AAR_MSG_BYTES` of them in an
 entry) are opaque and never swapped. The audio ring buffer is little-endian,
-because the app, the runtime and the S16LE samples are; the client library
+because the app, the runtime and the S16LE samples are. The client library
 swaps the words it reads.
 
 | Symbol | Meaning |
@@ -64,11 +64,11 @@ request that names a handle whose generation is not the live one fails with
 Claim is a platform control call that must reply. It either refuses with
 `AAR_E_NORESOURCE` and an `AAR_REASON_*` code, or returns the handle and the
 tokens of the control block and the queue pair. The index selects a process
-record that the platform allocates at admission; the count of live apps is
-bounded by resources, not by a constant. Recommended order: process record and
-translation tables first, then the control block and queues from shared
-memory. The commit for the image and the shared limit are reserved when the
-load begins. Everything reserved is released on every failure path.
+record that the platform allocates at admission. The count of live apps is
+bounded by resources, not by a constant. The recommended order is process
+record and translation tables first, then the control block and queues from
+shared memory. The commit for the image and the shared limit are reserved when
+the load begins. Everything reserved is released on every failure path.
 
 | Symbol | Meaning |
 |---|---|
@@ -82,11 +82,11 @@ load begins. Everything reserved is released on every failure path.
 
 ## The control block
 
-`AAR_CB_BYTES` (4 KiB) per app, zero-filled at admission. Offsets are bytes
-from the start of the block. **Every word has exactly one writer.** A word that
-changes hands (a queue index, the lease counter) sits at the start of its own
-64-byte line (`AAR_CB_LINE_BYTES`), so two writers never share a line. Unlisted
-space is reserved and zero.
+The control block is `AAR_CB_BYTES` (4 KiB) per app, zero-filled at
+admission. Offsets are bytes from the start of the block. **Every word has
+exactly one writer.** Each queue index and the lease counter sits at the start
+of its own 64-byte line (`AAR_CB_LINE_BYTES`), so two writers never share a
+line. Unlisted space is reserved and zero.
 
 | Symbol | Value |
 |---|---|
@@ -224,7 +224,7 @@ The descriptor words, added to `AAR_CB_Q_DESC(q)`:
 
 | Symbol | Meaning |
 |---|---|
-| `aar_cb_init` | Platform, at admission: zeroes the block, then writes the header and both queue descriptors. The magic goes last. `AAR_E_INVAL` for an invalid depth. The client must not see the block before this returns, and the caller orders the magic with its own release barrier before it hands out the block's token. |
+| `aar_cb_init` | Platform, at admission: zeroes the block, then writes the header and both queue descriptors. The magic goes last. `AAR_E_INVAL` for an invalid depth. The client must not see the block before this returns, and the caller orders the magic with its own release barrier before it issues the block's token. |
 | `aar_cb_check` | `AAR_OK` for a block with the right magic, a layout version this header understands and a size of at least `AAR_CB_BYTES`; `AAR_E_IO` otherwise. |
 | `aar_cb_queue_bind` | Builds the `aar_queue` view of queue `AAR_QUEUE_SQ` or `AAR_QUEUE_CQ` from the control block and the mapped ring. The depth and entry size come from the descriptor: `AAR_E_IO` if they are not valid. |
 
@@ -315,7 +315,7 @@ Native-order forms and the encoders:
 ## Ordering and barriers
 
 The reference model implements these rules. The barriers are caller-supplied
-hooks: a hook orders memory for the caller's platform, and a NULL hook means no
+hooks. A hook orders memory for the caller's platform, and a NULL hook means no
 barrier, which is correct on a strongly ordered CPU such as the 68k and in a
 single-threaded test.
 
@@ -362,12 +362,12 @@ without a barrier. Every index is a free-running `uint32_t`; a count above
 
 Messages and completions share the completion queue, and the consumer releases
 a FIFO in order. If the client could post messages without limit, the runtime's
-inbox would fill, the runtime would have to leave a message in the queue, and a
-completion behind it could not be reached until the app drained its inbox,
-which an app that waits for that completion cannot do. **Message credits**
-prevent this.
+inbox would fill. The runtime would then have to leave a message in the queue,
+and a completion behind it could not be reached until the app drained its
+inbox. An app that waits for that completion cannot drain it. **Message
+credits** prevent this.
 
-The platform writes `AAR_CB_MSG_CONSUMED`: the number of messages the app has
+The platform writes `AAR_CB_MSG_CONSUMED`, the number of messages the app has
 taken from its inbox, not the number moved out of the queue. The client keeps
 its own free-running count of the messages it has posted. Both are `uint32_t`
 and wrap. The client posts an `AAR_OP_MSG` only while
@@ -494,12 +494,12 @@ completion. A 64-bit value is `_HI` then `_LO`.
 
 ### The audio ring buffer
 
-The shared buffer that the runtime allocates at audio open and names in the
-request's `buf`; the completion echoes it in `AAR_R_AUDIO_OPEN_RING`. Unlike the control block it
-is **little-endian**. Each index has its own line and one writer.
-The three pointers of `aar_audio` point into one mapping of the ring: if `ring`
-is the address of its first byte, `write_frame` is `ring`, `read_frame` is
-`ring + 0x40` and `samples` is `ring + 0x80`.
+This is the shared buffer that the runtime allocates at audio open and names in
+the request's `buf`. The completion echoes it in `AAR_R_AUDIO_OPEN_RING`.
+Unlike the control block, it is **little-endian**. Each index has its own line
+and one writer. The three pointers of `aar_audio` point into one mapping of the
+ring. If `ring` is the address of its first byte, `write_frame` is `ring`,
+`read_frame` is `ring + 0x40` and `samples` is `ring + 0x80`.
 
 | Symbol | Offset | Meaning |
 |---|---|---|
@@ -527,7 +527,7 @@ host-visible heap with the normal write-back shareable mapping. Tokens are
 board-relative Zorro III offsets. The Zorro master reaches that memory
 coherently through the Zynq ACP, which snoops the ARM caches. The ARM side
 orders stores before publishing an index or message with barriers and needs
-no cache maintenance. The ACP does not reach the 68k data cache; the client
+no cache maintenance. The ACP does not reach the 68k data cache. The client
 maps these ranges cache-inhibited, and unmapping does not restore the prior
 cache mode. Draw into private memory or a surface back buffer rather than
 using a shared buffer as framebuffer scratch space.
@@ -545,9 +545,9 @@ platform that can only poll is correct, and a platform that can raise an
 interrupt or a signal is faster. The ring carries no data, and it is not part
 of the control block.
 
-**ZZ9000 note.** The client-to-ARM ring is a mailbox write that names the handle.
-The ARM-to-client direction uses the library's vertical-blank poll, narrowed by
-event counts; no Amiga interrupt is defined by the transport.
+**ZZ9000 note.** The client-to-ARM ring is a mailbox write that names the
+handle. The ARM-to-client direction uses the library's vertical-blank poll,
+narrowed by event counts. No Amiga interrupt is defined by the transport.
 
 ## Event counts (optional)
 
@@ -556,27 +556,28 @@ counts that a client reads as a hint, to avoid reading the control block of
 every armed handle at every poll. There is one global count and one count per
 group of 32 process records (record index = the handle's low 16 bits). Each time
 the runtime makes something new visible to a client for a record (it publishes a
-submission entry, or writes a non-zero end reason), it orders that store before
-the increments (a barrier), then increments the count of the record's group and
-then the global count, each by one with an atomic read-modify-write, as the
-runtime may post from more than one core. A record that has no group (its group
-would lie beyond the block) increments the global count only; a client treats
-such a record as changed whenever the global count changed. Counts wrap around;
-a client compares them for difference only. The counts only go up, so a client
-needs nothing to clear and races with nothing.
+submission entry, or writes a non-zero end reason), it first orders that store
+before the increments with a barrier. It then increments the count of the
+record's group and then the global count. Each increment is by one with an
+atomic read-modify-write, because the runtime may post from more than one core.
+A record that has no group (its group would lie beyond the block) increments
+the global count only. A client treats such a record as changed whenever the
+global count changed. Counts wrap around; a client compares them for difference
+only. The counts only go up, so a client needs nothing to clear and races with
+nothing.
 
 A client that reads the global count and finds it equal to the one it saw last
-knows that nothing was posted in between and skips the queues of its handles;
-when it differs, the client reads the group counts and looks at the handles of the
-groups that changed. A client that ignores the counts is still correct: they
-carry no data and the indices stay authoritative.
+knows that nothing was posted in between and skips the queues of its handles.
+When the count differs, the client reads the group counts and looks at the
+handles of the groups that changed. A client that ignores the counts is still
+correct, because they carry no data and the indices stay authoritative.
 
 **ZZ9000 note.** The block is 64 bytes from the host-visible heap, written with the
 normal write-back shareable mapping and zero-filled at start: big-endian word 0
 is the global count and words 1 to 15 the counts of groups 0 to 14 (records 0 to
-479). The QUERY reply carries its board offset at offset 48 (0 when absent); a
-reply shorter than 52 bytes has no such word, and the client then does not use
-counts.
+479). The QUERY reply carries its board offset at offset 48 (0 when absent).
+A reply shorter than 52 bytes has no such word, and the client then does not
+use counts.
 
 ## Lease and stale handles
 

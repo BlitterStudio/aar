@@ -23,9 +23,9 @@ A platform conforms to a profile at an API major.minor when (spec 11.1):
    suite version and the platform's `AARInfo` dump;
 4. every SKIP has a reason, and a SKIP is only for a test of an undeclared
    group or a SHOULD test, or for a MUST row that the catalogue lets skip for an
-   optional route (C-AUDIO.1 to C-AUDIO.9 with the reason `no PLATFORM route`, when
-   the platform has no mixer of its own and refuses the route PLATFORM with
-   `AAR_E_NOSYS`, spec 8.4).
+   optional route. An example is C-AUDIO.1 to C-AUDIO.9 with the reason
+   `no PLATFORM route`, when the platform has no mixer of its own and refuses the
+   route PLATFORM with `AAR_E_NOSYS` (spec 8.4).
 
 The host runner (`host-runner/`) passes the payloads that build for it and is the
 reference for app semantics. It does not count as a platform. A test that needs a
@@ -37,20 +37,20 @@ keyboard and mouse) are `operator` tests. By default the runner skips them with 
 reason `manual`. With `INTERACTIVE` the runner takes the operator through them while
 the run goes on:
 
-- A test that shows something (C-DISPLAY.17 a picture for 5 seconds, C-INPUT.11 a grey
-  screen for 12 seconds in which to use the keyboard, mouse and joystick, C-AUDIO.12 a
-  tone for 2 seconds) prints what to look for or do, and waits for Return, so that you
-  are looking when it starts. It runs, and the question (`y/n`) comes right after.
+- A test that shows something prints what to look for or do, and waits for Return,
+  so that you are looking when it starts. It runs, and the question (`y/n`) comes
+  right after. Such tests include C-DISPLAY.17 (a picture for 5 seconds), C-INPUT.11
+  (a grey screen for 12 seconds in which to use the keyboard, mouse and joystick) and
+  C-AUDIO.12 (a tone for 2 seconds).
 - C-INPUT.11 also prints what the app saw. If no event is a key press, a mouse move, a
   button or a joystick movement, it says so and offers to repeat the 12 seconds once.
   A yes does not count when the app saw no such event: the test fails with "operator
-  confirmed but the app saw no key or mouse event". The app's evidence has the last
-  word.
+  confirmed but the app saw no key or mouse event". The app's evidence decides.
 - C-LIFE.24 is a procedure that you do before the run (start two apps, reset the machine,
-  boot, start the suite); the runner prints the text and, at the start of the run, asks
+  boot, start the suite). The runner prints the text and, at the start of the run, asks
   whether you did it and whether it behaved as described.
 
-`ONLY` with one operator id runs just that test and its question, for example
+`ONLY` with one operator id runs only that test and its question, for example
 `ONLY=C-INPUT.11 INTERACTIVE`. Without `INTERACTIVE` it is `SKIP manual`. A SHOULD
 operator test that is skipped does not affect the verdict. A MUST operator test
 (C-LIFE.24) that is skipped does, so a platform's report must include the operator's
@@ -108,19 +108,25 @@ MANIFEST.txt
 
 `MANIFEST.txt` holds the suite version, the commit it was built from, the run
 commands (the full run, `INTERACTIVE`, `ONLY` for every area, `PROFILE=a64` for an
-A64 platform) and the sha256 of every other file; check them with
-`grep -E '^[0-9a-f]{64}  ' MANIFEST.txt | sha256sum -c`. To make it yourself:
-`make conf-bundle` in the SDK image stages the payloads and the corpus (set
-`BUNDLE=<dir>`), `AAR_CONF_OUT=<dir>/aar-conf sh client/tests/m68k_check.sh` in the
-m68k image adds the runner, and `python3 conformance/tools/conf_bundle.py manifest
-<dir> --commit <sha>` writes the manifest. `tests/bundle_test.py` tests the
-assembly. [docs/porting.md](../docs/porting.md) is the guide for the platform
-that runs it.
+A64 platform) and the sha256 of every other file. Check them with
+`grep -E '^[0-9a-f]{64}  ' MANIFEST.txt | sha256sum -c`.
+
+To make the bundle yourself:
+
+1. Run `make conf-bundle` in the SDK image. It stages the payloads and the corpus
+   (set `BUNDLE=<dir>`).
+2. Run `AAR_CONF_OUT=<dir>/aar-conf sh client/tests/m68k_check.sh` in the m68k image.
+   It adds the runner.
+3. Run `python3 conformance/tools/conf_bundle.py manifest <dir> --commit <sha>`. It
+   writes the manifest.
+
+`tests/bundle_test.py` tests the assembly. [docs/porting.md](../docs/porting.md) is
+the guide for the platform that runs it.
 
 ## Running on a platform
 
 Copy `aar-conf` and the payload directories to the Amiga. The payloads of a
-profile live in a directory named after it:
+profile are in a directory named after it:
 
 ```
 aar-conf
@@ -208,9 +214,9 @@ The runner starts the payload with `argv` = the file name, `alpha`, `beta gamma`
 `conf:peer=1` and some `info:<key>=<n>` words that carry the client's `AARInfo`
 (groups, platform id, message capacity, stall limit, stop grace, argument limits).
 It serves the payload with `aar_serve` and a console of its own that captures the
-text, and relays every `AAR-CONF` line. It fails every id the catalogue says the
-payload prints (judged by `payload`, impl `yes`, group declared, profile
-matching) and that did not arrive, so a payload that crashed, was refused or hung
+text, and relays every `AAR-CONF` line. It fails every id that the catalogue says
+the payload prints and that did not arrive (judged by `payload`, impl `yes`, group
+declared, profile matching). A payload that crashed, was refused or hung therefore
 cannot pass by silence. A payload must print the end line last; the runner checks
 that the counts in it match the lines, and that the exit code read through
 `AARStatus` is 0 when nothing failed and 10 otherwise (C-LIFE.3).
@@ -219,15 +225,16 @@ A payload asks the runner for help by sending a 32-byte message with an ASCII
 keyword. The core handles `CONF-STOP-NOW` (`payloads/conf_proto.h`); areas add
 their own keywords and handlers in `payloads/conf_<area>.h` and
 `runner/r_<area>.c`. When a test needs the runner and there is none
-(`conf:peer=1` missing: a run by hand, the host runner or qemu loader), it prints
-`SKIP host: <reason>`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the peer interface.
+(`conf:peer=1` is missing in a run by hand, the host runner or the qemu loader), it
+prints `SKIP host: <reason>`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the peer
+interface.
 
 ## Adding tests
 
-[`CONTRIBUTING.md`](CONTRIBUTING.md) is the guide for the author of an area: which files the area
-owns, how to mark rows `impl yes`, how to add peer keywords, payload variants and
-console modes to the runner, what to do about gaps in the spec, and how to run the
-host, qemu and m68k checks. In short: the rows are in `TESTS.md`; a payload test is
-printed by `payloads/conf_<area>.c`; a runner test is listed in
-`runner/r_<area>.c`; `python3 conformance/tools/conf_catalogue.py check` keeps the
-catalogue and the sources in step.
+[`CONTRIBUTING.md`](CONTRIBUTING.md) is the guide for the author of an area. It
+covers which files the area owns, how to mark rows `impl yes`, how to add peer
+keywords, payload variants and console modes to the runner, what to do about gaps
+in the spec, and how to run the host, qemu and m68k checks. The rows are in
+`TESTS.md`. A payload test is printed by `payloads/conf_<area>.c`, a runner test is
+listed in `runner/r_<area>.c`, and `python3 conformance/tools/conf_catalogue.py
+check` keeps the catalogue and the sources in step.

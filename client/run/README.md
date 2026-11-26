@@ -4,7 +4,7 @@
 loads one trusted app through `aar.library` and serves it until it ends: files,
 console, display, audio and input. It is a Shell command and a Workbench tool,
 and it runs on any platform that has an `aar.library`. Nothing in it belongs to
-one board; the ZZ9000 is the first platform behind the library, and what is
+one board. The ZZ9000 is the first platform behind the library, and what is
 specific to it is in [Platform notes](#platform-notes).
 
 aar-run is MIT licensed and is built from this repository (`client/run` and
@@ -14,11 +14,11 @@ window title, Picasso96 screen title and requester titles all say `aar-run`.
 It needs `aar.library` (`LIBS:aar.library`, installed with aar-run), AmigaOS 3
 graphics and Intuition 39 or later, `timer.device`, Picasso96 when the app asks
 for a display and `ahi.device` for `AUDIO=AHI`. Without the library it prints
-`aar.library not found.` and returns 20; with a library that has no platform
+`aar.library not found.` and returns 20. With a library that has no platform
 behind it, it prints `no AAR platform found` (or that `AARQuery` failed) and
 returns 20.
 
-Every instance claims its own app, so many apps can run at once; the platform's
+Every instance claims its own app, so many apps can run at once. The platform's
 resources are the limit. When the platform cannot admit another one, a launch
 reports `claim refused:` with the reason (not enough memory, no translation
 tables left, not enough shared memory for the queues) and returns 20.
@@ -28,8 +28,8 @@ tables left, not enough shared memory for the queues) and returns 20.
 Run `Stack 32768` in the launching Shell first. aar-run requires at least a
 16 KiB stack and prints `Run Stack 32768 in this Shell before aar-run.`
 (returning 10) when it has less. For a Shell command the stack that counts is
-the CLI's default stack (what the `Stack` command sets, `cli_DefaultStack`), also
-when the task's own stack bounds are larger; a Workbench start uses the icon's
+the CLI's default stack (what the `Stack` command sets, `cli_DefaultStack`), even
+when the task's own stack bounds are larger. A Workbench start uses the icon's
 stack.
 
 ```text
@@ -63,9 +63,9 @@ anything. A launch the platform would refuse prints the limit and returns 10:
 | the ELF | `max_image_bytes` | reported by the load (`larger than the <n> MiB image limit`) |
 
 `MAXMEM`, `HOSTMEM` and `WEIGHT` must be positive decimal numbers; anything
-else prints the usage and returns 10. The library refuses an out of range tag
-value in any case, so these checks only change where the message appears and
-that no claim is taken first.
+else prints the usage and returns 10. The library refuses an out-of-range tag
+value in any case, so these checks change only where the message appears, and
+aar-run takes no claim before them.
 
 `MAXMEM=<MiB>` caps the private memory committed by this app.
 
@@ -74,12 +74,12 @@ aar-run RAM:swquake.elf MAXMEM=256 +timedemo demo1
 ```
 
 `HOSTMEM=<MiB>` sets how much shared (host-visible) memory this app may
-allocate: the memory the Amiga can address through the platform, including the
-buffers the runtime allocates for the app's console, files and audio. Without
-it the app gets the platform default (`shared_default_mib`). The limit is a
-cap, not a reservation. Both limits go to the library before the load; the
-platform checks them at load and refuses what it cannot grant. aar-run then
-prints `load refused:` with the reason (a platform limit means `HOSTMEM` or
+allocate. This is the memory the Amiga can address through the platform,
+including the buffers the runtime allocates for the app's console, files and
+audio. Without it the app gets the platform default (`shared_default_mib`). The
+limit is a cap, not a reservation. Both limits go to the library before the
+load. The platform checks them at load and refuses what it cannot grant. aar-run
+then prints `load refused:` with the reason (a platform limit means `HOSTMEM` or
 `MAXMEM` is too large) and returns 20.
 
 ```text
@@ -105,7 +105,7 @@ aar-run icon. For Quake, set `ROOT` to the directory containing `id1/`.
 A relative ELF path is opened from aar-run's current AmigaDOS directory. A path
 with a volume or assign prefix is resolved through `GetDeviceProc`; on a
 multi-directory assign, aar-run tries each directory after an
-`ERROR_OBJECT_NOT_FOUND` result. aar-run hands the library the full path of the
+`ERROR_OBJECT_NOT_FOUND` result. aar-run gives the library the full path of the
 file it found.
 
 ### Checks before a claim
@@ -122,16 +122,16 @@ names the cause and the exit code is 20:
 | API too new for the platform | `<file> needs AAR API 0.5, this platform has 0.3.` |
 | a required service group the platform lacks | `<file> needs service groups this platform lacks: gl.` |
 
-The profile is checked first, then the API, then the groups the image requires;
-the groups it lists as optional are only a hint and never refuse an image. The
+The profile is checked first, then the API, then the groups the image requires.
+The groups it lists as optional are only a hint and never refuse an image. The
 library's probe cannot tell a note newer than the library from a damaged one,
-which is why the not-an-AAR-image line names both; a platform older than its
-library is the API line. A file name with a volume or assign colon may be a
-multi-directory assign, which the library's own open does not search: if the
-first probe finds nothing there, aar-run finds the file the way it does for the
-load and probes the full name then. That needs the serving loop and so a claim,
-which aar-run opens and closes again when it refuses the image. Every other
-refusal, and a missing plain path, happens before any claim.
+which is why the not-an-AAR-image line names both. A platform older than its
+library is reported by the API line. A file name with a volume or assign colon
+may be a multi-directory assign, which the library's own open does not search.
+If the first probe finds nothing there, aar-run finds the file the way it does
+for the load and probes the full name then. That needs the serving loop and so a
+claim, which aar-run opens and closes again when it refuses the image. Every
+other refusal, and a missing plain path, happens before any claim.
 
 ### Exit codes
 
@@ -164,7 +164,7 @@ table. Where `AARExt` returns no table (a platform that does not offer the
 claim list) they print `aar-run: STATUS is not supported on this platform.`
 (or `RELEASE`) and return 20. Launching an app never needs the extension.
 
-A crashed aar-run does not leave a claim behind: `aar.library` notices that the
+A crashed aar-run does not leave a claim behind. `aar.library` notices that the
 task is gone within about a second, stops the app and releases the claim. A
 claim the library could not release (its own helper stopped, or the platform
 revoked it) keeps its control block and buffers until it is released, because
@@ -187,12 +187,12 @@ every claim.
 A Workbench start reads the ToolTypes of the aar-run icon (`PROGDIR:aar-run`,
 or the icon of the tool a project icon names). Dragging an ELF project onto the
 icon, or giving a project icon whose default tool is `aar-run`, takes
-precedence over `APP`. A Workbench start has no Shell: the ELF comes from the
+precedence over `APP`. A Workbench start has no Shell. The ELF comes from the
 project icon or `APP`, and without either aar-run requests `Set the APP
-tooltype, or start aar-run from a project icon.` and returns 10.
-The project directory lock is resolved with `NameFromLock`: any nonzero DOS
-BOOLEAN result is success, including `DOSTRUE` (-1). The project name is then
-appended to that directory, without adding a slash after a volume colon.
+tooltype, or start aar-run from a project icon.` and returns 10. The project
+directory lock is resolved with `NameFromLock`, and any nonzero DOS BOOLEAN
+result is success, including `DOSTRUE` (-1). The project name is then appended
+to that directory, without adding a slash after a volume colon.
 
 | ToolType | Meaning |
 | --- | --- |
@@ -209,7 +209,7 @@ appended to that directory, without adding a slash after a volume colon.
 
 The same limits and refusals apply as in a Shell launch. The diagnostic words
 below are not ToolTypes. A Workbench start opens one console window titled
-`aar-run` for aar-run's lines and the app's console: see
+`aar-run` for aar-run's lines and the app's console. See
 [Console and audio routes](#console-and-audio-routes).
 
 ## Diagnostics
@@ -220,7 +220,7 @@ not passed to the app. A bad value prints the usage and returns 10.
 
 | Word | Effect |
 | --- | --- |
-| `POLL=<us>` | The heartbeat of the loop, in microseconds. The default is 1000. The parser accepts 0 to 999999 (`AAR_RUN_POLL_US_LIMIT` in `aar_run_policy.h`). `POLL=20000` suits a program that is happy with a vertical-blank wake-up. `POLL=0` turns the heartbeat off and waits on the library's signal and timed wakes: 10 ms while a stop is pending, 20 ms for display joysticks, 1 ms for completions waiting for queue space, and 250 ms to see a revoked claim. With `AUDIO=AHI`, the serving loop requires 1 to 20000 us instead; other values fail at startup with `AAR_E_NOSYS` (currently reported as `timer.device is required.`). A slower heartbeat costs latency for DOS and audio work. |
+| `POLL=<us>` | The heartbeat of the loop, in microseconds. The default is 1000. The parser accepts 0 to 999999 (`AAR_RUN_POLL_US_LIMIT` in `aar_run_policy.h`). `POLL=20000` suits a program that tolerates a vertical-blank wake-up. `POLL=0` turns the heartbeat off and waits on the library's signal and timed wakes: 10 ms while a stop is pending, 20 ms for display joysticks, 1 ms for completions waiting for queue space, and 250 ms to see a revoked claim. With `AUDIO=AHI`, the serving loop requires 1 to 20000 us instead; other values fail at startup with `AAR_E_NOSYS` (currently reported as `timer.device is required.`). A slower heartbeat costs latency for DOS and audio work. |
 | `DISPLAY=<BUFFERS\|PAN3\|PAN2\|SINGLE>` | The display strategy aar-run starts with, and the fallbacks after it. `BUFFERS` (the default) uses screen buffers, then a three page tall screen, a two page one and one buffer. `PAN3` starts at the three page tall screen, `PAN2` at the two page one, and `SINGLE` uses one buffer the platform copies each frame. A strategy the screen cannot open falls back to the next one, as in the default order. |
 
 ```text
@@ -261,7 +261,7 @@ each buffer it wants aar-run to use in the request that needs it.
    platform behind the library the query fails and aar-run stops before
    claiming. It checks that the platform implements the API major it was built
    for, reads the limits it needs from `AARInfo` and checks the launch against
-   them. A `aar-run STATUS` or `RELEASE` needs only the query and `AARExt`.
+   them. An `aar-run STATUS` or `RELEASE` needs only the query and `AARExt`.
 2. `AARProbeFile` reads the image's note, and aar-run compares it with the
    platform (profile, API, required groups). A refusal prints its cause and
    takes no claim.
@@ -288,18 +288,18 @@ each buffer it wants aar-run to use in the request that needs it.
    each pass forwards input, serves the requests the app has posted
    (`AARServiceNext` and `AARServiceReply`), completes the ones that were
    waiting for DOS, the display or AHI, and reads the app's state and end
-   reason with a small `AARStatus`. aar-run does not renew the lease: the
+   reason with a small `AARStatus`. aar-run does not renew the lease. The
    library does that, so a requester or a long DOS wait in aar-run does not
    cost the app its claim. A completion is followed by a doorbell the library
-   sends, but the queue indices stay authoritative: a lost doorbell costs
+   sends, but the queue indices stay authoritative. A lost doorbell costs
    latency, never data.
-8. Ctrl-C from the Shell or an app-display raw key requests a stop: aar-run
+8. Ctrl-C from the Shell or an app-display raw key requests a stop. aar-run
    posts one stop event (retried until the queue has room for it) and calls
    `AARStop`, which writes the control block's stop request, posts the stop
    event and sends the platform's stop. Ctrl-D, Ctrl-E, and Ctrl-F on the app
-   display remain normal raw-key events and additionally post a break event
-   with codes 4, 5, and 6. The app display has one borderless input window, not
-   a close gadget; its raw keys are forwarded to the app, including Ctrl-C and
+   display remain normal raw-key events and also post a break event
+   with codes 4, 5, and 6. The app display has one borderless input window and
+   no close gadget. Its raw keys are forwarded to the app, including Ctrl-C and
    the app's own quit controls. aar-run remains alive for the platform's stop
    grace period (`AARInfo.stop_grace_ms`) so the platform can publish the final
    state. Ctrl-C ends aar-run after that grace, plus a second one, even if
@@ -328,7 +328,7 @@ mouse and joystick ports are left exactly as it found them.
 
 Events travel on the completion queue, which holds 64 entries shared with
 completions and messages. The library sums consecutive mouse motion into one
-pending event and flushes it, so a flood costs one entry; every other event
+pending event and flushes it, so a flood costs one entry. Every other event
 keeps its order behind the motion that came before it. An event that finds the
 queue full is dropped and counted in the control block's events-dropped word,
 except the stop event, which aar-run retries until it is delivered.
@@ -347,75 +347,88 @@ streams) and the heartbeat. See [Diagnostics](#diagnostics) for the AHI `POLL`
 bound and the parser's separate limit.
 aar-run does not write to stderr while the app is running.
 
-aar-run takes the app's messages itself: the serving loop drains them with
+aar-run takes the app's messages itself. The serving loop drains them with
 `AARGetMessage`, drops them and counts them, so an app that sends more than the
 library's inbox holds cannot hang itself behind an unread message. After the
 run aar-run prints `dropped <n> app messages.` when it dropped any. Apps that
-exchange custom messages need a client that takes them: for example a program
+exchange custom messages need a client that takes them, for example a program
 that creates `aar_serve` with `AAR_SERVEF_KEEP_MESSAGES` (see the
 [serve API](../../docs/aar-serve-api.md)).
 
 ### Console and audio routes
 
 The app's console output arrives as `CONSOLE_WRITE` requests naming bytes in a
-console buffer the platform allocated; a request completes when the DOS write has
-finished, with the number of bytes written. A Shell launch writes those bytes
-through `Output()` and takes app stdin from `Input()` (a Workbench start opens one titled `CON:` window and uses it both ways). A `CONSOLE_READ` request
-is the app's demand for input; aar-run starts one DOS read for it and completes it
-with the bytes read, or with 0 at the end of input. A redirected input (`<file`
-or a pipe) ends the app's stdin at the end of that stream. From the keyboard,
-the app gets whatever ends a `Type *` in the same console; on OS 3.2.3 with the
-standard or CCON handler Ctrl-\ does not, so stop such an app with Ctrl-C.
+console buffer the platform allocated. A request completes when the DOS write
+has finished, with the number of bytes written. A Shell launch writes those
+bytes through `Output()` and takes app stdin from `Input()` (a Workbench start
+opens one titled `CON:` window and uses it both ways).
+
+A `CONSOLE_READ` request is the app's demand for input. aar-run starts one DOS
+read for it and completes it with the bytes read, or with 0 at the end of
+input. A redirected input (`<file` or a pipe) ends the app's stdin at the end of
+that stream. From the keyboard, the app gets whatever ends a `Type *` in the
+same console. On OS 3.2.3 with the standard or CCON handler Ctrl-\ does not, so
+stop such an app with Ctrl-C.
+
 aar-run starts a read only while the app it owns is running and has asked for
 input. If the app is waiting for keyboard input when it stops, aar-run writes
 `press Return to finish.` to the console that owns that read (the Workbench
-`CON:` window, or `Input()`), not to redirected stdout: the console cannot
-cancel the line read it has open. A pipe or other non-interactive input uses
-the same asynchronous read, so an open writer cannot stall the lease, display,
-or audio. A regular file completes immediately. If a non-interactive read is
-still pending at exit, aar-run writes `waiting for pending input to finish.` to
-the user console (not stdout, and not the pipe) and waits, because a pipe read
-cannot be cancelled. The custom screen is closed before either of those waits,
-so the prompt is not hidden behind the app display. A Workbench launch opens one
-closable `CON:` window titled `aar-run` when it starts, and aar-run's own lines
-and the app's console output both go to it; aar-run does not write through the C
-library's stdout, so no second, untitled window appears. If that window cannot be
-opened, aar-run opens it at the app's first console use instead. If writing app
-output fails, aar-run stops the app and returns 20.
+`CON:` window, or `Input()`), not to redirected stdout, because the console
+cannot cancel the line read it has open. A pipe or other non-interactive input
+uses the same asynchronous read, so an open writer cannot stall the lease,
+display, or audio. A regular file completes immediately. If a non-interactive
+read is still pending at exit, aar-run writes `waiting for pending input to
+finish.` to the user console (not stdout, and not the pipe) and waits, because
+a pipe read cannot be cancelled. The custom screen is closed before either of
+those waits, so the prompt is not hidden behind the app display.
 
-The default audio route is the platform's own audio path and needs nothing from aar-run. Set
-`AUDIO=AHI` in the app icon or pass `AUDIO=AHI` after the ELF in a Shell
-command to request the AHI route; it is passed to the library as the audio
-route tag before the load. On that route the platform allocates the audio ring and
-names it in an `AUDIO_OPEN` request; aar-run opens AHI at the requested rate
+A Workbench launch opens one closable `CON:` window titled `aar-run` when it
+starts, and aar-run's own lines and the app's console output both go to it.
+aar-run does not write through the C library's stdout, so no second, untitled
+window appears. If that window cannot be opened, aar-run opens it at the app's
+first console use instead. If writing app output fails, aar-run stops the app
+and returns 20.
+
+The default audio route is the platform's own audio path and needs nothing from
+aar-run. Set `AUDIO=AHI` in the app icon or pass `AUDIO=AHI` after the ELF in a
+Shell command to request the AHI route. It is passed to the library as the audio
+route tag before the load. On that route the platform allocates the audio ring
+and names it in an `AUDIO_OPEN` request. aar-run opens AHI at the requested rate
 (stereo), and the library attaches the ring when aar-run completes the request
-and detaches it at `AUDIO_CLOSE`. aar-run reads the PCM with `AARAudioRead`,
-which converts the ring's interleaved S16LE samples (rate and channel count in
-its header) into AHI's S16BE bounce buffers without resampling or downmixing,
-through a reserve of up to two requests' worth (a FIFO between the ring and
-AHI), in two requests of up to 3/50 s (60 ms) each, the double buffering of the
-AHI developer guide: each is linked (`ahir_Link`) to the other while that one is
-queued, and a request is sent again as soon as it has finished. AHI is not
-started before about 120 ms are in the reserve (the prebuffer); after that every
-request is a whole one, never a short piece, because some drivers leave a gap at
-every short request boundary and an app that fills its ring just ahead of the
-player (a tone generator) would otherwise produce many. Together the two
-requests keep about 120 ms of audio in AHI, so a delay of the loop of up to about
-100 ms plays out of AHI's queue. The price is latency: the prebuffer adds about
-120 ms, up to 240 ms in all between the app's ring and the speakers. If the app
-stops writing for 30 ms, what is left in the reserve is played as a last, short
-request (the end of a sound), and when the app closes the audio the queued audio
-plays out before AHI is closed (a run that ends without closing it cuts the last
-250 ms or so). If AHI runs dry while the app is still writing (the reserve cannot
-keep up), aar-run counts it (`ran dry`), reads the empty ring once so that the
-ring's underrun counter shows it, and buffers again before it goes on. The AHI
-line printed at the end gives underruns, times AHI ran dry, the number of
-requests and their length in frames (minimum and average): with whole requests
-they are equal, except for the last one of a sound. If AHI cannot be opened, aar-run stops
-the app and returns 20. Before each read aar-run asks the library how many frames
-are readable (`AARAudioRead` with no buffer), which counts nothing, so an
-underrun in the ring header is counted only when AHI ran dry and found the ring
-empty.
+and detaches it at `AUDIO_CLOSE`.
+
+aar-run reads the PCM with `AARAudioRead`, which converts the ring's interleaved
+S16LE samples (rate and channel count in its header) into AHI's S16BE bounce
+buffers without resampling or downmixing. The data goes through a reserve of up
+to the size of two requests (a FIFO between the ring and AHI), in two requests
+of up to 3/50 s (60 ms) each. This is the double buffering of the AHI developer
+guide. Each request is linked (`ahir_Link`) to the other while that one is
+queued, and a request is sent again as soon as it has finished.
+
+AHI is not started before about 120 ms are in the reserve (the prebuffer). After
+that every request is a whole one, never a short piece, because some drivers
+leave a gap at every short request boundary and an app that fills its ring only
+a short way ahead of the player (a tone generator) would otherwise produce many
+gaps. Together the two requests keep about 120 ms of audio in AHI, so a delay of
+the loop of up to about 100 ms plays out of AHI's queue. This costs latency. The
+prebuffer adds about 120 ms, up to 240 ms in all between the app's ring and the
+speakers.
+
+If the app stops writing for 30 ms, what is left in the reserve is played as a
+last, short request (the end of a sound). When the app closes the audio, the
+queued audio plays out before AHI is closed (a run that ends without closing it
+cuts the last 250 ms or so). If AHI runs dry while the app is still writing (the
+reserve cannot keep up), aar-run counts it (`ran dry`), reads the empty ring
+once so that the ring's underrun counter shows it, and buffers again before it
+goes on.
+
+The AHI line printed at the end gives underruns, times AHI ran dry, the number
+of requests and their length in frames (minimum and average). With whole
+requests they are equal, except for the last one of a sound. If AHI cannot be
+opened, aar-run stops the app and returns 20. Before each read aar-run asks the
+library how many frames are readable (`AARAudioRead` with no buffer), which
+counts nothing, so an underrun in the ring header is counted only when AHI ran
+dry and found the ring empty.
 
 Output to `NIL:` works. A console handle with no handler port, which is what
 `NIL:` is, cannot take the asynchronous DOS packet the loop uses for other
@@ -425,7 +438,7 @@ request on the next pass of the loop, so `aar-run app.elf >NIL:` runs the app
 to its end, discards its text and returns its exit code. Input from `NIL:`
 ends at once, which is the end of input the app sees. aar-run's own notes (the
 output-failure note and the finish prompts) go to the user's console, never
-only into the redirected output. A write that really fails, such as a full
+only into the redirected output. A write that fails, such as a full
 volume or a closed pipe, still stops the app and returns 20.
 
 When the app opens its display, the platform posts `DISPLAY_OPEN` with the width,
@@ -438,12 +451,12 @@ With two displayable P96 bitmaps (`AllocScreenBuffer`), each flip request
 changes screen buffer and completes when P96 has finished with the old one. If
 P96 refuses screen buffers, aar-run first opens a bitmap three times the
 requested height and pans between its pages. If that fails, it retries with a
-double-height bitmap. A pan completes with the submitted flag: the platform
+double-height bitmap. A pan completes with the submitted flag. The platform
 acknowledges the flip after its own next vertical blank has latched the new
 address, which keeps the old front unavailable until scanout has stopped reading
 it. Only if both panning layouts fail does it use one bitmap, which the platform
-copies each frame into. When the app asks for latest-frame flips, the platform owns
-every flip and aar-run sees none: it does not pan or change buffers. The
+copies each frame into. When the app asks for latest-frame flips, the platform
+owns every flip and aar-run sees none. It does not pan or change buffers. The
 `DISPLAY=` diagnostic word chooses where this walk starts.
 
 ### Files and ROOT
@@ -451,7 +464,7 @@ every flip and aar-run sees none: it does not pan or change buffers. The
 File requests (`FILE_OPEN`, `FILE_READ`, `FILE_WRITE`, `FILE_SEEK`,
 `FILE_STAT`, `FILE_CLOSE`, `LIST_OPEN`, `LIST_NEXT`, `LIST_CLOSE`) carry paths
 and data in buffers the platform names. The app has up to 16 open files and 16 open
-directory lists. A short read is end of file. Raw AmigaDOS Examine packets
+directory lists. A short read means end of file. Raw AmigaDOS Examine packets
 return length-prefixed BCPL names; aar-run converts them to NUL-terminated
 names in the request buffer before posting the list completion. The end of a
 list is `AAR_E_NOENT`.
@@ -483,25 +496,25 @@ another request, but another Amiga program or aar-run instance can create the
 same name between the probe and the open.
 
 With `ABS` on a multi-directory assign, the probe finds the directory that holds
-the file and the open, `SetFileSize` and `MODE_NEWFILE` fallback all go to that
+the file. The open, `SetFileSize` and `MODE_NEWFILE` fallback all go to that
 same directory, so an existing file is updated, truncated, kept or replaced
 where it is rather than shadowed by a new file in the first directory. Every
 step that can create, truncate, replace or write a file is skipped, and answers
-`AAR_E_IO`, once the request is no longer wanted: the claim was revoked, any stop is
-under way (Ctrl-C, `aar_serve_stop`, a stop from the app's window, the platform
-ending the app), or an earlier wait for AmigaDOS was abandoned.
+`AAR_E_IO`, once the request is no longer wanted. That is the case when the
+claim was revoked, any stop is under way (Ctrl-C, `aar_serve_stop`, a stop from
+the app's window, the platform ending the app), or an earlier wait for AmigaDOS
+was abandoned.
 
 Relative paths stay below `ROOT`, for open, stat and list alike, with or without
-`ABS`. `..`, leading `/`, and empty path components
-that would leave the root are rejected, and so is a link whose target lies
-outside it. Paths containing `:` are rejected unless `ABS` is enabled (the only
-thing `ABS` admits). With
+`ABS`. `..`, leading `/`, and empty path components that would leave the root
+are rejected, and so is a link whose target lies outside it. Paths containing
+`:` are rejected unless `ABS` is enabled (the only thing `ABS` admits). With
 `ABS`, file open, stat, and directory-list requests use `GetDeviceProc` and try
 later multi-directory assign candidates after `ERROR_OBJECT_NOT_FOUND`. This is
 path hygiene for an app that is already trusted; it is not an isolation
 boundary. File reads and writes are chunked at 8 KiB so one request does not
 hold the serving loop for long. A stalled AmigaDOS volume can still block its
-DOS call; the claim stays alive meanwhile, because the library renews the
+DOS call. The claim stays alive meanwhile, because the library renews the
 lease.
 
 The launcher reports file modification times as Unix seconds derived from an

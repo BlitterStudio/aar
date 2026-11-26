@@ -5,7 +5,7 @@ and calls `AAR_NOTE()` from `aar/note.h`, so the image carries the `.note.aar`
 note without a separate assembler file. The public API is `include/aar/`; the
 transport headers are for platform implementers and apps never include them.
 Every template builds for profile A32 and for profile A64. The few that touch
-the instruction set (`fault.c`, `fpenv.c`, `membench.c`, `svcprobe.c`) carry
+the instruction set (`fault.c`, `fpenv.c`, `membench.c`, `svcprobe.c`) have
 both variants behind `__aarch64__`.
 
 Apps link against the PIC newlib from `build_pic_newlib.sh`, except freestanding
@@ -133,7 +133,7 @@ instruction set.
   pointer-chase traffic with `aar_time_us`, without PMU or device-register
   access. The display region is optional.
 - `filter.c`: file-in/file-out Shell template. It maps an input through the
-  client's file calls (`aar_map_file`, an optional call: the template fails
+  client's file calls (`aar_map_file` is optional, and the template fails
   with 10 where it is absent), computes SHA-256 with the services group, and
   writes the 32-byte digest to its output path. Invoke it as `filter input
   output`.
@@ -147,21 +147,21 @@ instruction set.
   stdin lines in upper case, reports Ctrl-D/E/F break events, and exits at EOF.
   See the [aar-run console notes](../client/run/README.md#console-and-audio-routes)
   for redirecting input and stopping a keyboard read.
-- `freestanding.c`: no newlib. A bump allocator over `aar_heap_range` and
-  `aar_heap_grow`, a hand-written hash, and its own number formatting; build
-  it with `AAR_FREESTANDING=1`. The host runner builds it too and a test
-  compares its hash with an independent implementation.
+- `freestanding.c`: a program without newlib. It has a bump allocator over
+  `aar_heap_range` and `aar_heap_grow`, a hand-written hash, and its own number
+  formatting. Build it with `AAR_FREESTANDING=1`. The host runner builds it too and
+  a test compares its hash with an independent implementation.
 - `fpenv.c`: prints the floating-point control register as the app sees it on
   entry and checks the denormal behaviour of the developer guide's
   bit-identical maths section. A32: FPSCR is 0, a VFP add keeps a denormal
   result and a NEON add flushes it. A64: FPCR is 0 and a scalar and an ASIMD
   add both keep it. Exit status 0 means every check held; it is the card test
   for that section.
-- `ringflood.c`: message queue conformance load. Starts quiet, parked in
+- `ringflood.c`: message queue conformance load. It starts quiet, parked in
   `aar_msg_wait`, and answers PING messages. On CTRL FLOOD it sends
   sequence-numbered, pattern-checked 32-byte messages as fast as the
   app-to-host queue takes them and bumps a counter word, big-endian, in a
-  shared buffer on every loop; `aar_publish` makes each store visible before
+  shared buffer on every loop. `aar_publish` makes each store visible before
   the message that carries the same value is sent. The INFO message carries the
   buffer's token (`aar_shared.haddr`). CTRL QUIET stops it. Its message layout
   is in the file header. `ringflood N` on the host runner leaves the flood after
