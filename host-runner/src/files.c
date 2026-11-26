@@ -71,19 +71,89 @@
 
 static uint32_t protect_of(const struct stat *st);
 
+/* What tells two paths, or a path and an open handle, apart on the host: the
+ * device and inode, or on Windows the volume and file index. */
+struct host_objid {
+#ifdef _WIN32
+    DWORD volume, index_hi, index_lo;
+#else
+    dev_t dev;
+    ino_t ino;
+#endif
+};
+
+static int objid_equal(const struct host_objid *a, const struct host_objid *b)
+{
+#ifdef _WIN32
+    return a->volume == b->volume && a->index_hi == b->index_hi &&
+           a->index_lo == b->index_lo;
+#else
+    return a->dev == b->dev && a->ino == b->ino;
+#endif
+}
+
+#ifdef _WIN32
+static int objid_of_handle(HANDLE h, struct host_objid *id)
+{
+    BY_HANDLE_FILE_INFORMATION info;
+
+    if (h == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(h, &info))
+        return -1;
+    id->volume = info.dwVolumeSerialNumber;
+    id->index_hi = info.nFileIndexHigh;
+    id->index_lo = info.nFileIndexLow;
+    return 0;
+}
+
+static int objid_of_fd(int fd, struct host_objid *id)
+{
+    return objid_of_handle((HANDLE)_get_osfhandle(fd), id);
+}
+
+/* The object a path names, through a handle of a moment. */
+static int objid_of_path(const char *path, struct host_objid *id)
+{
+    HANDLE h;
+    int rc;
+
+    h = CreateFileA(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    rc = objid_of_handle(h, id);
+    if (h != INVALID_HANDLE_VALUE)
+        CloseHandle(h);
+    return rc;
+}
+#else
+static int objid_of_stat(const struct stat *st, struct host_objid *id)
+{
+    id->dev = st->st_dev;
+    id->ino = st->st_ino;
+    return 0;
+}
+
+static int objid_of_fd(int fd, struct host_objid *id)
+{
+    struct stat st;
+
+    if (fstat(fd, &st) != 0)
+        return -1;
+    return objid_of_stat(&st, id);
+}
+#endif
+
 struct host_fd {
     int used;
     uint32_t access;  /* AAR_FILE_READ and AAR_FILE_WRITE as opened */
     FILE *fp;
-#ifndef _WIN32
-    dev_t dev;        /* the file this id holds, for file_delete */
-    ino_t ino;
-#endif
+    struct host_objid id; /* the object this id holds, when have_id */
+    int have_id;
 };
 
 struct host_list {
     int used;
     char path[4096];
+    struct host_objid id; /* the directory this listing reads, when have_id */
+    int have_id;
 #ifdef _WIN32
     HANDLE find;
     WIN32_FIND_DATAA data;
@@ -93,6 +163,21 @@ struct host_list {
     DIR *dir;
 #endif
 };
+
+/* The directory this listing reads. */
+static int objid_of_list(const struct host_list *l, struct host_objid *id)
+{
+#ifdef _WIN32
+    /* A FindFirstFile search handle is not a file handle. */
+    return objid_of_path(l->path, id);
+#else
+    struct stat st;
+
+    if (fstat(dirfd(l->dir), &st) != 0)
+        return -1;
+    return objid_of_stat(&st, id);
+#endif
+}
 
 static struct host_fd fds[HOST_FD_COUNT];
 static struct host_list lists[HOST_FD_COUNT];
@@ -456,16 +541,7 @@ static int api_file_open(const char *path, uint32_t flags)
     fds[slot].used = 1;
     fds[slot].access = flags & (AAR_FILE_READ | AAR_FILE_WRITE);
     fds[slot].fp = fp;
-#ifndef _WIN32
-    {
-        struct stat held;
-
-        memset(&held, 0, sizeof held);
-        (void)fstat(fd, &held);
-        fds[slot].dev = held.st_dev;
-        fds[slot].ino = held.st_ino;
-    }
-#endif
+    fds[slot].have_id = objid_of_fd(fd, &fds[slot].id) == 0;
     return HOST_FD_BASE + slot;
 }
 
@@ -625,6 +701,7 @@ static int api_file_list_open(const char *path)
     if (!lists[ix].dir)
         return io_err();
 #endif
+    lists[ix].have_id = objid_of_list(&lists[ix], &lists[ix].id) == 0;
     lists[ix].used = 1;
     id = HOST_FD_BASE + ix;
     return id;
@@ -845,20 +922,31 @@ static uint32_t protect_of(const struct stat *st)
     return p;
 }
 
-#ifndef _WIN32
-/* An id that is open holds its file: deleting it is AAR_E_BUSY, as on
- * AmigaDOS, where the file is locked. */
-static int file_is_open(const struct stat *st)
+/* An open id holds its file, and an open listing holds its directory:
+ * deleting either is AAR_E_BUSY, as on AmigaDOS, where the object is locked.
+ * The objects are compared by identity, so another name of the same file (a
+ * hard link) counts, and the listing of a parent does not hold a child. */
+static int object_in_use(const struct stat *st, const char *full)
 {
+    struct host_objid id;
     int i;
 
+#ifdef _WIN32
+    (void)st;
+    if (objid_of_path(full, &id) != 0)
+        return 0;
+#else
+    (void)full; /* the identity is in the stat the caller already has */
+    objid_of_stat(st, &id);
+#endif
     for (i = 0; i < HOST_FD_COUNT; i++) {
-        if (fds[i].used && fds[i].dev == st->st_dev && fds[i].ino == st->st_ino)
+        if (fds[i].used && fds[i].have_id && objid_equal(&fds[i].id, &id))
+            return 1;
+        if (lists[i].used && lists[i].have_id && objid_equal(&lists[i].id, &id))
             return 1;
     }
     return 0;
 }
-#endif
 
 static int api_file_delete(const char *path)
 {
@@ -876,10 +964,8 @@ static int api_file_delete(const char *path)
     if (!IS_LNK(st.st_mode)) {
         if (protect_of(&st) & AAR_PROT_DELETE)
             return AAR_E_ACCES;
-#ifndef _WIN32
-        if (file_is_open(&st))
+        if (object_in_use(&st, full))
             return AAR_E_BUSY;
-#endif
     }
     if ((S_ISDIR(st.st_mode) ? host_rmdir(full) : host_unlink(full)) != 0)
         return op_err();
@@ -892,26 +978,12 @@ static int same_object(const struct stat *sa, const struct stat *sb,
                        const char *a, const char *b)
 {
 #ifdef _WIN32
-    BY_HANDLE_FILE_INFORMATION ia, ib;
-    HANDLE ha, hb;
-    int same = 0;
+    struct host_objid ia, ib;
 
     (void)sa;
     (void)sb;
-    ha = CreateFileA(a, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                     NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-    hb = CreateFileA(b, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                     NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-    if (ha != INVALID_HANDLE_VALUE && hb != INVALID_HANDLE_VALUE &&
-        GetFileInformationByHandle(ha, &ia) && GetFileInformationByHandle(hb, &ib))
-        same = ia.dwVolumeSerialNumber == ib.dwVolumeSerialNumber &&
-               ia.nFileIndexHigh == ib.nFileIndexHigh &&
-               ia.nFileIndexLow == ib.nFileIndexLow;
-    if (ha != INVALID_HANDLE_VALUE)
-        CloseHandle(ha);
-    if (hb != INVALID_HANDLE_VALUE)
-        CloseHandle(hb);
-    return same;
+    return objid_of_path(a, &ia) == 0 && objid_of_path(b, &ib) == 0 &&
+           objid_equal(&ia, &ib);
 #else
     (void)a;
     (void)b;
@@ -948,8 +1020,13 @@ static int api_file_rename(const char *from, const char *to, uint32_t flags)
     if (exists) {
         if (!(flags & AAR_RENAME_REPLACE))
             return AAR_E_EXIST;
-        if (!IS_LNK(sb.st_mode) && (protect_of(&sb) & AAR_PROT_DELETE))
-            return AAR_E_ACCES;
+        if (!IS_LNK(sb.st_mode)) {
+            if (protect_of(&sb) & AAR_PROT_DELETE)
+                return AAR_E_ACCES;
+            /* The target is deleted first: like a delete, it must be free. */
+            if (object_in_use(&sb, b))
+                return AAR_E_BUSY;
+        }
     }
 #ifdef _WIN32
     if (!MoveFileExA(a, b, (flags & AAR_RENAME_REPLACE) ? MOVEFILE_REPLACE_EXISTING : 0))
@@ -1106,6 +1183,11 @@ static int api_file_truncate(int fd, uint64_t size)
     if (rc != 0)
         return errno == EFBIG ? AAR_E_NOSPC : op_err();
 #endif
+    /* A read that reached the old end set the stream's end-of-file flag, and
+     * the flag stays after the file grew: clear it, so that the next read
+     * returns the new bytes without a seek. clearerr is the only portable way
+     * and clears the error flag too; a failed fflush above was reported. */
+    clearerr(fds[ix].fp);
     return AAR_OK;
 }
 

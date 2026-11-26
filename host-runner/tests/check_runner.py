@@ -744,6 +744,9 @@ def check_api06_files(exe):
             raise SystemExit("the directory was not deleted")
         if os.path.exists(os.path.join(root, "ok2.txt")):
             raise SystemExit("a refused rename created its target")
+        with open(os.path.join(root, "eof.txt"), "rb") as fh:
+            if fh.read() != b"abc\0\0\0":
+                raise SystemExit("truncate after a read to the end did not extend eof.txt with zeros")
         if int(os.stat(os.path.join(root, "dated.txt")).st_mtime) != 1000000000:
             raise SystemExit("set_date did not set the modification time")
         perm = os.path.join(root, "perm.txt")

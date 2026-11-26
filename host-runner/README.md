@@ -441,9 +441,12 @@ with `AAR_E_ACCES` after a stop request. `aar_file_open` and `aar_file_write`
 are not (spec 3.7 lets a call after a stop complete).
 
 `aar_file_delete` is `unlink` or `rmdir`. A directory that is not empty is
-`AAR_E_EXIST`. A file that an id of the runner holds is `AAR_E_BUSY`, as a
-locked file is on AmigaDOS (on Windows the host refuses an open file with
-`AAR_E_ACCES`). A delete-protected object is `AAR_E_ACCES`.
+`AAR_E_EXIST`. An object in use is `AAR_E_BUSY`, as a locked object is on
+AmigaDOS: a file or directory that an open id holds, or a directory that an
+open listing reads. The check is by identity (device and inode, or volume and
+file index on Windows), so a hard link to the file counts, and the listing of
+a parent directory does not hold a child. A delete-protected object is
+`AAR_E_ACCES`.
 `aar_file_rename` is `rename`, or `MoveFileEx` on Windows. Two paths that name
 the same object (the same device and inode, so a hard link counts, or the same
 file index on Windows) are `AAR_OK` and nothing changes, with or without the
@@ -452,16 +455,19 @@ that is a check before the rename, so another process can still slip a file
 in. With the flag the host's rename semantics apply: a file replaces a file and
 a directory an empty directory. A directory against a file, or a directory that
 is not empty, is `AAR_E_EXIST`; a delete-protected target is `AAR_E_ACCES`; a
-target on another file system, or a directory moved into itself, is
-`AAR_E_INVAL`.
+target in use (as for `aar_file_delete`) is `AAR_E_BUSY` and keeps its
+contents, because the flag deletes the target first; a target on another file
+system, or a directory moved into itself, is `AAR_E_INVAL`.
 `aar_file_set_date` sets the modification time (`utimensat`, the access time
 stays) and refuses a negative time or one that the host's `time_t` cannot hold
 with `AAR_E_INVAL`. `aar_file_truncate` flushes the stream of the id and calls
 `ftruncate` (`_chsize_s` on Windows), so it shortens or zero-extends the
-file and leaves the position alone. `aar_get_volume_info` is `statvfs` of the
-path: the fragment size as `block_bytes`, the blocks as `total_bytes`, the
-blocks available to a user as `free_bytes`, and `AAR_VOLF_READONLY` for a
-read-only mount (`GetDiskFreeSpaceEx` on Windows). The path of the root is `.`.
+file and leaves the position alone. It also clears the stream's end-of-file
+flag, so a read after an extension returns the new bytes without a seek.
+`aar_get_volume_info` is `statvfs` of the path: the fragment size as
+`block_bytes`, the blocks as `total_bytes`, the blocks available to a user as
+`free_bytes`, and `AAR_VOLF_READONLY` for a read-only mount
+(`GetDiskFreeSpaceEx` on Windows). The path of the root is `.`.
 
 POSIX has three owner permission bits where AmigaDOS has eight protection
 bits. `aar_stat.protect` and `aar_file_set_protect` map the owner's r, w and x

@@ -301,6 +301,7 @@ static int read_file(const char *leaf, char *buf, size_t n)
 static void test_delete_and_dir_create(void)
 {
     int fd;
+    int list;
 
     host_files_init(UNIT_ROOT, 0);
     put_file("del.txt", "x");
@@ -321,18 +322,43 @@ static void test_delete_and_dir_create(void)
     assert(api_file_delete(0) == AAR_E_INVAL);
     assert(api_dir_create("../outside") == AAR_E_ACCES);
     assert(api_dir_create("") == AAR_E_INVAL);
-#ifndef _WIN32
-    /* An open id holds its file. */
+    /* An open id holds its file: by identity, so another spelling of the
+     * path counts too. */
     put_file("busy.txt", "x");
     fd = api_file_open("busy.txt", AAR_FILE_READ);
     assert(fd >= HOST_FD_BASE);
     assert(api_file_delete("busy.txt") == AAR_E_BUSY);
+    assert(api_file_delete("./busy.txt") == AAR_E_BUSY);
     assert(file_size("busy.txt") == 1);
-    assert(api_file_close(fd) == AAR_OK);
-    assert(api_file_delete("busy.txt") == AAR_OK);
+#ifndef _WIN32
+    /* ... and so does a hard link to it. */
+    {
+        char a[4096];
+        char b[4096];
+
+        snprintf(a, sizeof a, "%s/busy.txt", UNIT_ROOT);
+        snprintf(b, sizeof b, "%s/busy.link", UNIT_ROOT);
+        assert(link(a, b) == 0);
+        assert(api_file_delete("busy.link") == AAR_E_BUSY);
+        assert(api_file_close(fd) == AAR_OK);
+        assert(api_file_delete("busy.link") == AAR_OK);
+    }
 #else
-    (void)fd;
+    assert(api_file_close(fd) == AAR_OK);
 #endif
+    assert(api_file_delete("busy.txt") == AAR_OK);
+    /* An open listing holds its directory. */
+    assert(api_dir_create("listdir") == AAR_OK);
+    list = api_file_list_open("listdir");
+    assert(list >= HOST_FD_BASE);
+    assert(api_file_delete("listdir") == AAR_E_BUSY);
+    assert(api_file_list_close(list) == AAR_OK);
+    assert(api_file_delete("listdir") == AAR_OK);
+    /* A listing of the parent does not hold a child. */
+    list = api_file_list_open(".");
+    put_file("free.txt", "x");
+    assert(api_file_delete("free.txt") == AAR_OK);
+    assert(api_file_list_close(list) == AAR_OK);
     /* After a stop nothing is created or removed. */
     put_file("stop.txt", "x");
     unit_stop = 1;
@@ -385,6 +411,37 @@ static void test_rename(void)
         assert(unlink(to) == 0);
     }
 #endif
+    /* The REPLACE target is deleted first: one that is in use is refused and
+     * keeps its contents. The same-object no-op comes before that check. */
+    put_file("rt.txt", "old");
+    put_file("rs.txt", "new");
+    {
+        int tfd = api_file_open("rt.txt", AAR_FILE_READ);
+        int lst;
+
+        assert(tfd >= HOST_FD_BASE);
+        assert(api_file_rename("rs.txt", "rt.txt", AAR_RENAME_REPLACE) == AAR_E_BUSY);
+        assert(api_file_rename("rs.txt", "rt.txt", 0) == AAR_E_EXIST);
+        assert(read_file("rt.txt", buf, sizeof buf) == 3 && memcmp(buf, "old", 3) == 0);
+        assert(file_size("rs.txt") == 3);
+        assert(api_file_rename("rt.txt", "rt.txt", AAR_RENAME_REPLACE) == AAR_OK);
+        assert(api_file_close(tfd) == AAR_OK);
+        assert(api_file_rename("rs.txt", "rt.txt", AAR_RENAME_REPLACE) == AAR_OK);
+        assert(read_file("rt.txt", buf, sizeof buf) == 3 && memcmp(buf, "new", 3) == 0);
+        assert(file_size("rs.txt") == -1);
+        assert(api_file_delete("rt.txt") == AAR_OK);
+        /* An empty directory that a listing reads is in use too. */
+        assert(api_dir_create("rl.dir") == AAR_OK);
+        assert(api_dir_create("rs.dir") == AAR_OK);
+        lst = api_file_list_open("rl.dir");
+        assert(lst >= HOST_FD_BASE);
+        assert(api_file_rename("rs.dir", "rl.dir", AAR_RENAME_REPLACE) == AAR_E_BUSY);
+        assert(api_dir_create("rs.dir") == AAR_E_EXIST); /* nothing moved */
+        assert(api_file_rename("rl.dir", "rl.dir", AAR_RENAME_REPLACE) == AAR_OK);
+        assert(api_file_list_close(lst) == AAR_OK);
+        assert(api_file_rename("rs.dir", "rl.dir", AAR_RENAME_REPLACE) == AAR_OK);
+        assert(api_file_delete("rl.dir") == AAR_OK);
+    }
 #ifndef _WIN32
     assert(api_dir_create("rd1") == AAR_OK);
     assert(api_dir_create("rd2") == AAR_OK);
@@ -425,6 +482,21 @@ static void test_truncate(void)
     assert(api_file_close(fd) == AAR_OK);
     assert(read_file("tr.bin", buf, sizeof buf) == 8);
     assert(memcmp(buf, "abc\0\0\0\0\0", 8) == 0);
+    /* A read that reached the end set the stream's end-of-file flag. After
+     * an extension the next read, without a seek, returns the new bytes. */
+    put_file("eof.bin", "abc");
+    fd = api_file_open("eof.bin", AAR_FILE_READ | AAR_FILE_WRITE);
+    assert(fd >= HOST_FD_BASE);
+    assert(api_file_read(fd, buf, 8u, &n) == AAR_OK && n == 3u);
+    assert(api_file_read(fd, buf, 8u, &n) == AAR_OK && n == 0u); /* the end */
+    assert(api_file_truncate(fd, 6u) == AAR_OK);
+    memset(buf, 'x', sizeof buf);
+    assert(api_file_read(fd, buf, 8u, &n) == AAR_OK && n == 3u);
+    assert(buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 'x');
+    assert(api_file_read(fd, buf, 8u, &n) == AAR_OK && n == 0u); /* the new end */
+    assert(api_file_close(fd) == AAR_OK);
+    assert(file_size("eof.bin") == 6);
+    assert(api_file_delete("eof.bin") == AAR_OK);
     /* A write that is still buffered is flushed first, and cut. */
     fd = api_file_open("tr.bin", AAR_FILE_READ | AAR_FILE_WRITE);
     assert(api_file_write(fd, "xyz", 3u, &n) == AAR_OK && n == 3u);

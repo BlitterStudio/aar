@@ -79,6 +79,7 @@ static int test_files(void)
     uint32_t n = 0;
     char buf[16];
     int fd;
+    int list;
 
     CHECK_RC(aar_dir_create("sub"), AAR_OK, 10);
     CHECK_RC(aar_dir_create("sub"), AAR_E_EXIST, 11);
@@ -101,6 +102,23 @@ static int test_files(void)
     aar_file_close(fd);
     CHECK_RC(aar_file_truncate(77, 1u), AAR_E_BADF, 29);
     CHECK_RC(aar_file_truncate(-5, 1u), AAR_E_BADF, 30);
+    /* A read that reached the end set the stream's end-of-file flag: after
+     * an extension the next read, without a seek, returns the new bytes. */
+    CHECK_RC(write_text("eof.txt", "abc"), AAR_OK, 33);
+    fd = aar_file_open("eof.txt", AAR_FILE_READ | AAR_FILE_WRITE);
+    CHECK(fd >= AAR_FD_BASE, 33);
+    CHECK_RC(aar_file_read(fd, buf, 8u, &n), AAR_OK, 33);
+    CHECK(n == 3u, 33);
+    CHECK_RC(aar_file_read(fd, buf, 8u, &n), AAR_OK, 33);
+    CHECK(n == 0u, 33); /* the end of the file */
+    CHECK_RC(aar_file_truncate(fd, 6u), AAR_OK, 33);
+    memset(buf, 'x', sizeof buf);
+    CHECK_RC(aar_file_read(fd, buf, 8u, &n), AAR_OK, 33);
+    CHECK(n == 3u && buf[0] == 0 && buf[2] == 0 && buf[3] == 'x', 33);
+    CHECK_RC(aar_file_read(fd, buf, 8u, &n), AAR_OK, 33);
+    CHECK(n == 0u, 33); /* the new end */
+    CHECK_RC(aar_file_close(fd), AAR_OK, 33);
+    CHECK(size_of("eof.txt") == 6, 33);
 
     /* rename */
     CHECK_RC(aar_file_rename("sub/a.txt", "sub/b.txt", 0), AAR_OK, 40);
@@ -117,6 +135,37 @@ static int test_files(void)
     CHECK_RC(aar_file_rename("ok.txt", "sub//ok.txt", 0), AAR_OK, 48);
     CHECK_RC(aar_file_rename("sub", "sub", AAR_RENAME_REPLACE), AAR_OK, 48);
     CHECK(size_of("ok.txt") == 6 && size_of("sub") >= 0, 48);
+    /* The REPLACE target is deleted first: one that is in use is refused and
+     * keeps its contents. The same-object no-op comes before that check. */
+    CHECK_RC(write_text("rt.txt", "old"), AAR_OK, 49);
+    CHECK_RC(write_text("rs.txt", "new"), AAR_OK, 49);
+    fd = aar_file_open("rt.txt", AAR_FILE_READ);
+    CHECK(fd >= AAR_FD_BASE, 49);
+    CHECK_RC(aar_file_rename("rs.txt", "rt.txt", AAR_RENAME_REPLACE), AAR_E_BUSY, 49);
+    CHECK_RC(aar_file_rename("rs.txt", "rt.txt", 0), AAR_E_EXIST, 49);
+    CHECK(size_of("rt.txt") == 3 && size_of("rs.txt") == 3, 49);
+    CHECK_RC(aar_file_read(fd, buf, sizeof buf, &n), AAR_OK, 49);
+    CHECK(n == 3u && memcmp(buf, "old", 3) == 0, 49);
+    CHECK_RC(aar_file_rename("rt.txt", "rt.txt", AAR_RENAME_REPLACE), AAR_OK, 49);
+    CHECK_RC(aar_file_close(fd), AAR_OK, 49);
+    CHECK_RC(aar_file_rename("rs.txt", "rt.txt", AAR_RENAME_REPLACE), AAR_OK, 49);
+    CHECK(size_of("rt.txt") == 3 && size_of("rs.txt") == -1, 49);
+    fd = aar_file_open("rt.txt", AAR_FILE_READ);
+    CHECK_RC(aar_file_read(fd, buf, sizeof buf, &n), AAR_OK, 49);
+    CHECK(n == 3u && memcmp(buf, "new", 3) == 0, 49);
+    CHECK_RC(aar_file_close(fd), AAR_OK, 49);
+    CHECK_RC(aar_file_delete("rt.txt"), AAR_OK, 49);
+    /* An empty directory that a listing reads is in use too. */
+    CHECK_RC(aar_dir_create("rl.dir"), AAR_OK, 49);
+    CHECK_RC(aar_dir_create("rs.dir"), AAR_OK, 49);
+    list = aar_file_list_open("rl.dir");
+    CHECK(list >= AAR_FD_BASE, 49);
+    CHECK_RC(aar_file_rename("rs.dir", "rl.dir", AAR_RENAME_REPLACE), AAR_E_BUSY, 49);
+    CHECK_RC(aar_dir_create("rs.dir"), AAR_E_EXIST, 49); /* nothing moved */
+    CHECK_RC(aar_file_rename("rl.dir", "rl.dir", AAR_RENAME_REPLACE), AAR_OK, 49);
+    CHECK_RC(aar_file_list_close(list), AAR_OK, 49);
+    CHECK_RC(aar_file_rename("rs.dir", "rl.dir", AAR_RENAME_REPLACE), AAR_OK, 49);
+    CHECK_RC(aar_file_delete("rl.dir"), AAR_OK, 49);
 
     /* set_date: Python reads the modification time of dated.txt afterwards */
     CHECK_RC(write_text("dated.txt", "d"), AAR_OK, 50);
@@ -161,6 +210,13 @@ static int test_files(void)
     CHECK_RC(aar_file_delete("sub/c.txt"), AAR_E_NOENT, 84);
     CHECK_RC(aar_file_delete("sub"), AAR_OK, 85);
     CHECK_RC(aar_file_delete("ok2.txt"), AAR_E_NOENT, 86);
+    /* An empty directory that a listing reads is in use. */
+    CHECK_RC(aar_dir_create("ldir"), AAR_OK, 87);
+    list = aar_file_list_open("ldir");
+    CHECK(list >= AAR_FD_BASE, 87);
+    CHECK_RC(aar_file_delete("ldir"), AAR_E_BUSY, 87);
+    CHECK_RC(aar_file_list_close(list), AAR_OK, 87);
+    CHECK_RC(aar_file_delete("ldir"), AAR_OK, 87);
 
     /* the path rules and the policy of file_open, for every call */
     /* aar06-outside.txt is a file next to the root that Python made. */
