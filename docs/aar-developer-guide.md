@@ -586,9 +586,12 @@ Apps must not depend on the scheduler quantum or API-body preemption policy.
 ## Running on a PC
 
 The [host-runner manual](../host-runner/README.md) describes native PC builds,
-its options and differences from a target. SDL2 supplies display, input and
-audio; the runner does not load an ARM ELF. Check timing, memory limits and
-watchdog behaviour on the target platform.
+its options and differences from a target. SDL2 supplies display, input,
+audio and, through its OpenGL context, the GL group, so a GL app runs there
+too; that GL is more capable than a card's renderer, so passing on the PC does
+not show that the app stays inside what the target supports. The runner does
+not load an ARM ELF. Check timing, memory limits and watchdog behaviour on the
+target platform.
 
 ## Debugging
 

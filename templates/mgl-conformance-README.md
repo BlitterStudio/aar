@@ -3,8 +3,11 @@
 `mgl-conformance.elf` exercises the in-process Arm MiniGL API through
 `aar_gl_bind` and the `gl*` wrappers. It requires `AAR_GROUP_DISPLAY` and
 `AAR_GROUP_GL` in its note, so a runtime without GL refuses to load it with
-`AAR_E_NOGROUP`; the host runner has no GL group and the template exits with 2
-there. The matching 68k executable is `mgl-conformance` from the
+`AAR_E_NOGROUP`. The host runner has the group when the host has OpenGL and
+draws the matrix through it; its GL is not MiniGL, so it reports the cases
+where the two differ (see the GL section of the host-runner manual). With
+`--no-gl`, or on a host without GL, the template exits with 2. The matching 68k
+executable is `mgl-conformance` from the
 `amiberry-minigl-library` checkout. Both compile the one shared matrix in
 `mgl_conformance_matrix.h`; set `MGL_CONFORMANCE_MATRIX_DIR` when the two
 repositories are not sibling checkouts.

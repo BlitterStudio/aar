@@ -258,19 +258,25 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-      - name: Install SDL2
+      # Mesa (llvmpipe) gives the GL tests a context without a GPU: EGL for the
+      # headless runs, GLX under Xvfb for the window run.
+      - name: Install SDL2, Mesa and Xvfb
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
-            cmake python3 libsdl2-dev
+            cmake python3 libsdl2-dev libegl1 libegl-mesa0 libgl1 \
+            libgl1-mesa-dri libglx-mesa0 xvfb xauth
       - name: Configure
         run: cmake -S host-runner -B build-aar-host -DCMAKE_BUILD_TYPE=Debug
       - name: Build
         run: cmake --build build-aar-host --parallel
+      # AAR_TEST_REQUIRE_GL turns a skipped GL test into a failure, so a
+      # missing Mesa package cannot hide the GL group.
       - name: Test
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
+          AAR_TEST_REQUIRE_GL: "1"
         run: ctest --test-dir build-aar-host --output-on-failure
 
   # Pushes ghcr.io/blitterstudio/aar-sdk on a v* tag and on a manual run only,

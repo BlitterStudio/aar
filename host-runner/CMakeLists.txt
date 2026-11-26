@@ -69,6 +69,7 @@ add_library(aar-host STATIC
   src/memory.c
   src/files.c
   src/display.c
+  src/hostgl.c
   src/input.c
   src/audio.c
   src/console.c
@@ -84,6 +85,9 @@ target_include_directories(aar-host
 target_link_libraries(aar-host PUBLIC ${AAR_SDL2})
 if(WIN32)
   target_link_libraries(aar-host PUBLIC user32)
+else()
+  # hostgl.c calls tan() for gluPerspective.
+  target_link_libraries(aar-host PUBLIC m)
 endif()
 target_compile_options(aar-host PRIVATE -Wall -Wextra -Werror)
 
@@ -111,9 +115,10 @@ aar_host_executable(echo SOURCES ${AAR_TEMPLATE_DIR}/echo.c)
 aar_host_executable(pixels SOURCES ${AAR_TEMPLATE_DIR}/pixels.c)
 aar_host_executable(tone SOURCES ${AAR_TEMPLATE_DIR}/tone.c)
 aar_host_executable(memhog SOURCES ${AAR_TEMPLATE_DIR}/memhog.c)
-# Needs the GL group, which this runner lacks: it links through gl.c and exits
-# 2 at aar_gl_bind. The "nogl" test checks that.
+# Draws through the GL group when the runner has it, and exits 2 at
+# aar_gl_bind when it does not (the "nogl" test checks that).
 aar_host_executable(mgl-conformance SOURCES ${AAR_TEMPLATE_DIR}/mgl_conformance.c)
+aar_host_executable(gltest SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/gltest.c)
 aar_host_executable(contract SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/contract.c)
 aar_host_executable(msgflood SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/msgflood.c)
 aar_host_executable(conshort SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/conshort.c)
@@ -223,6 +228,16 @@ if(BUILD_TESTING)
   aar_host_test(msgwaitstop EXE contract)
   aar_host_test(msgwaitidle EXE contract)
   aar_host_test(nogl EXE mgl-conformance)
+
+  # The GL group. These need a GL context (EGL offscreen for --headless,
+  # Mesa llvmpipe will do), and exit 77 (skipped) where the host has none.
+  # Set AAR_TEST_REQUIRE_GL=1 to make that a failure, as CI does.
+  aar_host_test(glabsent EXE gltest)
+  aar_host_test(gl EXE gltest)
+  aar_host_test(glwindow EXE gltest)
+  aar_host_test(glconf EXE mgl-conformance)
+  set_tests_properties(gl glwindow glconf PROPERTIES SKIP_RETURN_CODE 77)
+  set_tests_properties(glconf PROPERTIES TIMEOUT 180)
   aar_host_test(keys EXE hello ENV "AAR_HOST_SELFTEST=1")
   aar_host_test(contract)
 

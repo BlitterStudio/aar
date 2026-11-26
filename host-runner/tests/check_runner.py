@@ -10,7 +10,7 @@ import tempfile
 
 import threading
 
-def run(exe, args, *, input_bytes=None, env=None, cwd=None):
+def run(exe, args, *, input_bytes=None, env=None, cwd=None, timeout=30):
     merged = os.environ.copy()
     merged["SDL_VIDEODRIVER"] = "dummy"
     merged["SDL_AUDIODRIVER"] = "dummy"
@@ -23,7 +23,7 @@ def run(exe, args, *, input_bytes=None, env=None, cwd=None):
         stderr=subprocess.PIPE,
         env=merged,
         cwd=cwd,
-        timeout=30,
+        timeout=timeout,
         check=False,
     )
 
@@ -320,12 +320,143 @@ def check_mailbox(exe):
 
 
 def check_nogl(exe):
-    # The runner has no GL group: aar_gl_bind returns NULL, and the template
+    # --no-gl takes the group away: aar_gl_bind returns NULL, and the template
     # ends with 2 before it draws anything.
-    proc = run(exe, ["--headless"])
+    proc = run(exe, ["--headless", "--no-gl"])
     if proc.returncode != 2:
         show(proc)
         raise SystemExit(f"expected exit 2 without the GL group, got {proc.returncode}")
+
+
+def gl_missing(proc, what):
+    # The test apps exit 77 and the template exits 2 when the host offers no
+    # GL context. CTest shows 77 as skipped, unless CI wants GL to work.
+    show(proc)
+    if os.environ.get("AAR_TEST_REQUIRE_GL"):
+        raise SystemExit(f"{what}: no GL group, and AAR_TEST_REQUIRE_GL is set")
+    sys.stderr.write(f"SKIP {what}: the host runner has no GL group here\n")
+    raise SystemExit(77)
+
+
+def check_glabsent(exe):
+    # Without a GL context the group is absent, and so is it with --no-gl on a
+    # host that has one. Both forms must behave as a runner without GL.
+    expect_ok(run(exe, ["--headless", "--no-gl", "--", "absent"]))
+    expect_ok(run(exe, ["--no-gl", "--", "absent"]))
+
+
+def rgb565_at(data, width, x, y_from_bottom, height):
+    row = height - 1 - y_from_bottom
+    i = (row * width + x) * 2
+    return data[i], data[i + 1]
+
+
+def check_gl_dump(path, width, height):
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if len(data) != width * height * 2:
+        raise SystemExit(f"gl dump is {len(data)} bytes, expected {width * height * 2}")
+    # The scene of gltest: red clear colour, a green triangle at the lower left.
+    if rgb565_at(data, width, 8, 8, height) != (0x07, 0xE0):
+        raise SystemExit("gl dump: the triangle is not green at the lower left")
+    if rgb565_at(data, width, 60, 44, height) != (0xF8, 0x00):
+        raise SystemExit("gl dump: the clear colour is not red at the upper right")
+
+
+def check_gl(exe):
+    # Headless: the offscreen driver gives a context without a display.
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "gl.bin")
+        proc = run(exe, ["--headless", "--dump-front", path, "--", "front"])
+        if proc.returncode == 77:
+            gl_missing(proc, "gl")
+        expect_ok(proc)
+        err = proc.stderr.decode("utf-8", "replace")
+        # The count starts again when the app reopens the display, and gltest
+        # swaps once after that.
+        if "flips=1" not in err:
+            show(proc)
+            raise SystemExit("gl: expected flips=1")
+        check_gl_dump(path, 64, 48)
+    # Without --dump-front a swap does not read the frame back.
+    proc = run(exe, ["--headless", "--"])
+    if proc.returncode == 77:
+        gl_missing(proc, "gl")
+    expect_ok(proc)
+
+
+def check_glwindow(exe):
+    # A window, scaled, the way a developer runs it: a real display, or Xvfb.
+    merged = os.environ.copy()
+    merged["SDL_AUDIODRIVER"] = "dummy"
+    merged.pop("SDL_VIDEODRIVER", None)
+    prefix = []
+    if sys.platform.startswith("linux") and not (
+        merged.get("DISPLAY") or merged.get("WAYLAND_DISPLAY")
+    ):
+        import shutil
+
+        xvfb = shutil.which("xvfb-run")
+        if not xvfb:
+            gl_missing(subprocess.CompletedProcess([], 77, b"", b""), "glwindow (no display, no xvfb-run)")
+        prefix = [xvfb, "-a"]
+        merged["SDL_VIDEODRIVER"] = "x11"
+        merged["LIBGL_ALWAYS_SOFTWARE"] = "1"
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "gl.bin")
+        proc = subprocess.run(
+            [*prefix, exe, "--scale", "2", "--dump-front", path, "--", "front"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=merged,
+            timeout=60,
+            check=False,
+        )
+        if proc.returncode == 77:
+            gl_missing(proc, "glwindow")
+        expect_ok(proc)
+        # xvfb-run folds the app's stderr into its stdout.
+        err = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+        if "flips=1" not in err:
+            show(proc)
+            raise SystemExit("glwindow: expected flips=1")
+        check_gl_dump(path, 64, 48)
+
+
+def check_glconf(exe):
+    # The MiniGL texture environment matrix of templates/mgl_conformance.c on
+    # the host's GL. The template exits 2 when it cannot bind, and 1 when a
+    # case differs. The cases whose result the GL 1.1 specification fixes (the
+    # groups below) must pass on any conforming GL. The other groups hold
+    # MiniGL's own choices, which the host GL does not have to share (see
+    # host-runner/README.md).
+    import re
+
+    proc = run(exe, ["--headless"], timeout=170)
+    if proc.returncode == 2:
+        gl_missing(proc, "glconf")
+    out = proc.stdout.decode("utf-8", "replace")
+    summary = re.search(r"MGL summary cases=(\d+) failures=(\d+)", out)
+    if proc.returncode not in (0, 1) or not summary:
+        show(proc)
+        raise SystemExit(f"mgl-conformance on the host GL: exit {proc.returncode}")
+    cases, failures = int(summary.group(1)), int(summary.group(2))
+    start = re.search(r"MGL start cases=(\d+)", out)
+    if not start or int(start.group(1)) != cases or cases == 0 or failures >= cases:
+        show(proc)
+        raise SystemExit("mgl-conformance did not run the matrix")
+    groups = {}
+    for m in re.finditer(r"^MGL env=(\w+) fmt=(\w+) draw=(\w+) pass=(\d+) fail=(\d+)", out, re.M):
+        groups[(m.group(1), m.group(2), m.group(3))] = (int(m.group(4)), int(m.group(5)))
+    for env, fmt in [("MODULATE", f) for f in ("RGBA", "RGB", "LUMINANCE", "ALPHA", "LUMINANCE_ALPHA")] + [
+        ("REPLACE", "RGBA"),
+        ("DECAL", "RGBA"),
+    ]:
+        for draw in ("immediate", "arrays", "elements"):
+            got = groups.get((env, fmt, draw))
+            if not got or got[0] == 0 or got[1] != 0:
+                show(proc)
+                raise SystemExit(f"mgl-conformance: {env}/{fmt}/{draw} did not pass on the host GL: {got}")
 
 
 def check_constop(exe):
@@ -514,6 +645,8 @@ def check_contract(exe):
         expect_ok(proc)
         proc = run(exe, ["--headless", "--", "table"])
         expect_ok(proc)
+        proc = run(exe, ["--headless", "--no-gl", "--", "table", "nogl"])
+        expect_ok(proc)
         proc = run(exe, ["--headless", "--", "display"])
         expect_ok(proc)
         proc = run(exe, ["--", "services"])
@@ -551,6 +684,10 @@ CHECKS = {
     "conshort": check_conshort,
     "mailbox": check_mailbox,
     "nogl": check_nogl,
+    "glabsent": check_glabsent,
+    "gl": check_gl,
+    "glwindow": check_glwindow,
+    "glconf": check_glconf,
     "constop": check_constop,
     "pixelsstop": check_pixelsstop,
     "msgwaitstop": check_msgwaitstop,

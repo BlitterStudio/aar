@@ -47,6 +47,7 @@ struct host_display {
     SDL_Window *win;
     SDL_Renderer *ren;
     SDL_Texture *tex;
+    int win_x, win_y;
 };
 
 static struct host_display disp;
@@ -248,10 +249,65 @@ static void fill_surface(aar_surface *out)
     out->back = disp.buf[disp.drawing];
 }
 
+/*
+ * The window of the surface, in one of two forms. The software form shows the
+ * converted surface through a renderer and a texture; a headless run has only
+ * a hidden window, because nothing would see the picture. The GL form has an
+ * OpenGL pixel format for the context of hostgl.c, and nothing else: GL draws
+ * into the window itself, at the size of the surface (--scale does not apply).
+ * A window cannot have both, so a bind replaces one with the other.
+ */
+static int create_window(int gl)
+{
+    const struct host_options *opt = host_options();
+    int scale = gl ? 1 : opt->scale;
+
+    disp.win = SDL_CreateWindow("aar-host", disp.win_x, disp.win_y,
+                                (int)disp.w * scale, (int)disp.h * scale,
+                                (opt->headless ? SDL_WINDOW_HIDDEN : 0) |
+                                    (gl ? SDL_WINDOW_OPENGL : 0));
+    return disp.win ? 0 : -1;
+}
+
+static int create_software(void)
+{
+    const struct host_options *opt = host_options();
+
+    if (create_window(0) != 0)
+        return -1;
+    if (opt->headless)
+        return 0;
+    disp.ren = SDL_CreateRenderer(
+        disp.win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!disp.ren)
+        disp.ren = SDL_CreateRenderer(disp.win, -1, SDL_RENDERER_SOFTWARE);
+    if (!disp.ren)
+        return -1;
+    disp.tex = SDL_CreateTexture(disp.ren, SDL_PIXELFORMAT_ARGB8888,
+                                 SDL_TEXTUREACCESS_STREAMING, (int)disp.w,
+                                 (int)disp.h);
+    return disp.tex ? 0 : -1;
+}
+
+/* Remembers where the window was, so that a replacement opens there. */
+static void destroy_window(void)
+{
+    if (disp.win && !host_options()->headless)
+        SDL_GetWindowPosition(disp.win, &disp.win_x, &disp.win_y);
+    if (disp.tex)
+        SDL_DestroyTexture(disp.tex);
+    if (disp.ren)
+        SDL_DestroyRenderer(disp.ren);
+    if (disp.win)
+        SDL_DestroyWindow(disp.win);
+    disp.tex = 0;
+    disp.ren = 0;
+    disp.win = 0;
+}
+
 static int api_display_open(uint32_t w, uint32_t h, uint32_t format,
                             uint32_t flags, aar_surface *out)
 {
-    const struct host_options *opt = host_options();
     uint32_t bpp;
     uint32_t pitch;
     uint64_t bytes;
@@ -304,23 +360,9 @@ static int api_display_open(uint32_t w, uint32_t h, uint32_t format,
     if (!disp.shown || !disp.convert)
         goto fail;
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
-    disp.win = SDL_CreateWindow("aar-host", SDL_WINDOWPOS_UNDEFINED,
-                                SDL_WINDOWPOS_UNDEFINED, (int)w * opt->scale,
-                                (int)h * opt->scale,
-                                opt->headless ? SDL_WINDOW_HIDDEN : 0);
-    if (!disp.win)
-        goto fail;
-    disp.ren = SDL_CreateRenderer(
-        disp.win, -1,
-        opt->headless ? SDL_RENDERER_SOFTWARE
-                      : SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!disp.ren)
-        disp.ren = SDL_CreateRenderer(disp.win, -1, SDL_RENDERER_SOFTWARE);
-    if (!disp.ren)
-        goto fail;
-    disp.tex = SDL_CreateTexture(disp.ren, SDL_PIXELFORMAT_ARGB8888,
-                                 SDL_TEXTUREACCESS_STREAMING, (int)w, (int)h);
-    if (!disp.tex)
+    disp.win_x = SDL_WINDOWPOS_UNDEFINED;
+    disp.win_y = SDL_WINDOWPOS_UNDEFINED;
+    if (create_software() != 0)
         goto fail;
     disp.open = 1;
     fill_surface(out);
@@ -330,12 +372,7 @@ fail:
         free(disp.buf[i]);
     free(disp.shown);
     free(disp.convert);
-    if (disp.tex)
-        SDL_DestroyTexture(disp.tex);
-    if (disp.ren)
-        SDL_DestroyRenderer(disp.ren);
-    if (disp.win)
-        SDL_DestroyWindow(disp.win);
+    destroy_window();
     memset(&disp, 0, sizeof disp);
     disp.pending = -1;
     return AAR_E_IO;
@@ -453,24 +490,89 @@ static int api_display_close(uint32_t surface_id)
 
     if (!valid_id(surface_id))
         return AAR_E_INVAL;
-    if (disp.tex)
-        SDL_DestroyTexture(disp.tex);
-    if (disp.ren)
-        SDL_DestroyRenderer(disp.ren);
-    if (disp.win)
-        SDL_DestroyWindow(disp.win);
+    host_gl_release();
+    destroy_window();
     for (i = 0; i < 3; i++) {
         free(disp.buf[i]);
         disp.buf[i] = 0;
     }
     free(disp.convert);
     disp.convert = 0;
-    disp.tex = 0;
-    disp.ren = 0;
-    disp.win = 0;
     disp.open = 0;
     disp.pending = -1;
     return AAR_OK;
+}
+
+/*
+ * The GL side (hostgl.c). gl_open swaps the window of the open surface for one
+ * with an OpenGL pixel format and returns it with its size. gl_close puts the
+ * software window back and shows the surface again. gl_swapped counts a
+ * presented frame, as a flip does. gl_store copies a frame that GL drew (RGBA,
+ * bottom row first) into the surface, in the format of the surface, so that
+ * --dump-front and a read of the front buffer see it. A CLUT8 surface has no
+ * colour to store.
+ */
+int host_display_gl_open(uint32_t surface_id, void **window, int32_t *w,
+                         int32_t *h)
+{
+    if (!valid_id(surface_id))
+        return -1;
+    destroy_window();
+    if (create_window(1) != 0) {
+        create_software();
+        return -1;
+    }
+    *window = disp.win;
+    *w = (int32_t)disp.w;
+    *h = (int32_t)disp.h;
+    return 0;
+}
+
+void host_display_gl_close(void)
+{
+    if (!disp.open)
+        return;
+    destroy_window();
+    if (create_software() != 0) {
+        fprintf(stderr, "aar-host: cannot restore the window: %s\n",
+                SDL_GetError());
+        return;
+    }
+    present_buffer(disp.showing);
+}
+
+void host_display_gl_swapped(void)
+{
+    count_flip();
+}
+
+void host_display_gl_store(const uint8_t *rgba, uint32_t w, uint32_t h)
+{
+    uint8_t *dst = disp.open ? disp.buf[disp.showing] : 0;
+    uint32_t x, y;
+
+    if (!dst || !disp.shown || w != disp.w || h != disp.h ||
+        disp.format == AAR_FMT_CLUT8)
+        return;
+    for (y = 0; y < h; y++) {
+        const uint8_t *src = rgba + (size_t)(h - 1u - y) * w * 4u;
+        uint8_t *row = dst + (size_t)y * disp.pitch;
+
+        for (x = 0; x < w; x++) {
+            if (disp.format == AAR_FMT_RGB565) {
+                row[x * 2u] = (uint8_t)((src[x * 4u] & 0xf8u) |
+                                        (src[x * 4u + 1u] >> 5));
+                row[x * 2u + 1u] = (uint8_t)(((src[x * 4u + 1u] << 3) & 0xe0u) |
+                                             (src[x * 4u + 2u] >> 3));
+            } else {
+                row[x * 4u] = src[x * 4u + 2u];
+                row[x * 4u + 1u] = src[x * 4u + 1u];
+                row[x * 4u + 2u] = src[x * 4u];
+                row[x * 4u + 3u] = 255u;
+            }
+        }
+    }
+    memcpy(disp.shown, dst, disp.shown_bytes);
 }
 
 void host_display_pump(void)

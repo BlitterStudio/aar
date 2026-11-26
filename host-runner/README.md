@@ -13,11 +13,12 @@ target in freestanding mode. `freestanding_unit` compiles libaar's `aar.c` and
 wrappers over a fake table and the `mem*` routines.
 
 The table claims `AAR_GROUP_DISPLAY`, `AAR_GROUP_INPUT`, `AAR_GROUP_AUDIO` and
-`AAR_GROUP_SERVICES`, in `aar_api.groups` and in `aar_info.groups`. There is
-no GL group: `gl_bind`, `gl_swap` and `gl_unbind` are NULL, `aar_gl_bind`
-returns NULL, and the `gl*` wrappers do nothing. The services group is present
-and answers `AAR_E_NOSYS` for what the host does not provide (see "Differences
-from a target").
+`AAR_GROUP_SERVICES`, in `aar_api.groups` and in `aar_info.groups`. It adds
+`AAR_GROUP_GL` when the host can make an OpenGL compatibility context (see
+"GL"); without it, `gl_bind`, `gl_swap` and `gl_unbind` are NULL,
+`aar_gl_bind` returns NULL, and the `gl*` wrappers do nothing. The services
+group is present and answers `AAR_E_NOSYS` for what the host does not provide
+(see "Differences from a target").
 
 ## Build
 
@@ -25,6 +26,9 @@ Linux (CI uses this):
 
 ```sh
 sudo apt-get install cmake libsdl2-dev python3
+# for the GL tests: Mesa (llvmpipe) for EGL and GLX, and a virtual X server
+sudo apt-get install libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 \
+  xvfb xauth
 cmake -S host-runner -B build-host
 cmake --build build-host
 ctest --test-dir build-host --output-on-failure
@@ -48,9 +52,14 @@ nothing in a build for the host, because the compiler is not an Arm target;
 define `AAR_HOST` when an Arm-hosted compiler builds the runner.
 
 CTest runs the native template tests, marked conformance payloads, contract
-and queue/display fixtures, source-level unit tests and libaar's freestanding
-tests. `host-runner/CMakeLists.txt` lists the cases; the Python drivers use SDL's
-dummy video and audio drivers.
+and queue/display fixtures, GL tests, source-level unit tests and libaar's
+freestanding tests. `host-runner/CMakeLists.txt` lists the cases; the Python
+drivers use SDL's dummy video and audio drivers, except for the GL tests, which
+need a context. `gl` and `glconf` run `--headless` on SDL's offscreen driver
+(EGL, Mesa llvmpipe is enough). `glwindow` runs in a window, on the display of
+the machine or under `xvfb-run`. A GL test exits 77, which CTest reports as
+skipped, when the host gives no GL group; set `AAR_TEST_REQUIRE_GL=1` to make
+that a failure.
 
 ## Run
 
@@ -58,8 +67,10 @@ dummy video and audio drivers.
 ./pixels --root . --scale 2
 ./filter --root "$PWD" -- in.bin out.bin
 ./console -- one
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
-  ./pixels --headless --frames 2 --dump-front frame.bin
+./pixels --headless --frames 2 --dump-front frame.bin
+./mgl-conformance --scale 2
+./mgl-conformance --headless --dump-front frame.bin
+./mgl-conformance --no-gl
 ```
 
 `argv[0]` passed to `aar_main` is this program's name. Arguments after the
@@ -71,8 +82,9 @@ runner options, or after `--`, are the app's arguments.
 | --- | --- |
 | `--root DIR` | Root for relative app paths. Default `.`. |
 | `--abs` | Allow a path that contains `:`. The root check does not apply. |
-| `--scale N` | Window scale, 1..8. The surface stays at the app's size. |
-| `--headless` | Force SDL's dummy video and audio drivers. No visible window. |
+| `--scale N` | Window scale, 1..8. The surface stays at the app's size. A GL window ignores it. |
+| `--headless` | No visible window. SDL's dummy audio driver, and the offscreen video driver when GL is wanted (see "GL"), else the dummy video driver. |
+| `--no-gl` | Leave the GL group out, as on a host without GL. |
 | `--frames N` | Set the stop flag after N presented frames. |
 | `--input FILE` | Scripted input events, injected before `aar_main`. |
 | `--audio-null` | Consume PCM on `aar_yield` instead of opening SDL audio. |
@@ -198,6 +210,76 @@ buffers. A flip replaces the pending frame, counts it in
 it an async flip stays pending until `aar_yield` or `aar_display_vsync`, and
 a flip or a refresh in the meantime is `AAR_E_BUSY`. `aar_display_flip_idle`
 and `aar_display_vsync` without a display are `AAR_E_INVAL`.
+
+### GL
+
+The group is present when the runner finds an OpenGL compatibility context with
+a depth buffer of at least 16 bits and every GL 1.1 entry point of the table,
+which spec 8.5 asks of a platform that sets `AAR_GROUP_GL`. It looks once at
+startup, with a hidden window and a throwaway context, and says why on stderr
+when it finds none. The dummy video driver cannot make a context and gets no
+message. `--no-gl` skips the look and keeps the group out.
+
+A surface has a software window or a GL window. The software window shows the
+converted surface through an SDL renderer. `aar_gl_bind(id)` needs the open
+surface: another id, a second bind before `aar_gl_unbind`, and a context that
+cannot be made all return NULL. A bind destroys the software window, opens a
+window with an OpenGL pixel format at the same position, and creates the
+context. The window has the size of the surface, so `--scale` does not apply
+while GL is bound: an app's `glViewport` is in surface pixels. The pixel format
+is RGB with no alpha, double buffered, with 24 bits of depth and 8 of stencil,
+or else 24 of depth, or else 16. `aar_gl_unbind` deletes the context, makes the
+software window again and shows the surface. `aar_display_close` with a context
+bound releases it first. The window changes in a bind and an unbind, so it may
+flicker.
+
+`aar_gl_swap` calls `SDL_GL_SwapWindow` and counts one presented frame, as a
+flip does (`--frames`). The host presents at once, so no swapped frame is in
+flight. The swap waits for the display refresh in a window and not headless.
+GL draws into the window, and the surface's own buffers are left as the app set
+them. With `--dump-front` a swap first reads the back buffer into the front
+buffer of the surface, in the layout of the surface (RGB565 or BGRA8888; CLUT8
+is not written), so that the dump and `aar_display_refresh` show the GL frame.
+That costs a readback per frame, so it is off otherwise.
+
+The table has `version` `AAR_GL_VERSION_ARRAYS` and the full `size`. A slot
+points at a wrapper in the runner and not at the host function, because the
+calling convention of the host's GL is not the app's (stdcall on 32-bit
+Windows), and a slot whose entry the host lacks can stay NULL. The wrappers
+are in `src/hostgl.c`, listed in two macros, one for the entry points a GL 1.1
+host must have and one for optional ones; a slot that `aar/gl.h` appends is one
+line in one of them, and a build check fails until it is there.
+
+GLU is not linked. `Perspective` calls the host's `glFrustum`.
+`Build2DMipmaps` takes `GL_TEXTURE_2D`, `GL_UNSIGNED_BYTE` and the formats
+`GL_RGBA`, `GL_RGB`, `GL_LUMINANCE_ALPHA`, `GL_LUMINANCE` and `GL_ALPHA`. It
+scales a size that is not a power of two to the power of two that GLU picks,
+builds the levels with a box filter, uploads them, and returns 0, or `100900`
+(enum), `100901` (size) or `100902` (memory) without touching GL. It honours
+the unpack alignment, row length and skip settings. `ClientActiveTextureARB`
+uses `glClientActiveTextureARB` or else `glClientActiveTexture`, and
+`LockArrays` and `UnlockArrays` use the EXT entry points. When the host has
+none of them the slot is NULL and the `gl*` wrapper of libaar does nothing.
+
+`--headless` picks SDL's offscreen video driver, which makes contexts through
+EGL. Mesa's llvmpipe is enough, so a machine without a GPU or a display can run
+a GL app. No SDL renderer is made for the hidden window, because nothing would
+show it. When the offscreen driver or EGL is missing, the runner says so on
+stderr, falls back to the dummy video driver, and the GL group is absent. Many
+SDL builds for Windows and macOS have no EGL in the offscreen driver, so there
+GL needs a window.
+
+The host GL is more capable than a card's renderer. It takes enums, formats and
+texture sizes that the target does not handle, and it follows the GL
+specification where a card's renderer makes its own choice. An app that is
+right on the host can still draw wrongly on the target, so check the frame
+there. The runner has no strict mode that rejects what the reference platform
+lacks. The matrix of `templates/mgl_conformance.c` shows the effect: it records
+what MiniGL on RasterIX draws, so on the host it reports the cases where GL
+differs (the colour that an alpha texture gives, the alpha of an RGB or
+luminance texture under `GL_REPLACE`, `GL_DECAL` on a format that has no
+defined result) and exits 1. `glconf` requires the cases that the GL 1.1
+specification fixes to match.
 
 ### Audio
 
