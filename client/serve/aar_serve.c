@@ -187,17 +187,23 @@ static void timer_arm(struct aar_serve *s)
  *   - the claim, which may be revoked without a signal: 250 ms */
 static uint32_t timed_wake_us(struct aar_serve *s)
 {
-    uint32_t us;
+    uint32_t us, vb;
 
-    if (s->cfg.poll_us)
-        return s->cfg.poll_us;
-    us = AAR_SERVE_WATCHDOG_US;
-    if (s->gfx.input_win && us > 20000UL)
-        us = 20000UL;
-    if ((s->stop_asked || s->events.stop_pending) && us > 10000UL)
-        us = 10000UL;
-    if (s->reply_n)
-        us = 1000UL;
+    if (s->cfg.poll_us) {
+        us = s->cfg.poll_us;
+    } else {
+        us = AAR_SERVE_WATCHDOG_US;
+        if (s->gfx.input_win && us > 20000UL)
+            us = 20000UL;
+        if ((s->stop_asked || s->events.stop_pending) && us > 10000UL)
+            us = 10000UL;
+        if (s->reply_n)
+            us = 1000UL;
+    }
+    /* A DISPLAY_VBLANK that waits has its timeout to meet. */
+    vb = aar_serve_display_vblank_wait_us(&s->core.display, now_ms(s));
+    if (vb < us)
+        us = vb;
     return us;
 }
 
@@ -306,7 +312,7 @@ static int group_served(const struct aar_serve *s, uint16_t op)
 {
     ULONG group = 0;
 
-    if (op >= AAR_OP_DISPLAY_OPEN && op <= AAR_OP_DISPLAY_CLOSE)
+    if (op >= AAR_OP_DISPLAY_OPEN && op <= AAR_OP_DISPLAY_VBLANK)
         group = AAR_GROUP_DISPLAY;
     else if (op == AAR_OP_AUDIO_OPEN || op == AAR_OP_AUDIO_CLOSE)
         group = AAR_GROUP_AUDIO;
@@ -344,6 +350,7 @@ static void service_requests(struct aar_serve *s)
     AARServiceReq r;
     LONG rc = AAR_OK;
 
+    aar_serve_display_clock(&s->core.display, now_ms(s));
     reply_flush(s);
     for (;;) {
         struct aar_serve_req q;
@@ -520,6 +527,7 @@ static int config_valid(const aar_serve_config *cfg)
             cfg->audio_route == AAR_AUDIO_ROUTE_AHI) &&
            (cfg->groups & ~AAR_GROUPS_DEFINED) == 0 &&
            (cfg->joy_ports & ~3UL) == 0 &&
+           (cfg->cd32_ports & ~3UL) == 0 &&
            (cfg->break_mask & ~AAR_SERVE_BREAK_ALL) == 0 &&
            cfg->display_strategy <= AAR_SERVE_DISPLAY_SINGLE &&
            cfg->platform == 0 &&
@@ -539,6 +547,11 @@ static void serve_free(struct aar_serve *s)
     }
     if (s->tm.port)
         X_DELETE_PORT(s->tm.port);
+    vb_free(s);
+    if (s->in.ll)
+        X_CLOSE_LIB(s->in.ll);
+    if (s->in.keymap)
+        X_CLOSE_LIB(s->in.keymap);
     if (s->gfx.p96)
         X_CLOSE_LIB(s->gfx.p96);
     X_FREE_VEC(s);
@@ -599,6 +612,14 @@ LONG aar_serve_create(AARHandle *h, const aar_serve_config *cfg,
         return AAR_E_NOMEM;
     }
     s->gfx.p96 = X_OPEN_LIB((CONST_STRPTR)"Picasso96API.library", 2);
+    /* A CD32 pad is read through lowlevel.library; the program asked for it. */
+    if (cfg->cd32_ports) {
+        s->in.ll = X_OPEN_LIB((CONST_STRPTR)"lowlevel.library", 37);
+        if (!s->in.ll) {
+            serve_free(s);
+            return AAR_E_NOSYS;
+        }
+    }
     s->tm.port = X_CREATE_PORT();
     if (s->tm.port)
         s->tm.io = (struct timerequest *)X_CREATE_IOREQ(
@@ -709,6 +730,8 @@ ULONG aar_serve_sigmask(const aar_serve *cs)
      * AHI. */
     if (s->gfx.safe_port)
         mask |= 1UL << s->gfx.safe_port->mp_SigBit;
+    if (s->gfx.vb_port)
+        mask |= 1UL << s->gfx.vb_port->mp_SigBit;
     if (s->ahi.port)
         mask |= 1UL << s->ahi.port->mp_SigBit;
     if (s->cfg.flags & AAR_SERVEF_USE_SIGNAL)
@@ -753,6 +776,7 @@ static LONG step_body(aar_serve *s, ULONG signals)
     service_messages(s);
     service_console(s);
     service_display(s);
+    aar_serve_display_vblank_check(&s->core.display, now_ms(s));
     service_ahi_audio(s);
     reply_flush(s);
     /* The claim may have been revoked while a request was served. One small
@@ -815,6 +839,12 @@ LONG aar_serve_post_event(aar_serve *s, const aar_event *ev)
 void aar_serve_flip_shown(aar_serve *s)
 {
     aar_serve_display_flip_safe(&s->core.display);
+}
+
+/* A replacement display's vertical blank (its table's vblank call is watching). */
+void aar_serve_vblank(aar_serve *s)
+{
+    aar_serve_display_vblank_seen(&s->core.display);
 }
 
 /* The completions of a replacement console (hooks.console): the program tells

@@ -2291,7 +2291,8 @@ static void rd_close(void *ctx)
 }
 
 static const struct aar_serve_display_ops rd_full = {
-    NULL, rd_open, rd_change, rd_pan, rd_tof, rd_palette, rd_close
+    NULL, rd_open, rd_change, rd_pan, rd_tof, rd_palette, rd_close,
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL
 };
 static const struct aar_serve_display_ops rd_only_open = { .open = rd_open };
 static aar_serve_hooks table_hooks;

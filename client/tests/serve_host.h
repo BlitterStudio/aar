@@ -127,6 +127,7 @@
 #define TR_ADDREQUEST 9
 #define TIMERNAME "timer.device"
 #define UNIT_MICROHZ 0
+#define UNIT_VBLANK 1
 #define AHINAME "ahi.device"
 #define AHI_DEFAULT_UNIT 0
 #define AHIST_S16S 3
@@ -145,6 +146,9 @@
 #define MIDDLEDOWN 0x6A
 #define MIDDLEUP 0xEA
 #define WFLG_WINDOWACTIVE 0x2000
+#define IDCMP_NEWSIZE 0x00000002UL
+#define IDCMP_ACTIVEWINDOW 0x00040000UL
+#define IDCMP_INACTIVEWINDOW 0x00080000UL
 #define SB_SCREEN_BITMAP 1
 
 #define WA_Left (TAG_USER + 100)
@@ -159,6 +163,24 @@
 #define WA_Backdrop (TAG_USER + 130)
 #define WA_RMBTrap (TAG_USER + 132)
 #define WA_NoCareRefresh (TAG_USER + 135)
+#define WA_PubScreen (TAG_USER + 150)
+#define WA_Title (TAG_USER + 151)
+#define WA_InnerWidth (TAG_USER + 152)
+#define WA_InnerHeight (TAG_USER + 153)
+#define WA_DragBar (TAG_USER + 154)
+#define WA_DepthGadget (TAG_USER + 155)
+#define WA_CloseGadget (TAG_USER + 156)
+#define WA_SizeGadget (TAG_USER + 157)
+#define WA_SizeBRight (TAG_USER + 158)
+#define WA_SizeBBottom (TAG_USER + 159)
+#define WA_MinWidth (TAG_USER + 160)
+#define WA_MinHeight (TAG_USER + 161)
+#define WA_MaxWidth (TAG_USER + 162)
+#define WA_MaxHeight (TAG_USER + 163)
+#define WA_SmartRefresh (TAG_USER + 164)
+#define WA_BusyPointer (TAG_USER + 165)
+#define WA_PointerDelay (TAG_USER + 166)
+#define WA_Pointer (TAG_USER + 167)
 
 #define INVALID_ID ((ULONG)~0UL)
 #define RGBFB_CLUT 0
@@ -170,6 +192,33 @@
 #define P96BMA_MEMORY 1
 #define P96BMA_BYTESPERROW 2
 #define P96BMA_RGBFORMAT 3
+#define P96BMA_BYTESPERPIXEL 4
+#define P96BMA_ISP96 5
+#define P96IDA_ISP96 6
+#define P96IDA_COMPATIBLEFORMATS 7
+#define BMF_CLEAR 1UL
+#define BMF_DISPLAYABLE 2UL
+#define DTAG_DISP 0x80000000UL
+#define DTAG_DIMS 0x80001000UL
+#define DTAG_MNTR 0x80002000UL
+#define IECLASS_RAWKEY 1
+#define IEQUALIFIER_LCOMMAND 0x0040
+#define IEQUALIFIER_RCOMMAND 0x0080
+#define JP_TYPE_NOTAVAIL (0UL << 28)
+#define JP_TYPE_GAMECTLR (1UL << 28)
+#define JP_TYPE_MOUSE (2UL << 28)
+#define JP_TYPE_JOYSTK (3UL << 28)
+#define JPF_BUTTON_BLUE (1UL << 23)
+#define JPF_BUTTON_RED (1UL << 22)
+#define JPF_BUTTON_YELLOW (1UL << 21)
+#define JPF_BUTTON_GREEN (1UL << 20)
+#define JPF_BUTTON_FORWARD (1UL << 19)
+#define JPF_BUTTON_REVERSE (1UL << 18)
+#define JPF_BUTTON_PLAY (1UL << 17)
+#define JPF_JOY_UP (1UL << 3)
+#define JPF_JOY_DOWN (1UL << 2)
+#define JPF_JOY_LEFT (1UL << 1)
+#define JPF_JOY_RIGHT (1UL << 0)
 #define P96SA_Left (TAG_USER + 0x10000)
 #define P96SA_Width (TAG_USER + 0x10001)
 #define P96SA_Height (TAG_USER + 0x10002)
@@ -196,8 +245,10 @@ struct Device {
 struct GfxBase {
     int hx_dummy;
 };
+struct Screen;
 struct IntuitionBase {
     int hx_dummy;
+    struct Screen *ActiveScreen;
 };
 struct DevProc;
 struct timeval {
@@ -337,6 +388,7 @@ struct Screen {
     struct ViewPort ViewPort;
     struct RasInfo ras;
     struct BitMap bm;
+    UBYTE *Title, *DefaultTitle;
 };
 struct DBufInfo {
     struct Message dbi_SafeMessage;
@@ -353,12 +405,49 @@ struct Window {
     UWORD Flags;
     WORD Width, Height;
     struct Screen *WScreen;
+    struct RastPort *RPort;
+    BYTE BorderLeft, BorderTop, BorderRight, BorderBottom;
+    struct RastPort hx_rp;
+    /* what the test asks about the window it was opened with */
+    ULONG hx_idcmp;
+    int hx_close_gadget, hx_size_gadget, hx_custom_screen;
+    struct Screen *hx_pub;
+    char hx_title[256], hx_screen_title[256];
 };
 struct IntuiMessage {
     struct Message ExecMessage;
     ULONG Class;
     UWORD Code, Qualifier;
     WORD MouseX, MouseY;
+    APTR IAddress;
+};
+struct InputEvent {
+    struct InputEvent *ie_NextEvent;
+    UBYTE ie_Class, ie_SubClass;
+    UWORD ie_Code, ie_Qualifier;
+    APTR ie_EventAddress;
+};
+struct Preferences {
+    UWORD color17, color18, color19;
+};
+struct Rectangle {
+    WORD MinX, MinY, MaxX, MaxY;
+};
+struct DimensionInfo {
+    struct Rectangle Nominal;
+};
+struct DisplayInfo {
+    UWORD NotAvailable;
+};
+struct MonitorInfo {
+    UWORD TotalRows, TotalColorClocks;
+};
+typedef ULONG RGBFTYPE;
+struct RenderInfo {
+    APTR Memory;
+    WORD BytesPerRow;
+    WORD pad;
+    RGBFTYPE RGBFormat;
 };
 struct EasyStruct {
     ULONG es_StructSize, es_Flags;
@@ -702,6 +791,7 @@ HX_UNUSED static int hx_ahi_pending_now;
 HX_UNUSED static int hx_ahi_max_pending;
 HX_UNUSED static struct Device hx_timer_dev, hx_ahi_dev;
 HX_UNUSED static unsigned long hx_timer_aborts;      /* timer requests aborted while still pending */
+HX_UNUSED static uint64_t hx_vblank_us = 20000;     /* the vertical blank period */
 HX_UNUSED static uint64_t hx_ahi_end;                /* when the last queued AHI write finishes playing */
 HX_UNUSED static unsigned long hx_ahi_short;         /* writes shorter than hx_ahi_short_ms (each costs a 5 ms gap) */
 HX_UNUSED static unsigned hx_ahi_short_ms = 40;      /* a write shorter than this leaves a gap */
@@ -746,7 +836,7 @@ HX_UNUSED static void hx_delete_ioreq(struct IORequest *io)
 
 HX_UNUSED static BYTE hx_open_device(const char *name, ULONG unit, struct IORequest *io, ULONG flags)
 {
-    (void)unit;
+    io->io_Unit = (void *)(uintptr_t)unit;
     (void)flags;
     if (strcmp(name, TIMERNAME) == 0) {
         if (hx_timer_fail_open)
@@ -789,7 +879,17 @@ HX_UNUSED static void hx_send_io(struct IORequest *io)
 
         if (io->io_Command != TR_ADDREQUEST)
             HX_FAIL("timer command");
-        hx_sched((uint64_t)tr->tr_time.tv_secs * 1000000u + tr->tr_time.tv_micro, hx_io_done, io);
+        if ((uintptr_t)io->io_Unit == UNIT_VBLANK) {
+            /* The VBLANK unit counts vertical blanks: a request ends at the next one at
+             * the earliest, and a time of one microsecond is the next. */
+            uint64_t us = (uint64_t)tr->tr_time.tv_secs * 1000000u + tr->tr_time.tv_micro;
+            uint64_t first = hx_vblank_us - (hx_now % hx_vblank_us);
+
+            hx_sched(first + (us > hx_vblank_us ? (us - 1u) / hx_vblank_us * hx_vblank_us : 0u),
+                     hx_io_done, io);
+        } else {
+            hx_sched((uint64_t)tr->tr_time.tv_secs * 1000000u + tr->tr_time.tv_micro, hx_io_done, io);
+        }
     } else if (io->io_Device == &hx_ahi_dev) {
         struct AHIRequest *ar = (struct AHIRequest *)io;
         uint64_t us;
@@ -1616,7 +1716,6 @@ HX_UNUSED static unsigned long hx_changes, hx_safe_msgs, hx_pans, hx_palettes;
 HX_UNUSED static ULONG hx_last_palette[2 + 256 * 3];
 HX_UNUSED static int hx_pub_front;                   /* the public screen was brought to front */
 HX_UNUSED static int hx_pub_locks;
-HX_UNUSED static uint64_t hx_vblank_us = 20000;
 HX_UNUSED static struct Screen *hx_cur_screen;
 HX_UNUSED static struct Window *hx_cur_window;
 HX_UNUSED static int hx_requesters;
@@ -1640,16 +1739,36 @@ static uint8_t *hx_gfx_mem(uint32_t bytes)
     return p;
 }
 
+HX_UNUSED static struct Library hx_ll_lib, hx_keymap_lib;
+HX_UNUSED static int hx_ll_present = 1, hx_keymap_present = 1; /* lowlevel.library, keymap.library open */
+HX_UNUSED static int hx_ll_open, hx_keymap_open;               /* opens not closed */
+
 HX_UNUSED static struct Library *hx_open_lib(const char *name, ULONG version)
 {
     (void)version;
     if (strcmp(name, "Picasso96API.library") == 0 && hx_p96_present)
         return &hx_p96_lib;
+    if (strcmp(name, "lowlevel.library") == 0 && hx_ll_present) {
+        hx_ll_open++;
+        return &hx_ll_lib;
+    }
+    if (strcmp(name, "keymap.library") == 0 && hx_keymap_present) {
+        hx_keymap_open++;
+        return &hx_keymap_lib;
+    }
     return NULL;
 }
 
 HX_UNUSED static void hx_close_lib(struct Library *l)
 {
+    if (l == &hx_ll_lib) {
+        hx_ll_open--;
+        return;
+    }
+    if (l == &hx_keymap_lib) {
+        hx_keymap_open--;
+        return;
+    }
     if (l != &hx_p96_lib)
         HX_FAIL("CloseLibrary of a library that is not open");
 }
@@ -1742,6 +1861,8 @@ HX_UNUSED static void hx_p96_close_screen(struct Screen *s)
     hx_free(s);
 }
 
+HX_UNUSED static struct Screen hx_pub_screen;        /* the default public screen (hx_lock_pub_screen) */
+HX_UNUSED static int hx_pub_is_p96 = 1;              /* it is a Picasso96 screen */
 HX_UNUSED static ULONG hx_p96_bitmap_attr(struct BitMap *bm, ULONG attr)
 {
     if (attr == P96BMA_MEMORY)
@@ -1750,6 +1871,10 @@ HX_UNUSED static ULONG hx_p96_bitmap_attr(struct BitMap *bm, ULONG attr)
         return bm->BytesPerRow;
     if (attr == P96BMA_RGBFORMAT)
         return (ULONG)bm->hx_rgb;
+    if (attr == P96BMA_BYTESPERPIXEL)
+        return hx_bpp(bm->hx_rgb);
+    if (attr == P96BMA_ISP96)
+        return bm == &hx_pub_screen.bm ? (ULONG)hx_pub_is_p96 : 1UL;
     return 0;
 }
 
@@ -1833,11 +1958,39 @@ HX_UNUSED static void hx_wait_tof(void)
     hx_run_for(hx_vblank_us);
 }
 
+/* The drawing area of the last window or screen the test opened: p96WritePixelArray and
+ * p96RectFill write here, at the coordinates the rast port has (the window's top-left is 0,0).
+ * A pixel is hx_canvas_bpp bytes at x * bpp in its row. */
+#define HX_CANVAS_W 256
+#define HX_CANVAS_H 256
+HX_UNUSED static uint8_t hx_canvas[HX_CANVAS_W * HX_CANVAS_H * 4];
+HX_UNUSED static uint32_t hx_canvas_bpp = 4;
+HX_UNUSED static unsigned long hx_pwa_calls, hx_rectfills, hx_locks_taken;
+HX_UNUSED static int hx_locks_live, hx_p96_bitmaps_live, hx_bitmaps_live, hx_pointers_live;
+HX_UNUSED static int hx_p96_fail_alloc_bitmap;
+HX_UNUSED static struct BitMap *hx_last_surface;     /* the bitmap p96AllocBitMap made last */
+HX_UNUSED static int hx_ptr_kind;                    /* 0 default, 1 busy, 2 an object */
+HX_UNUSED static void *hx_ptr_obj;
+HX_UNUSED static unsigned long hx_ptr_calls;
+HX_UNUSED static WORD hx_pub_w = 640, hx_pub_h = 480;
+HX_UNUSED static int hx_pub_rgb = RGBFB_B8G8R8A8;
+HX_UNUSED static ULONG hx_pub_mode_id = 0x50002UL;
+HX_UNUSED static int hx_intuition_version = 47;
+
 HX_UNUSED static struct Screen *hx_lock_pub_screen(const char *name)
 {
+    struct Screen *s = &hx_pub_screen;
+
     (void)name;
     hx_pub_locks++;
-    return (struct Screen *)(uintptr_t)&hx_pub_locks;
+    s->Width = hx_pub_w;
+    s->Height = hx_pub_h;
+    s->bm.hx_rgb = hx_pub_rgb;
+    s->bm.Rows = (UWORD)hx_pub_h;
+    s->bm.BytesPerRow = (UWORD)(hx_pub_w * (WORD)hx_bpp(hx_pub_rgb));
+    s->RastPort.BitMap = &s->bm;
+    s->ViewPort.RasInfo = &s->ras;
+    return s;
 }
 
 HX_UNUSED static void hx_unlock_pub_screen(void *name, struct Screen *s)
@@ -1863,7 +2016,10 @@ HX_UNUSED static struct Window *hx_open_window(void *newwin, ULONG first, ...)
     va_list ap;
     ULONG tag = first;
     struct Window *w;
-    struct Screen *scr = NULL;
+    struct Screen *scr = NULL, *pub = NULL;
+    ULONG idcmp = 0, iw = 0, ih = 0;
+    int close_gadget = 0, size_gadget = 0, size_bottom = 0;
+    const char *title = NULL;
 
     (void)newwin;
     va_start(ap, first);
@@ -1872,19 +2028,55 @@ HX_UNUSED static struct Window *hx_open_window(void *newwin, ULONG first, ...)
 
         if (tag == WA_CustomScreen)
             scr = (struct Screen *)(uintptr_t)v;
+        else if (tag == WA_PubScreen)
+            pub = (struct Screen *)(uintptr_t)v;
+        else if (tag == WA_IDCMP)
+            idcmp = v;
+        else if (tag == WA_InnerWidth)
+            iw = v;
+        else if (tag == WA_InnerHeight)
+            ih = v;
+        else if (tag == WA_CloseGadget)
+            close_gadget = v != 0;
+        else if (tag == WA_SizeGadget)
+            size_gadget = v != 0;
+        else if (tag == WA_SizeBBottom)
+            size_bottom = v != 0;
+        else if (tag == WA_Title)
+            title = (const char *)(uintptr_t)v;
         tag = va_arg(ap, ULONG);
     }
     va_end(ap);
     w = hx_alloc(sizeof(*w), 1);
     w->UserPort = hx_port_new();
     w->Flags = WFLG_WINDOWACTIVE;
-    w->WScreen = scr;
-    if (scr) {
+    w->RPort = &w->hx_rp;
+    w->hx_idcmp = idcmp;
+    w->hx_close_gadget = close_gadget;
+    w->hx_size_gadget = size_gadget;
+    w->hx_custom_screen = scr != NULL;
+    w->hx_pub = pub;
+    if (title)
+        snprintf(w->hx_title, sizeof(w->hx_title), "%s", title);
+    if (pub) {
+        /* a window with borders: 4 left and right, 11 on top, 4 or (a size gadget in it) 10 below */
+        w->WScreen = pub;
+        w->BorderLeft = 4;
+        w->BorderRight = 4;
+        w->BorderTop = 11;
+        w->BorderBottom = (BYTE)(size_bottom ? 10 : 4);
+        w->Width = (WORD)(iw + 8u);
+        w->Height = (WORD)(ih + 11u + (size_bottom ? 10u : 4u));
+    } else if (scr) {
+        w->WScreen = scr;
         w->Width = scr->Width;
         w->Height = scr->Height;
     }
+    w->hx_rp.BitMap = w->WScreen ? w->WScreen->RastPort.BitMap : NULL;
+    memset(hx_canvas, 0xCD, sizeof(hx_canvas));
     hx_windows++;
     hx_cur_window = w;
+    (void)size_gadget;
     return w;
 }
 
@@ -1903,6 +2095,7 @@ HX_UNUSED static void hx_close_window(struct Window *w)
 }
 
 /* A message of the input window: the test's input. */
+HX_UNUSED static APTR hx_post_iaddr;          /* IAddress of the next message posted */
 HX_UNUSED static void hx_window_post(ULONG cls, UWORD code, UWORD qual, WORD mx, WORD my)
 {
     struct IntuiMessage *im = hx_alloc(sizeof(*im), 1);
@@ -1914,6 +2107,7 @@ HX_UNUSED static void hx_window_post(ULONG cls, UWORD code, UWORD qual, WORD mx,
     im->Qualifier = qual;
     im->MouseX = mx;
     im->MouseY = my;
+    im->IAddress = hx_post_iaddr;
     hx_post(hx_cur_window->UserPort, &im->ExecMessage);
 }
 
@@ -1921,6 +2115,340 @@ HX_UNUSED static void hx_reply_msg(struct Message *m)
 {
     /* The window's messages are the test's: the reply gives them back. */
     hx_free(m);
+}
+
+/* ---- Surfaces, what a window shows, pointers, the display database, input libraries ------------- */
+
+struct hx_ptr {
+    struct BitMap *bm;
+    LONG xo, yo;
+};
+
+HX_UNUSED static void hx_set_window_titles(struct Window *w, const char *wt, const char *st)
+{
+    if (wt != (const char *)~0UL)
+        snprintf(w->hx_title, sizeof(w->hx_title), "%s", wt ? wt : "");
+    if (st != (const char *)~0UL)
+        snprintf(w->hx_screen_title, sizeof(w->hx_screen_title), "%s", st ? st : "");
+}
+
+HX_UNUSED static void hx_set_window_pointer(struct Window *w, ULONG first, ...)
+{
+    va_list ap;
+    ULONG tag = first;
+
+    (void)w;
+    hx_ptr_calls++;
+    hx_ptr_kind = 0;
+    hx_ptr_obj = NULL;
+    va_start(ap, first);
+    while (tag != TAG_DONE) {
+        ULONG v = va_arg(ap, ULONG);
+
+        if (tag == WA_BusyPointer && v)
+            hx_ptr_kind = 1;
+        else if (tag == WA_Pointer) {
+            hx_ptr_kind = 2;
+            hx_ptr_obj = (void *)(uintptr_t)v;
+        }
+        tag = va_arg(ap, ULONG);
+    }
+    va_end(ap);
+}
+
+HX_UNUSED static void *hx_new_pointer(struct BitMap *bm, LONG xo, LONG yo)
+{
+    struct hx_ptr *p = hx_alloc(sizeof(*p), 1);
+
+    if (!p)
+        return NULL;
+    p->bm = bm;
+    p->xo = xo;
+    p->yo = yo;
+    hx_pointers_live++;
+    return p;
+}
+
+HX_UNUSED static void hx_dispose_pointer(void *obj)
+{
+    if (obj == hx_ptr_obj)
+        HX_FAIL("DisposeObject of the pointer a window still shows");
+    hx_free(obj);
+    hx_pointers_live--;
+}
+
+HX_UNUSED static ULONG hx_prefs_colors[3];
+HX_UNUSED static void hx_get_prefs(struct Preferences *p, ULONG size)
+{
+    if (size < sizeof(*p))
+        HX_FAIL("GetPrefs into too small a buffer");
+    p->color17 = (UWORD)hx_prefs_colors[0];
+    p->color18 = (UWORD)hx_prefs_colors[1];
+    p->color19 = (UWORD)hx_prefs_colors[2];
+}
+
+/* graphics.library bitmaps: planar */
+HX_UNUSED static struct BitMap *hx_alloc_bitmap(ULONG w, ULONG h, ULONG depth, ULONG flags,
+                                                struct BitMap *friend)
+{
+    struct BitMap *bm;
+    uint32_t bpr = ((w + 15u) / 16u) * 2u, i;
+
+    (void)friend;
+    if (depth == 0 || depth > 8 || h == 0 || w == 0)
+        HX_FAIL("AllocBitMap with a bad size");
+    bm = hx_alloc(sizeof(*bm), 1);
+    if (!bm)
+        return NULL;
+    for (i = 0; i < depth; i++)
+        bm->Planes[i] = hx_alloc(bpr * h, (flags & BMF_CLEAR) != 0);
+    bm->Rows = (UWORD)h;
+    bm->BytesPerRow = (UWORD)bpr;
+    hx_bitmaps_live++;
+    return bm;
+}
+
+HX_UNUSED static void hx_free_bitmap(struct BitMap *bm)
+{
+    int i;
+
+    for (i = 0; i < 8; i++)
+        if (bm->Planes[i])
+            hx_free(bm->Planes[i]);
+    hx_free(bm);
+    hx_bitmaps_live--;
+}
+
+/* Picasso96 bitmaps: in the arena, so that AARSharedToken names them */
+HX_UNUSED static struct BitMap *hx_p96_alloc_bitmap(ULONG w, ULONG h, ULONG depth, ULONG flags,
+                                                    struct BitMap *friend, ULONG rgb)
+{
+    struct BitMap *bm;
+    uint32_t pitch = (w * hx_bpp((int)rgb) + 15u) & ~15u;
+
+    (void)depth;
+    (void)friend;
+    if (hx_p96_fail_alloc_bitmap)
+        return NULL;
+    bm = hx_alloc(sizeof(*bm), 1);
+    if (!bm)
+        return NULL;
+    bm->Planes[0] = hx_gfx_mem(pitch * (uint32_t)h);
+    if (flags & BMF_CLEAR)
+        memset(bm->Planes[0], 0, pitch * (uint32_t)h);
+    bm->Rows = (UWORD)h;
+    bm->BytesPerRow = (UWORD)pitch;
+    bm->hx_rgb = (int)rgb;
+    hx_p96_bitmaps_live++;
+    hx_last_surface = bm;
+    return bm;
+}
+
+HX_UNUSED static void hx_p96_free_bitmap(struct BitMap *bm)
+{
+    if (hx_locks_live)
+        HX_FAIL("p96FreeBitMap while a bitmap is locked");
+    if (hx_last_surface == bm)
+        hx_last_surface = NULL;
+    hx_free(bm);
+    hx_p96_bitmaps_live--;
+}
+
+HX_UNUSED static LONG hx_p96_lock_bitmap(struct BitMap *bm, UBYTE *buf, ULONG size)
+{
+    struct RenderInfo *ri = (struct RenderInfo *)(void *)buf;
+
+    if (size < sizeof(*ri))
+        HX_FAIL("p96LockBitMap with too small a RenderInfo");
+    ri->Memory = bm->Planes[0];
+    ri->BytesPerRow = (WORD)bm->BytesPerRow;
+    ri->pad = 0;
+    ri->RGBFormat = (RGBFTYPE)bm->hx_rgb;
+    hx_locks_live++;
+    hx_locks_taken++;
+    return (LONG)hx_locks_taken;
+}
+
+HX_UNUSED static void hx_p96_unlock_bitmap(struct BitMap *bm, LONG lock)
+{
+    (void)bm;
+    (void)lock;
+    if (!hx_locks_live)
+        HX_FAIL("p96UnlockBitMap without a lock");
+    hx_locks_live--;
+}
+
+HX_UNUSED static void hx_p96_write_pixel_array(struct RenderInfo *ri, UWORD sx, UWORD sy,
+                                               struct RastPort *rp, UWORD dx, UWORD dy,
+                                               UWORD w, UWORD h)
+{
+    uint32_t bpp = hx_bpp((int)ri->RGBFormat), y;
+
+    (void)rp;
+    if (!ri->Memory)
+        HX_FAIL("p96WritePixelArray from no memory");
+    if ((uint32_t)dx + w > HX_CANVAS_W || (uint32_t)dy + h > HX_CANVAS_H)
+        HX_FAIL("p96WritePixelArray outside the fake drawing area");
+    hx_pwa_calls++;
+    hx_canvas_bpp = bpp;
+    for (y = 0; y < h; y++)
+        memcpy(hx_canvas + (uint32_t)(dy + y) * HX_CANVAS_W * 4u + (uint32_t)dx * bpp,
+               (const uint8_t *)ri->Memory + (uint32_t)(sy + y) * (uint32_t)(UWORD)ri->BytesPerRow +
+                   (uint32_t)sx * bpp,
+               (uint32_t)w * bpp);
+}
+
+HX_UNUSED static void hx_p96_rect_fill(struct RastPort *rp, UWORD x0, UWORD y0, UWORD x1,
+                                       UWORD y1, ULONG argb)
+{
+    uint32_t y, bpp = hx_last_surface ? hx_bpp(hx_last_surface->hx_rgb) : hx_canvas_bpp;
+
+    (void)rp;
+    (void)argb;
+    if (x1 >= HX_CANVAS_W || y1 >= HX_CANVAS_H || x1 < x0 || y1 < y0)
+        HX_FAIL("p96RectFill outside the fake drawing area");
+    hx_rectfills++;
+    hx_canvas_bpp = bpp;
+    for (y = y0; y <= y1; y++)
+        memset(hx_canvas + y * HX_CANVAS_W * 4u + (uint32_t)x0 * bpp, 0,
+               (uint32_t)(x1 - x0 + 1u) * bpp);
+}
+
+/* the display database: the modes the test has */
+struct hx_mode {
+    ULONG id;
+    int w, h;
+    int is_p96;
+    ULONG formats;               /* RGBFF_* */
+    UWORD rows, clocks;
+    UWORD unavailable;
+};
+HX_UNUSED static struct hx_mode hx_modes[16];
+HX_UNUSED static int hx_nmodes;
+
+HX_UNUSED static void hx_modes_default(void)
+{
+    static const struct hx_mode def[] = {
+        {0x50001UL, 640, 480, 1, RGBFF_R5G6B5 | RGBFF_CLUT, 525, 113, 0},
+        {0x50002UL, 1280, 720, 1, RGBFF_R5G6B5 | RGBFF_B8G8R8A8 | RGBFF_CLUT, 750, 95, 0},
+        {0x50003UL, 1920, 1080, 1, RGBFF_B8G8R8A8, 1125, 63, 0},
+        {0x50004UL, 800, 600, 1, RGBFF_R5G6B5, 628, 90, 1},
+        {0x50005UL, 640, 256, 0, RGBFF_CLUT, 312, 227, 0},
+    };
+
+    memcpy(hx_modes, def, sizeof(def));
+    hx_nmodes = (int)(sizeof(def) / sizeof(def[0]));
+}
+
+static struct hx_mode *hx_mode_of(ULONG id)
+{
+    int i;
+
+    for (i = 0; i < hx_nmodes; i++)
+        if (hx_modes[i].id == id)
+            return &hx_modes[i];
+    return NULL;
+}
+
+HX_UNUSED static ULONG hx_next_display_info(ULONG id)
+{
+    int i = 0;
+
+    if (id != INVALID_ID) {
+        struct hx_mode *m = hx_mode_of(id);
+
+        i = m ? (int)(m - hx_modes) + 1 : hx_nmodes;
+    }
+    return i < hx_nmodes ? hx_modes[i].id : INVALID_ID;
+}
+
+HX_UNUSED static ULONG hx_get_display_info(void *buf, ULONG size, ULONG tag, ULONG id)
+{
+    struct hx_mode *m = hx_mode_of(id);
+
+    if (!m)
+        return 0;
+    memset(buf, 0, size);
+    if (tag == DTAG_DISP) {
+        ((struct DisplayInfo *)buf)->NotAvailable = m->unavailable;
+    } else if (tag == DTAG_DIMS) {
+        struct DimensionInfo *d = buf;
+
+        d->Nominal.MaxX = (WORD)(m->w - 1);
+        d->Nominal.MaxY = (WORD)(m->h - 1);
+    } else if (tag == DTAG_MNTR) {
+        struct MonitorInfo *mi = buf;
+
+        mi->TotalRows = m->rows;
+        mi->TotalColorClocks = m->clocks;
+    } else {
+        return 0;
+    }
+    return size;
+}
+
+HX_UNUSED static ULONG hx_p96_mode_attr(ULONG id, ULONG attr)
+{
+    struct hx_mode *m = hx_mode_of(id);
+
+    if (!m)
+        return 0;
+    if (attr == P96IDA_ISP96)
+        return (ULONG)m->is_p96;
+    if (attr == P96IDA_COMPATIBLEFORMATS)
+        return m->formats;
+    return 0;
+}
+
+/* lowlevel.library's ReadJoyPort and keymap.library's MapRawKey */
+HX_UNUSED static ULONG hx_jp[2];
+HX_UNUSED static unsigned long hx_jp_reads, hx_keymap_calls;
+
+HX_UNUSED static ULONG hx_read_joy_port(ULONG port)
+{
+    hx_jp_reads++;
+    return hx_jp[port & 1];
+}
+
+/* A keymap of a few keys: the letter rows (lower case, upper with Shift), Space,
+ * Return, Backspace, the cursor up key (a CSI sequence), a key with a letter above
+ * 0x7F (raw 0x0D), and a dead key: the raw key 0x00 (the back quote) makes no
+ * character, and the key 0x12 (E) after it makes an e with a grave accent. The
+ * previous key of a dead key sequence is ie_EventAddress, as Intuition passes it. */
+HX_UNUSED static LONG hx_map_raw_key(struct InputEvent *ie, UBYTE *buf, LONG len)
+{
+    static const char row1[] = "qwertyuiop", row2[] = "asdfghjkl", row3[] = "zxcvbnm";
+    unsigned raw = ie->ie_Code;
+    int shift = (ie->ie_Qualifier & 3) != 0, n = 0;
+    unsigned char out[4];
+
+    hx_keymap_calls++;
+    if (ie->ie_Class != IECLASS_RAWKEY || (raw & 0x80))
+        HX_FAIL("MapRawKey of an event that is not a key press");
+    if (raw == 0x12 && ie->ie_EventAddress) {
+        out[n++] = 0xE8;
+    } else if (raw >= 0x10 && raw <= 0x19) {
+        out[n++] = (unsigned char)(shift ? row1[raw - 0x10] - 32 : row1[raw - 0x10]);
+    } else if (raw >= 0x20 && raw <= 0x28) {
+        out[n++] = (unsigned char)(shift ? row2[raw - 0x20] - 32 : row2[raw - 0x20]);
+    } else if (raw >= 0x31 && raw <= 0x37) {
+        out[n++] = (unsigned char)(shift ? row3[raw - 0x31] - 32 : row3[raw - 0x31]);
+    } else if (raw == 0x40) {
+        out[n++] = ' ';
+    } else if (raw == 0x44) {
+        out[n++] = 0x0D;
+    } else if (raw == 0x41) {
+        out[n++] = 0x08;
+    } else if (raw == 0x4C) {
+        out[n++] = 0x9B;
+        out[n++] = 'A';
+    } else if (raw == 0x0D) {
+        out[n++] = 0xE9;
+    }
+    if (n > len)
+        return -1;
+    memcpy(buf, out, (size_t)n);
+    return n;
 }
 
 HX_UNUSED static LONG hx_easy_request(void *win, struct EasyStruct *es, void *a, void *b)
@@ -2067,6 +2595,33 @@ HX_UNUSED static void hx_reset(void)
     hx_joydat[0] = hx_joydat[1] = 0;
     hx_ciaa_pra = 0xFF;
     hx_token_add = 0;
+    hx_ll_present = hx_keymap_present = 1;
+    hx_ll_open = hx_keymap_open = 0;
+    hx_intuition_version = 47;
+    hx_intuition_base.ActiveScreen = NULL;
+    hx_pub_w = 640;
+    hx_pub_h = 480;
+    hx_pub_rgb = RGBFB_B8G8R8A8;
+    hx_pub_is_p96 = 1;
+    hx_pub_mode_id = 0x50002UL;
+    memset(&hx_pub_screen, 0, sizeof(hx_pub_screen));
+    hx_p96_fail_alloc_bitmap = 0;
+    hx_p96_bitmaps_live = hx_bitmaps_live = hx_pointers_live = hx_locks_live = 0;
+    hx_pwa_calls = hx_rectfills = hx_locks_taken = 0;
+    hx_ptr_kind = 0;
+    hx_ptr_obj = NULL;
+    hx_ptr_calls = 0;
+    hx_last_surface = NULL;
+    hx_post_iaddr = NULL;
+    hx_jp[0] = hx_jp[1] = JP_TYPE_NOTAVAIL;
+    hx_jp_reads = 0;
+    hx_keymap_calls = 0;
+    hx_prefs_colors[0] = 0x0000;
+    hx_prefs_colors[1] = 0x0FFF;
+    hx_prefs_colors[2] = 0x0F80;
+    memset(hx_canvas, 0, sizeof(hx_canvas));
+    hx_canvas_bpp = 4;
+    hx_modes_default();
 }
 
 /* ---- The bindings ---------------------------------------------------------------------------------- */
@@ -2152,5 +2707,28 @@ HX_UNUSED static void hx_reset(void)
 #define X_P96_BITMAP_ATTR(s, bm, attr) ((void)(s), hx_p96_bitmap_attr((bm), (attr)))
 #define X_JOYDAT(port) hx_joydat[(port) ? 1 : 0]
 #define X_CIAA_PRA() hx_ciaa_pra
+#define X_SET_WINDOW_TITLES(win, wt, st) hx_set_window_titles((win), (wt), (st))
+#define X_SET_WINDOW_POINTER(...) hx_set_window_pointer(__VA_ARGS__)
+#define X_NEW_POINTER(bm, xo, yo) hx_new_pointer((bm), (xo), (yo))
+#define X_DISPOSE_POINTER(obj) hx_dispose_pointer(obj)
+#define X_GET_PREFS(prefs, size) hx_get_prefs((prefs), (size))
+#define X_ALLOC_BITMAP(w, h, depth, flags, friend) hx_alloc_bitmap((w), (h), (depth), (flags), (friend))
+#define X_FREE_BITMAP(bm) hx_free_bitmap(bm)
+#define X_GET_VP_MODE_ID(vp) ((void)(vp), hx_pub_mode_id)
+#define X_NEXT_DISPLAY_INFO(id) hx_next_display_info(id)
+#define X_GET_DISPLAY_INFO(buf, size, tag, id) hx_get_display_info((buf), (size), (tag), (id))
+#define X_INTUITION_VERSION() ((ULONG)hx_intuition_version)
+#define X_P96_ALLOC_BITMAP(s, w, h, depth, flags, friend, rgb) \
+    ((void)(s), hx_p96_alloc_bitmap((w), (h), (depth), (flags), (friend), (rgb)))
+#define X_P96_FREE_BITMAP(s, bm) ((void)(s), hx_p96_free_bitmap(bm))
+#define X_P96_LOCK_BITMAP(s, bm, ri, size) ((void)(s), hx_p96_lock_bitmap((bm), (UBYTE *)(ri), (size)))
+#define X_P96_UNLOCK_BITMAP(s, bm, lock) ((void)(s), hx_p96_unlock_bitmap((bm), (lock)))
+#define X_P96_WRITE_PIXEL_ARRAY(s, ri, sx, sy, rp, dx, dy, w, h) \
+    ((void)(s), hx_p96_write_pixel_array((ri), (sx), (sy), (rp), (dx), (dy), (w), (h)))
+#define X_P96_RECT_FILL(s, rp, x0, y0, x1, y1, argb) \
+    ((void)(s), hx_p96_rect_fill((rp), (x0), (y0), (x1), (y1), (argb)))
+#define X_P96_MODE_ATTR(s, id, attr) ((void)(s), hx_p96_mode_attr((id), (attr)))
+#define X_READ_JOY_PORT(s, port) ((void)(s), hx_read_joy_port(port))
+#define X_MAP_RAW_KEY(s, ie, buf, len) ((void)(s), hx_map_raw_key((ie), (UBYTE *)(buf), (len)))
 
 #endif /* SERVE_HOST_H */

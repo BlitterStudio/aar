@@ -891,6 +891,57 @@ static void test_events(void)
     finish();
 }
 
+static void test_absolute_mouse_merge(void)
+{
+    AARHandle *h;
+    aar_event ev, got;
+    uint8_t entry[AAR_ENTRY_BYTES];
+    int slot, i;
+
+    setup("absolute mouse merge");
+    h = open1(1);
+    slot = slot_of(h);
+    memset(&ev, 0, sizeof(ev));
+    /* A full CQ: absolute positions replace the pending one, they are not summed. */
+    fill_cq_with_keys(h, 64);
+    ev.type = AAR_EV_MOUSE;
+    ev.buttons = AAR_MOUSE_ABSOLUTE | AAR_MOUSE_LEFT;
+    ev.dx = 300;
+    ev.dy = 200;
+    ev.time_ms = 5;
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK);
+    ev.dx = 310;
+    ev.dy = -7;
+    ev.time_ms = 6;
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK);
+    ev.dx = 20000;
+    ev.dy = 20000;
+    ev.time_ms = 7;
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK);
+    ev.dx = 12;
+    ev.dy = 34;
+    ev.time_ms = 8;
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_OK);
+    CHECK(h->stats.events_merged == 3 && h->stats.events_dropped == 0);
+    /* A button change is not folded into an absolute motion. */
+    ev.code = 2;
+    ev.buttons = AAR_MOUSE_ABSOLUTE;
+    CHECK(aar_core_post_event(&core, h, &ev) == AAR_E_BUSY);
+    CHECK(h->stats.events_dropped == 1);
+    CHECK(refplat_app_cq_pop(slot, entry) == 1);
+    dispatch_once();
+    got.type = 0;
+    for (i = 0; i < 70 && got.type != AAR_EV_MOUSE; i++) {
+        if (refplat_app_cq_pop(slot, entry) != 1)
+            break;
+        aar_entry_get_event(entry, &got);
+    }
+    CHECK(got.type == AAR_EV_MOUSE);
+    CHECK(got.buttons == (AAR_MOUSE_ABSOLUTE | AAR_MOUSE_LEFT));
+    CHECK(got.dx == 12 && got.dy == 34 && got.time_ms == 8);
+    finish();
+}
+
 static void test_kick(void)
 {
     AARHandle *h;
@@ -2927,6 +2978,7 @@ int main(void)
     test_status();
     test_messages();
     test_events();
+    test_absolute_mouse_merge();
     test_kick();
     test_service();
     test_logs_and_stats();

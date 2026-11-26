@@ -1342,8 +1342,14 @@ static int post_event(AARHandle *h, const aar_event *ev)
                 return rc;
         }
         if (h->mouse_pending) {
-            h->mouse.dx = sat16((int32_t)h->mouse.dx + ev->dx);
-            h->mouse.dy = sat16((int32_t)h->mouse.dy + ev->dy);
+            if (ev->buttons & AAR_MOUSE_ABSOLUTE) {
+                /* A position, not a delta: the latest one replaces the pending one. */
+                h->mouse.dx = ev->dx;
+                h->mouse.dy = ev->dy;
+            } else {
+                h->mouse.dx = sat16((int32_t)h->mouse.dx + ev->dx);
+                h->mouse.dy = sat16((int32_t)h->mouse.dy + ev->dy);
+            }
             h->mouse.time_ms = ev->time_ms;
             h->stats.events_merged++;
         } else {

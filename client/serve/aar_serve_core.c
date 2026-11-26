@@ -1272,6 +1272,8 @@ void aar_serve_display_reset(struct aar_serve_display *d)
     d->have_pan = 0;
     d->pan_count = 0;
     d->showing = 0;
+    d->features = 0;
+    d->caps = 0;
     d->flip_active = 0;
     d->flip_queued = 0;
 }
@@ -1302,17 +1304,36 @@ uint32_t aar_serve_display_layout(uint32_t format)
            (format == AAR_FMT_CLUT8 ? AAR_LAYOUT_CLUT8 : AAR_LAYOUT_RGB565_BE);
 }
 
-uint16_t aar_serve_display_caps(uint32_t open_flags)
+uint16_t aar_serve_display_caps(uint32_t open_flags, uint32_t features)
 {
-    return (uint16_t)(AAR_DISPCAP_ASYNC | AAR_DISPCAP_CLUT8 |
-                      ((open_flags & AAR_DISPLAY_LATEST) ?
-                       AAR_DISPCAP_LATEST : 0u));
+    uint32_t caps = AAR_DISPCAP_ASYNC | AAR_DISPCAP_CLUT8;
+
+    if (open_flags & AAR_DISPLAY_LATEST)
+        caps |= AAR_DISPCAP_LATEST;
+    if ((open_flags & AAR_DISPLAY_WINDOW) && (features & AAR_DISPCAP_WINDOW)) {
+        caps |= AAR_DISPCAP_WINDOW;
+        /* A resizable window is a window: without one there is nothing to size. */
+        if ((open_flags & AAR_DISPLAY_RESIZABLE) && (features & AAR_DISPCAP_RESIZE))
+            caps |= AAR_DISPCAP_RESIZE;
+        /* The close gadget belongs to the window. */
+        if ((open_flags & AAR_DISPLAY_CLOSE_REQUEST) &&
+            (features & AAR_DISPCAP_CLOSE_REQUEST))
+            caps |= AAR_DISPCAP_CLOSE_REQUEST;
+    }
+    if ((open_flags & AAR_DISPLAY_POINTER_ABS) && (features & AAR_DISPCAP_POINTER_ABS))
+        caps |= AAR_DISPCAP_POINTER_ABS;
+    if ((open_flags & AAR_DISPLAY_TEXT_INPUT) && (features & AAR_DISPCAP_TEXT_INPUT))
+        caps |= AAR_DISPCAP_TEXT_INPUT;
+    if ((open_flags & AAR_DISPLAY_SCALE) && (features & AAR_DISPCAP_SCALED))
+        caps |= AAR_DISPCAP_SCALED;
+    return (uint16_t)caps;
 }
 
 void aar_serve_display_opened(struct aar_serve_display *d, const struct aar_serve_req *req,
                               uint32_t pitch, uint32_t front, uint32_t back,
                               uint32_t spare, int have_two, int have_pan,
-                              uint32_t pan_count, struct aar_serve_done *done)
+                              uint32_t pan_count, uint32_t features,
+                              struct aar_serve_done *done)
 {
     aar_serve_display_reset(d);
     d->open = 1;
@@ -1329,8 +1350,10 @@ void aar_serve_display_opened(struct aar_serve_display *d, const struct aar_serv
     d->have_two = have_two;
     d->have_pan = have_pan;
     d->pan_count = have_pan ? pan_count : 0u;
+    d->features = features;
+    d->caps = aar_serve_display_caps(d->flags, features);
     done_result(done, AAR_OK);
-    done->flags = aar_serve_display_caps(d->flags);
+    done->flags = (uint16_t)d->caps;
     done->out[AAR_R_DISPLAY_OPEN_ID] = d->id;
     done->out[AAR_R_DISPLAY_OPEN_PITCH] = pitch;
     done->out[AAR_R_DISPLAY_OPEN_LAYOUT] = d->layout;
@@ -1417,7 +1440,10 @@ void aar_serve_display_flip_request(struct aar_serve_display *d,
         display_flip_outs(d, done);
         return;
     }
-    /* A single buffer: the firmware copies the frame. */
+    /* A single buffer: the firmware copies the frame. A window or a scaled
+     * screen shows it first. */
+    if (d->ops.present)
+        d->ops.present(d->ops.ctx);
     if ((d->flags & AAR_DISPLAY_VSYNC) && d->ops.wait_tof)
         d->ops.wait_tof(d->ops.ctx);
     display_flip_outs(d, done);
@@ -1446,7 +1472,7 @@ static void display_adopt(struct aar_serve_display *d, const struct aar_serve_re
         return;
     }
     aar_serve_display_opened(d, req, pitch, front, back, spare, two, pan,
-                             pan ? (spare ? 3u : 2u) : 0u, done);
+                             pan ? (spare ? 3u : 2u) : 0u, 0u, done);
 }
 
 static void flip_complete(struct aar_serve_display *d, const struct aar_serve_req *req,
@@ -1458,6 +1484,23 @@ static void flip_complete(struct aar_serve_display *d, const struct aar_serve_re
     if (result == AAR_OK)
         display_flip_outs(d, &done);
     d->sink->complete(d->sink->ctx, req, &done);
+}
+
+/* A parked DISPLAY_VBLANK ends with result: the watch stops and the app is
+ * answered. */
+static void vblank_finish(struct aar_serve_display *d, int32_t result)
+{
+    struct aar_serve_req req;
+    struct aar_serve_done done;
+
+    if (!d->vb_active)
+        return;
+    req = d->vb_req;
+    d->vb_active = 0;
+    if (d->ops.vblank)
+        d->ops.vblank(d->ops.ctx, 0);
+    done_result(&done, result);
+    d->sink->complete(d->sink->ctx, &req, &done);
 }
 
 void aar_serve_display_flip_safe(struct aar_serve_display *d)
@@ -1538,8 +1581,553 @@ void aar_serve_display_close_request(struct aar_serve_display *d,
         d->flip_queued = 0;
         flip_complete(d, &next, AAR_E_IO);
     }
+    vblank_finish(d, AAR_E_IO);
     aar_serve_display_reset(d);
     done->result = AAR_OK;
+}
+
+/* ---- Display: info, modes, resize, title, pointer, vertical blank ------- */
+
+void aar_serve_display_clock(struct aar_serve_display *d, uint32_t now_ms)
+{
+    d->now_ms = now_ms;
+}
+
+void aar_serve_display_info_request(struct aar_serve_display *d,
+                                    const struct aar_serve_req *req,
+                                    struct aar_serve_done *done)
+{
+    aar_display_info info;
+
+    done_clear(done);
+    if (!d->open || req->arg[AAR_A_DISPLAY_ID] != d->id) {
+        done->result = AAR_E_INVAL;
+        return;
+    }
+    memset(&info, 0, sizeof(info));
+    info.screen_width = d->width;
+    info.screen_height = d->height;
+    if (d->ops.info)
+        d->ops.info(d->ops.ctx, &info);
+    /* WINDOW and SCALED are what was granted, whatever the table says. */
+    info.flags &= ~(uint32_t)(AAR_DISPINFO_WINDOW | AAR_DISPINFO_SCALED);
+    if (d->caps & AAR_DISPCAP_WINDOW)
+        info.flags |= AAR_DISPINFO_WINDOW;
+    if (d->caps & AAR_DISPCAP_SCALED)
+        info.flags |= AAR_DISPINFO_SCALED;
+    done->result = AAR_OK;
+    done->out[AAR_R_DISPLAY_INFO_WIDTH] = d->width;
+    done->out[AAR_R_DISPLAY_INFO_HEIGHT] = d->height;
+    done->out[AAR_R_DISPLAY_INFO_REFRESH_MHZ] = info.refresh_mhz;
+    done->out[AAR_R_DISPLAY_INFO_SCREEN_W] = info.screen_width;
+    done->out[AAR_R_DISPLAY_INFO_SCREEN_H] = info.screen_height;
+    done->out[AAR_R_DISPLAY_INFO_FLAGS] = info.flags;
+}
+
+void aar_serve_display_modes_request(struct aar_serve_display *d,
+                                     const struct aar_serve_req *req,
+                                     struct aar_serve_done *done)
+{
+    uint32_t room = req->buf ? req->buf_len / AAR_DISPLAY_MODE_REC_BYTES : 0u;
+    uint32_t max = room < AAR_SERVE_MODES_MAX ? room : AAR_SERVE_MODES_MAX;
+    uint32_t total = 0, n, i;
+
+    done_clear(done);
+    if (d->ops.modes) {
+        memset(d->mode_list, 0, max * sizeof(d->mode_list[0]));
+        total = d->ops.modes(d->ops.ctx, d->mode_list, max);
+    }
+    n = total < max ? total : max;
+    for (i = 0; i < n; i++)
+        aar_serve_mode_encode(&d->mode_list[i],
+                              req->buf + i * AAR_DISPLAY_MODE_REC_BYTES);
+    done->result = AAR_OK;
+    done->out[AAR_R_DISPLAY_MODES_COUNT] = n;
+    done->out[AAR_R_DISPLAY_MODES_TOTAL] = total;
+}
+
+void aar_serve_display_resize_request(struct aar_serve_display *d,
+                                      const struct aar_serve_req *req,
+                                      struct aar_serve_done *done)
+{
+    struct aar_serve_req open_req;
+    uint32_t w = req->arg[AAR_A_DISPLAY_RESIZE_W];
+    uint32_t h = req->arg[AAR_A_DISPLAY_RESIZE_H];
+
+    done_clear(done);
+    if (!d->open || req->arg[AAR_A_DISPLAY_ID] != d->id) {
+        done->result = AAR_E_INVAL;
+        return;
+    }
+    if (!(d->caps & AAR_DISPCAP_RESIZE) || !d->ops.resize) {
+        done->result = AAR_E_NOSYS;
+        return;
+    }
+    if (w == 0 || h == 0 || w > AAR_DISPLAY_MAX_DIM || h > AAR_DISPLAY_MAX_DIM) {
+        done->result = AAR_E_INVAL;
+        return;
+    }
+    if (d->flip_active || d->flip_queued) {
+        done->result = AAR_E_BUSY;
+        return;
+    }
+    /* The table sees the request as the open it replaces. */
+    open_req = *req;
+    open_req.arg[AAR_A_DISPLAY_OPEN_W] = w;
+    open_req.arg[AAR_A_DISPLAY_OPEN_H] = h;
+    open_req.arg[AAR_A_DISPLAY_OPEN_FORMAT] = d->format;
+    open_req.arg[AAR_A_DISPLAY_OPEN_FLAGS] = d->flags;
+    d->ops.resize(d->ops.ctx, &open_req, done);
+    if (done->result != AAR_OK)
+        return;
+    if (done->out[AAR_R_DISPLAY_OPEN_FRONT] == 0u ||
+        done->out[AAR_R_DISPLAY_OPEN_PITCH] == 0u) {
+        done_result(done, AAR_E_IO);
+        return;
+    }
+    aar_serve_display_opened(d, &open_req, done->out[AAR_R_DISPLAY_OPEN_PITCH],
+                             done->out[AAR_R_DISPLAY_OPEN_FRONT],
+                             done->out[AAR_R_DISPLAY_OPEN_BACK],
+                             done->out[AAR_R_DISPLAY_OPEN_SPARE], d->have_two,
+                             d->have_pan, d->pan_count, d->features, done);
+}
+
+void aar_serve_display_title_request(struct aar_serve_display *d,
+                                     const struct aar_serve_req *req,
+                                     struct aar_serve_done *done)
+{
+    char title[256];
+    uint32_t n;
+
+    done_clear(done);
+    if (!d->open || req->arg[AAR_A_DISPLAY_ID] != d->id || !req->buf) {
+        done->result = AAR_E_INVAL;
+        return;
+    }
+    /* At most 255 bytes, and the NUL inside the buffer. */
+    for (n = 0; n < req->buf_len && n < 256u; n++) {
+        if (req->buf[n] == 0)
+            break;
+    }
+    if (n >= req->buf_len || n >= 256u) {
+        done->result = AAR_E_INVAL;
+        return;
+    }
+    if (!d->ops.set_title) {
+        done->result = AAR_E_NOSYS;
+        return;
+    }
+    (void)aar_serve_utf8_to_latin1(req->buf, n, title, sizeof(title));
+    done->result = d->ops.set_title(d->ops.ctx, title);
+}
+
+void aar_serve_display_pointer_request(struct aar_serve_display *d,
+                                       const struct aar_serve_req *req,
+                                       struct aar_serve_done *done)
+{
+    uint32_t mode = req->arg[AAR_A_DISPLAY_POINTER_MODE];
+    uint32_t w = req->arg[AAR_A_DISPLAY_POINTER_W];
+    uint32_t h = req->arg[AAR_A_DISPLAY_POINTER_H];
+    int32_t hot_x = (int32_t)req->arg[AAR_A_DISPLAY_POINTER_HOT_X];
+    int32_t hot_y = (int32_t)req->arg[AAR_A_DISPLAY_POINTER_HOT_Y];
+
+    done_clear(done);
+    if (!d->open || req->arg[AAR_A_DISPLAY_ID] != d->id || mode > AAR_POINTER_CUSTOM) {
+        done->result = AAR_E_INVAL;
+        return;
+    }
+    if (mode == AAR_POINTER_CUSTOM &&
+        (w == 0 || h == 0 || w > AAR_POINTER_MAX_DIM || h > AAR_POINTER_MAX_DIM ||
+         hot_x < 0 || hot_y < 0 || hot_x >= (int32_t)w || hot_y >= (int32_t)h ||
+         !req->buf || req->buf_len < w * h * 4u)) {
+        done->result = AAR_E_INVAL;
+        return;
+    }
+    if (!d->ops.set_pointer) {
+        done->result = AAR_E_NOSYS;
+        return;
+    }
+    done->result = d->ops.set_pointer(d->ops.ctx, mode, w, h, hot_x, hot_y,
+                                      mode == AAR_POINTER_CUSTOM ? req->buf : NULL);
+}
+
+void aar_serve_display_vblank_request(struct aar_serve_display *d,
+                                      const struct aar_serve_req *req,
+                                      struct aar_serve_done *done, int *deferred)
+{
+    uint32_t us = req->arg[AAR_A_DISPLAY_VBLANK_TIMEOUT_US];
+    uint32_t ms;
+
+    *deferred = 0;
+    done_clear(done);
+    if (!d->open || req->arg[AAR_A_DISPLAY_ID] != d->id || us == 0) {
+        done->result = AAR_E_INVAL;
+        return;
+    }
+    if (d->vb_active) {
+        done->result = AAR_E_BUSY;
+        return;
+    }
+    if (!d->ops.vblank || !d->ops.vblank(d->ops.ctx, 1)) {
+        done->result = AAR_E_NOSYS;
+        return;
+    }
+    ms = us / 1000u + ((us % 1000u) ? 1u : 0u);
+    d->vb_req = *req;
+    d->vb_active = 1;
+    d->vb_deadline_ms = d->now_ms + ms;
+    *deferred = 1;
+}
+
+void aar_serve_display_vblank_seen(struct aar_serve_display *d)
+{
+    vblank_finish(d, AAR_OK);
+}
+
+void aar_serve_display_vblank_check(struct aar_serve_display *d, uint32_t now_ms)
+{
+    if (d->vb_active && (int32_t)(now_ms - d->vb_deadline_ms) >= 0)
+        vblank_finish(d, AAR_E_TIMEDOUT);
+}
+
+uint32_t aar_serve_display_vblank_wait_us(const struct aar_serve_display *d,
+                                          uint32_t now_ms)
+{
+    int32_t left;
+
+    if (!d->vb_active)
+        return 0xFFFFFFFFu;
+    left = (int32_t)(d->vb_deadline_ms - now_ms);
+    if (left <= 0)
+        return 1u;
+    if (left > 4000000)
+        left = 4000000;
+    return (uint32_t)left * 1000u;
+}
+
+/* ---- Display geometry, pointer and text (pure) -------------------------- */
+
+void aar_serve_fit_rect(uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh,
+                        uint32_t *x, uint32_t *y, uint32_t *w, uint32_t *h)
+{
+    uint32_t fw, fh;
+
+    if (!sw || !sh || !dw || !dh) {
+        *x = *y = *w = *h = 0;
+        return;
+    }
+    if (dw * sh <= dh * sw) {
+        fw = dw;
+        fh = sh * dw / sw;
+    } else {
+        fh = dh;
+        fw = sw * dh / sh;
+    }
+    if (fw == 0)
+        fw = 1;
+    if (fh == 0)
+        fh = 1;
+    *x = (dw - fw) / 2u;
+    *y = (dh - fh) / 2u;
+    *w = fw;
+    *h = fh;
+}
+
+static int32_t floor_div(int32_t a, int32_t b)
+{
+    int32_t q = a / b;
+
+    if (a % b < 0)
+        q--;
+    return q;
+}
+
+void aar_serve_surface_pos(int32_t mx, int32_t my, uint32_t sw, uint32_t sh,
+                           uint32_t fit_x, uint32_t fit_y, uint32_t fit_w,
+                           uint32_t fit_h, int32_t *sx, int32_t *sy)
+{
+    if (fit_w == 0 || fit_h == 0) {
+        *sx = mx;
+        *sy = my;
+        return;
+    }
+    *sx = floor_div((mx - (int32_t)fit_x) * (int32_t)sw, (int32_t)fit_w);
+    *sy = floor_div((my - (int32_t)fit_y) * (int32_t)sh, (int32_t)fit_h);
+}
+
+/* The source index of destination index i is (2i + 1) * n / (2m) rounded down
+ * (the pixel centres). Each axis keeps acc = (2i + 1) * n - 2m * index and
+ * steps it by 2n, so a row needs no multiplication or division. The rows y0 to
+ * y0 + rows - 1 of the dw x dh result are written to dst, from its first row
+ * on; dw and dh up to 16384. */
+void aar_serve_scale_nn(const uint8_t *src, uint32_t src_pitch, uint32_t sw,
+                        uint32_t sh, uint8_t *dst, uint32_t dst_pitch,
+                        uint32_t dw, uint32_t dh, uint32_t bpp, uint32_t y0,
+                        uint32_t rows)
+{
+    uint32_t x, y, t = (2u * y0 + 1u) * sh;
+    uint32_t sy = t / (2u * dh);
+    uint32_t ay = t - sy * 2u * dh;
+
+    for (y = 0; y < rows; y++) {
+        const uint8_t *srow;
+        uint32_t sx = 0, ax = sw;
+
+        while (ay >= 2u * dh) {
+            ay -= 2u * dh;
+            sy++;
+        }
+        ay += 2u * sh;
+        srow = src + sy * src_pitch;
+        if (bpp == 4u) {
+            const uint32_t *s32 = (const uint32_t *)(const void *)srow;
+            uint32_t *d32 = (uint32_t *)(void *)(dst + y * dst_pitch);
+
+            for (x = 0; x < dw; x++) {
+                while (ax >= 2u * dw) {
+                    ax -= 2u * dw;
+                    sx++;
+                }
+                ax += 2u * sw;
+                d32[x] = s32[sx];
+            }
+        } else if (bpp == 2u) {
+            const uint16_t *s16 = (const uint16_t *)(const void *)srow;
+            uint16_t *d16 = (uint16_t *)(void *)(dst + y * dst_pitch);
+
+            for (x = 0; x < dw; x++) {
+                while (ax >= 2u * dw) {
+                    ax -= 2u * dw;
+                    sx++;
+                }
+                ax += 2u * sw;
+                d16[x] = s16[sx];
+            }
+        } else {
+            uint8_t *d8 = dst + y * dst_pitch;
+
+            for (x = 0; x < dw; x++) {
+                while (ax >= 2u * dw) {
+                    ax -= 2u * dw;
+                    sx++;
+                }
+                ax += 2u * sw;
+                d8[x] = srow[sx];
+            }
+        }
+    }
+}
+
+int aar_serve_wheel_key(uint16_t raw, int16_t *dx, int16_t *dy)
+{
+    *dx = 0;
+    *dy = 0;
+    switch (raw) {
+    case 0x7Au: *dy = -1; return 1;
+    case 0x7Bu: *dy = 1; return 1;
+    case 0x7Cu: *dx = -1; return 1;
+    case 0x7Du: *dx = 1; return 1;
+    default: return 0;
+    }
+}
+
+uint32_t aar_serve_text_chars(const uint8_t *mapped, int32_t n, uint16_t qualifiers,
+                              uint16_t command_mask, uint16_t *out, uint32_t max)
+{
+    uint32_t count = 0;
+    int32_t i = 0;
+
+    if (qualifiers & command_mask)
+        return 0;
+    while (i < n) {
+        uint8_t c = mapped[i++];
+
+        if (c == 0x9Bu) {
+            /* A CSI sequence: parameters, intermediates, a final byte. */
+            while (i < n && mapped[i] >= 0x20u && mapped[i] <= 0x3Fu)
+                i++;
+            if (i < n && mapped[i] >= 0x40u && mapped[i] <= 0x7Eu)
+                i++;
+            continue;
+        }
+        if (c < 0x20u || (c >= 0x7Fu && c <= 0x9Fu))
+            continue;
+        if (count < max)
+            out[count++] = c;
+    }
+    return count;
+}
+
+uint32_t aar_serve_utf8_to_latin1(const uint8_t *in, uint32_t n, char *out, uint32_t cap)
+{
+    uint32_t i = 0, o = 0;
+
+    if (cap == 0)
+        return 0;
+    while (i < n && in[i] != 0 && o + 1u < cap) {
+        uint8_t c = in[i];
+        uint32_t cp = c, need = 0, k;
+        int ok = 1;
+
+        if (c >= 0xC2u && c <= 0xDFu) {
+            need = 1;
+            cp = c & 0x1Fu;
+        } else if (c >= 0xE0u && c <= 0xEFu) {
+            need = 2;
+            cp = c & 0x0Fu;
+        } else if (c >= 0xF0u && c <= 0xF4u) {
+            need = 3;
+            cp = c & 0x07u;
+        } else if (c >= 0x80u) {
+            ok = 0;
+        }
+        if (ok && need) {
+            if (i + need >= n) {
+                ok = 0;
+            } else {
+                for (k = 1; k <= need; k++) {
+                    if ((in[i + k] & 0xC0u) != 0x80u) {
+                        ok = 0;
+                        break;
+                    }
+                    cp = (cp << 6) | (in[i + k] & 0x3Fu);
+                }
+            }
+            if (ok && ((need == 2 && cp < 0x800u) || (need == 3 && cp < 0x10000u) ||
+                       (cp >= 0xD800u && cp <= 0xDFFFu) || cp > 0x10FFFFu))
+                ok = 0;
+        }
+        if (!ok) {
+            out[o++] = '?';
+            i++;
+            continue;
+        }
+        out[o++] = cp <= 0xFFu ? (char)cp : '?';
+        i += need + 1u;
+    }
+    out[o] = '\0';
+    return o;
+}
+
+uint32_t aar_serve_pointer_pixel(uint32_t argb, const uint32_t palette[3])
+{
+    int32_t r = (int32_t)((argb >> 16) & 0xFFu);
+    int32_t g = (int32_t)((argb >> 8) & 0xFFu);
+    int32_t b = (int32_t)(argb & 0xFFu);
+    uint32_t best = 1, best_d = 0xFFFFFFFFu, k;
+
+    if ((argb >> 24) < 0x80u)
+        return 0;
+    for (k = 0; k < 3; k++) {
+        int32_t dr = r - (int32_t)((palette[k] >> 16) & 0xFFu);
+        int32_t dg = g - (int32_t)((palette[k] >> 8) & 0xFFu);
+        int32_t db = b - (int32_t)(palette[k] & 0xFFu);
+        uint32_t dist = (uint32_t)(dr * dr + dg * dg + db * db);
+
+        if (dist < best_d) {
+            best_d = dist;
+            best = k + 1u;
+        }
+    }
+    return best;
+}
+
+void aar_serve_pointer_planes(const uint8_t *argb_be, uint32_t w, uint32_t h,
+                              const uint32_t palette[3], uint8_t *plane0,
+                              uint8_t *plane1, uint32_t bytes_per_row)
+{
+    uint32_t x, y;
+
+    for (y = 0; y < h; y++) {
+        uint8_t *row0 = plane0 + y * bytes_per_row;
+        uint8_t *row1 = plane1 + y * bytes_per_row;
+
+        memset(row0, 0, bytes_per_row);
+        memset(row1, 0, bytes_per_row);
+        for (x = 0; x < w; x++) {
+            uint32_t p = aar_serve_pointer_pixel(
+                aar_serve_be32(argb_be + (y * w + x) * 4u), palette);
+            uint8_t bit = (uint8_t)(0x80u >> (x & 7u));
+
+            if (p & 1u)
+                row0[x >> 3] |= bit;
+            if (p & 2u)
+                row1[x >> 3] |= bit;
+        }
+    }
+}
+
+uint32_t aar_serve_refresh_mhz(uint32_t total_rows, uint32_t total_clocks,
+                               uint32_t clock_hz)
+{
+    uint32_t div, mhz;
+
+    if (!total_rows || !total_clocks || !clock_hz || total_rows > 4096u ||
+        total_clocks > 4096u || clock_hz > 4000000u)
+        return 0;
+    div = total_rows * total_clocks;
+    mhz = (clock_hz * 1000u + div / 2u) / div;
+    return (mhz < 20000u || mhz > 300000u) ? 0u : mhz;
+}
+
+void aar_serve_mode_encode(const aar_display_mode *m, uint8_t *rec)
+{
+    aar_serve_put_be32(rec, m->width);
+    aar_serve_put_be32(rec + 4, m->height);
+    aar_serve_put_be32(rec + 8, m->refresh_mhz);
+    aar_serve_put_be32(rec + 12, m->formats);
+    aar_serve_put_be32(rec + 16, m->flags);
+    aar_serve_put_be32(rec + 20, 0u);
+}
+
+void aar_serve_modes_prefer(aar_display_mode *modes, uint32_t n, uint32_t wb_w,
+                            uint32_t wb_h)
+{
+    uint32_t i;
+    int found = 0;
+
+    for (i = 0; i < n; i++) {
+        if (!found && modes[i].width == wb_w && modes[i].height == wb_h) {
+            modes[i].flags |= AAR_MODEF_PREFERRED;
+            found = 1;
+        } else {
+            modes[i].flags &= ~(uint32_t)AAR_MODEF_PREFERRED;
+        }
+    }
+}
+
+int aar_serve_cd32_valid(uint32_t jp)
+{
+    uint32_t type = jp & AAR_SERVE_JP_TYPE_MASK;
+
+    return type == AAR_SERVE_JP_TYPE_GAMECTLR || type == AAR_SERVE_JP_TYPE_JOYSTK;
+}
+
+uint16_t aar_serve_cd32_buttons(uint32_t jp)
+{
+    uint16_t b = 0;
+
+    if (jp & AAR_SERVE_JPF_RED)
+        b |= AAR_JOY_BUTTON1;
+    if (jp & AAR_SERVE_JPF_BLUE)
+        b |= AAR_JOY_BUTTON2;
+    if (jp & AAR_SERVE_JPF_GREEN)
+        b |= AAR_JOY_BUTTON3;
+    if (jp & AAR_SERVE_JPF_YELLOW)
+        b |= AAR_JOY_BUTTON4;
+    if (jp & AAR_SERVE_JPF_PLAY)
+        b |= AAR_JOY_PLAY;
+    if (jp & AAR_SERVE_JPF_FORWARD)
+        b |= AAR_JOY_FORWARD;
+    if (jp & AAR_SERVE_JPF_REVERSE)
+        b |= AAR_JOY_REVERSE;
+    return b;
+}
+
+void aar_serve_cd32_axes(uint32_t jp, int16_t *dx, int16_t *dy)
+{
+    *dx = (jp & AAR_SERVE_JPF_LEFT) ? -1 : ((jp & AAR_SERVE_JPF_RIGHT) ? 1 : 0);
+    *dy = (jp & AAR_SERVE_JPF_UP) ? -1 : ((jp & AAR_SERVE_JPF_DOWN) ? 1 : 0);
 }
 
 /* ---- Audio -------------------------------------------------------------- */
@@ -1710,6 +2298,7 @@ void aar_serve_core_abort(struct aar_serve_core *s)
         d->flip_queued = 0;
         flip_complete(d, &next, AAR_E_IO);
     }
+    vblank_finish(d, AAR_E_IO);
 }
 
 int aar_serve_core_request(struct aar_serve_core *s, const struct aar_serve_req *req,
@@ -1755,6 +2344,24 @@ int aar_serve_core_request(struct aar_serve_core *s, const struct aar_serve_req 
         break;
     case AAR_OP_DISPLAY_CLOSE:
         aar_serve_display_close_request(&s->display, req, done);
+        break;
+    case AAR_OP_DISPLAY_INFO:
+        aar_serve_display_info_request(&s->display, req, done);
+        break;
+    case AAR_OP_DISPLAY_MODES:
+        aar_serve_display_modes_request(&s->display, req, done);
+        break;
+    case AAR_OP_DISPLAY_RESIZE:
+        aar_serve_display_resize_request(&s->display, req, done);
+        break;
+    case AAR_OP_DISPLAY_TITLE:
+        aar_serve_display_title_request(&s->display, req, done);
+        break;
+    case AAR_OP_DISPLAY_POINTER:
+        aar_serve_display_pointer_request(&s->display, req, done);
+        break;
+    case AAR_OP_DISPLAY_VBLANK:
+        aar_serve_display_vblank_request(&s->display, req, done, &deferred);
         break;
     case AAR_OP_AUDIO_OPEN:
         aar_serve_audio_open_request(&s->audio, req, done);

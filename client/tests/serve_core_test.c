@@ -1849,6 +1849,7 @@ struct fdisp {
     uint32_t pan_count;
 };
 
+static uint32_t fd_features;    /* the AAR_DISPCAP_* bits the fake screen could provide */
 static struct fdisp fd_;
 
 static void d_open(void *ctx, const struct aar_serve_req *req, struct aar_serve_done *done)
@@ -1860,7 +1861,7 @@ static void d_open(void *ctx, const struct aar_serve_req *req, struct aar_serve_
                              fd_.have_two ? 0x00600000u :
                              (fd_.have_pan ? 0x00400000u + 1280u * 480u : 0u),
                              fd_.pan_count == 3u ? 0x00400000u + 2u * 1280u * 480u : 0u,
-                             fd_.have_two, fd_.have_pan, fd_.pan_count, done);
+                             fd_.have_two, fd_.have_pan, fd_.pan_count, fd_features, done);
 }
 
 static int d_change(void *ctx, int to_back)
@@ -1976,9 +1977,9 @@ static void test_display_open_validates_and_reports_what_was_made(void)
     assert(aar_serve_display_depth(AAR_FMT_BGRA8888) == 32u);
     assert(aar_serve_display_depth(AAR_FMT_CLUT8) == 8u);
     assert(aar_serve_display_depth(AAR_FMT_RGB565) == 16u);
-    assert(aar_serve_display_caps(AAR_DISPLAY_LATEST) ==
+    assert(aar_serve_display_caps(AAR_DISPLAY_LATEST, 0u) ==
            (AAR_DISPCAP_ASYNC | AAR_DISPCAP_CLUT8 | AAR_DISPCAP_LATEST));
-    assert(aar_serve_display_caps(AAR_DISPLAY_VSYNC) ==
+    assert(aar_serve_display_caps(AAR_DISPLAY_VSYNC, 0u) ==
            (AAR_DISPCAP_ASYNC | AAR_DISPCAP_CLUT8));
 
     display_fixture(0, 1, 2u);
@@ -2418,6 +2419,791 @@ static void test_a_stop_that_found_the_queue_full_is_retried(void)
     assert(fe.posted == 1 && !aar_serve_events_pending(&e));
 }
 
+/* ---- Display, API minor 6 ----------------------------------------------- */
+
+#define ALL_FEATURES (AAR_DISPCAP_WINDOW | AAR_DISPCAP_RESIZE | AAR_DISPCAP_POINTER_ABS | \
+                      AAR_DISPCAP_TEXT_INPUT | AAR_DISPCAP_CLOSE_REQUEST | AAR_DISPCAP_SCALED)
+#define BASE_CAPS (AAR_DISPCAP_ASYNC | AAR_DISPCAP_CLUT8)
+
+static void test_display_caps_follow_the_flags_and_what_the_screen_could_do(void)
+{
+    struct aar_serve_done d;
+
+    /* nothing asked: nothing granted, whatever the screen could do */
+    assert(aar_serve_display_caps(0u, ALL_FEATURES) == BASE_CAPS);
+    assert(aar_serve_display_caps(AAR_DISPLAY_WINDOW, ALL_FEATURES) ==
+           (BASE_CAPS | AAR_DISPCAP_WINDOW));
+    /* the window fell back to a screen: no window cap, and none that needs a window */
+    assert(aar_serve_display_caps(AAR_DISPLAY_WINDOW, 0u) == BASE_CAPS);
+    assert(aar_serve_display_caps(AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE |
+                                      AAR_DISPLAY_CLOSE_REQUEST,
+                                  AAR_DISPCAP_POINTER_ABS) == BASE_CAPS);
+    /* resizable and the close request need the window */
+    assert(aar_serve_display_caps(AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE, ALL_FEATURES) ==
+           (BASE_CAPS | AAR_DISPCAP_WINDOW | AAR_DISPCAP_RESIZE));
+    assert(aar_serve_display_caps(AAR_DISPLAY_RESIZABLE, ALL_FEATURES) == BASE_CAPS);
+    assert(aar_serve_display_caps(AAR_DISPLAY_CLOSE_REQUEST, ALL_FEATURES) == BASE_CAPS);
+    assert(aar_serve_display_caps(AAR_DISPLAY_WINDOW | AAR_DISPLAY_CLOSE_REQUEST, ALL_FEATURES) ==
+           (BASE_CAPS | AAR_DISPCAP_WINDOW | AAR_DISPCAP_CLOSE_REQUEST));
+    /* a window that cannot be sized grants no resize */
+    assert(aar_serve_display_caps(AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE,
+                                  AAR_DISPCAP_WINDOW) == (BASE_CAPS | AAR_DISPCAP_WINDOW));
+    /* the others are granted when asked for and possible */
+    assert(aar_serve_display_caps(AAR_DISPLAY_POINTER_ABS, ALL_FEATURES) ==
+           (BASE_CAPS | AAR_DISPCAP_POINTER_ABS));
+    assert(aar_serve_display_caps(AAR_DISPLAY_POINTER_ABS, 0u) == BASE_CAPS);
+    assert(aar_serve_display_caps(AAR_DISPLAY_TEXT_INPUT, ALL_FEATURES) ==
+           (BASE_CAPS | AAR_DISPCAP_TEXT_INPUT));
+    assert(aar_serve_display_caps(AAR_DISPLAY_TEXT_INPUT, AAR_DISPCAP_POINTER_ABS) == BASE_CAPS);
+    assert(aar_serve_display_caps(AAR_DISPLAY_SCALE, ALL_FEATURES) ==
+           (BASE_CAPS | AAR_DISPCAP_SCALED));
+    assert(aar_serve_display_caps(AAR_DISPLAY_SCALE, 0u) == BASE_CAPS);
+    assert(aar_serve_display_caps(AAR_DISPLAY_LATEST | AAR_DISPLAY_VSYNC, 0u) ==
+           (BASE_CAPS | AAR_DISPCAP_LATEST));
+    assert(aar_serve_display_caps(0xFFFFFFFFu, ALL_FEATURES) ==
+           (BASE_CAPS | AAR_DISPCAP_LATEST | ALL_FEATURES));
+    /* the open reply carries them */
+    fd_features = AAR_DISPCAP_WINDOW | AAR_DISPCAP_SCALED;
+    display_fixture(0, 0, 0u);
+    d = display_open(320u, 200u, AAR_FMT_RGB565,
+                     AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE | AAR_DISPLAY_TEXT_INPUT, AAR_OK);
+    assert(d.flags == (BASE_CAPS | AAR_DISPCAP_WINDOW | AAR_DISPCAP_SCALED));
+    assert(serve.display.caps == d.flags);
+    fd_features = 0;
+}
+
+struct fdx {
+    int info_calls;
+    aar_display_info info_out;
+    uint32_t mode_total;
+    uint32_t mode_max_seen;
+    int resize_calls;
+    int resize_result;
+    uint32_t resize_front;
+    uint32_t resize_w, resize_h, resize_format, resize_flags;
+    char title[300];
+    int title_calls;
+    int title_result;
+    int pointer_calls;
+    uint32_t pointer_mode, pointer_w, pointer_h;
+    int32_t pointer_hot_x, pointer_hot_y;
+    const uint8_t *pointer_argb;
+    int vb_watch_on, vb_watch_off, vb_can;
+};
+static struct fdx fx;
+
+static void x_info(void *ctx, aar_display_info *out)
+{
+    (void)ctx;
+    fx.info_calls++;
+    out->refresh_mhz = fx.info_out.refresh_mhz;
+    out->screen_width = fx.info_out.screen_width;
+    out->screen_height = fx.info_out.screen_height;
+    out->flags = fx.info_out.flags | AAR_DISPINFO_WINDOW; /* the core overrides WINDOW */
+}
+
+static uint32_t x_modes(void *ctx, aar_display_mode *out, uint32_t max)
+{
+    uint32_t i;
+
+    (void)ctx;
+    fx.mode_max_seen = max;
+    for (i = 0; i < fx.mode_total && i < max; i++) {
+        out[i].width = 640u + i;
+        out[i].height = 480u + i;
+        out[i].refresh_mhz = 50000u + i;
+        out[i].formats = (1u << AAR_FMT_RGB565) | (1u << AAR_FMT_BGRA8888);
+        out[i].flags = i == 1 ? AAR_MODEF_PREFERRED : 0u;
+    }
+    return fx.mode_total;
+}
+
+static void x_resize(void *ctx, const struct aar_serve_req *req, struct aar_serve_done *done)
+{
+    (void)ctx;
+    fx.resize_calls++;
+    fx.resize_w = req->arg[AAR_A_DISPLAY_OPEN_W];
+    fx.resize_h = req->arg[AAR_A_DISPLAY_OPEN_H];
+    fx.resize_format = req->arg[AAR_A_DISPLAY_OPEN_FORMAT];
+    fx.resize_flags = req->arg[AAR_A_DISPLAY_OPEN_FLAGS];
+    memset(done, 0, sizeof(*done));
+    done->result = fx.resize_result;
+    done->out[AAR_R_DISPLAY_OPEN_PITCH] = fx.resize_w * 2u;
+    done->out[AAR_R_DISPLAY_OPEN_FRONT] = fx.resize_front;
+}
+
+static int x_title(void *ctx, const char *title)
+{
+    (void)ctx;
+    fx.title_calls++;
+    snprintf(fx.title, sizeof(fx.title), "%s", title);
+    return fx.title_result;
+}
+
+static int x_pointer(void *ctx, uint32_t mode, uint32_t w, uint32_t h, int32_t hx, int32_t hy,
+                     const uint8_t *argb)
+{
+    (void)ctx;
+    fx.pointer_calls++;
+    fx.pointer_mode = mode;
+    fx.pointer_w = w;
+    fx.pointer_h = h;
+    fx.pointer_hot_x = hx;
+    fx.pointer_hot_y = hy;
+    fx.pointer_argb = argb;
+    return AAR_OK;
+}
+
+static int x_vblank(void *ctx, int watch)
+{
+    (void)ctx;
+    if (watch) {
+        fx.vb_watch_on++;
+        return fx.vb_can;
+    }
+    fx.vb_watch_off++;
+    return 1;
+}
+
+/* A fixture with every optional call, and a display opened with flags. */
+static void x_fixture(uint32_t flags)
+{
+    struct aar_serve_display_ops ops;
+
+    memset(&fx, 0, sizeof(fx));
+    fx.vb_can = 1;
+    fx.resize_result = AAR_OK;
+    fx.resize_front = 0x00500000u;
+    fd_features = ALL_FEATURES;
+    display_fixture(0, 0, 0u);
+    ops = serve.display.ops;
+    ops.info = x_info;
+    ops.modes = x_modes;
+    ops.resize = x_resize;
+    ops.set_title = x_title;
+    ops.set_pointer = x_pointer;
+    ops.vblank = x_vblank;
+    aar_serve_display_init(&serve.display, &ops, &serve.sink);
+    display_open(320u, 200u, AAR_FMT_RGB565, flags, AAR_OK);
+    sunk_n = 0;
+}
+
+static struct aar_serve_req dreq(uint16_t op)
+{
+    struct aar_serve_req r = mkreq(op);
+
+    r.arg[AAR_A_DISPLAY_ID] = AAR_SERVE_DISPLAY_ID;
+    return r;
+}
+
+static void test_display_info_reports_the_surface_and_what_the_screen_adds(void)
+{
+    struct aar_serve_req r;
+    struct aar_serve_done d;
+
+    x_fixture(AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE);
+    fx.info_out.refresh_mhz = 59940u;
+    fx.info_out.screen_width = 1920u;
+    fx.info_out.screen_height = 1080u;
+    fx.info_out.flags = AAR_DISPINFO_ACTIVE;
+    r = dreq(AAR_OP_DISPLAY_INFO);
+    assert(serve_one(&r, &d) == AAR_OK);
+    assert(d.out[AAR_R_DISPLAY_INFO_WIDTH] == 320u && d.out[AAR_R_DISPLAY_INFO_HEIGHT] == 200u);
+    assert(d.out[AAR_R_DISPLAY_INFO_REFRESH_MHZ] == 59940u);
+    assert(d.out[AAR_R_DISPLAY_INFO_SCREEN_W] == 1920u && d.out[AAR_R_DISPLAY_INFO_SCREEN_H] == 1080u);
+    assert(d.out[AAR_R_DISPLAY_INFO_FLAGS] ==
+           (AAR_DISPINFO_WINDOW | AAR_DISPINFO_SCALED | AAR_DISPINFO_ACTIVE));
+    /* WINDOW and SCALED are what was granted: a screen display says neither */
+    x_fixture(0u);
+    fx.info_out.flags = 0u;
+    r = dreq(AAR_OP_DISPLAY_INFO);
+    assert(serve_one(&r, &d) == AAR_OK);
+    assert(d.out[AAR_R_DISPLAY_INFO_FLAGS] == 0u);
+    /* another id */
+    r = dreq(AAR_OP_DISPLAY_INFO);
+    r.arg[AAR_A_DISPLAY_ID] = 9u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    /* no display open */
+    display_fixture(0, 0, 0u);
+    r = dreq(AAR_OP_DISPLAY_INFO);
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    /* a table without info: the refresh rate is unknown and the screen is the surface */
+    display_open(320u, 200u, AAR_FMT_RGB565, 0u, AAR_OK);
+    r = dreq(AAR_OP_DISPLAY_INFO);
+    assert(serve_one(&r, &d) == AAR_OK);
+    assert(d.out[AAR_R_DISPLAY_INFO_REFRESH_MHZ] == 0u);
+    assert(d.out[AAR_R_DISPLAY_INFO_SCREEN_W] == 320u && d.out[AAR_R_DISPLAY_INFO_SCREEN_H] == 200u);
+    assert(d.out[AAR_R_DISPLAY_INFO_FLAGS] == 0u);
+    fd_features = 0;
+}
+
+static void test_display_modes_are_encoded_and_counted(void)
+{
+    struct aar_serve_req r;
+    struct aar_serve_done d;
+    uint8_t buf[AAR_DISPLAY_MODE_REC_BYTES * 4u + 5u];
+
+    x_fixture(0u);
+    fx.mode_total = 3u;
+    memset(buf, 0xEE, sizeof(buf));
+    r = mkreq(AAR_OP_DISPLAY_MODES);
+    r.buf = buf;
+    r.buf_len = sizeof(buf);
+    assert(serve_one(&r, &d) == AAR_OK);
+    assert(d.out[AAR_R_DISPLAY_MODES_COUNT] == 3u && d.out[AAR_R_DISPLAY_MODES_TOTAL] == 3u);
+    assert(fx.mode_max_seen == 4u); /* the room: whole records only */
+    /* second record: 641 x 481, 50001 mHz, RGB565 | BGRA8888, preferred */
+    assert(aar_serve_be32(buf + 24) == 641u && aar_serve_be32(buf + 28) == 481u);
+    assert(aar_serve_be32(buf + 32) == 50001u);
+    assert(aar_serve_be32(buf + 36) == ((1u << AAR_FMT_RGB565) | (1u << AAR_FMT_BGRA8888)));
+    assert(aar_serve_be32(buf + 40) == AAR_MODEF_PREFERRED && aar_serve_be32(buf + 44) == 0u);
+    assert(aar_serve_be32(buf + 0) == 640u && aar_serve_be32(buf + 20) == 0u);
+    assert(buf[72] == 0xEE); /* nothing past the three records */
+    /* room for two of three: two written, the total says three */
+    r = mkreq(AAR_OP_DISPLAY_MODES);
+    r.buf = buf;
+    r.buf_len = AAR_DISPLAY_MODE_REC_BYTES * 2u + 23u;
+    assert(serve_one(&r, &d) == AAR_OK);
+    assert(d.out[AAR_R_DISPLAY_MODES_COUNT] == 2u && d.out[AAR_R_DISPLAY_MODES_TOTAL] == 3u);
+    /* no room at all finds the count */
+    r = mkreq(AAR_OP_DISPLAY_MODES);
+    r.buf = NULL;
+    r.buf_len = 0;
+    assert(serve_one(&r, &d) == AAR_OK);
+    assert(d.out[AAR_R_DISPLAY_MODES_COUNT] == 0u && d.out[AAR_R_DISPLAY_MODES_TOTAL] == 3u);
+    /* it needs no open display, and a table without modes has none */
+    display_fixture(0, 0, 0u);
+    r = mkreq(AAR_OP_DISPLAY_MODES);
+    r.buf = buf;
+    r.buf_len = sizeof(buf);
+    assert(serve_one(&r, &d) == AAR_OK);
+    assert(d.out[AAR_R_DISPLAY_MODES_COUNT] == 0u && d.out[AAR_R_DISPLAY_MODES_TOTAL] == 0u);
+    fd_features = 0;
+}
+
+static void test_display_resize_reallocates_and_answers_like_open(void)
+{
+    struct aar_serve_req r;
+    struct aar_serve_done d;
+
+    x_fixture(AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE | AAR_DISPLAY_VSYNC);
+    r = dreq(AAR_OP_DISPLAY_RESIZE);
+    r.arg[AAR_A_DISPLAY_RESIZE_W] = 400u;
+    r.arg[AAR_A_DISPLAY_RESIZE_H] = 300u;
+    assert(serve_one(&r, &d) == AAR_OK);
+    /* the table saw the open it replaces: the new size, the old format and flags */
+    assert(fx.resize_calls == 1 && fx.resize_w == 400u && fx.resize_h == 300u);
+    assert(fx.resize_format == AAR_FMT_RGB565);
+    assert(fx.resize_flags == (AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE | AAR_DISPLAY_VSYNC));
+    /* the reply is an open reply with the caps of the open */
+    assert(d.out[AAR_R_DISPLAY_OPEN_ID] == AAR_SERVE_DISPLAY_ID);
+    assert(d.out[AAR_R_DISPLAY_OPEN_PITCH] == 800u);
+    assert(d.out[AAR_R_DISPLAY_OPEN_FRONT] == 0x00500000u);
+    assert(d.out[AAR_R_DISPLAY_OPEN_LAYOUT] == AAR_LAYOUT_RGB565_BE);
+    assert(d.flags == (BASE_CAPS | AAR_DISPCAP_WINDOW | AAR_DISPCAP_RESIZE));
+    /* and the display is recorded at the new size */
+    assert(serve.display.width == 400u && serve.display.height == 300u);
+    assert(serve.display.front == 0x00500000u && serve.display.pitch == 800u);
+    assert(serve.display.caps == d.flags && serve.display.open);
+    /* sizes outside 1 to 4096 */
+    r = dreq(AAR_OP_DISPLAY_RESIZE);
+    r.arg[AAR_A_DISPLAY_RESIZE_W] = 0u;
+    r.arg[AAR_A_DISPLAY_RESIZE_H] = 300u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    r.arg[AAR_A_DISPLAY_RESIZE_W] = 300u;
+    r.arg[AAR_A_DISPLAY_RESIZE_H] = 4097u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    r.arg[AAR_A_DISPLAY_RESIZE_H] = 4096u;
+    assert(serve_one(&r, &d) == AAR_OK);
+    /* a failure of the table passes through and leaves the display as it was */
+    fx.resize_result = AAR_E_NOMEM;
+    r = dreq(AAR_OP_DISPLAY_RESIZE);
+    r.arg[AAR_A_DISPLAY_RESIZE_W] = 10u;
+    r.arg[AAR_A_DISPLAY_RESIZE_H] = 10u;
+    assert(serve_one(&r, &d) == AAR_E_NOMEM);
+    assert(serve.display.width == 300u && serve.display.height == 4096u);
+    /* a table that leaves no token has not resized */
+    fx.resize_result = AAR_OK;
+    fx.resize_front = 0u;
+    assert(serve_one(&r, &d) == AAR_E_IO);
+    fx.resize_front = 0x00500000u;
+    /* a flip that is pending: busy */
+    serve.display.flip_active = 1;
+    assert(serve_one(&r, &d) == AAR_E_BUSY);
+    serve.display.flip_active = 0;
+    serve.display.flip_queued = 1;
+    assert(serve_one(&r, &d) == AAR_E_BUSY);
+    serve.display.flip_queued = 0;
+    /* the wrong id */
+    r.arg[AAR_A_DISPLAY_ID] = 7u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    /* without the resize cap: not implemented, and the table is not asked */
+    x_fixture(AAR_DISPLAY_WINDOW);
+    r = dreq(AAR_OP_DISPLAY_RESIZE);
+    r.arg[AAR_A_DISPLAY_RESIZE_W] = 10u;
+    r.arg[AAR_A_DISPLAY_RESIZE_H] = 10u;
+    assert(serve_one(&r, &d) == AAR_E_NOSYS && fx.resize_calls == 0);
+    fd_features = 0;
+}
+
+static void test_display_title_is_converted_to_latin1(void)
+{
+    struct aar_serve_req r;
+    struct aar_serve_done d;
+    uint8_t buf[300];
+
+    x_fixture(0u);
+    r = dreq(AAR_OP_DISPLAY_TITLE);
+    memset(buf, 0, sizeof(buf));
+    strcpy((char *)buf, "Caf\xC3\xA9 \xE2\x82\xAC");
+    r.buf = buf;
+    r.buf_len = 12u;
+    assert(serve_one(&r, &d) == AAR_OK);
+    assert(fx.title_calls == 1 && strcmp(fx.title, "Caf\xE9 ?") == 0);
+    /* 255 bytes fit, 256 do not, and the NUL must be inside the buffer */
+    memset(buf, 'a', sizeof(buf));
+    buf[255] = 0;
+    r.buf_len = 256u;
+    assert(serve_one(&r, &d) == AAR_OK && strlen(fx.title) == 255u);
+    buf[255] = 'a';
+    buf[256] = 0;
+    r.buf_len = 257u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    memset(buf, 'b', 10u);
+    r.buf_len = 10u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    r.buf = NULL;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    /* the table's result is the call's */
+    fx.title_result = AAR_E_NOSYS;
+    r.buf = buf;
+    buf[3] = 0;
+    r.buf_len = 4u;
+    assert(serve_one(&r, &d) == AAR_E_NOSYS);
+    r.arg[AAR_A_DISPLAY_ID] = 3u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    /* a table without a title call */
+    display_fixture(0, 0, 0u);
+    display_open(320u, 200u, AAR_FMT_RGB565, 0u, AAR_OK);
+    r = dreq(AAR_OP_DISPLAY_TITLE);
+    r.buf = buf;
+    r.buf_len = 4u;
+    assert(serve_one(&r, &d) == AAR_E_NOSYS);
+    fd_features = 0;
+}
+
+static void test_display_pointer_is_checked_and_passed_on(void)
+{
+    struct aar_serve_req r;
+    struct aar_serve_done d;
+    static uint8_t argb[64u * 64u * 4u];
+
+    x_fixture(0u);
+    r = dreq(AAR_OP_DISPLAY_POINTER);
+    r.arg[AAR_A_DISPLAY_POINTER_MODE] = AAR_POINTER_HIDDEN;
+    assert(serve_one(&r, &d) == AAR_OK);
+    assert(fx.pointer_calls == 1 && fx.pointer_mode == AAR_POINTER_HIDDEN && !fx.pointer_argb);
+    r.arg[AAR_A_DISPLAY_POINTER_MODE] = AAR_POINTER_BUSY;
+    assert(serve_one(&r, &d) == AAR_OK && fx.pointer_mode == AAR_POINTER_BUSY);
+    r.arg[AAR_A_DISPLAY_POINTER_MODE] = AAR_POINTER_DEFAULT;
+    assert(serve_one(&r, &d) == AAR_OK && fx.pointer_mode == AAR_POINTER_DEFAULT);
+    r.arg[AAR_A_DISPLAY_POINTER_MODE] = AAR_POINTER_CUSTOM + 1u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    /* a custom pointer needs a good image */
+    r.arg[AAR_A_DISPLAY_POINTER_MODE] = AAR_POINTER_CUSTOM;
+    r.arg[AAR_A_DISPLAY_POINTER_W] = 16u;
+    r.arg[AAR_A_DISPLAY_POINTER_H] = 12u;
+    r.arg[AAR_A_DISPLAY_POINTER_HOT_X] = 3u;
+    r.arg[AAR_A_DISPLAY_POINTER_HOT_Y] = 11u;
+    r.buf = argb;
+    r.buf_len = 16u * 12u * 4u;
+    assert(serve_one(&r, &d) == AAR_OK);
+    assert(fx.pointer_mode == AAR_POINTER_CUSTOM && fx.pointer_w == 16u && fx.pointer_h == 12u);
+    assert(fx.pointer_hot_x == 3 && fx.pointer_hot_y == 11 && fx.pointer_argb == argb);
+    r.buf_len = 16u * 12u * 4u - 1u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    r.buf_len = 16u * 12u * 4u;
+    r.buf = NULL;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    r.buf = argb;
+    r.arg[AAR_A_DISPLAY_POINTER_HOT_Y] = 12u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    r.arg[AAR_A_DISPLAY_POINTER_HOT_Y] = (uint32_t)(int32_t)-1;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    r.arg[AAR_A_DISPLAY_POINTER_HOT_Y] = 0u;
+    r.arg[AAR_A_DISPLAY_POINTER_W] = 0u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    r.arg[AAR_A_DISPLAY_POINTER_W] = 65u;
+    r.buf_len = 65u * 12u * 4u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    r.arg[AAR_A_DISPLAY_POINTER_W] = 64u;
+    r.arg[AAR_A_DISPLAY_POINTER_H] = 64u;
+    r.buf_len = sizeof(argb);
+    assert(serve_one(&r, &d) == AAR_OK && fx.pointer_w == 64u && fx.pointer_h == 64u);
+    r.arg[AAR_A_DISPLAY_ID] = 2u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    /* a table without a pointer call */
+    display_fixture(0, 0, 0u);
+    display_open(320u, 200u, AAR_FMT_RGB565, 0u, AAR_OK);
+    r = dreq(AAR_OP_DISPLAY_POINTER);
+    r.arg[AAR_A_DISPLAY_POINTER_MODE] = AAR_POINTER_HIDDEN;
+    assert(serve_one(&r, &d) == AAR_E_NOSYS);
+    fd_features = 0;
+}
+
+static void test_display_vblank_is_parked_until_the_blank_or_the_timeout(void)
+{
+    struct aar_serve_req r, r2, c;
+    struct aar_serve_done d;
+
+    x_fixture(0u);
+    aar_serve_display_clock(&serve.display, 1000u);
+    r = dreq(AAR_OP_DISPLAY_VBLANK);
+    r.arg[AAR_A_DISPLAY_VBLANK_TIMEOUT_US] = 0u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    r.arg[AAR_A_DISPLAY_VBLANK_TIMEOUT_US] = 20000u;
+    assert(aar_serve_core_request(&serve, &r, &d) == AAR_SERVE_REQ_DEFERRED);
+    assert(fx.vb_watch_on == 1 && sunk_n == 0);
+    assert(aar_serve_display_vblank_wait_us(&serve.display, 1000u) == 20000u);
+    assert(aar_serve_display_vblank_wait_us(&serve.display, 1015u) == 5000u);
+    /* one at a time */
+    r2 = dreq(AAR_OP_DISPLAY_VBLANK);
+    r2.arg[AAR_A_DISPLAY_VBLANK_TIMEOUT_US] = 5u;
+    assert(serve_one(&r2, &d) == AAR_E_BUSY);
+    /* nothing happens before the timeout */
+    aar_serve_display_vblank_check(&serve.display, 1019u);
+    assert(sunk_n == 0);
+    /* the blank completes it with AAR_OK, once, and stops the watch */
+    aar_serve_display_vblank_seen(&serve.display);
+    assert(sunk_n == 1 && sunk[0].req.id == r.id && sunk[0].done.result == AAR_OK);
+    assert(fx.vb_watch_off == 1);
+    aar_serve_display_vblank_seen(&serve.display);
+    aar_serve_display_vblank_check(&serve.display, 99999u);
+    assert(sunk_n == 1);
+    assert(aar_serve_display_vblank_wait_us(&serve.display, 1000u) == 0xFFFFFFFFu);
+    /* the timeout: 1500 us is two milliseconds */
+    sunk_n = 0;
+    aar_serve_display_clock(&serve.display, 5000u);
+    r = dreq(AAR_OP_DISPLAY_VBLANK);
+    r.arg[AAR_A_DISPLAY_VBLANK_TIMEOUT_US] = 1500u;
+    assert(aar_serve_core_request(&serve, &r, &d) == AAR_SERVE_REQ_DEFERRED);
+    aar_serve_display_vblank_check(&serve.display, 5001u);
+    assert(sunk_n == 0);
+    aar_serve_display_vblank_check(&serve.display, 5002u);
+    assert(sunk_n == 1 && sunk[0].done.result == AAR_E_TIMEDOUT && fx.vb_watch_off == 2);
+    /* the clock wraps */
+    sunk_n = 0;
+    aar_serve_display_clock(&serve.display, 0xFFFFFFFFu - 1u);
+    r = dreq(AAR_OP_DISPLAY_VBLANK);
+    r.arg[AAR_A_DISPLAY_VBLANK_TIMEOUT_US] = 5000u;
+    assert(aar_serve_core_request(&serve, &r, &d) == AAR_SERVE_REQ_DEFERRED);
+    aar_serve_display_vblank_check(&serve.display, 0xFFFFFFFFu);
+    assert(sunk_n == 0);
+    aar_serve_display_vblank_check(&serve.display, 3u);
+    assert(sunk_n == 1 && sunk[0].done.result == AAR_E_TIMEDOUT);
+    /* a close, and an abort, end a parked request with AAR_E_IO */
+    sunk_n = 0;
+    aar_serve_display_clock(&serve.display, 100u);
+    r = dreq(AAR_OP_DISPLAY_VBLANK);
+    r.arg[AAR_A_DISPLAY_VBLANK_TIMEOUT_US] = 5000u;
+    assert(aar_serve_core_request(&serve, &r, &d) == AAR_SERVE_REQ_DEFERRED);
+    c = dreq(AAR_OP_DISPLAY_CLOSE);
+    assert(serve_one(&c, &d) == AAR_OK);
+    assert(sunk_n == 1 && sunk[0].done.result == AAR_E_IO);
+    x_fixture(0u);
+    r = dreq(AAR_OP_DISPLAY_VBLANK);
+    r.arg[AAR_A_DISPLAY_VBLANK_TIMEOUT_US] = 5000u;
+    assert(aar_serve_core_request(&serve, &r, &d) == AAR_SERVE_REQ_DEFERRED);
+    aar_serve_core_abort(&serve);
+    assert(sunk_n == 1 && sunk[0].done.result == AAR_E_IO);
+    /* a platform that cannot see the blank, and a table that has no call */
+    x_fixture(0u);
+    fx.vb_can = 0;
+    r = dreq(AAR_OP_DISPLAY_VBLANK);
+    r.arg[AAR_A_DISPLAY_VBLANK_TIMEOUT_US] = 5000u;
+    assert(serve_one(&r, &d) == AAR_E_NOSYS);
+    display_fixture(0, 0, 0u);
+    display_open(320u, 200u, AAR_FMT_RGB565, 0u, AAR_OK);
+    r = dreq(AAR_OP_DISPLAY_VBLANK);
+    r.arg[AAR_A_DISPLAY_VBLANK_TIMEOUT_US] = 5000u;
+    assert(serve_one(&r, &d) == AAR_E_NOSYS);
+    /* no display */
+    display_fixture(0, 0, 0u);
+    r = dreq(AAR_OP_DISPLAY_VBLANK);
+    r.arg[AAR_A_DISPLAY_VBLANK_TIMEOUT_US] = 5000u;
+    assert(serve_one(&r, &d) == AAR_E_INVAL);
+    fd_features = 0;
+}
+
+static void test_the_fit_rectangle_and_the_pointer_position_on_the_surface(void)
+{
+    uint32_t x, y, w, h;
+    int32_t sx, sy;
+
+    /* 320 x 200 in 640 x 480: twice as wide, bars above and below */
+    aar_serve_fit_rect(320u, 200u, 640u, 480u, &x, &y, &w, &h);
+    assert(x == 0u && y == 40u && w == 640u && h == 400u);
+    /* in 1000 x 400: height-bound, bars at the sides */
+    aar_serve_fit_rect(320u, 200u, 1000u, 400u, &x, &y, &w, &h);
+    assert(x == 180u && y == 0u && w == 640u && h == 400u);
+    /* the same aspect fills it, a smaller area scales down */
+    aar_serve_fit_rect(320u, 200u, 160u, 100u, &x, &y, &w, &h);
+    assert(x == 0u && y == 0u && w == 160u && h == 100u);
+    aar_serve_fit_rect(1920u, 1080u, 100u, 100u, &x, &y, &w, &h);
+    assert(x == 0u && y == 22u && w == 100u && h == 56u);
+    /* never empty, never larger than the area */
+    aar_serve_fit_rect(4096u, 1u, 10u, 10u, &x, &y, &w, &h);
+    assert(w == 10u && h == 1u && y == 4u);
+    aar_serve_fit_rect(0u, 5u, 10u, 10u, &x, &y, &w, &h);
+    assert(w == 0u && h == 0u);
+    /* shown 1:1 at the top-left: the position is the window's */
+    aar_serve_surface_pos(17, -3, 320u, 200u, 0u, 0u, 0u, 0u, &sx, &sy);
+    assert(sx == 17 && sy == -3);
+    /* scaled: back through the rectangle, rounded down, outside values stay outside */
+    aar_serve_surface_pos(320, 240, 320u, 200u, 0u, 40u, 640u, 400u, &sx, &sy);
+    assert(sx == 160 && sy == 100);
+    aar_serve_surface_pos(0, 40, 320u, 200u, 0u, 40u, 640u, 400u, &sx, &sy);
+    assert(sx == 0 && sy == 0);
+    aar_serve_surface_pos(639, 439, 320u, 200u, 0u, 40u, 640u, 400u, &sx, &sy);
+    assert(sx == 319 && sy == 199);
+    aar_serve_surface_pos(-1, 39, 320u, 200u, 0u, 40u, 640u, 400u, &sx, &sy);
+    assert(sx == -1 && sy == -1);
+    aar_serve_surface_pos(700, 500, 320u, 200u, 0u, 40u, 640u, 400u, &sx, &sy);
+    assert(sx == 350 && sy == 230);
+}
+
+static void scale_check(uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh, uint32_t bpp,
+                        uint32_t strip)
+{
+    uint8_t *src = malloc((size_t)sw * sh * bpp), *dst = malloc((size_t)dw * dh * bpp);
+    uint8_t *tmp = malloc((size_t)dw * strip * bpp);
+    uint32_t x, y, k, y0;
+
+    assert(src && dst && tmp);
+    for (y = 0; y < sh; y++)
+        for (x = 0; x < sw; x++)
+            for (k = 0; k < bpp; k++)
+                src[(y * sw + x) * bpp + k] = (uint8_t)(y * 31u + x * 7u + k * 101u + 3u);
+    for (y0 = 0; y0 < dh; y0 += strip) {
+        uint32_t n = dh - y0 < strip ? dh - y0 : strip;
+
+        aar_serve_scale_nn(src, sw * bpp, sw, sh, tmp, dw * bpp, dw, dh, bpp, y0, n);
+        memcpy(dst + (size_t)y0 * dw * bpp, tmp, (size_t)n * dw * bpp);
+    }
+    for (y = 0; y < dh; y++) {
+        for (x = 0; x < dw; x++) {
+            uint32_t sx = (uint32_t)(((uint64_t)(2u * x + 1u) * sw) / (2u * dw));
+            uint32_t sy = (uint32_t)(((uint64_t)(2u * y + 1u) * sh) / (2u * dh));
+
+            assert(memcmp(dst + ((size_t)y * dw + x) * bpp, src + ((size_t)sy * sw + sx) * bpp,
+                          bpp) == 0);
+        }
+    }
+    free(src);
+    free(dst);
+    free(tmp);
+}
+
+static void test_nearest_neighbour_scaling_matches_the_pixel_centre_formula(void)
+{
+    static const uint32_t sizes[][4] = {
+        {4, 3, 8, 6}, {4, 3, 9, 7}, {8, 6, 3, 2}, {7, 5, 7, 5}, {1, 1, 5, 5},
+        {5, 5, 1, 1}, {320, 200, 400, 250}, {100, 60, 31, 17}, {16, 16, 64, 48},
+    };
+    unsigned i, bpp;
+
+    for (i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++)
+        for (bpp = 1; bpp <= 4; bpp *= 2) {
+            scale_check(sizes[i][0], sizes[i][1], sizes[i][2], sizes[i][3], bpp, 16u);
+            scale_check(sizes[i][0], sizes[i][1], sizes[i][2], sizes[i][3], bpp, 1u);
+            scale_check(sizes[i][0], sizes[i][1], sizes[i][2], sizes[i][3], bpp, 5u);
+        }
+}
+
+static void test_wheel_keys_and_text_characters(void)
+{
+    int16_t dx, dy;
+    uint16_t out[8];
+    uint8_t m1[] = { 'a' };
+    uint8_t m2[] = { 'a', 0xE9, ' ', '~' };
+    uint8_t csi[] = { 0x9B, 'A', 'b', 0x9B, '1', ';', '2', '~', 'c' };
+    uint8_t ctl[] = { 0x0D, 0x08, 0x1B, 0x7F, 0x85, 0x9F, 0xA0, 0xFF };
+
+    assert(aar_serve_wheel_key(0x7Au, &dx, &dy) && dx == 0 && dy == -1);
+    assert(aar_serve_wheel_key(0x7Bu, &dx, &dy) && dx == 0 && dy == 1);
+    assert(aar_serve_wheel_key(0x7Cu, &dx, &dy) && dx == -1 && dy == 0);
+    assert(aar_serve_wheel_key(0x7Du, &dx, &dy) && dx == 1 && dy == 0);
+    assert(!aar_serve_wheel_key(0x79u, &dx, &dy) && dx == 0 && dy == 0);
+    assert(!aar_serve_wheel_key(0x7Eu, &dx, &dy));
+    assert(!aar_serve_wheel_key(0xFAu, &dx, &dy)); /* the caller removes the up bit first */
+
+    assert(aar_serve_text_chars(m1, 1, 0u, 0xC0u, out, 8u) == 1u && out[0] == 'a');
+    assert(aar_serve_text_chars(m2, 4, 1u, 0xC0u, out, 8u) == 4u);
+    assert(out[0] == 'a' && out[1] == 0xE9u && out[2] == ' ' && out[3] == '~');
+    /* the cursor and function keys are escape sequences, not text */
+    assert(aar_serve_text_chars(csi, 9, 0u, 0xC0u, out, 8u) == 2u);
+    assert(out[0] == 'b' && out[1] == 'c');
+    /* control characters and the C1 range make none; 0xA0 and above are Latin-1 */
+    assert(aar_serve_text_chars(ctl, 8, 0u, 0xC0u, out, 8u) == 2u);
+    assert(out[0] == 0xA0u && out[1] == 0xFFu);
+    /* an Amiga key held: a shortcut, not text */
+    assert(aar_serve_text_chars(m1, 1, 0x40u, 0xC0u, out, 8u) == 0u);
+    assert(aar_serve_text_chars(m1, 1, 0x80u, 0xC0u, out, 8u) == 0u);
+    assert(aar_serve_text_chars(m1, 1, 0x08u, 0xC0u, out, 8u) == 1u);
+    /* the output is limited, and nothing mapped is nothing */
+    assert(aar_serve_text_chars(m2, 4, 0u, 0xC0u, out, 2u) == 2u);
+    assert(aar_serve_text_chars(m2, 0, 0u, 0xC0u, out, 8u) == 0u);
+    assert(aar_serve_text_chars(m2, -1, 0u, 0xC0u, out, 8u) == 0u);
+    /* a CSI that the text ends in */
+    assert(aar_serve_text_chars(csi, 1, 0u, 0xC0u, out, 8u) == 0u);
+}
+
+static void test_utf8_titles_become_latin1(void)
+{
+    char out[16];
+
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"plain", 5u, out, sizeof(out)) == 5u);
+    assert(strcmp(out, "plain") == 0);
+    /* two byte sequences up to U+00FF are the same Latin-1 character */
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xC3\xA4\xC3\xB6\xC3\xBC\xC2\xA0", 8u, out,
+                                    sizeof(out)) == 4u);
+    assert(memcmp(out, "\xE4\xF6\xFC\xA0", 5) == 0);
+    /* above U+00FF, and the three and four byte forms, are '?' */
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xC4\x80\xE2\x82\xAC\xF0\x9F\x98\x80z", 10u,
+                                    out, sizeof(out)) == 4u);
+    assert(strcmp(out, "???z") == 0);
+    /* malformed: a lone continuation, a lead without its continuation, an overlong form, a
+     * surrogate, a code point past U+10FFFF, a truncated end */
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\x80" "a", 2u, out, sizeof(out)) == 2u);
+    assert(strcmp(out, "?a") == 0);
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xC3" "a", 2u, out, sizeof(out)) == 2u);
+    assert(strcmp(out, "?a") == 0);
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xC0\x80", 2u, out, sizeof(out)) == 2u);
+    assert(strcmp(out, "??") == 0);
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xE0\x80\x80", 3u, out, sizeof(out)) == 3u);
+    assert(strcmp(out, "???") == 0);
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xED\xA0\x80", 3u, out, sizeof(out)) == 3u);
+    assert(strcmp(out, "???") == 0);
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xF4\x90\x80\x80", 4u, out, sizeof(out)) == 4u);
+    assert(strcmp(out, "????") == 0);
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"ab\xE2\x82", 4u, out, sizeof(out)) == 4u);
+    assert(strcmp(out, "ab??") == 0);
+    /* a NUL ends it, n limits it, cap limits the output */
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"ab\0cd", 5u, out, sizeof(out)) == 2u);
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"abcdef", 3u, out, sizeof(out)) == 3u);
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"abcdef", 6u, out, 4u) == 3u);
+    assert(strcmp(out, "abc") == 0);
+    assert(aar_serve_utf8_to_latin1((const uint8_t *)"abc", 3u, out, 0u) == 0u);
+}
+
+static void test_pointer_images_are_quantised_to_the_pointer_colours(void)
+{
+    /* the Preferences colours: black, white, orange */
+    static const uint32_t pal[3] = { 0x000000u, 0xFFFFFFu, 0xFF8800u };
+    uint8_t argb[16 * 2 * 4];
+    uint8_t p0[12], p1[12];
+    uint32_t x;
+
+    assert(aar_serve_pointer_pixel(0x00FFFFFFu, pal) == 0u);  /* transparent */
+    assert(aar_serve_pointer_pixel(0x7FFFFFFFu, pal) == 0u);  /* just under half */
+    assert(aar_serve_pointer_pixel(0x80FFFFFFu, pal) == 2u);  /* just over: white */
+    assert(aar_serve_pointer_pixel(0xFF000000u, pal) == 1u);
+    assert(aar_serve_pointer_pixel(0xFFFF8000u, pal) == 3u);
+    assert(aar_serve_pointer_pixel(0xFFE0E0E0u, pal) == 2u);
+    assert(aar_serve_pointer_pixel(0xFF202020u, pal) == 1u);
+    assert(aar_serve_pointer_pixel(0xFFFF0000u, pal) == 3u);  /* red is nearer orange than black */
+    /* row 0: pixels 0..3 are transparent, black, white, orange, the rest transparent; row 1: white */
+    memset(argb, 0, sizeof(argb));
+    for (x = 0; x < 16; x++)
+        aar_serve_put_be32(argb + (16u + x) * 4u, 0xFFFFFFFFu);
+    aar_serve_put_be32(argb + 1u * 4u, 0xFF000000u);
+    aar_serve_put_be32(argb + 2u * 4u, 0xFFFFFFFFu);
+    aar_serve_put_be32(argb + 3u * 4u, 0xFFFF8800u);
+    memset(p0, 0xAA, sizeof(p0));
+    memset(p1, 0xAA, sizeof(p1));
+    /* rows of 4 bytes, so that the planes of 16 pixels have room to spare */
+    aar_serve_pointer_planes(argb, 16u, 2u, pal, p0, p1, 4u);
+    /* pixel 1 is value 1 (plane 0), pixel 2 value 2 (plane 1), pixel 3 value 3 (both) */
+    assert(p0[0] == 0x50u && p0[1] == 0u && p0[2] == 0u && p0[3] == 0u);
+    assert(p1[0] == 0x30u && p1[1] == 0u && p1[2] == 0u && p1[3] == 0u);
+    /* white is 2: plane 1 only; the rows are cleared whole */
+    assert(p0[4] == 0u && p0[5] == 0u && p0[6] == 0u && p0[7] == 0u);
+    assert(p1[4] == 0xFFu && p1[5] == 0xFFu && p1[6] == 0u && p1[7] == 0u);
+    /* nothing past the rows is touched */
+    assert(p0[8] == 0xAAu && p1[8] == 0xAAu && p0[11] == 0xAAu && p1[11] == 0xAAu);
+}
+
+static void test_refresh_rates_and_mode_records(void)
+{
+    aar_display_mode m[3];
+    uint8_t rec[AAR_DISPLAY_MODE_REC_BYTES];
+
+    /* PAL: 312 lines of 227 colour clocks of 280 ns */
+    assert(aar_serve_refresh_mhz(312u, 227u, 3571429u) == 50427u);
+    assert(aar_serve_refresh_mhz(525u, 113u, 3571429u) == 60201u);
+    assert(aar_serve_refresh_mhz(0u, 227u, 3571429u) == 0u);
+    assert(aar_serve_refresh_mhz(312u, 0u, 3571429u) == 0u);
+    assert(aar_serve_refresh_mhz(312u, 227u, 0u) == 0u);
+    assert(aar_serve_refresh_mhz(5000u, 227u, 3571429u) == 0u);
+    assert(aar_serve_refresh_mhz(2000u, 500u, 3571429u) == 0u);  /* 3.5 Hz */
+    assert(aar_serve_refresh_mhz(10u, 100u, 3571429u) == 0u);    /* 3.5 kHz */
+
+    m[0].width = 0x01020304u;
+    m[0].height = 480u;
+    m[0].refresh_mhz = 60000u;
+    m[0].formats = 6u;
+    m[0].flags = 1u;
+    m[0].reserved = 0xFFFFFFFFu;
+    memset(rec, 0xEE, sizeof(rec));
+    aar_serve_mode_encode(&m[0], rec);
+    assert(rec[0] == 1u && rec[1] == 2u && rec[2] == 3u && rec[3] == 4u);
+    assert(aar_serve_be32(rec + 4) == 480u && aar_serve_be32(rec + 8) == 60000u);
+    assert(aar_serve_be32(rec + 12) == 6u && aar_serve_be32(rec + 16) == 1u);
+    assert(aar_serve_be32(rec + 20) == 0u); /* the reserved word is 0 */
+
+    memset(m, 0, sizeof(m));
+    m[0].width = 640u; m[0].height = 480u;
+    m[1].width = 1280u; m[1].height = 720u; m[1].flags = AAR_MODEF_PREFERRED;
+    m[2].width = 1280u; m[2].height = 720u;
+    aar_serve_modes_prefer(m, 3u, 1280u, 720u);
+    assert(m[0].flags == 0u && m[1].flags == AAR_MODEF_PREFERRED && m[2].flags == 0u);
+    aar_serve_modes_prefer(m, 3u, 640u, 480u);
+    assert(m[0].flags == AAR_MODEF_PREFERRED && m[1].flags == 0u);
+    aar_serve_modes_prefer(m, 3u, 800u, 600u);
+    assert(m[0].flags == 0u && m[1].flags == 0u && m[2].flags == 0u);
+}
+
+static void test_cd32_pad_values_map_to_joy_bits(void)
+{
+    int16_t dx, dy;
+
+    assert(aar_serve_cd32_valid(AAR_SERVE_JP_TYPE_GAMECTLR));
+    assert(aar_serve_cd32_valid(AAR_SERVE_JP_TYPE_JOYSTK));
+    assert(!aar_serve_cd32_valid(0x00000000UL));        /* not available */
+    assert(!aar_serve_cd32_valid(0x20000000UL));        /* a mouse */
+    assert(!aar_serve_cd32_valid(0x40000000UL));        /* unknown */
+    assert(aar_serve_cd32_buttons(0u) == 0u);
+    assert(aar_serve_cd32_buttons(AAR_SERVE_JPF_RED) == AAR_JOY_BUTTON1);
+    assert(aar_serve_cd32_buttons(AAR_SERVE_JPF_BLUE) == AAR_JOY_BUTTON2);
+    assert(aar_serve_cd32_buttons(AAR_SERVE_JPF_GREEN) == AAR_JOY_BUTTON3);
+    assert(aar_serve_cd32_buttons(AAR_SERVE_JPF_YELLOW) == AAR_JOY_BUTTON4);
+    assert(aar_serve_cd32_buttons(AAR_SERVE_JPF_PLAY) == AAR_JOY_PLAY);
+    assert(aar_serve_cd32_buttons(AAR_SERVE_JPF_FORWARD) == AAR_JOY_FORWARD);
+    assert(aar_serve_cd32_buttons(AAR_SERVE_JPF_REVERSE) == AAR_JOY_REVERSE);
+    assert(aar_serve_cd32_buttons(AAR_SERVE_JPF_RED | AAR_SERVE_JPF_PLAY | AAR_SERVE_JPF_REVERSE) ==
+           (AAR_JOY_BUTTON1 | AAR_JOY_PLAY | AAR_JOY_REVERSE));
+    /* the type and the directions are not buttons */
+    assert(aar_serve_cd32_buttons(AAR_SERVE_JP_TYPE_GAMECTLR | 0xFu) == 0u);
+    aar_serve_cd32_axes(0u, &dx, &dy);
+    assert(dx == 0 && dy == 0);
+    aar_serve_cd32_axes(AAR_SERVE_JPF_LEFT | AAR_SERVE_JPF_UP, &dx, &dy);
+    assert(dx == -1 && dy == -1);
+    aar_serve_cd32_axes(AAR_SERVE_JPF_RIGHT | AAR_SERVE_JPF_DOWN, &dx, &dy);
+    assert(dx == 1 && dy == 1);
+    aar_serve_cd32_axes(AAR_SERVE_JPF_RIGHT | AAR_SERVE_JPF_LEFT | AAR_SERVE_JPF_RED, &dx, &dy);
+    assert(dx == -1); /* both: the left one wins, as the register reading does */
+}
+
 int main(void)
 {
     test_dos_errors_map_to_aar_errors();
@@ -2447,6 +3233,20 @@ int main(void)
     test_console_read_waits_for_demand_and_returns_what_was_read();
     test_console_read_end_of_input_is_sticky();
     test_display_open_validates_and_reports_what_was_made();
+    test_display_caps_follow_the_flags_and_what_the_screen_could_do();
+    test_display_info_reports_the_surface_and_what_the_screen_adds();
+    test_display_modes_are_encoded_and_counted();
+    test_display_resize_reallocates_and_answers_like_open();
+    test_display_title_is_converted_to_latin1();
+    test_display_pointer_is_checked_and_passed_on();
+    test_display_vblank_is_parked_until_the_blank_or_the_timeout();
+    test_the_fit_rectangle_and_the_pointer_position_on_the_surface();
+    test_nearest_neighbour_scaling_matches_the_pixel_centre_formula();
+    test_wheel_keys_and_text_characters();
+    test_utf8_titles_become_latin1();
+    test_pointer_images_are_quantised_to_the_pointer_colours();
+    test_refresh_rates_and_mode_records();
+    test_cd32_pad_values_map_to_joy_bits();
     test_pan_flips_rotate_the_pages_and_rely_on_the_card_vblank();
     test_screen_buffer_flips_complete_on_the_safe_message();
     test_a_single_buffer_flip_waits_for_the_frame_only_when_asked();

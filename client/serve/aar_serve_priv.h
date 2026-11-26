@@ -47,6 +47,12 @@
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <libraries/Picasso96.h>
+#include <graphics/displayinfo.h>
+#include <intuition/intuitionbase.h>
+#include <intuition/pointerclass.h>
+#include <libraries/lowlevel.h>
+#include <proto/keymap.h>
+#include <proto/lowlevel.h>
 #include <proto/aar.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
@@ -142,6 +148,40 @@
     ({ struct Library *P96Base = (s)->gfx.p96; p96CloseScreen(scr); })
 #define X_P96_BITMAP_ATTR(s, bm, attr) \
     ({ struct Library *P96Base = (s)->gfx.p96; p96GetBitMapAttr(bm, attr); })
+
+/* Display, pointer, title, modes, text input and CD32 pads (API minor 6). */
+#define X_SET_WINDOW_TITLES(win, wt, st) SetWindowTitles(win, wt, st)
+#define X_SET_WINDOW_POINTER(...) SetWindowPointer(__VA_ARGS__)
+#define X_NEW_POINTER(bm, xo, yo) \
+    NewObject(NULL, (CONST_STRPTR)"pointerclass", POINTERA_BitMap, (ULONG)(bm), \
+              POINTERA_XOffset, (ULONG)(xo), POINTERA_YOffset, (ULONG)(yo), TAG_DONE)
+#define X_DISPOSE_POINTER(obj) DisposeObject(obj)
+#define X_GET_PREFS(prefs, size) GetPrefs(prefs, size)
+#define X_ALLOC_BITMAP(w, h, depth, flags, friend) AllocBitMap(w, h, depth, flags, friend)
+#define X_FREE_BITMAP(bm) FreeBitMap(bm)
+#define X_GET_VP_MODE_ID(vp) GetVPModeID(vp)
+#define X_NEXT_DISPLAY_INFO(id) NextDisplayInfo(id)
+#define X_GET_DISPLAY_INFO(buf, size, tag, id) \
+    GetDisplayInfoData(NULL, (UBYTE *)(buf), size, tag, id)
+#define X_INTUITION_VERSION() ((ULONG)IntuitionBase->LibNode.lib_Version)
+#define X_P96_ALLOC_BITMAP(s, w, h, depth, flags, friend, rgb) \
+    ({ struct Library *P96Base = (s)->gfx.p96; p96AllocBitMap(w, h, depth, flags, friend, rgb); })
+#define X_P96_FREE_BITMAP(s, bm) \
+    ({ struct Library *P96Base = (s)->gfx.p96; p96FreeBitMap(bm); })
+#define X_P96_LOCK_BITMAP(s, bm, ri, size) \
+    ({ struct Library *P96Base = (s)->gfx.p96; p96LockBitMap(bm, (UBYTE *)(ri), size); })
+#define X_P96_UNLOCK_BITMAP(s, bm, lock) \
+    ({ struct Library *P96Base = (s)->gfx.p96; p96UnlockBitMap(bm, lock); })
+#define X_P96_WRITE_PIXEL_ARRAY(s, ri, sx, sy, rp, dx, dy, w, h) \
+    ({ struct Library *P96Base = (s)->gfx.p96; p96WritePixelArray(ri, sx, sy, rp, dx, dy, w, h); })
+#define X_P96_RECT_FILL(s, rp, x0, y0, x1, y1, argb) \
+    ({ struct Library *P96Base = (s)->gfx.p96; p96RectFill(rp, x0, y0, x1, y1, argb); })
+#define X_P96_MODE_ATTR(s, id, attr) \
+    ({ struct Library *P96Base = (s)->gfx.p96; p96GetModeIDAttr(id, attr); })
+#define X_READ_JOY_PORT(s, port) \
+    ({ struct Library *LowLevelBase = (s)->in.ll; ReadJoyPort(port); })
+#define X_MAP_RAW_KEY(s, ie, buf, len) \
+    ({ struct Library *KeymapBase = (s)->in.keymap; MapRawKey(ie, buf, len, NULL); })
 
 /* The custom chip registers the joystick sampling reads (no state changes). */
 #define X_JOYDAT(port) (*((port) ? (volatile UWORD *)0xDFF00CUL : (volatile UWORD *)0xDFF00AUL))
@@ -269,6 +309,27 @@ struct aar_serve {
         struct MsgPort *safe_port;      /* SafeMessage replies of the flips */
         uint32_t flip_pending;
         uint32_t safe_pending;
+        /* A display in a window, or one that is scaled, has a surface of its own
+         * (a bitmap on the board) that each flip shows. */
+        struct Window *win;             /* the display window of a window display */
+        struct Screen *pub;             /* the locked public screen it is on */
+        struct BitMap *surface;         /* the surface bitmap: the front token */
+        ULONG surf_rgb;                 /* its RGBFB_* */
+        uint32_t surf_w, surf_h, surf_bpp;
+        int scaled;                     /* flips show the surface scaled */
+        uint32_t caps;                  /* the AAR_DISPCAP_* granted at the open */
+        uint32_t fit_x, fit_y, fit_w, fit_h; /* where a scaled surface is drawn, in the inner area */
+        uint32_t shown_w, shown_h;      /* the inner size that rectangle was made for (0: clear again) */
+        uint8_t *strip;                 /* scaled rows on their way to p96WritePixelArray */
+        uint32_t strip_bytes;
+        uint32_t scr_w, scr_h;          /* size of the screen the surface is on */
+        ULONG mode_id;                  /* the DisplayID shown (0 unknown) */
+        char title_buf[256];            /* the title of the window or screen, ISO-8859-1 */
+        APTR pointer_obj;               /* the custom pointer set, or NULL */
+        struct BitMap *pointer_bm;
+        struct MsgPort *vb_port;        /* DISPLAY_VBLANK: timer.device's VBLANK unit */
+        struct timerequest *vb_io;
+        int vb_pending;                 /* the request is sent */
     } gfx;
 
     /* ---- aar_serve_ahi.c: AHI audio -------------------------------------------------------- */
@@ -307,6 +368,9 @@ struct aar_serve {
         uint16_t mouse_buttons;
         ULONG joy_last[2];
         int joy_valid[2];
+        struct Library *ll;             /* lowlevel.library, when cfg.cd32_ports asks for it */
+        struct Library *keymap;         /* keymap.library, opened with a TEXT_INPUT display */
+        uint32_t cd32_ms[2];            /* when ReadJoyPort last read each port */
     } in;
 
     /* ---- The timer (loop, and the packet engine's wait) ------------------------------------- */

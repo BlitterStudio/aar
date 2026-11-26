@@ -775,6 +775,8 @@ int aar_serve_console_output_pending(const struct aar_serve_console *c);
 
 #define AAR_SERVE_SCREEN_MAX 4096u
 #define AAR_SERVE_DISPLAY_ID 1u
+/* DISPLAY_MODES: the most records one request reports. */
+#define AAR_SERVE_MODES_MAX 256u
 
 struct aar_serve_display {
     struct aar_serve_display_ops ops;
@@ -795,6 +797,13 @@ struct aar_serve_display {
     int have_pan;   /* one tall screen, flipped by panning */
     uint32_t pan_count;
     uint32_t showing;
+    uint32_t features; /* AAR_DISPCAP_* bits the screen could provide when it opened */
+    uint32_t caps;     /* AAR_DISPCAP_* granted at the open */
+    uint32_t now_ms;   /* the loop's clock, set before requests are served (aar_serve_display_clock) */
+    int vb_active;     /* a DISPLAY_VBLANK is parked */
+    struct aar_serve_req vb_req;
+    uint32_t vb_deadline_ms;
+    aar_display_mode mode_list[AAR_SERVE_MODES_MAX];
 
     int flip_active; /* a ChangeScreenBuffer flip waits for its SafeMessage */
     struct aar_serve_req flip_req;
@@ -812,15 +821,21 @@ int32_t aar_serve_display_open_check(const struct aar_serve_req *req);
 /* The surface depth in bits and the AAR_LAYOUT_* of one AAR_FMT_*. */
 uint32_t aar_serve_display_depth(uint32_t format);
 uint32_t aar_serve_display_layout(uint32_t format);
-/* The AAR_DISPCAP_* bits aar_serve grants for the AAR_DISPLAY_* flags asked. */
-uint16_t aar_serve_display_caps(uint32_t open_flags);
+/* The AAR_DISPCAP_* bits aar_serve grants for the AAR_DISPLAY_* flags asked.
+ * features are the AAR_DISPCAP_* bits the screen could provide (the built-in
+ * backend reports what it managed to open: WINDOW, SCALED, and POINTER_ABS,
+ * TEXT_INPUT and CLOSE_REQUEST when an input window exists; a replacement
+ * table reports none). The result is the base caps, plus each feature that
+ * was asked for; RESIZE needs WINDOW as well as RESIZABLE. */
+uint16_t aar_serve_display_caps(uint32_t open_flags, uint32_t features);
 /* Records the screen DISPLAY_OPEN made and fills its completion. front,
  * back and spare are tokens (board offsets) of the bitmap memory: for
  * panning, front is page 0 and the other pages follow at pitch * height. */
 void aar_serve_display_opened(struct aar_serve_display *d, const struct aar_serve_req *req,
                               uint32_t pitch, uint32_t front, uint32_t back,
                               uint32_t spare, int have_two, int have_pan,
-                              uint32_t pan_count, struct aar_serve_done *done);
+                              uint32_t pan_count, uint32_t features,
+                              struct aar_serve_done *done);
 /* Forgets the screen (the P96 screen is closed elsewhere). */
 void aar_serve_display_reset(struct aar_serve_display *d);
 void aar_serve_display_flip_request(struct aar_serve_display *d,
@@ -834,6 +849,120 @@ void aar_serve_display_palette_request(struct aar_serve_display *d,
 void aar_serve_display_close_request(struct aar_serve_display *d,
                                      const struct aar_serve_req *req,
                                      struct aar_serve_done *done);
+/* The loop's clock in milliseconds: set it before serving requests. */
+void aar_serve_display_clock(struct aar_serve_display *d, uint32_t now_ms);
+/* DISPLAY_INFO, DISPLAY_MODES, DISPLAY_RESIZE, DISPLAY_TITLE, DISPLAY_POINTER
+ * and DISPLAY_VBLANK (the last two may be deferred). */
+void aar_serve_display_info_request(struct aar_serve_display *d,
+                                    const struct aar_serve_req *req,
+                                    struct aar_serve_done *done);
+void aar_serve_display_modes_request(struct aar_serve_display *d,
+                                     const struct aar_serve_req *req,
+                                     struct aar_serve_done *done);
+void aar_serve_display_resize_request(struct aar_serve_display *d,
+                                      const struct aar_serve_req *req,
+                                      struct aar_serve_done *done);
+void aar_serve_display_title_request(struct aar_serve_display *d,
+                                     const struct aar_serve_req *req,
+                                     struct aar_serve_done *done);
+void aar_serve_display_pointer_request(struct aar_serve_display *d,
+                                       const struct aar_serve_req *req,
+                                       struct aar_serve_done *done);
+void aar_serve_display_vblank_request(struct aar_serve_display *d,
+                                      const struct aar_serve_req *req,
+                                      struct aar_serve_done *done, int *deferred);
+/* A vertical blank came: completes a parked DISPLAY_VBLANK with AAR_OK. */
+void aar_serve_display_vblank_seen(struct aar_serve_display *d);
+/* Completes a parked DISPLAY_VBLANK whose timeout has passed with
+ * AAR_E_TIMEDOUT. */
+void aar_serve_display_vblank_check(struct aar_serve_display *d, uint32_t now_ms);
+/* Microseconds until a parked DISPLAY_VBLANK times out (at least 1), or
+ * 0xFFFFFFFF when none is parked. */
+uint32_t aar_serve_display_vblank_wait_us(const struct aar_serve_display *d,
+                                          uint32_t now_ms);
+
+/* ---- Display geometry, pointer and text (pure) -------------------------- */
+
+/* The largest rectangle of the aspect of sw x sh that fits in dw x dh, centred
+ * in it. All sizes 1 to 65535; no 64-bit arithmetic. */
+void aar_serve_fit_rect(uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh,
+                        uint32_t *x, uint32_t *y, uint32_t *w, uint32_t *h);
+/* A pointer position in the window's inner area (mx, my from its top-left
+ * pixel) as a position on the surface. The surface is shown 1:1 at the top-left
+ * when fit_w is 0, else it is shown in the rectangle fit_x, fit_y, fit_w, fit_h
+ * and the position is scaled back. The result can lie outside the surface. */
+void aar_serve_surface_pos(int32_t mx, int32_t my, uint32_t sw, uint32_t sh,
+                           uint32_t fit_x, uint32_t fit_y, uint32_t fit_w,
+                           uint32_t fit_h, int32_t *sx, int32_t *sy);
+/* Nearest-neighbour scaling of an sw x sh surface of bpp (1, 2 or 4) bytes per
+ * pixel to dw x dh, sizes up to 16384. Destination pixel x takes source pixel
+ * (2x + 1) * sw / (2 * dw), the pixel centres. Writes the rows y0 to
+ * y0 + rows - 1 of the result to dst, starting at its first row. */
+void aar_serve_scale_nn(const uint8_t *src, uint32_t src_pitch, uint32_t sw,
+                        uint32_t sh, uint8_t *dst, uint32_t dst_pitch,
+                        uint32_t dw, uint32_t dh, uint32_t bpp, uint32_t y0,
+                        uint32_t rows);
+/* NewMouse wheel keys: 0x7A up, 0x7B down, 0x7C left, 0x7D right. 1 and the
+ * steps of one press (dy positive down, dx positive right) when raw (the up
+ * bit removed) is one, else 0. */
+int aar_serve_wheel_key(uint16_t raw, int16_t *dx, int16_t *dy);
+/* The characters of one key press: mapped is what keymap.library MapRawKey
+ * produced (ISO-8859-1, with CSI sequences for the cursor and function keys).
+ * Printable characters become code points in out (at most max); control
+ * characters (below 0x20, 0x7F and 0x80 to 0x9F) and CSI sequences produce
+ * none, and a key held with a qualifier in command_mask produces none.
+ * Returns the count. */
+uint32_t aar_serve_text_chars(const uint8_t *mapped, int32_t n, uint16_t qualifiers,
+                              uint16_t command_mask, uint16_t *out, uint32_t max);
+/* UTF-8 to ISO-8859-1 for a title: code points above 0xFF and malformed
+ * sequences become '?'. Reads at most n bytes, stops at a NUL, writes at most
+ * cap - 1 characters and a NUL. Returns the length written. */
+uint32_t aar_serve_utf8_to_latin1(const uint8_t *in, uint32_t n, char *out, uint32_t cap);
+/* The pointer colour (0 transparent, 1 to 3 the nearest of palette[0..2], each
+ * 0x00RRGGBB) of one 0xAARRGGBB pixel; alpha below 0x80 is transparent. */
+uint32_t aar_serve_pointer_pixel(uint32_t argb, const uint32_t palette[3]);
+/* Quantises w x h big-endian 0xAARRGGBB words to a two plane sprite image: pixel
+ * value bit 0 in plane0, bit 1 in plane1, rows of bytes_per_row bytes (zeroed
+ * first, at least (w + 7) / 8). */
+void aar_serve_pointer_planes(const uint8_t *argb_be, uint32_t w, uint32_t h,
+                              const uint32_t palette[3], uint8_t *plane0,
+                              uint8_t *plane1, uint32_t bytes_per_row);
+/* The refresh rate in millihertz of a mode with total_rows lines of
+ * total_clocks colour clocks (0 when either is 0 or the rate is outside 20 to
+ * 300 Hz); clock_hz is the colour clock rate, 3571429 for the 280 ns clock that
+ * MonitorInfo.TotalColorClocks counts. */
+uint32_t aar_serve_refresh_mhz(uint32_t total_rows, uint32_t total_clocks,
+                               uint32_t clock_hz);
+/* One DISPLAY_MODES record: six big-endian words in aar_display_mode order. */
+void aar_serve_mode_encode(const aar_display_mode *m, uint8_t *rec);
+/* Sets AAR_MODEF_PREFERRED on the first mode of the size wb_w x wb_h and clears
+ * it on the others. */
+void aar_serve_modes_prefer(aar_display_mode *modes, uint32_t n, uint32_t wb_w,
+                            uint32_t wb_h);
+
+/* CD32 pads read with lowlevel.library ReadJoyPort (the values of
+ * libraries/lowlevel.h). */
+#define AAR_SERVE_JP_TYPE_MASK   0xF0000000UL
+#define AAR_SERVE_JP_TYPE_GAMECTLR 0x10000000UL
+#define AAR_SERVE_JP_TYPE_JOYSTK   0x30000000UL
+#define AAR_SERVE_JPF_BLUE    (1UL << 23)
+#define AAR_SERVE_JPF_RED     (1UL << 22)
+#define AAR_SERVE_JPF_YELLOW  (1UL << 21)
+#define AAR_SERVE_JPF_GREEN   (1UL << 20)
+#define AAR_SERVE_JPF_FORWARD (1UL << 19)
+#define AAR_SERVE_JPF_REVERSE (1UL << 18)
+#define AAR_SERVE_JPF_PLAY    (1UL << 17)
+#define AAR_SERVE_JPF_UP      (1UL << 3)
+#define AAR_SERVE_JPF_DOWN    (1UL << 2)
+#define AAR_SERVE_JPF_LEFT    (1UL << 1)
+#define AAR_SERVE_JPF_RIGHT   (1UL << 0)
+/* 1 when ReadJoyPort's value is a pad or a joystick, whose buttons and
+ * directions are meaningful. */
+int aar_serve_cd32_valid(uint32_t jp);
+/* The AAR_JOY_* bits of a ReadJoyPort value. */
+uint16_t aar_serve_cd32_buttons(uint32_t jp);
+/* The axes (-1, 0, 1) of a ReadJoyPort value. */
+void aar_serve_cd32_axes(uint32_t jp, int16_t *dx, int16_t *dy);
 
 /* ---- Audio (the AHI route) ---------------------------------------------- */
 
