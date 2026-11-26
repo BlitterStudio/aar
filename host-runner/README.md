@@ -81,6 +81,7 @@ runner options, or after `--`, are the app's arguments.
 | Option | Meaning |
 | --- | --- |
 | `--root DIR` | Root for relative app paths. Default `.`. |
+| `--env DIR` | Serve `aar_env_get` from the files of `DIR`, one file per variable, as `ENV:` holds them. Without it the call reads the environment of the runner. |
 | `--abs` | Allow a path that contains `:`. The root check does not apply. |
 | `--scale N` | Window scale, 1..8. The surface stays at the app's size. A GL window ignores it. |
 | `--headless` | No visible window. SDL's dummy audio driver, and the offscreen video driver when GL is wanted (see "GL"), else the dummy video driver. |
@@ -109,20 +110,31 @@ to stderr.
 key down 0x22 8
 key up 34
 mouse 2 -1 1
+mouse 40 20 0x8000
 mousebtn 1 down
 joy 1 -1 0 1
 break 4
+wheel 1 -2 8
+text 0x20ac
+active 1
+close
 lowmem
 resize 320 240
 stop
 ```
 
-`key` takes an Amiga raw code and optional qualifier bits. `break` is
-`AAR_EV_BREAK` (`4`, `5`, `6` for Ctrl-D/E/F). `stop` sets the stop flag and
-latches `AAR_EV_STOP`. `lowmem` latches an `AAR_EV_LOW_MEMORY` at once, for
-an app that does not exhaust the heap. `resize` enqueues `AAR_EV_RESIZE`,
-which a runtime never sends in API 0.5; it tests handling of an event the app
-should ignore.
+`key` takes an Amiga raw code and optional qualifier bits. `mouse` takes the
+buttons word as it is, so `0x8000` (`AAR_MOUSE_ABSOLUTE`) makes `dx` and `dy` a
+position. `break` is `AAR_EV_BREAK` (`4`, `5`, `6` for Ctrl-D/E/F). `wheel`,
+`text`, `active` and `close` enqueue `AAR_EV_WHEEL`, `AAR_EV_TEXT`,
+`AAR_EV_ACTIVE` and `AAR_EV_CLOSE_REQUEST`, and `resize` enqueues
+`AAR_EV_RESIZE`. `stop` sets the stop flag and latches `AAR_EV_STOP`. `lowmem`
+latches an `AAR_EV_LOW_MEMORY` at once, for an app that does not exhaust the
+heap. `text`, `close` and `resize` reach the app only while its display has the
+cap for them (`AAR_DISPCAP_TEXT_INPUT`, `AAR_DISPCAP_CLOSE_REQUEST`,
+`AAR_DISPCAP_RESIZE`), as the events of the window do. The script is queued
+before `aar_main` runs, so an app that polls before it opens the display loses
+those events.
 
 ### Message script
 
@@ -150,9 +162,11 @@ alt `0x0010`/`0x0020`, left/right Amiga (GUI) `0x0040`/`0x0080`, numeric pad
 `0x0100`, repeat `0x0200`.
 
 Ctrl-D/E/F (raw `0x22`/`0x12`/`0x23`) also enqueue `AAR_EV_BREAK` with codes
-`4`/`5`/`6`, on key-down only. Window close and Ctrl-C set the stop flag and
-latch one `AAR_EV_STOP`. Unmapped scancodes are ignored. The queue holds
-256 ordinary events and drops the newest when full. `AAR_EV_STOP` and
+`4`/`5`/`6`, on key-down only. Ctrl-C sets the stop flag and latches one
+`AAR_EV_STOP`, and so does a window close, unless the display has
+`AAR_DISPCAP_CLOSE_REQUEST` (see "Mouse, wheel, text and window events").
+Unmapped scancodes are ignored. The queue holds 256 ordinary events and drops
+the newest when full, except mouse motion, which is merged. `AAR_EV_STOP` and
 `AAR_EV_LOW_MEMORY` are separate latches: a full queue cannot drop them, and
 `aar_event_poll` delivers them before queued input. It never blocks.
 
@@ -169,10 +183,52 @@ latch one `AAR_EV_STOP`. Unmapped scancodes are ignored. The queue holds
 | arrows up down right left | `0x4C`–`0x4F` | F1–F10 | `0x50`–`0x59` |
 | keypad `-` `/` `*` `+` | `0x4A` `0x5C` `0x5D` `0x5E` | shifts, caps, ctrl, alts, GUI | `0x60`–`0x67` |
 
-Both Control keys are raw `0x63`. SDL joystick 0 is Amiga port 1 (the game
-port); joystick 1 is port 0. `dx`/`dy` are `-1`, `0`, or `1`. Fire is button
-0 in `buttons` bit 0. Mouse movement is deltas. Mouse button codes are 1, 2,
-3 for left, right, middle, and `buttons` bits 0, 1, 2 match.
+Both Control keys are raw `0x63`.
+
+## Mouse, wheel, text and window events
+
+Mouse button codes are 1, 2, 3 for left, right, middle. `buttons` holds the
+state of all three (bits 0, 1, 2), and `code` is 0 for a motion. Motion is
+deltas in window pixels. With `AAR_DISPLAY_POINTER_ABS` granted every mouse
+event, a button change too, carries `AAR_MOUSE_ABSOLUTE` in `buttons`, and `dx`
+and `dy` are the position in surface pixels: the window position divided by
+`--scale` and rounded down, or with `AAR_DISPLAY_SCALE` the position SDL
+reports for the logical size. The position can lie outside the surface, with a
+button held or not, and a motion event reports it even when the pointer did not
+move.
+
+The queue merges what it cannot hold. When 256 events wait, a further motion
+event is not dropped: relative deltas are summed (saturating at the `int16_t`
+range) and an absolute event keeps the latest position, in one event that joins
+the queue as soon as the app has taken one. A button change or another event
+that finds the queue full is dropped. Other events keep their place behind the
+merged motion.
+
+`AAR_EV_WHEEL` is sent for `SDL_MOUSEWHEEL` and needs no flag: `dx` is positive
+to the right and `dy` positive towards the user, which undoes SDL's direction
+and its flipped direction, and `buttons` holds the qualifiers. `AAR_EV_TEXT` is
+sent with `AAR_DISPCAP_TEXT_INPUT`: the UTF-8 of `SDL_TEXTINPUT` becomes one
+event per code point, and a code point above U+FFFF or a byte sequence that is
+not UTF-8 is dropped. The raw key events are still sent. The runner starts SDL
+text input when the cap is granted and stops it when not.
+
+`AAR_EV_ACTIVE` is sent when the window of the display gains or loses input
+focus, once per change, and `AAR_DISPINFO_ACTIVE` reports the state. A hidden
+headless window never has focus. With `AAR_DISPCAP_CLOSE_REQUEST` the close
+of the window is `AAR_EV_CLOSE_REQUEST` and does not stop the app (the
+`SDL_QUIT` that SDL sends after the last window closes is swallowed); Ctrl-C
+and SIGTERM stop it as before. `AAR_EV_RESIZE` is described under "Display".
+
+SDL game controllers are the joystick ports 2 and up, in the order they are
+opened, up to four, with hot plug. The d-pad gives `dx` and `dy`, or else the
+left stick with a dead zone of half its range. `buttons`: A is
+`AAR_JOY_BUTTON1`, B `AAR_JOY_BUTTON2`, X `AAR_JOY_BUTTON3`, Y
+`AAR_JOY_BUTTON4`, start `AAR_JOY_PLAY`, the right shoulder `AAR_JOY_FORWARD`
+and the left shoulder `AAR_JOY_REVERSE`. An event is sent for each change of
+the state, and a controller that is unplugged with a button held sends a
+neutral state. A raw SDL joystick that is not a game controller keeps the older
+mapping: joystick 0 is Amiga port 1 (the game port), joystick 1 is port 0,
+`dx`/`dy` are `-1`, `0`, or `1`, and fire is button 0 in `buttons` bit 0.
 
 ## Differences from a target
 
@@ -192,6 +248,10 @@ Headless vsync does not wait for a 50/60 Hz blank. A windowed
 renderer uses SDL vsync when the driver provides it. `aar_sleep_us` is
 host-clock sleep, not a platform tick.
 
+`aar_time_unix_us` is the real-time clock of the host (`clock_gettime` with
+`CLOCK_REALTIME`, `GetSystemTimeAsFileTime` on Windows), in microseconds since
+1970 UTC. It never steps by itself and is never `AAR_E_NOSYS`.
+
 ### Log
 
 `aar_log` is printed immediately, truncated to `AAR_LOG_MAX`, with
@@ -210,6 +270,57 @@ buffers. A flip replaces the pending frame, counts it in
 it an async flip stays pending until `aar_yield` or `aar_display_vsync`, and
 a flip or a refresh in the meantime is `AAR_E_BUSY`. `aar_display_flip_idle`
 and `aar_display_vsync` without a display are `AAR_E_INVAL`.
+
+The host shows the surface in an SDL window, so `AAR_DISPLAY_WINDOW` is
+granted whenever it is asked for. The other flags of API 0.6 are granted as
+asked, except that `AAR_DISPLAY_RESIZABLE` needs `AAR_DISPLAY_WINDOW`. A flag
+bit above `AAR_DISPLAY_SCALE` is `AAR_E_INVAL`.
+
+`AAR_DISPLAY_RESIZABLE` makes the window resizable. When SDL reports a new
+window size the app gets `AAR_EV_RESIZE`, with the size divided by `--scale`
+(at least 1, at most `AAR_DISPLAY_MAX_DIM`). The event is sent once per size:
+not for the size the app last set or was last told, so the resize that
+`aar_display_resize` itself makes is silent. `aar_display_resize` allocates
+new zeroed buffers, makes the window the surface size times `--scale`, and
+keeps showing the old frame (and keeps it for `--dump-front`) until the next
+flip. A pending flip is `AAR_E_BUSY`. In latest mode a pending frame of the old
+size is dropped. An allocation that fails is `AAR_E_NOMEM`.
+
+`AAR_DISPLAY_SCALE` calls `SDL_RenderSetLogicalSize` with the surface size, so
+the frame fills the window and keeps its aspect ratio, with bars at the sides.
+A GL window is not scaled. `aar_display_get_info` reports
+`AAR_DISPINFO_SCALED` for a software window that is scaled by the flag or by
+`--scale`, and not for a GL window.
+
+`aar_display_get_info` reports the surface size, `AAR_DISPINFO_WINDOW` always,
+`AAR_DISPINFO_ACTIVE` while the window has focus, the desktop size of the
+window's display as the screen, and its refresh rate in millihertz. SDL gives
+whole hertz, so the rate is a multiple of 1000, and 0 when the video driver does
+not know one. SDL's offscreen driver (`--headless` with GL) has none; its dummy
+driver (`--headless --no-gl`) says 60 Hz.
+
+`aar_display_modes` lists the SDL display modes of the window's display (of the
+first display while none is open), without duplicates, each for all three
+formats. The desktop mode is the preferred one (`AAR_MODEF_PREFERRED`) and is
+added when SDL's list lacks it. `aar_display_set_title` calls
+`SDL_SetWindowTitle` and the title stays when a bind replaces the window.
+
+`aar_display_pointer` acts on the SDL cursor, which belongs to the whole
+process: hidden is `SDL_ShowCursor(SDL_DISABLE)`, busy is SDL's wait-arrow
+system cursor (a video driver without system cursors, such as the dummy one,
+accepts the call and shows nothing), and a custom pointer is an SDL colour
+cursor made from the ARGB pixels, which SDL copies. Closing the display
+restores the default cursor.
+
+`aar_display_wait_vblank` is an estimate from the clock. The runner takes the
+refresh rate of the display and treats the multiples of its period after the
+last presented frame (after the open, before the first) as the blanks. The
+call returns at the next one, or after the timeout with `AAR_E_TIMEDOUT` when
+that comes first, and then completes a pending async flip as `aar_yield`
+does. It is not synchronised to the hardware, and it is `AAR_E_NOSYS` where the
+display has no known rate. `aar_display_last_present_us` is the
+`aar_time_us` value at which the last flip completed or the last GL swap ran
+(the host presents at once), and 0 before the first one after an open.
 
 ### GL
 
@@ -245,7 +356,16 @@ buffer of the surface, in the layout of the surface (RGB565 or BGRA8888; CLUT8
 is not written), so that the dump and `aar_display_refresh` show the GL frame.
 That costs a readback per frame, so it is off otherwise.
 
-The table has `version` `AAR_GL_VERSION_ARRAYS` and the full `size`. A slot
+`aar_display_resize` with a context bound: when the window already has the new
+size, as after the user dragged it, the context stays on that window. Otherwise
+the runner makes a window with the same pixel format at the new size, makes
+the context current on it, and destroys the old one. The context keeps its
+textures and state. A new window is needed because SDL's offscreen driver does
+not resize the framebuffer of an existing window. The window may flicker, and
+`glViewport` is up to the app after the resize. A bind or an unbind after a
+resize makes its window at the new size.
+
+The table has `version` `AAR_GL_VERSION_11` and the full `size`. A slot
 points at a wrapper in the runner and not at the host function, because the
 calling convention of the host's GL is not the app's (stdcall on 32-bit
 Windows), and a slot whose entry the host lacks can stay NULL. The wrappers
@@ -313,6 +433,79 @@ The path policy of the standard applies. Relative paths stay under
 as in an AmigaDOS path. `aar_map_file` reads at most 16 MiB into a
 runtime-owned shared block, so the file counts against the shared limit.
 A larger file is `AAR_E_NOSPC` and a zero-length file is `AAR_E_NOMEM`.
+
+The calls of API 0.6 resolve their paths as `aar_file_open` does. Those that
+change something (`aar_file_delete`, `aar_file_rename`, `aar_dir_create`,
+`aar_file_set_date`, `aar_file_set_protect`, `aar_file_truncate`) are refused
+with `AAR_E_ACCES` after a stop request. `aar_file_open` and `aar_file_write`
+are not (spec 3.7 lets a call after a stop complete).
+
+`aar_file_delete` is `unlink` or `rmdir`. A directory that is not empty is
+`AAR_E_EXIST`. A file that an id of the runner holds is `AAR_E_BUSY`, as a
+locked file is on AmigaDOS (on Windows the host refuses an open file with
+`AAR_E_ACCES`). A delete-protected object is `AAR_E_ACCES`.
+`aar_file_rename` is `rename`, or `MoveFileEx` on Windows. An existing target is
+`AAR_E_EXIST` without `AAR_RENAME_REPLACE`; that is a check before the
+rename, so another process can still slip a file in. With the flag the host's
+rename semantics apply: a file replaces a file and a directory an empty
+directory. A directory against a file, or a directory that is not empty, is
+`AAR_E_EXIST`; a delete-protected target is `AAR_E_ACCES`; a target on another
+file system, or a directory moved into itself, is `AAR_E_INVAL`.
+`aar_file_set_date` sets the modification time (`utimensat`, the access time
+stays) and refuses a negative time or one that the host's `time_t` cannot hold
+with `AAR_E_INVAL`. `aar_file_truncate` flushes the stream of the id and calls
+`ftruncate` (`_chsize_s` on Windows), so it shortens or zero-extends the
+file and leaves the position alone. `aar_get_volume_info` is `statvfs` of the
+path: the fragment size as `block_bytes`, the blocks as `total_bytes`, the
+blocks available to a user as `free_bytes`, and `AAR_VOLF_READONLY` for a
+read-only mount (`GetDiskFreeSpaceEx` on Windows). The path of the root is `.`.
+
+POSIX has three owner permission bits where AmigaDOS has eight protection
+bits. `aar_stat.protect` and `aar_file_set_protect` map the owner's r, w and x
+bits to `AAR_PROT_READ`, `AAR_PROT_WRITE` and `AAR_PROT_EXECUTE` with the sense
+of AmigaDOS: a clear permission bit is a set protection bit. A directory has no
+`AAR_PROT_EXECUTE`, and its x bit is left alone. `AAR_PROT_DELETE` is reported
+when `AAR_PROT_WRITE` is and ignored by `aar_file_set_protect`, so a file that
+cannot be written cannot be deleted either, whatever the directory allows.
+`AAR_PROT_ARCHIVE`, `AAR_PROT_PURE`, `AAR_PROT_SCRIPT` and `AAR_PROT_HOLD` are
+accepted and read back as clear, because the host has nowhere to keep them. A
+file made by the host usually has no x bit and so reports `AAR_PROT_EXECUTE`.
+On Windows the read-only attribute is `AAR_PROT_WRITE` and `AAR_PROT_DELETE`,
+and nothing else is stored.
+
+### Locale, environment and clipboard
+
+`aar_get_locale_info` reports the UTC offset that the time zone of the host has
+now, daylight saving included, in minutes east of UTC, and always sets
+`AAR_LOCALEF_OFFSET_KNOWN`. The language is the ISO 639-1 code of `LC_ALL`,
+else `LC_MESSAGES`, else `LANG` (on Windows the user locale when none is set),
+as an Amiga language name spelled without accents: `english`, `deutsch`,
+`francais`, `espanol`, `italiano`, `nederlands`, `svenska`, `dansk`, `norsk`,
+`suomi`, `portugues` and `polski`. Any other language, and the `C` and `POSIX`
+locales, give an empty string. The country is the region of that name as an
+Amiga country code (`D`, `A`, `F`, `I`, `E`, `USA`, `B`, `S`, `N`, `FIN`, `P`,
+`CDN`, `AUS`, `IRL`) or else as its ISO 3166 code, and empty when the name has
+none. The decimal point and group separator are those of the numeric locale
+(`LC_ALL`, `LC_NUMERIC`, `LANG`), read with `localeconv` without changing the
+locale of the process. A locale that the host does not have, and the `C`
+locale, give `.` and an empty separator, and so does a separator that is not
+valid UTF-8 or is longer than three bytes.
+
+`aar_env_get` reads the environment of the runner process. With `--env DIR` it
+reads the file `DIR/<name>` instead and returns its bytes as they are, as
+`ENV:` holds a variable; a `/` in a name is a subdirectory, and the process
+environment is not visible. A name that leaves `DIR` (a `..` or empty component,
+a leading `/`, a `:` or a `\`) is `AAR_E_ACCES`, and a directory is
+`AAR_E_NOENT`. A value that does not fit gives `AAR_E_NOSPC` with the full
+length, and the part that fits is copied.
+
+`aar_clip_read` and `aar_clip_write` use the SDL text clipboard, for unit 0 and
+`AAR_CLIP_TEXT` only. An empty clipboard is `AAR_E_NOENT`. For another unit or
+`AAR_CLIP_IFF`, a read is `AAR_E_NOENT` and a write `AAR_E_NOSYS`; a unit of 256
+or more and an unknown type are `AAR_E_INVAL` first. A write ends the text at a
+NUL byte, because SDL takes a C string. Without a video subsystem the calls
+are `AAR_E_NOSYS`. SDL's dummy and offscreen video drivers keep the text inside
+the process.
 
 ### Console
 

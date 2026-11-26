@@ -124,6 +124,7 @@ aar_host_executable(contract SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/contract.
 aar_host_executable(msgflood SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/msgflood.c)
 aar_host_executable(conshort SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/conshort.c)
 aar_host_executable(mailbox SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/mailbox.c)
+aar_host_executable(api06 SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/tests/api06.c)
 
 # Conformance payloads (conformance/payloads) that make sense on the host. The
 # host runner is the reference for app semantics (spec 11.1): the core group
@@ -238,10 +239,18 @@ if(BUILD_TESTING)
   aar_host_test(glpump EXE gltest)
   aar_host_test(glwindow EXE gltest)
   aar_host_test(glconf EXE mgl-conformance)
-  set_tests_properties(gl glpump glwindow glconf PROPERTIES SKIP_RETURN_CODE 77)
+  aar_host_test(glresize EXE gltest)
+  set_tests_properties(gl glpump glwindow glconf glresize PROPERTIES SKIP_RETURN_CODE 77)
   set_tests_properties(glconf PROPERTIES TIMEOUT 180)
   aar_host_test(keys EXE hello ENV "AAR_HOST_SELFTEST=1")
   aar_host_test(contract)
+
+  # The API 0.6 calls and events (tests/api06.c); api06_pads needs SDL's
+  # virtual joystick and exits 77 where that is missing.
+  foreach(t files time locale env clip display present resize events input pads)
+    aar_host_test(api06_${t} EXE api06)
+  endforeach()
+  set_tests_properties(api06_pads PROPERTIES SKIP_RETURN_CODE 77)
 
   # conf_<area> runs the payload and checks its AAR-CONF lines against
   # conformance/TESTS.md; conf_catalogue checks the catalogue itself.

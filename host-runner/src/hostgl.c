@@ -640,15 +640,22 @@ void host_gl_shutdown(void)
     host_gl_release();
 }
 
-/* The window of the bound context has the new surface size. The framebuffer
- * follows the window by itself; the readback for --dump-front needs the size.
- * glViewport stays the app's business. */
-void host_gl_resized(int32_t w, int32_t h)
+/* The bound context moves to another window, which has the new size of the
+ * surface. The window must have been made with the pixel format of the
+ * context, which is the one hostgl set for every window of the surface. The
+ * state of the context is kept. glViewport stays the app's business. Returns 0
+ * when no context is bound. */
+int host_gl_set_window(void *window, int32_t w, int32_t h)
 {
     if (!gl.bound)
-        return;
+        return 0;
+    if (SDL_GL_MakeCurrent((SDL_Window *)window, gl.ctx) != 0)
+        return -1;
+    gl.win = (SDL_Window *)window;
     gl.w = w;
     gl.h = h;
+    SDL_GL_SetSwapInterval(host_options()->headless ? 0 : 1);
+    return 0;
 }
 
 static const aar_gl *api_gl_bind(uint32_t surface_id)

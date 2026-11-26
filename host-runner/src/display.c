@@ -812,6 +812,46 @@ static int api_display_resize(uint32_t id, uint32_t w, uint32_t h,
             free(buf[i]);
         return AAR_E_NOMEM;
     }
+    if (disp.gl) {
+        /* A GL window of another size is a new window: some drivers (SDL's
+         * offscreen one) keep the framebuffer at the size they made it with.
+         * The context moves to it, and keeps its state. A window that already
+         * has the size, as after the user resized it, stays. */
+        SDL_Window *old = disp.win;
+        uint32_t old_id = disp.window_id;
+        uint32_t old_w = disp.w;
+        uint32_t old_h = disp.h;
+        int cur_w = 0;
+        int cur_h = 0;
+
+        SDL_GetWindowSize(old, &cur_w, &cur_h);
+        if (cur_w != (int)w || cur_h != (int)h) {
+            if (!host_options()->headless)
+                SDL_GetWindowPosition(old, &disp.win_x, &disp.win_y);
+            disp.w = w;
+            disp.h = h;
+            if (create_window(1) != 0 ||
+                host_gl_set_window(disp.win, (int32_t)w, (int32_t)h) != 0) {
+                if (disp.win)
+                    SDL_DestroyWindow(disp.win);
+                (void)host_gl_set_window(old, (int32_t)old_w, (int32_t)old_h);
+                disp.win = old;
+                disp.window_id = old_id;
+                disp.w = old_w;
+                disp.h = old_h;
+                for (i = 0; i < 3; i++)
+                    free(buf[i]);
+                free(convert);
+                return AAR_E_IO;
+            }
+            SDL_DestroyWindow(old);
+        } else if (host_gl_set_window(old, (int32_t)w, (int32_t)h) != 0) {
+            for (i = 0; i < 3; i++)
+                free(buf[i]);
+            free(convert);
+            return AAR_E_IO;
+        }
+    }
     for (i = 0; i < 3; i++) {
         free(disp.buf[i]);
         disp.buf[i] = buf[i];
@@ -830,13 +870,11 @@ static int api_display_resize(uint32_t id, uint32_t w, uint32_t h,
      * (the old texture and the old copy for --dump-front) until the next
      * flip. */
     scale = window_scale();
-    if (disp.win)
+    if (disp.win && !disp.gl)
         SDL_SetWindowSize(disp.win, (int)w * scale, (int)h * scale);
     if (disp.ren && logical_size_in_use())
         SDL_RenderSetLogicalSize(disp.ren, (int)w, (int)h);
-    if (disp.gl)
-        host_gl_resized((int32_t)w, (int32_t)h);
-    else
+    if (!disp.gl)
         redraw();
     fill_surface(out);
     return AAR_OK;
@@ -928,9 +966,8 @@ static int api_display_wait_vblank(uint32_t timeout_us)
     now = host_time_us();
     base = disp.presented_us ? disp.presented_us : disp.opened_us;
     k = now > base ? (now - base) * mhz / 1000000000ull + 1u : 1u;
-    next = base + k * 1000000000ull / mhz;
-    if (next <= now)
-        next = now + 1u;
+    /* Rounded up, so that a call that wakes at a boundary sees the next one. */
+    next = base + (k * 1000000000ull + mhz - 1u) / mhz;
     timed_out = next - now > timeout_us;
     host_sleep_until(timed_out ? now + timeout_us : next);
     if (host_stop_requested())

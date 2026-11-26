@@ -394,6 +394,26 @@ def check_glpump(exe):
     expect_ok(proc)
 
 
+def check_glresize(exe):
+    # aar_display_resize with a context bound, unbound and bound again. The
+    # last frame is 100x70 and left bound, so --dump-front holds it.
+    width, height = 100, 70
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "gl.bin")
+        proc = run(exe, ["--headless", "--dump-front", path, "--", "resize"])
+        if proc.returncode == 77:
+            gl_missing(proc, "glresize")
+        expect_ok(proc)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        if len(data) != width * height * 2:
+            raise SystemExit(f"glresize dump is {len(data)} bytes, expected {width * height * 2}")
+        if rgb565_at(data, width, 8, 8, height) != (0x07, 0xE0):
+            raise SystemExit("glresize dump: the triangle is not green at the lower left")
+        if rgb565_at(data, width, 96, 66, height) != (0xF8, 0x00):
+            raise SystemExit("glresize dump: the clear colour is not red at the upper right")
+
+
 def check_glwindow(exe):
     # A window, scaled, the way a developer runs it: a real display, or Xvfb.
     merged = os.environ.copy()
@@ -678,6 +698,276 @@ def check_contract(exe):
         expect_ok(proc)
 
 
+# ---- API 0.6 (tests/api06.c) ----------------------------------------------
+
+def api06_run(exe, mode, *, options=(), env=None, cwd=None, expect=0):
+    proc = run(exe, ["--headless", *options, "--", *mode], env=env, cwd=cwd)
+    if proc.returncode == 77:
+        show(proc)
+        sys.stderr.write("SKIP: " + " ".join(mode) + "\n")
+        raise SystemExit(77)
+    if proc.returncode != expect:
+        show(proc)
+        raise SystemExit(f"api06 {' '.join(mode)}: exit {proc.returncode}")
+    return proc.stdout.decode("utf-8", "replace")
+
+
+def check_api06_files(exe):
+    import re
+    import stat
+
+    with tempfile.TemporaryDirectory() as root:
+        with open(os.path.join(root, "ok.txt"), "w", encoding="ascii") as fh:
+            fh.write("ok\n")
+        out = api06_run(exe, ["files"], options=["--root", root])
+        # What the calls did on the host.
+        with open(os.path.join(root, "ok.txt"), "rb") as fh:
+            if fh.read() != b"he\0\0\0\0":
+                raise SystemExit("rename with replace did not put the file over ok.txt")
+        if os.path.exists(os.path.join(root, "sub")):
+            raise SystemExit("the directory was not deleted")
+        if os.path.exists(os.path.join(root, "ok2.txt")):
+            raise SystemExit("a refused rename created its target")
+        if int(os.stat(os.path.join(root, "dated.txt")).st_mtime) != 1000000000:
+            raise SystemExit("set_date did not set the modification time")
+        perm = os.path.join(root, "perm.txt")
+        if os.name == "posix":
+            mode = stat.S_IMODE(os.stat(perm).st_mode)
+            # WRITE | DELETE | EXECUTE were set: DENY write, execute asked for
+            # by the clear EXECUTE bit does not hold, so the owner x bit is
+            # not set; read stays allowed.
+            if mode & stat.S_IWUSR or not mode & stat.S_IRUSR or mode & stat.S_IXUSR:
+                raise SystemExit(f"set_protect left mode {mode:o} on perm.txt")
+            os.chmod(perm, 0o644)
+        m = re.search(r"volume block=(\d+) total=(\d+) free=(\d+)", out)
+        if not m:
+            raise SystemExit("no volume line")
+        block, total, free = (int(x) for x in m.groups())
+        if os.name == "posix":
+            sv = os.statvfs(root)
+            unit = sv.f_frsize or sv.f_bsize
+            if block != unit or total != sv.f_blocks * unit or free > total:
+                raise SystemExit(f"volume_info {block}/{total}/{free} vs statvfs {unit}/{sv.f_blocks * unit}")
+    # An unsafe path is refused with --root, and a stop refuses a change.
+    with tempfile.TemporaryDirectory() as root:
+        outside = os.path.join(os.path.dirname(root), "aar06-outside.txt")
+        with open(outside, "w", encoding="ascii") as fh:
+            fh.write("keep")
+        try:
+            api06_run(exe, ["files"], options=["--root", root], expect=10)
+        except SystemExit:
+            pass
+        finally:
+            if open(outside, encoding="ascii").read() != "keep":
+                raise SystemExit("a call changed a file outside the root")
+            os.remove(outside)
+
+
+def check_api06_time(exe):
+    import time
+
+    before = time.time_ns() // 1000
+    out = api06_run(exe, ["time"])
+    after = time.time_ns() // 1000
+    line = [l for l in out.splitlines() if l.startswith("unix_us=")]
+    if not line:
+        raise SystemExit("no unix_us line")
+    value = int(line[0].split("=")[1])
+    if not before <= value <= after:
+        raise SystemExit(f"time_unix_us {value} is outside [{before}, {after}]")
+
+
+def locale_fields(exe, env):
+    import re
+
+    base = {"LC_ALL": "", "LC_MESSAGES": "", "LANG": "", "LC_NUMERIC": "", "TZ": "UTC"}
+    base.update(env)
+    out = api06_run(exe, ["locale"], env=base)
+    m = re.search(r"utc=(-?\d+) flags=(\d+) lang=(\S*) country=(\S*) dec=(\S*) grp=(.*)", out)
+    if not m:
+        raise SystemExit(f"locale line: {out!r}")
+    return m.groups()
+
+
+def check_api06_locale(exe):
+    # The offset is minutes east; a POSIX TZ string "XYZ-5:30" is 5:30 east.
+    utc, flags, lang, country, dec, grp = locale_fields(
+        exe, {"LC_ALL": "de_DE.UTF-8", "TZ": "XYZ-5:30"})
+    if (int(utc), int(flags), lang, country) != (330, 1, "deutsch", "D"):
+        raise SystemExit(f"de_DE: {(utc, flags, lang, country)}")
+    if not dec:
+        raise SystemExit("no decimal point")
+    got = locale_fields(exe, {"LANG": "fr_CA.UTF-8", "TZ": "XYZ+3"})
+    if (int(got[0]), got[2], got[3]) != (-180, "francais", "CDN"):
+        raise SystemExit(f"fr_CA by LANG: {got}")
+    got = locale_fields(exe, {"LC_ALL": "C"})
+    if (int(got[0]), got[2], got[3]) != (0, "", ""):
+        raise SystemExit(f"C: {got}")
+    got = locale_fields(exe, {"LC_ALL": "en_GB", "LANG": "de_DE"})
+    if (got[2], got[3]) != ("english", "GB"):
+        raise SystemExit(f"en_GB over LANG: {got}")
+    got = locale_fields(exe, {"LC_MESSAGES": "sv_SE.UTF-8", "LANG": "de_DE"})
+    if (got[2], got[3]) != ("svenska", "S"):
+        raise SystemExit(f"sv_SE by LC_MESSAGES: {got}")
+    got = locale_fields(exe, {"LC_ALL": "xx_YY"})
+    if (got[2], got[3]) != ("", "YY"):
+        raise SystemExit(f"unknown language: {got}")
+    got = locale_fields(exe, {"LC_ALL": "pt_BR.UTF-8"})
+    if (got[2], got[3]) != ("portugues", "BR"):
+        raise SystemExit(f"pt_BR: {got}")
+
+
+def check_api06_env(exe):
+    with tempfile.TemporaryDirectory() as env_dir:
+        with open(os.path.join(env_dir, "greeting"), "wb") as fh:
+            fh.write(b"hello world")
+        open(os.path.join(env_dir, "empty"), "wb").close()
+        os.makedirs(os.path.join(env_dir, "sub"))
+        with open(os.path.join(env_dir, "sub", "inner"), "wb") as fh:
+            fh.write(b"in")
+        with open(os.path.join(env_dir, "bin"), "wb") as fh:
+            fh.write(b"\0\1\2")
+        api06_run(exe, ["envdir"], options=["--env", env_dir],
+                  env={"AARTEST_ENV": "from-process"})
+    env = {"AARTEST_ENV": "from-process"}
+    env.pop("AARTEST_NOT_SET", None)
+    api06_run(exe, ["envproc"], env=env)
+    # --env names a directory.
+    proc = run(exe, ["--headless", "--env", os.path.join(tempfile.gettempdir(), "aar-no-such-dir"), "--", "time"])
+    if proc.returncode != 10 or b"--env" not in proc.stderr:
+        show(proc)
+        raise SystemExit(f"--env with a missing directory: exit {proc.returncode}")
+    proc = run(exe, ["--headless", "--env"])
+    if proc.returncode != 10:
+        raise SystemExit("--env without a value")
+
+
+def check_api06_clip(exe):
+    api06_run(exe, ["clip"])
+    api06_run(exe, ["clip"], options=["--no-gl"])
+
+
+def check_api06_display(exe):
+    import re
+
+    out = api06_run(exe, ["display"])
+    if not re.search(r"refresh_mhz=\d+ screen=\d+x\d+", out):
+        raise SystemExit("no display info line")
+    api06_run(exe, ["display"], options=["--no-gl"])
+    api06_run(exe, ["display"], options=["--scale", "2"])
+
+
+def check_api06_present(exe):
+    out = api06_run(exe, ["present"])
+    if "vblank=" not in out:
+        raise SystemExit("no vblank line")
+    api06_run(exe, ["present"], options=["--no-gl"])
+
+
+def check_api06_resize(exe):
+    with tempfile.TemporaryDirectory() as root:
+        script = os.path.join(root, "input.txt")
+        with open(script, "w", encoding="ascii") as fh:
+            fh.write("resize 80 60\n")
+        api06_run(exe, ["resize"], options=["--input", script])
+        api06_run(exe, ["resize"], options=["--input", script, "--scale", "2"])
+
+
+def check_api06_events(exe):
+    api06_run(exe, ["events"])
+    api06_run(exe, ["events_nocap"])
+    api06_run(exe, ["events_nocap"], options=["--no-gl"])
+    api06_run(exe, ["events_scaled"], options=["--scale", "2"])
+
+
+SCRIPT_EVENTS = """\
+text 65
+wheel 1 -2 8
+active 1
+close
+resize 80 60
+mouse 1 2 0x8000
+text 0x20ac 8
+"""
+
+WHEEL = "ev 10 0 1 -2 8"
+ACTIVE = "ev 12 1 0 0 0"
+MOUSE = "ev 3 0 1 2 32768"
+TEXT_A = "ev 9 65 0 0 0"
+TEXT_EURO = "ev 9 8364 0 0 8"
+CLOSE = "ev 11 0 0 0 0"
+RESIZE = "ev 6 0 80 60 0"
+
+
+def check_api06_input(exe):
+    # An event that needs a cap reaches the app only with that cap; the wheel
+    # and focus events always do.
+    with tempfile.TemporaryDirectory() as root:
+        script = os.path.join(root, "input.txt")
+        with open(script, "w", encoding="ascii") as fh:
+            fh.write(SCRIPT_EVENTS)
+        cases = [
+            (0, [WHEEL, ACTIVE, MOUSE]),
+            (12, [WHEEL, ACTIVE, RESIZE, MOUSE]),  # WINDOW | RESIZABLE
+            (32, [TEXT_A, WHEEL, ACTIVE, MOUSE, TEXT_EURO]),  # TEXT_INPUT
+            (64, [WHEEL, ACTIVE, CLOSE, MOUSE]),  # CLOSE_REQUEST
+            (8, [WHEEL, ACTIVE, MOUSE]),  # RESIZABLE needs WINDOW
+            (252, [TEXT_A, WHEEL, ACTIVE, CLOSE, RESIZE, MOUSE, TEXT_EURO]),
+        ]
+        for flags, want in cases:
+            out = api06_run(exe, ["script", str(flags)], options=["--input", script])
+            got = [l for l in out.splitlines() if l.startswith("ev ")]
+            if got != want:
+                raise SystemExit(f"script events with flags {flags}: {got} != {want}")
+        import re
+
+        # Motion that the queue cannot hold is merged, and no delta is lost.
+        script = os.path.join(root, "merge.txt")
+        with open(script, "w", encoding="ascii") as fh:
+            fh.write("mouse 1 2\n" * 300)
+        out = api06_run(exe, ["merge"], options=["--input", script])
+        m = re.search(r"rel events=(\d+) before=(-?\d+),(-?\d+) buttons=(\d+) after=(-?\d+),(-?\d+)", out)
+        if not m:
+            raise SystemExit(f"merge output {out!r}")
+        events, bx, by, buttons, ax, ay = (int(x) for x in m.groups())
+        if (bx, by, buttons, ax, ay) != (300, 600, 0, 0, 0):
+            raise SystemExit(f"merged motion lost deltas: {m.groups()}")
+        if events != 257:
+            raise SystemExit(f"{events} events for 300 scripted: the queue holds 256 and one merged event")
+        # Below the capacity nothing is merged, and a button keeps its place.
+        script = os.path.join(root, "order.txt")
+        with open(script, "w", encoding="ascii") as fh:
+            fh.write("mouse 1 2\n" * 5)
+            fh.write("mousebtn 1 down\n")
+            fh.write("mouse 3 -1 1\n" * 10)
+        out = api06_run(exe, ["merge"], options=["--input", script])
+        m = re.search(r"rel events=(\d+) before=(-?\d+),(-?\d+) buttons=(\d+) after=(-?\d+),(-?\d+)", out)
+        if not m or tuple(int(x) for x in m.groups()) != (16, 5, 10, 1, 30, -10):
+            raise SystemExit(f"motion around a button: {out!r}")
+        # The merged sum saturates at the int16 range.
+        script = os.path.join(root, "sat.txt")
+        with open(script, "w", encoding="ascii") as fh:
+            fh.write("mouse 1000 -1000\n" * 300)
+        out = api06_run(exe, ["merge"], options=["--input", script])
+        m = re.search(r"rel events=(\d+) before=(-?\d+),(-?\d+)", out)
+        if not m or (int(m.group(2)), int(m.group(3))) != (256 * 1000 + 32767, -(256 * 1000 + 32768)):
+            raise SystemExit(f"saturating motion: {out!r}")
+        # An absolute event keeps the position of the latest one.
+        script = os.path.join(root, "abs.txt")
+        with open(script, "w", encoding="ascii") as fh:
+            for i in range(1, 301):
+                fh.write(f"mouse {i} {2 * i} 0x8000\n")
+        out = api06_run(exe, ["merge", "abs"], options=["--input", script])
+        m = re.search(r"abs events=(\d+) last=(\d+),(\d+)", out)
+        if not m or (int(m.group(2)), int(m.group(3))) != (300, 600) or int(m.group(1)) >= 300:
+            raise SystemExit(f"absolute merge: {out!r}")
+
+
+def check_api06_pads(exe):
+    api06_run(exe, ["pads"])
+
+
+
 CHECKS = {
     "ringflood": check_ringflood,
     "freestanding": check_freestanding,
@@ -697,11 +987,23 @@ CHECKS = {
     "gl": check_gl,
     "glpump": check_glpump,
     "glwindow": check_glwindow,
+    "glresize": check_glresize,
     "glconf": check_glconf,
     "constop": check_constop,
     "pixelsstop": check_pixelsstop,
     "msgwaitstop": check_msgwaitstop,
     "msgwaitidle": check_msgwaitidle,
+    "api06_files": check_api06_files,
+    "api06_time": check_api06_time,
+    "api06_locale": check_api06_locale,
+    "api06_env": check_api06_env,
+    "api06_clip": check_api06_clip,
+    "api06_display": check_api06_display,
+    "api06_present": check_api06_present,
+    "api06_resize": check_api06_resize,
+    "api06_events": check_api06_events,
+    "api06_input": check_api06_input,
+    "api06_pads": check_api06_pads,
 }
 
 

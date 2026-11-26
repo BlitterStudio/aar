@@ -120,8 +120,9 @@ int host_gl_available(void);
 void host_gl_bind(aar_api *api);
 void host_gl_release(void);
 void host_gl_shutdown(void);
-/* The surface of a bound GL window was resized: the context's size. */
-void host_gl_resized(int32_t w, int32_t h);
+/* The bound context, if any, moves to another window of the same pixel
+ * format that has the new surface size. Returns -1 when it cannot. */
+int host_gl_set_window(void *window, int32_t w, int32_t h);
 
 int host_input_init(void);
 void host_input_shutdown(void);
