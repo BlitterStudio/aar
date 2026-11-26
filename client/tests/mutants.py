@@ -1088,8 +1088,7 @@ mutant("surface-token-not-checked", "display_window_fallback", SG,
        ("    if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb ||\n        !bitmap_token(s, bm, token, pitch)) {",
         "    if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb) {\n        (void)bitmap_token(s, bm, token, pitch);"))
 mutant("scaled-flip-draws-unscaled", "display_scale_window", SG,
-       ("    if (s->gfx.scaled)\n        write_scaled(s, &ri, rp, ox + x, oy + y, w, h);",
-        "    if (0)\n        write_scaled(s, &ri, rp, ox + x, oy + y, w, h);"))
+       ("        if (s->gfx.scaled)\n            write_scaled(s, &ri, rp, ox + x, oy + y, w, h);", "        if (0)\n            write_scaled(s, &ri, rp, ox + x, oy + y, w, h);"))
 mutant("scaled-area-not-cleared", "display_scale_window", SG,
        ("            update_fit(s);\n            clear_inner(s);\n", "            update_fit(s);\n"))
 mutant("resize-keeps-the-old-bitmap", "display_resize", SG,
@@ -1113,6 +1112,8 @@ mutant("no-timed-wake-for-a-vblank-timeout", "display_vblank_timeout", SL,
        ("    if (vb < us)\n        us = vb;\n", ""))
 mutant("cd32-without-lowlevel-is-served", "joystick_cd32", SL,
        ("        if (!s->in.ll) {", "        if (0) {"))
+mutant("cybergraphics-scaling-never-used", "display_scale_cybergraphics", SG,
+       ("        if (s->gfx.cgx &&\n            X_SCALE_PIXEL_ARRAY(", "        if (0 &&\n            X_SCALE_PIXEL_ARRAY("))
 NAMES = {m[0]: m for m in M}
 
 

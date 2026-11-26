@@ -219,6 +219,7 @@
 #define JPF_JOY_DOWN (1UL << 2)
 #define JPF_JOY_LEFT (1UL << 1)
 #define JPF_JOY_RIGHT (1UL << 0)
+#define AAR_SERVE_RECTFMT_ARGB 2UL
 #define P96SA_Left (TAG_USER + 0x10000)
 #define P96SA_Width (TAG_USER + 0x10001)
 #define P96SA_Height (TAG_USER + 0x10002)
@@ -1739,9 +1740,11 @@ static uint8_t *hx_gfx_mem(uint32_t bytes)
     return p;
 }
 
-HX_UNUSED static struct Library hx_ll_lib, hx_keymap_lib;
+HX_UNUSED static struct Library hx_ll_lib, hx_keymap_lib, hx_cgx_lib;
 HX_UNUSED static int hx_ll_present = 1, hx_keymap_present = 1; /* lowlevel.library, keymap.library open */
 HX_UNUSED static int hx_ll_open, hx_keymap_open;               /* opens not closed */
+HX_UNUSED static int hx_cgx_present;                           /* cybergraphics.library opens */
+HX_UNUSED static int hx_cgx_open;
 
 HX_UNUSED static struct Library *hx_open_lib(const char *name, ULONG version)
 {
@@ -1756,6 +1759,10 @@ HX_UNUSED static struct Library *hx_open_lib(const char *name, ULONG version)
         hx_keymap_open++;
         return &hx_keymap_lib;
     }
+    if (strcmp(name, "cybergraphics.library") == 0 && hx_cgx_present) {
+        hx_cgx_open++;
+        return &hx_cgx_lib;
+    }
     return NULL;
 }
 
@@ -1767,6 +1774,10 @@ HX_UNUSED static void hx_close_lib(struct Library *l)
     }
     if (l == &hx_keymap_lib) {
         hx_keymap_open--;
+        return;
+    }
+    if (l == &hx_cgx_lib) {
+        hx_cgx_open--;
         return;
     }
     if (l != &hx_p96_lib)
@@ -2410,6 +2421,39 @@ HX_UNUSED static ULONG hx_p96_mode_attr(ULONG id, ULONG attr)
     return 0;
 }
 
+/* cybergraphics.library ScalePixelArray: it scales the 4 byte pixels of src into the rast port
+ * at DestX, DestY, and answers 0, or another value when it cannot (hx_cgx_fail). */
+HX_UNUSED static int hx_cgx_present = 1, hx_cgx_open, hx_cgx_fail;
+HX_UNUSED static unsigned long hx_cgx_calls;
+HX_UNUSED static ULONG hx_cgx_last_fmt;
+
+HX_UNUSED static LONG hx_scale_pixel_array(APTR src, UWORD sw, UWORD sh, UWORD mod,
+                                          struct RastPort *rp, UWORD dx, UWORD dy, UWORD dw,
+                                          UWORD dh, ULONG fmt)
+{
+    uint32_t x, y;
+    const uint8_t *s = src;
+
+    (void)rp;
+    hx_cgx_calls++;
+    hx_cgx_last_fmt = fmt;
+    if (hx_cgx_fail)
+        return 20;
+    if (fmt != 2u)
+        HX_FAIL("ScalePixelArray of a format the test does not model");
+    if ((uint32_t)dx + dw > HX_CANVAS_W || (uint32_t)dy + dh > HX_CANVAS_H)
+        HX_FAIL("ScalePixelArray outside the fake drawing area");
+    hx_canvas_bpp = 4;
+    for (y = 0; y < dh; y++)
+        for (x = 0; x < dw; x++) {
+            uint32_t sx = ((2u * x + 1u) * sw) / (2u * dw), sy = ((2u * y + 1u) * sh) / (2u * dh);
+            uint8_t *d = hx_canvas + (uint32_t)(dy + y) * HX_CANVAS_W * 4u + (uint32_t)(dx + x) * 4u;
+
+            memcpy(d, s + (uint32_t)sy * mod + sx * 4u, 4u);
+        }
+    return 0;
+}
+
 /* lowlevel.library's ReadJoyPort and keymap.library's MapRawKey */
 HX_UNUSED static ULONG hx_jp[2];
 HX_UNUSED static unsigned long hx_jp_reads, hx_keymap_calls;
@@ -2605,8 +2649,10 @@ HX_UNUSED static void hx_reset(void)
     hx_joydat[0] = hx_joydat[1] = 0;
     hx_ciaa_pra = 0xFF;
     hx_token_add = 0;
-    hx_ll_present = hx_keymap_present = 1;
-    hx_ll_open = hx_keymap_open = 0;
+    hx_ll_present = hx_keymap_present = hx_cgx_present = 1;
+    hx_ll_open = hx_keymap_open = hx_cgx_open = 0;
+    hx_cgx_calls = hx_cgx_fail = 0;
+    hx_cgx_last_fmt = 0xFFFFFFFFu;
     hx_intuition_version = 47;
     hx_intuition_base.ActiveScreen = NULL;
     hx_pub_w = 640;
@@ -2741,5 +2787,7 @@ HX_UNUSED static void hx_reset(void)
 #define X_P96_MODE_ATTR(s, id, attr) ((void)(s), hx_p96_mode_attr((id), (attr)))
 #define X_READ_JOY_PORT(s, port) ((void)(s), hx_read_joy_port(port))
 #define X_MAP_RAW_KEY(s, ie, buf, len) ((void)(s), hx_map_raw_key((ie), (UBYTE *)(buf), (len)))
+#define X_SCALE_PIXEL_ARRAY(s, src, w, h, mod, rp, dx, dy, dw, dh, fmt) \
+    ((void)(s), hx_scale_pixel_array((src), (w), (h), (mod), (rp), (dx), (dy), (dw), (dh), (fmt)))
 
 #endif /* SERVE_HOST_H */

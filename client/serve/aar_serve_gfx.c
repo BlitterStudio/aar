@@ -206,6 +206,20 @@ static void write_scaled(struct aar_serve *s, const struct RenderInfo *ri,
 
     if (row == 0 || row > 32767u)
         return;
+    /* A 32 bit surface goes through cybergraphics.library when it is there: the
+     * board may scale it in hardware. Otherwise the loop scales it itself. */
+    if (s->gfx.surf_rgb == RGBFB_B8G8R8A8) {
+        if (!s->gfx.cgx && !s->gfx.cgx_absent) {
+            s->gfx.cgx = X_OPEN_LIB((CONST_STRPTR)"cybergraphics.library", 41);
+            if (!s->gfx.cgx)
+                s->gfx.cgx_absent = 1;
+        }
+        if (s->gfx.cgx &&
+            X_SCALE_PIXEL_ARRAY(s, ri->Memory, s->gfx.surf_w, s->gfx.surf_h,
+                                (ULONG)(UWORD)ri->BytesPerRow, rp, dx, dy, dw, dh,
+                                AAR_SERVE_RECTFMT_ARGB) == 0)
+            return;
+    }
     if (s->gfx.strip_bytes < row * AAR_SERVE_STRIP_ROWS) {
         if (s->gfx.strip)
             X_FREE_MEM(s->gfx.strip, s->gfx.strip_bytes);
