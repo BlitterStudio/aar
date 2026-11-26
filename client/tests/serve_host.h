@@ -218,7 +218,6 @@
 #define JPF_JOY_DOWN (1UL << 2)
 #define JPF_JOY_LEFT (1UL << 1)
 #define JPF_JOY_RIGHT (1UL << 0)
-#define AAR_SERVE_RECTFMT_ARGB 2UL
 #define P96SA_Left (TAG_USER + 0x10000)
 #define P96SA_Width (TAG_USER + 0x10001)
 #define P96SA_Height (TAG_USER + 0x10002)
@@ -1729,11 +1728,9 @@ static uint8_t *hx_gfx_mem(uint32_t bytes)
     return p;
 }
 
-HX_UNUSED static struct Library hx_ll_lib, hx_keymap_lib, hx_cgx_lib;
+HX_UNUSED static struct Library hx_ll_lib, hx_keymap_lib;
 HX_UNUSED static int hx_ll_present = 1, hx_keymap_present = 1; /* lowlevel.library, keymap.library open */
 HX_UNUSED static int hx_ll_open, hx_keymap_open;               /* opens not closed */
-HX_UNUSED static int hx_cgx_present;                           /* cybergraphics.library opens */
-HX_UNUSED static int hx_cgx_open;
 
 HX_UNUSED static struct Library *hx_open_lib(const char *name, ULONG version)
 {
@@ -1748,10 +1745,8 @@ HX_UNUSED static struct Library *hx_open_lib(const char *name, ULONG version)
         hx_keymap_open++;
         return &hx_keymap_lib;
     }
-    if (strcmp(name, "cybergraphics.library") == 0 && hx_cgx_present) {
-        hx_cgx_open++;
-        return &hx_cgx_lib;
-    }
+    if (strcmp(name, "cybergraphics.library") == 0)
+        HX_FAIL("OpenLibrary of cybergraphics.library: ScalePixelArray takes no BGRA8888 format");
     return NULL;
 }
 
@@ -1763,10 +1758,6 @@ HX_UNUSED static void hx_close_lib(struct Library *l)
     }
     if (l == &hx_keymap_lib) {
         hx_keymap_open--;
-        return;
-    }
-    if (l == &hx_cgx_lib) {
-        hx_cgx_open--;
         return;
     }
     if (l != &hx_p96_lib)
@@ -1966,6 +1957,7 @@ HX_UNUSED static void hx_wait_tof(void)
 HX_UNUSED static uint8_t hx_canvas[HX_CANVAS_W * HX_CANVAS_H * 4];
 HX_UNUSED static uint32_t hx_canvas_bpp = 4;
 HX_UNUSED static unsigned long hx_pwa_calls, hx_rectfills, hx_locks_taken;
+HX_UNUSED static int hx_pwa_last_rgb = -1;
 HX_UNUSED static int hx_locks_live, hx_p96_bitmaps_live, hx_bitmaps_live, hx_pointers_live;
 HX_UNUSED static int hx_p96_fail_alloc_bitmap;
 HX_UNUSED static struct BitMap *hx_last_surface;     /* the bitmap p96AllocBitMap made last */
@@ -2300,6 +2292,7 @@ HX_UNUSED static void hx_p96_write_pixel_array(struct RenderInfo *ri, UWORD sx, 
     if ((uint32_t)dx + w > HX_CANVAS_W || (uint32_t)dy + h > HX_CANVAS_H)
         HX_FAIL("p96WritePixelArray outside the fake drawing area");
     hx_pwa_calls++;
+    hx_pwa_last_rgb = (int)ri->RGBFormat;
     hx_canvas_bpp = bpp;
     for (y = 0; y < h; y++)
         memcpy(hx_canvas + (uint32_t)(dy + y) * HX_CANVAS_W * 4u + (uint32_t)dx * bpp,
@@ -2407,39 +2400,6 @@ HX_UNUSED static ULONG hx_p96_mode_attr(ULONG id, ULONG attr)
         return (ULONG)m->is_p96;
     if (attr == P96IDA_COMPATIBLEFORMATS)
         return m->formats;
-    return 0;
-}
-
-/* cybergraphics.library ScalePixelArray: it scales the 4 byte pixels of src into the rast port
- * at DestX, DestY, and answers 0, or another value when it cannot (hx_cgx_fail). */
-HX_UNUSED static int hx_cgx_present = 1, hx_cgx_open, hx_cgx_fail;
-HX_UNUSED static unsigned long hx_cgx_calls;
-HX_UNUSED static ULONG hx_cgx_last_fmt;
-
-HX_UNUSED static LONG hx_scale_pixel_array(APTR src, UWORD sw, UWORD sh, UWORD mod,
-                                          struct RastPort *rp, UWORD dx, UWORD dy, UWORD dw,
-                                          UWORD dh, ULONG fmt)
-{
-    uint32_t x, y;
-    const uint8_t *s = src;
-
-    (void)rp;
-    hx_cgx_calls++;
-    hx_cgx_last_fmt = fmt;
-    if (hx_cgx_fail)
-        return 20;
-    if (fmt != 2u)
-        HX_FAIL("ScalePixelArray of a format the test does not model");
-    if ((uint32_t)dx + dw > HX_CANVAS_W || (uint32_t)dy + dh > HX_CANVAS_H)
-        HX_FAIL("ScalePixelArray outside the fake drawing area");
-    hx_canvas_bpp = 4;
-    for (y = 0; y < dh; y++)
-        for (x = 0; x < dw; x++) {
-            uint32_t sx = ((2u * x + 1u) * sw) / (2u * dw), sy = ((2u * y + 1u) * sh) / (2u * dh);
-            uint8_t *d = hx_canvas + (uint32_t)(dy + y) * HX_CANVAS_W * 4u + (uint32_t)(dx + x) * 4u;
-
-            memcpy(d, s + (uint32_t)sy * mod + sx * 4u, 4u);
-        }
     return 0;
 }
 
@@ -2638,10 +2598,8 @@ HX_UNUSED static void hx_reset(void)
     hx_joydat[0] = hx_joydat[1] = 0;
     hx_ciaa_pra = 0xFF;
     hx_token_add = 0;
-    hx_ll_present = hx_keymap_present = hx_cgx_present = 1;
-    hx_ll_open = hx_keymap_open = hx_cgx_open = 0;
-    hx_cgx_calls = hx_cgx_fail = 0;
-    hx_cgx_last_fmt = 0xFFFFFFFFu;
+    hx_ll_present = hx_keymap_present = 1;
+    hx_ll_open = hx_keymap_open = 0;
     hx_intuition_version = 47;
     hx_intuition_base.ActiveScreen = NULL;
     hx_pub_w = 640;
@@ -2654,6 +2612,7 @@ HX_UNUSED static void hx_reset(void)
     hx_p96_outside_arena = 0;
     hx_p96_bitmaps_live = hx_bitmaps_live = hx_pointers_live = hx_locks_live = 0;
     hx_pwa_calls = hx_rectfills = hx_locks_taken = 0;
+    hx_pwa_last_rgb = -1;
     hx_ptr_kind = 0;
     hx_ptr_obj = NULL;
     hx_ptr_calls = 0;
@@ -2776,7 +2735,5 @@ HX_UNUSED static void hx_reset(void)
 #define X_P96_MODE_ATTR(s, id, attr) ((void)(s), hx_p96_mode_attr((id), (attr)))
 #define X_READ_JOY_PORT(s, port) ((void)(s), hx_read_joy_port(port))
 #define X_MAP_RAW_KEY(s, ie, buf, len) ((void)(s), hx_map_raw_key((ie), (UBYTE *)(buf), (len)))
-#define X_SCALE_PIXEL_ARRAY(s, src, w, h, mod, rp, dx, dy, dw, dh, fmt) \
-    ((void)(s), hx_scale_pixel_array((src), (w), (h), (mod), (rp), (dx), (dy), (dw), (dh), (fmt)))
 
 #endif /* SERVE_HOST_H */

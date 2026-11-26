@@ -31,9 +31,8 @@ m68k-amigaos-gcc -std=gnu11 -noixemul -m68030 -O2 -Iclient/include -Iinclude \
 - The program supplies `AARBase`, `IntuitionBase` and `GfxBase`.
   `aar_serve` opens `timer.device`, `Picasso96API.library` (when there
   is one), `ahi.device` (for the AHI audio route), `lowlevel.library` (only for
-  `cd32_ports`), `keymap.library` (only for a display that asks for text input)
-  and `cybergraphics.library` (only to scale a 32 bit surface) itself and keeps
-  those bases to itself.
+  `cd32_ports`) and `keymap.library` (only for a display that asks for text
+  input) itself and keeps those bases to itself.
 - The calling task needs `AAR_SERVE_MIN_STACK` bytes of stack (16 KiB); a
   palette update holds a 3 KiB table. `aar_serve` does not check it.
 - A request's buffer is touched only between the request and its completion,
@@ -206,11 +205,11 @@ window display follows its window: a size change redraws the frame at the new
 size. On a screen the surface is a bitmap of its own again, and the screen has the
 size of the Workbench screen, in the mode that suits the surface's format. The
 cap `AAR_DISPCAP_SCALED` is granted when that surface could be made. A BGRA8888
-surface is scaled by `cybergraphics.library` `ScalePixelArray` (version 41, which
-Picasso96 provides) when the library opens, which lets the board scale in
-hardware. Otherwise, for an RGB565 or CLUT8 surface, and for a frame that
-`ScalePixelArray` says it cannot take, the scaling is nearest neighbour, done by
-the loop in strips of 16 rows and drawn with `p96WritePixelArray`.
+surface, an RGB565 surface and a CLUT8 surface alike, is scaled by the loop,
+nearest neighbour, in strips of 16 rows drawn with `p96WritePixelArray` in the
+surface's own format. `cybergraphics.library` `ScalePixelArray` is not used: it
+takes RECTFMT_RGB, RECTFMT_RGBA, RECTFMT_ARGB (alpha first) and RECTFMT_GREY8
+only, none of them the byte order B, G, R, A of a BGRA8888 surface.
 
 Two events need no flag. `AAR_EV_ACTIVE` is sent for `IDCMP_ACTIVEWINDOW` and
 `IDCMP_INACTIVEWINDOW`, with code 1 and 0, so also once when the display opens

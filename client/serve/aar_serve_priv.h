@@ -52,14 +52,6 @@
 #include <intuition/pointerclass.h>
 #include <libraries/lowlevel.h>
 #include <proto/keymap.h>
-/* cybergraphics.library's inline stubs read the base through this name: a file
- * static that X_SCALE_PIXEL_ARRAY sets from the instance it is called for. */
-static struct Library *aar_serve_cgx_base;
-#define CYBERGRAPHICS_BASE_NAME (aar_serve_cgx_base)
-#include <inline/cybergraphics.h>
-/* RECTFMT_ARGB of cybergraphics.h (the NDK's inline header lacks the formats):
- * the byte order of a BGRA8888 surface. */
-#define AAR_SERVE_RECTFMT_ARGB 2UL
 #include <proto/lowlevel.h>
 #include <proto/aar.h>
 #include <proto/dos.h>
@@ -190,11 +182,6 @@ static struct Library *aar_serve_cgx_base;
     ({ struct Library *LowLevelBase = (s)->in.ll; ReadJoyPort(port); })
 #define X_MAP_RAW_KEY(s, ie, buf, len) \
     ({ struct Library *KeymapBase = (s)->in.keymap; MapRawKey(ie, buf, len, NULL); })
-/* cybergraphics.library ScalePixelArray, for a 32 bit surface: the base is the
- * instance's (the CYBERGRAPHICS_BASE_NAME of inline/cybergraphics.h above). */
-#define X_SCALE_PIXEL_ARRAY(s, src, w, h, mod, rp, dx, dy, dw, dh, fmt) \
-    ({ aar_serve_cgx_base = (s)->gfx.cgx; \
-       ScalePixelArray(src, w, h, mod, rp, dx, dy, dw, dh, fmt); })
 
 /* The custom chip registers the joystick sampling reads (no state changes). */
 #define X_JOYDAT(port) (*((port) ? (volatile UWORD *)0xDFF00CUL : (volatile UWORD *)0xDFF00AUL))
@@ -308,8 +295,6 @@ struct aar_serve {
     /* ---- aar_serve_gfx.c: the P96 screen and the input window ------------------------- */
     struct {
         struct Library *p96;            /* Picasso96API.library, or NULL */
-        struct Library *cgx;            /* cybergraphics.library 41, for ScalePixelArray, or NULL */
-        int cgx_absent;                 /* cybergraphics.library did not open: do not ask again */
         struct Screen *screen;
         struct Window *input_win;       /* also read by aar_serve_input.c */
         struct ScreenBuffer *buf_front;

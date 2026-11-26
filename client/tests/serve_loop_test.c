@@ -176,7 +176,7 @@ static void finish(void)
     CHECK(hx_pub_locks == 0);
     CHECK(hx_live_blocks == 0);
     CHECK(hx_p96_bitmaps_live == 0 && hx_bitmaps_live == 0 && hx_pointers_live == 0 && hx_locks_live == 0);
-    CHECK(hx_ll_open == 0 && hx_keymap_open == 0 && hx_cgx_open == 0);
+    CHECK(hx_ll_open == 0 && hx_keymap_open == 0);
 }
 
 static volatile uint8_t *buf(uint32_t off)
@@ -3774,83 +3774,55 @@ static uint32_t canvas_px4(uint32_t x, uint32_t y)
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
 
-static void test_a_32_bit_surface_is_scaled_by_cybergraphics_when_it_is_there(void)
+/* The BGRA8888 surface has no RECTFMT of cybergraphics.library ScalePixelArray (RGB, RGBA,
+ * ARGB with alpha first, GREY8), so the loop scales every format itself and writes the strips
+ * with p96WritePixelArray in the surface's own format. The fake fails an OpenLibrary of
+ * cybergraphics.library. */
+static void test_a_32_bit_surface_is_scaled_by_the_loop_in_its_own_byte_order(void)
 {
     struct comp c;
+    struct BitMap *bm;
     uint32_t x, y, ok = 1;
-    struct Library *first;
 
-    setup("display_scale_cybergraphics");
+    setup("display_scale_bgra");
     make_serve();
     /* a window display of a BGRA8888 surface, the window made twice as wide and tall inside */
     CHECK(open_display(&c, AAR_FMT_BGRA8888, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE |
                                               AAR_DISPLAY_RESIZABLE));
     CHECK(c.result == AAR_OK && (c.flags & AAR_DISPCAP_SCALED));
     fill_surface();
+    /* the red and alpha bytes too, so that each byte of a pixel is told apart */
+    bm = hx_last_surface;
+    CHECK(bm != NULL);
+    for (y = 0; bm && y < bm->Rows; y++)
+        for (x = 0; x < (uint32_t)(bm->BytesPerRow / 4) && x < 256u; x++) {
+            bm->Planes[0][y * bm->BytesPerRow + x * 4u + 2u] = 0x5A;
+            bm->Planes[0][y * bm->BytesPerRow + x * 4u + 3u] = 0xA5;
+        }
     hx_cur_window->Width = (WORD)(DW * 2u + 8u);
     hx_cur_window->Height = (WORD)(DH * 2u + 11u + 10u);
     hx_window_post(IDCMP_NEWSIZE, 0, 0, 0, 0);
     ticks(3);
     drain();
-    /* one call for the whole frame, in the ARGB format, with the surface's pitch */
-    CHECK(hx_cgx_calls == 1 && hx_cgx_open == 1 && hx_cgx_last_fmt == 2u);
-    CHECK(hx_pwa_calls == 0 && S->gfx.strip == NULL);
+    /* four strips of 16 rows, each written as B8G8R8A8 */
+    CHECK(hx_pwa_calls >= 4 && hx_pwa_last_rgb == RGBFB_B8G8R8A8 && S->gfx.strip != NULL);
     for (y = 0; y < DH * 2u; y++)
         for (x = 0; x < DW * 2u; x++)
-            if (((canvas_px4(4 + x, 11 + y) >> 16) & 0xFFFFu) != (((x / 2u) << 8) | (y / 2u)))
+            if (canvas_px4(4 + x, 11 + y) !=
+                (((x / 2u) << 24) | ((y / 2u) << 16) | (0x5Au << 8) | 0xA5u))
                 ok = 0;
     CHECK(ok);
-    first = S->gfx.cgx;
-    flip_once(21);
-    CHECK(hx_cgx_calls == 2 && S->gfx.cgx == first); /* opened once */
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
-    aar_serve_destroy(S);
-    S = NULL;
-    drain();
-    CHECK(hx_cgx_open == 0);
-    /* the library says it cannot: the loop scales the frame itself, in the same frame */
-    make_serve();
-    hx_cgx_fail = 1;
-    CHECK(open_display(&c, AAR_FMT_BGRA8888, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE |
-                                              AAR_DISPLAY_RESIZABLE));
-    fill_surface();
-    hx_cur_window->Width = (WORD)(DW * 2u + 8u);
-    hx_cur_window->Height = (WORD)(DH * 2u + 11u + 10u);
-    hx_window_post(IDCMP_NEWSIZE, 0, 0, 0, 0);
-    ticks(3);
-    drain();
-    CHECK(hx_cgx_calls == 3 && hx_pwa_calls >= 4); /* four strips of 16 rows */
-    CHECK(((canvas_px4(4 + 20, 11 + 30) >> 16) & 0xFFFFu) == ((10u << 8) | 15u));
-    CHECK(S->gfx.strip != NULL);
-    CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
-    aar_serve_destroy(S);
-    S = NULL;
-    drain();
-    CHECK(hx_cgx_open == 0);
-    /* no cybergraphics.library: asked once per display, then the loop's own scaling */
-    hx_cgx_fail = 0;
-    hx_cgx_present = 0;
-    make_serve();
-    CHECK(open_display(&c, AAR_FMT_BGRA8888, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE |
-                                              AAR_DISPLAY_RESIZABLE));
-    fill_surface();
-    hx_cur_window->Width = (WORD)(DW * 2u + 8u);
-    hx_cur_window->Height = (WORD)(DH * 2u + 11u + 10u);
-    flip_once(24);
-    CHECK(hx_cgx_calls == 3 && hx_pwa_calls >= 8 && S->gfx.cgx_absent);
-    CHECK(((canvas_px4(4 + 21, 11 + 31) >> 16) & 0xFFFFu) == ((10u << 8) | 15u));
-    /* a 16 bit surface is scaled by the loop even with the library there */
-    hx_cgx_present = 1;
-    CHECK(call(AAR_OP_DISPLAY_CLOSE, 25, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* a 16 bit surface is scaled by the loop as well, in its own format */
     CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE));
     fill_surface();
     hx_cur_window->Width = (WORD)(DW * 2u + 8u);
     hx_cur_window->Height = (WORD)(DH * 2u + 11u + 10u);
     {
-        unsigned long calls = hx_cgx_calls, pwa = hx_pwa_calls;
+        unsigned long pwa = hx_pwa_calls;
 
         flip_once(26);
-        CHECK(hx_cgx_calls == calls && hx_pwa_calls > pwa);
+        CHECK(hx_pwa_calls > pwa && hx_pwa_last_rgb == RGBFB_R5G6B5);
     }
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 27, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     finish();
@@ -4011,7 +3983,7 @@ static const struct {
     T(test_a_replacement_display_waits_for_its_vblank_and_times_out),
     T(test_cd32_ports_are_read_with_lowlevel),
     T(test_a_replacement_display_has_no_window_caps_and_serves_the_rest),
-    T(test_a_32_bit_surface_is_scaled_by_cybergraphics_when_it_is_there),
+    T(test_a_32_bit_surface_is_scaled_by_the_loop_in_its_own_byte_order),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

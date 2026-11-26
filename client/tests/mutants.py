@@ -1109,8 +1109,8 @@ mutant("no-timed-wake-for-a-vblank-timeout", "repl_display_vblank", SL,
        ("    if (vb < us)\n        us = vb;\n", ""))
 mutant("cd32-without-lowlevel-is-served", "joystick_cd32", SL,
        ("        if (!s->in.ll) {", "        if (0) {"))
-mutant("cybergraphics-scaling-never-used", "display_scale_cybergraphics", SG,
-       ("        if (s->gfx.cgx &&\n            X_SCALE_PIXEL_ARRAY(", "        if (0 &&\n            X_SCALE_PIXEL_ARRAY("))
+mutant("scaled-strips-written-in-the-wrong-format", "display_scale_bgra", SG,
+       ("    out.RGBFormat = (RGBFTYPE)s->gfx.surf_rgb;", "    out.RGBFormat = RGBFB_R5G6B5;"))
 NAMES = {m[0]: m for m in M}
 
 

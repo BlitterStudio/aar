@@ -556,8 +556,6 @@ static void serve_free(struct aar_serve *s)
         X_CLOSE_LIB(s->in.ll);
     if (s->in.keymap)
         X_CLOSE_LIB(s->in.keymap);
-    if (s->gfx.cgx)
-        X_CLOSE_LIB(s->gfx.cgx);
     if (s->gfx.p96)
         X_CLOSE_LIB(s->gfx.p96);
     X_FREE_VEC(s);
