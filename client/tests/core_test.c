@@ -902,6 +902,7 @@ static void test_absolute_mouse_merge(void)
     h = open1(1);
     slot = slot_of(h);
     memset(&ev, 0, sizeof(ev));
+    memset(&got, 0, sizeof(got));
     /* A full CQ: absolute positions replace the pending one, they are not summed. */
     fill_cq_with_keys(h, 64);
     ev.type = AAR_EV_MOUSE;
