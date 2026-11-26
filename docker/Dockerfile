@@ -89,7 +89,8 @@ RUN chmod 755 /tmp/build_pic_newlib.sh \
 
 # ---- PIC C++ runtime, built from the GCC source of the toolchain release into
 # the same sysroot as newlib. The stage needs the host libraries that GCC's own
-# configure wants.
+# configure wants. The job count is capped at 6 so the GCC host build fits a
+# build VM with 8 GiB of memory.
 FROM build-base AS cxx-base
 
 RUN apt-get update \
@@ -107,7 +108,7 @@ RUN chmod 755 /tmp/build_pic_libstdcxx.sh \
        AAR_SYSROOT=/opt/aar-sysroot-a32 \
        AAR_GCC_CACHE=/tmp/gcc-cache \
        AAR_GCC_BUILD=/tmp/gcc-build \
-       JOBS="$(nproc)" \
+       JOBS="$(n=$(nproc); [ "$n" -gt 6 ] && n=6; echo "$n")" \
        /tmp/build_pic_libstdcxx.sh \
     && rm -rf /tmp/gcc-cache /tmp/gcc-build /tmp/build_pic_libstdcxx.sh
 
@@ -121,7 +122,7 @@ RUN chmod 755 /tmp/build_pic_libstdcxx.sh \
        AAR_SYSROOT=/opt/aar-sysroot-a64 \
        AAR_GCC_CACHE=/tmp/gcc-cache \
        AAR_GCC_BUILD=/tmp/gcc-build \
-       JOBS="$(nproc)" \
+       JOBS="$(n=$(nproc); [ "$n" -gt 6 ] && n=6; echo "$n")" \
        /tmp/build_pic_libstdcxx.sh \
     && rm -rf /tmp/gcc-cache /tmp/gcc-build /tmp/build_pic_libstdcxx.sh
 
