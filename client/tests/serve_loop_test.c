@@ -175,6 +175,8 @@ static void finish(void)
     CHECK(hx_timer_open_count == 0 && hx_ahi_open_count == 0);
     CHECK(hx_pub_locks == 0);
     CHECK(hx_live_blocks == 0);
+    CHECK(hx_p96_bitmaps_live == 0 && hx_bitmaps_live == 0 && hx_pointers_live == 0 && hx_locks_live == 0);
+    CHECK(hx_ll_open == 0 && hx_keymap_open == 0);
 }
 
 static volatile uint8_t *buf(uint32_t off)
@@ -2291,7 +2293,8 @@ static void rd_close(void *ctx)
 }
 
 static const struct aar_serve_display_ops rd_full = {
-    NULL, rd_open, rd_change, rd_pan, rd_tof, rd_palette, rd_close
+    NULL, rd_open, rd_change, rd_pan, rd_tof, rd_palette, rd_close,
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL
 };
 static const struct aar_serve_display_ops rd_only_open = { .open = rd_open };
 static aar_serve_hooks table_hooks;
@@ -2753,6 +2756,1212 @@ static void test_a_break_the_program_owns_is_not_consumed_by_a_dos_wait(void)
     finish();
 }
 
+/* ---- Tests: windows, scaling, input and the calls of API minor 6 ---------------------------------------- */
+
+static void drain(void)
+{
+    struct comp c;
+
+    while (next_comp(&c))
+        ;
+}
+
+static const aar_event *last_event(uint16_t type)
+{
+    unsigned i;
+
+    for (i = nev; i > 0; i--)
+        if (evs[i - 1].type == type)
+            return &evs[i - 1];
+    return NULL;
+}
+
+static uint32_t get_be(const volatile uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+static void put_be(volatile uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
+/* A request with up to six arguments. */
+static int post6(uint32_t op, uint32_t id, const uint32_t arg[6], uint32_t off, uint32_t len)
+{
+    return refplat_app_request(SLOT, op, 0, id, arg, len ? refplat_buf_token(SLOT, 0) : 0, off, len);
+}
+
+static int call6(uint32_t op, uint32_t id, const uint32_t arg[6], uint32_t off, uint32_t len,
+                 struct comp *c)
+{
+    if (post6(op, id, arg, off, len) != AAR_OK)
+        return 0;
+    return wait_comp(c, 400);
+}
+
+/* The surface bitmap of the last open: the bytes of pixel (x, y) start with x, then y. */
+static void fill_surface(void)
+{
+    struct BitMap *bm = hx_last_surface;
+    uint32_t x, y, bpp;
+
+    CHECK(bm != NULL);
+    if (!bm)
+        return;
+    bpp = hx_bpp(bm->hx_rgb);
+    for (y = 0; y < bm->Rows; y++)
+        for (x = 0; x < (uint32_t)(bm->BytesPerRow / (UWORD)bpp) && x < 256u; x++) {
+            bm->Planes[0][y * bm->BytesPerRow + x * bpp] = (uint8_t)x;
+            bm->Planes[0][y * bm->BytesPerRow + x * bpp + 1u] = (uint8_t)y;
+        }
+}
+
+/* A pixel of the fake drawing area (two bytes per pixel). */
+static uint32_t canvas_px(uint32_t x, uint32_t y)
+{
+    const uint8_t *p = hx_canvas + y * HX_CANVAS_W * 4u + x * 2u;
+
+    return ((uint32_t)p[0] << 8) | p[1];
+}
+
+static void flip_once(uint32_t id)
+{
+    struct comp c;
+
+    CHECK(call(AAR_OP_DISPLAY_FLIP, id, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK);
+}
+
+#define WINF_ALL (AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE | AAR_DISPLAY_POINTER_ABS | \
+                  AAR_DISPLAY_TEXT_INPUT | AAR_DISPLAY_CLOSE_REQUEST)
+#define CAPS_BASE (AAR_DISPCAP_ASYNC | AAR_DISPCAP_CLUT8)
+
+static void test_a_window_display_shows_its_surface_in_a_window_on_the_public_screen(void)
+{
+    struct comp c;
+    struct Window *w;
+    uint32_t front;
+
+    setup("display_window");
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, WINF_ALL));
+    CHECK(c.result == AAR_OK);
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW | AAR_DISPCAP_RESIZE | AAR_DISPCAP_POINTER_ABS |
+                      AAR_DISPCAP_TEXT_INPUT | AAR_DISPCAP_CLOSE_REQUEST));
+    /* no screen of its own: a window on the public screen, with a surface bitmap of the format */
+    CHECK(hx_screens == 0 && hx_windows == 1 && hx_buffers_live == 0 && hx_p96_bitmaps_live == 1);
+    CHECK(hx_pub_locks == 1);
+    w = hx_cur_window;
+    CHECK(w && w->hx_pub == &hx_pub_screen);
+    CHECK(w->Width == (WORD)(DW + 8u) && w->Height == (WORD)(DH + 11u + 10u)); /* a size gadget below */
+    CHECK(w->hx_close_gadget && w->hx_size_gadget);
+    CHECK(strcmp(w->hx_title, "aar-serve") == 0);
+    CHECK((w->hx_idcmp & IDCMP_NEWSIZE) && (w->hx_idcmp & IDCMP_ACTIVEWINDOW) &&
+          (w->hx_idcmp & IDCMP_INACTIVEWINDOW) && (w->hx_idcmp & IDCMP_CLOSEWINDOW));
+    CHECK(!(w->hx_idcmp & IDCMP_DELTAMOVE)); /* absolute positions */
+    front = c.out[AAR_R_DISPLAY_OPEN_FRONT];
+    CHECK(front != 0 && c.out[AAR_R_DISPLAY_OPEN_BACK] == 0 && c.out[AAR_R_DISPLAY_OPEN_SPARE] == 0);
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_PITCH] == ((DW * 2u + 15u) & ~15u));
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_LAYOUT] == AAR_LAYOUT_RGB565_BE);
+    /* the window was cleared once; a flip draws the surface at the top-left of the inner area */
+    CHECK(hx_rectfills == 1 && hx_pwa_calls == 0);
+    fill_surface();
+    flip_once(21);
+    CHECK(hx_pwa_calls == 1 && hx_locks_live == 1 && hx_locks_taken == 1); /* locked once, for the token */
+    CHECK(canvas_px(4, 11) == 0x0000u);
+    CHECK(canvas_px(4 + 10, 11 + 5) == ((10u << 8) | 5u));
+    CHECK(canvas_px(4 + DW - 1u, 11 + DH - 1u) == (((DW - 1u) << 8) | (DH - 1u)));
+    CHECK(canvas_px(4 + DW, 11) == 0xCDCDu); /* nothing outside the surface */
+    CHECK(hx_windows == 1 && hx_p96_bitmaps_live == 1);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(c.result == AAR_OK);
+    CHECK(hx_windows == 0 && hx_p96_bitmaps_live == 0 && hx_pub_locks == 0);
+    /* it opens again */
+    CHECK(open_display(&c, AAR_FMT_BGRA8888, AAR_DISPLAY_WINDOW));
+    CHECK(c.result == AAR_OK && c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW));
+    CHECK(hx_cur_window && !hx_cur_window->hx_size_gadget && hx_cur_window->BorderBottom == 4);
+    finish();
+}
+
+static void test_a_window_that_the_public_screen_cannot_show_falls_back_to_a_screen(void)
+{
+    struct comp c;
+
+    setup("display_window_fallback");
+    make_serve();
+    /* the public screen is not a Picasso96 screen */
+    hx_pub_is_p96 = 0;
+    CHECK(open_display(&c, AAR_FMT_RGB565, WINF_ALL));
+    CHECK(c.result == AAR_OK);
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_POINTER_ABS | AAR_DISPCAP_TEXT_INPUT));
+    CHECK(hx_screens == 1 && hx_pub_locks == 0 && hx_p96_bitmaps_live == 0);
+    CHECK(hx_cur_window && hx_cur_window->hx_custom_screen);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* a public screen of 8 bits */
+    hx_pub_is_p96 = 1;
+    hx_pub_rgb = RGBFB_CLUT;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE));
+    CHECK(c.flags == CAPS_BASE && hx_screens == 1);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* a CLUT8 surface needs a screen of its own: its palette is the screen's */
+    hx_pub_rgb = RGBFB_B8G8R8A8;
+    CHECK(open_display(&c, AAR_FMT_CLUT8, AAR_DISPLAY_WINDOW));
+    CHECK(c.flags == CAPS_BASE && hx_screens == 1 && hx_pub_locks == 0);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* a surface bitmap that cannot be made */
+    hx_p96_fail_alloc_bitmap = 1;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE));
+    CHECK(c.result == AAR_OK && c.flags == CAPS_BASE && hx_screens == 1 && hx_pub_locks == 0);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 24, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    hx_p96_fail_alloc_bitmap = 0;
+    /* a bitmap outside what the platform can see is not used either */
+    hx_p96_outside_arena = 1;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(c.result == AAR_OK && c.flags == CAPS_BASE && hx_screens == 1);
+    CHECK(hx_pub_locks == 0 && hx_p96_bitmaps_live == 0);
+    hx_p96_outside_arena = 0;
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 25, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* the flags that need a window say nothing without one: RESIZABLE alone */
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_RESIZABLE | AAR_DISPLAY_CLOSE_REQUEST));
+    CHECK(c.flags == CAPS_BASE && hx_screens == 1);
+    finish();
+}
+
+static void test_a_scaled_window_keeps_the_aspect_and_follows_its_size(void)
+{
+    struct comp c;
+    const aar_event *e;
+    uint32_t x, y, ok = 1;
+
+    setup("display_scale_window");
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565,
+                       AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE | AAR_DISPLAY_RESIZABLE |
+                           AAR_DISPLAY_POINTER_ABS));
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW | AAR_DISPCAP_SCALED | AAR_DISPCAP_RESIZE |
+                      AAR_DISPCAP_POINTER_ABS));
+    fill_surface();
+    /* the user makes the window 128 x 96 inside: the 64 x 32 surface is 128 x 64 in it, with bars */
+    hx_cur_window->Width = (WORD)(128 + 8);
+    hx_cur_window->Height = (WORD)(96 + 11 + 10);
+    hx_window_post(IDCMP_NEWSIZE, 0, 0, 0, 0);
+    ticks(3);
+    drain();
+    e = last_event(AAR_EV_RESIZE);
+    CHECK(e != NULL && e->dx == 128 && e->dy == 96);
+    flip_once(21);
+    CHECK(hx_pwa_calls >= 2); /* strips of 16 rows: four of them */
+    for (y = 0; y < 64; y++)
+        for (x = 0; x < 128; x++)
+            if (canvas_px(4 + x, 11 + 16 + y) != (((x / 2u) << 8) | (y / 2u)))
+                ok = 0;
+    CHECK(ok);
+    /* the bars above and below were cleared, the area outside the window is untouched */
+    CHECK(canvas_px(4, 11) == 0 && canvas_px(4 + 127, 11 + 15) == 0);
+    CHECK(canvas_px(4, 11 + 16 + 64) == 0 && canvas_px(4 + 127, 11 + 95) == 0);
+    CHECK(canvas_px(4 + 128, 11) == 0xCDCDu);
+    /* a pointer position is a position on the surface: the window's inner origin and the bars go */
+    hx_window_post(IDCMP_MOUSEMOVE, 0, 0, (WORD)(4 + 20), (WORD)(11 + 16 + 10));
+    ticks(2);
+    drain();
+    e = last_event(AAR_EV_MOUSE);
+    CHECK(e && e->dx == 10 && e->dy == 5 && e->buttons == AAR_MOUSE_ABSOLUTE);
+    /* the same size again: the frame is drawn again with no new clear */
+    {
+        unsigned long fills = hx_rectfills;
+
+        flip_once(22);
+        CHECK(hx_rectfills == fills);
+    }
+    /* a taller window: bars at the sides, and the next flip clears and draws again */
+    hx_cur_window->Width = (WORD)(200 + 8);
+    hx_cur_window->Height = (WORD)(32 + 11 + 10);
+    hx_window_post(IDCMP_NEWSIZE, 0, 0, 0, 0);
+    ticks(3);
+    drain();
+    e = last_event(AAR_EV_RESIZE);
+    CHECK(e && e->dx == 200 && e->dy == 32);
+    flip_once(23);
+    /* 64 x 32 in 200 x 32: 64 x 32 at x = 68 */
+    CHECK(canvas_px(4 + 68, 11) == 0x0000u && canvas_px(4 + 68 + 5, 11 + 3) == ((5u << 8) | 3u));
+    CHECK(canvas_px(4 + 67, 11 + 3) == 0 && canvas_px(4 + 68 + 64, 11 + 3) == 0);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 24, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
+static void test_a_scaled_screen_has_a_surface_of_its_own(void)
+{
+    struct comp c;
+    const aar_event *e;
+    uint32_t x, y, ok = 1;
+
+    setup("display_scale_screen");
+    /* a Workbench screen the fake drawing area can hold */
+    hx_pub_w = 240;
+    hx_pub_h = 160;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_SCALE | AAR_DISPLAY_POINTER_ABS));
+    CHECK(c.result == AAR_OK);
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_SCALED | AAR_DISPCAP_POINTER_ABS));
+    /* the screen has the size of the Workbench screen, no screen buffers, a bitmap for the surface */
+    CHECK(hx_screens == 1 && hx_buffers_live == 0 && hx_p96_bitmaps_live == 1);
+    CHECK(hx_cur_screen && hx_cur_screen->Width == 240 && hx_cur_screen->Height == 160);
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_PITCH] == ((DW * 2u + 15u) & ~15u) && c.out[AAR_R_DISPLAY_OPEN_BACK] == 0);
+    CHECK(hx_pub_locks == 0);
+    /* the front token is the surface's, not the screen's bitmap */
+    CHECK(hx_last_surface && hx_last_surface != &hx_cur_screen->bm);
+    fill_surface();
+    flip_once(21);
+    /* 64 x 32 in 240 x 160: 240 x 120, 20 rows of bars above and below, drawn through the window */
+    for (y = 0; y < 120; y++)
+        for (x = 0; x < 240; x++) {
+            uint32_t sx = ((2u * x + 1u) * 64u) / (2u * 240u), sy = ((2u * y + 1u) * 32u) / (2u * 120u);
+
+            if (canvas_px(x, 20 + y) != ((sx << 8) | sy))
+                ok = 0;
+        }
+    CHECK(ok);
+    CHECK(canvas_px(0, 0) == 0 && canvas_px(239, 19) == 0 && canvas_px(0, 140) == 0 && canvas_px(239, 159) == 0);
+    /* the pointer: back through the rectangle */
+    hx_window_post(IDCMP_MOUSEMOVE, 0, 0, 120, 20 + 60);
+    ticks(2);
+    drain();
+    e = last_event(AAR_EV_MOUSE);
+    CHECK(e && e->dx == 32 && e->dy == 16 && e->buttons == AAR_MOUSE_ABSOLUTE);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(hx_screens == 0 && hx_p96_bitmaps_live == 0);
+    /* the surface bitmap cannot be made: a screen of the surface's size, not scaled */
+    hx_p96_fail_alloc_bitmap = 1;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_SCALE));
+    CHECK(c.result == AAR_OK && c.flags == CAPS_BASE);
+    CHECK(hx_cur_screen && hx_cur_screen->Width == (WORD)DW && hx_cur_screen->Height >= (WORD)DH);
+    finish();
+}
+
+static void test_a_window_is_resized_by_the_app(void)
+{
+    struct comp c;
+    uint32_t arg[6], first_front, front2;
+
+    setup("display_resize");
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE));
+    first_front = c.out[AAR_R_DISPLAY_OPEN_FRONT];
+    memset(arg, 0, sizeof(arg));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    arg[1] = 100u;
+    arg[2] = 50u;
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 30, arg, 0, 0, &c));
+    CHECK(c.result == AAR_OK);
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_ID] == AAR_SERVE_DISPLAY_ID);
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_PITCH] == ((100u * 2u + 15u) & ~15u));
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW | AAR_DISPCAP_RESIZE));
+    front2 = c.out[AAR_R_DISPLAY_OPEN_FRONT];
+    CHECK(front2 != 0 && front2 != first_front);
+    CHECK(hx_p96_bitmaps_live == 1 && hx_last_surface && hx_last_surface->Rows == 50);
+    /* a flip shows the new surface (the inner area of the window did not change: 64 x 32 shown) */
+    fill_surface();
+    flip_once(31);
+    CHECK(canvas_px(4 + 7, 11 + 9) == ((7u << 8) | 9u));
+    /* the user resizes the window: the event carries the inner size */
+    hx_cur_window->Width = (WORD)(120 + 8);
+    hx_cur_window->Height = (WORD)(80 + 11 + 10);
+    hx_window_post(IDCMP_NEWSIZE, 0, 0, 0, 0);
+    ticks(3);
+    drain();
+    CHECK(last_event(AAR_EV_RESIZE) && last_event(AAR_EV_RESIZE)->dx == 120 &&
+          last_event(AAR_EV_RESIZE)->dy == 80);
+    /* a surface that cannot be made leaves the old one */
+    hx_p96_fail_alloc_bitmap = 1;
+    arg[1] = 200u;
+    arg[2] = 100u;
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 32, arg, 0, 0, &c));
+    CHECK(c.result == AAR_E_NOMEM && hx_p96_bitmaps_live == 1 && hx_last_surface->Rows == 50);
+    hx_p96_fail_alloc_bitmap = 0;
+    flip_once(33);
+    /* sizes outside 1..4096 */
+    arg[1] = 0u;
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 34, arg, 0, 0, &c) && c.result == AAR_E_INVAL);
+    arg[1] = 4097u;
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 35, arg, 0, 0, &c) && c.result == AAR_E_INVAL);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 36, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* no resize cap: a window that was not asked to be resizable, and a screen */
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    arg[1] = 100u;
+    arg[2] = 50u;
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 37, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 38, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_RESIZABLE));
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 39, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
+    /* and without a display it is invalid */
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 40, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 41, arg, 0, 0, &c) && c.result == AAR_E_INVAL);
+    finish();
+}
+
+static void test_active_wheel_and_mouse_events(void)
+{
+    struct comp c;
+    unsigned i, wheels = 0, keys = 0;
+
+    setup("input_events");
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    hx_window_post(IDCMP_ACTIVEWINDOW, 0, 0, 0, 0);
+    hx_window_post(IDCMP_INACTIVEWINDOW, 0, 0, 0, 0);
+    /* the NewMouse wheel: up, down, left, right, each with its release, and an ordinary key */
+    hx_window_post(IDCMP_RAWKEY, 0x7A, 1, 0, 0);
+    hx_window_post(IDCMP_RAWKEY, 0x7A | IECODE_UP_PREFIX, 1, 0, 0);
+    hx_window_post(IDCMP_RAWKEY, 0x7B, 0, 0, 0);
+    hx_window_post(IDCMP_RAWKEY, 0x7C, 0, 0, 0);
+    hx_window_post(IDCMP_RAWKEY, 0x7D, 0, 0, 0);
+    hx_window_post(IDCMP_RAWKEY, 0x45, 0, 0, 0);
+    /* the buttons: left down, middle down, left up; then motion */
+    hx_window_post(IDCMP_MOUSEBUTTONS, SELECTDOWN, 0, 0, 0);
+    hx_window_post(IDCMP_MOUSEBUTTONS, MIDDLEDOWN, 0, 0, 0);
+    hx_window_post(IDCMP_MOUSEBUTTONS, SELECTUP, 0, 0, 0);
+    hx_window_post(IDCMP_MOUSEMOVE, 0, 0, 5, -3);
+    ticks(4);
+    drain();
+    CHECK(evs[0].type == AAR_EV_ACTIVE && evs[0].code == 1);
+    CHECK(evs[1].type == AAR_EV_ACTIVE && evs[1].code == 0);
+    for (i = 0; i < nev; i++) {
+        if (evs[i].type == AAR_EV_WHEEL)
+            wheels++;
+        if (evs[i].type == AAR_EV_KEY_DOWN || evs[i].type == AAR_EV_KEY_UP)
+            keys++;
+    }
+    CHECK(wheels == 4 && keys == 1); /* the wheel keys are not sent as keys, up or down */
+    CHECK(evs[2].type == AAR_EV_WHEEL && evs[2].dx == 0 && evs[2].dy == -1 && evs[2].buttons == 1);
+    CHECK(evs[3].type == AAR_EV_WHEEL && evs[3].dx == 0 && evs[3].dy == 1);
+    CHECK(evs[4].type == AAR_EV_WHEEL && evs[4].dx == -1 && evs[4].dy == 0);
+    CHECK(evs[5].type == AAR_EV_WHEEL && evs[5].dx == 1 && evs[5].dy == 0);
+    CHECK(evs[6].type == AAR_EV_KEY_DOWN && evs[6].code == 0x45);
+    /* code: the button that changed, buttons: the state of all of them */
+    CHECK(evs[7].type == AAR_EV_MOUSE && evs[7].code == 1 && evs[7].buttons == AAR_MOUSE_LEFT);
+    CHECK(evs[8].type == AAR_EV_MOUSE && evs[8].code == 3 &&
+          evs[8].buttons == (AAR_MOUSE_LEFT | AAR_MOUSE_MIDDLE));
+    CHECK(evs[9].type == AAR_EV_MOUSE && evs[9].code == 1 && evs[9].buttons == AAR_MOUSE_MIDDLE);
+    CHECK(evs[10].type == AAR_EV_MOUSE && evs[10].code == 0 && evs[10].dx == 5 && evs[10].dy == -3 &&
+          evs[10].buttons == AAR_MOUSE_MIDDLE);
+    CHECK(events_of(AAR_EV_TEXT) == 0 && events_of(AAR_EV_CLOSE_REQUEST) == 0);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
+static void test_text_input_maps_keys_with_the_keymap(void)
+{
+    struct comp c;
+    APTR dead_prev = &c;
+    unsigned i;
+
+    setup("text_input");
+    cfg.joy_ports = 0;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_TEXT_INPUT));
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_TEXT_INPUT) && hx_keymap_open == 1);
+    hx_window_post(IDCMP_RAWKEY, 0x10, 0, 0, 0);                    /* q */
+    hx_window_post(IDCMP_RAWKEY, 0x10 | IECODE_UP_PREFIX, 0, 0, 0); /* its release: no text */
+    hx_window_post(IDCMP_RAWKEY, 0x10, 1, 0, 0);                    /* shift q */
+    hx_window_post(IDCMP_RAWKEY, 0x44, 0, 0, 0);                    /* return: a key, no text */
+    hx_window_post(IDCMP_RAWKEY, 0x4C, 0, 0, 0);                    /* cursor up: a CSI, no text */
+    hx_window_post(IDCMP_RAWKEY, 0x0D, 0, 0, 0);                    /* a Latin-1 letter */
+    hx_window_post(IDCMP_RAWKEY, 0x10, IEQUALIFIER_LCOMMAND, 0, 0); /* a shortcut: no text */
+    hx_window_post(IDCMP_RAWKEY, 0x00, 0, 0, 0);                    /* a dead key: no text */
+    hx_post_iaddr = &dead_prev;                                     /* Intuition's previous keys */
+    hx_window_post(IDCMP_RAWKEY, 0x12, 0, 0, 0);                    /* e after it: a grave e */
+    hx_post_iaddr = NULL;
+    hx_window_post(IDCMP_RAWKEY, 0x12, 0, 0, 0);                    /* e alone: an e */
+    ticks(4);
+    drain();
+    CHECK(events_of(AAR_EV_TEXT) == 5);
+    /* in order: the key first, its characters after it, the qualifiers with them */
+    CHECK(evs[0].type == AAR_EV_KEY_DOWN && evs[0].code == 0x10);
+    CHECK(evs[1].type == AAR_EV_TEXT && evs[1].code == 'q' && evs[1].buttons == 0);
+    CHECK(evs[2].type == AAR_EV_KEY_UP && evs[2].code == 0x10);
+    CHECK(evs[3].type == AAR_EV_KEY_DOWN && evs[4].type == AAR_EV_TEXT && evs[4].code == 'Q' &&
+          evs[4].buttons == 1);
+    for (i = 5; i < nev && evs[i].type != AAR_EV_TEXT; i++)
+        ;
+    CHECK(i < nev && evs[i].code == 0xE9u && evs[i - 1].type == AAR_EV_KEY_DOWN && evs[i - 1].code == 0x0D);
+    for (i++; i < nev && evs[i].type != AAR_EV_TEXT; i++)
+        ;
+    CHECK(i < nev && evs[i].code == 0xE8u && evs[i - 1].code == 0x12);
+    CHECK(hx_keymap_calls == 9); /* every key press, not the release */
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    aar_serve_destroy(S);
+    S = NULL;
+    CHECK(hx_keymap_open == 0);
+    drain();
+    /* no keymap.library: the cap is not granted and nothing is sent */
+    hx_keymap_present = 0;
+    nev = 0;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_TEXT_INPUT));
+    CHECK(c.result == AAR_OK && c.flags == CAPS_BASE);
+    hx_window_post(IDCMP_RAWKEY, 0x10, 0, 0, 0);
+    ticks(3);
+    drain();
+    CHECK(events_of(AAR_EV_KEY_DOWN) == 1 && events_of(AAR_EV_TEXT) == 0);
+    /* and text input that was not asked for sends none, with the keymap there */
+    hx_keymap_present = 1;
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(c.flags == CAPS_BASE && hx_keymap_open == 0);
+    finish();
+}
+
+static void test_absolute_pointer_positions(void)
+{
+    struct comp c;
+    const aar_event *e;
+
+    setup("pointer_abs");
+    cfg.joy_ports = 0;
+    make_serve();
+    /* on a screen: positions from the surface's top-left, in the buttons too */
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_POINTER_ABS));
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_POINTER_ABS));
+    CHECK(!(hx_cur_window->hx_idcmp & IDCMP_DELTAMOVE));
+    hx_window_post(IDCMP_MOUSEMOVE, 0, 0, 30, 40);
+    hx_window_post(IDCMP_MOUSEBUTTONS, SELECTDOWN, 0, 31, 41);
+    hx_window_post(IDCMP_MOUSEMOVE, 0, 0, 32, 42);
+    hx_window_post(IDCMP_MOUSEMOVE, 0, 0, -5, 70); /* outside the surface, as with a button held */
+    hx_window_post(IDCMP_MOUSEBUTTONS, SELECTUP, 0, -5, 70);
+    ticks(4);
+    drain();
+    CHECK(nev == 5);
+    CHECK(evs[0].type == AAR_EV_MOUSE && evs[0].code == 0 && evs[0].dx == 30 && evs[0].dy == 40 &&
+          evs[0].buttons == AAR_MOUSE_ABSOLUTE);
+    CHECK(evs[1].code == 1 && evs[1].dx == 31 && evs[1].dy == 41 &&
+          evs[1].buttons == (AAR_MOUSE_ABSOLUTE | AAR_MOUSE_LEFT));
+    CHECK(evs[2].code == 0 && evs[2].dx == 32 && evs[2].buttons == (AAR_MOUSE_ABSOLUTE | AAR_MOUSE_LEFT));
+    CHECK(evs[3].dx == -5 && evs[3].dy == 70);
+    CHECK(evs[4].code == 1 && evs[4].buttons == AAR_MOUSE_ABSOLUTE && evs[4].dx == -5);
+    /* a motion to the same place is still an event: a position is not a delta */
+    hx_window_post(IDCMP_MOUSEMOVE, 0, 0, 0, 0);
+    ticks(2);
+    drain();
+    e = last_event(AAR_EV_MOUSE);
+    CHECK(e && nev == 6 && e->dx == 0 && e->dy == 0 && e->buttons == AAR_MOUSE_ABSOLUTE);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* in a window: from the inner area, not the window's corner */
+    nev = 0;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_POINTER_ABS));
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW | AAR_DISPCAP_POINTER_ABS));
+    hx_window_post(IDCMP_MOUSEMOVE, 0, 0, 4 + 10, 11 + 20);
+    hx_window_post(IDCMP_MOUSEBUTTONS, MENUDOWN, 0, 4, 11);
+    ticks(3);
+    drain();
+    CHECK(nev == 2 && evs[0].dx == 10 && evs[0].dy == 20 && evs[1].code == 2 && evs[1].dx == 0 &&
+          evs[1].dy == 0 && evs[1].buttons == (AAR_MOUSE_ABSOLUTE | AAR_MOUSE_RIGHT));
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* not asked for: deltas, and the position is not in the buttons */
+    nev = 0;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW));
+    CHECK(hx_cur_window->hx_idcmp & IDCMP_DELTAMOVE);
+    hx_window_post(IDCMP_MOUSEMOVE, 0, 0, 3, -2);
+    ticks(2);
+    drain();
+    /* the right button is still down from before: the state is in the buttons */
+    CHECK(nev == 1 && evs[0].dx == 3 && evs[0].dy == -2 && evs[0].buttons == AAR_MOUSE_RIGHT);
+    finish();
+}
+
+static void test_the_close_gadget_sends_a_close_request_when_asked(void)
+{
+    struct comp c;
+    struct aar_serve_result res;
+
+    setup("close_request");
+    cfg.joy_ports = 0;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_CLOSE_REQUEST));
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW | AAR_DISPCAP_CLOSE_REQUEST));
+    hx_window_post(IDCMP_CLOSEWINDOW, 0, 0, 0, 0);
+    ticks(3);
+    drain();
+    memset(&res, 0, sizeof(res));
+    res.size = sizeof(res);
+    (void)aar_serve_result(S, &res);
+    CHECK(events_of(AAR_EV_CLOSE_REQUEST) == 1 && events_of(AAR_EV_STOP) == 0);
+    CHECK(!(res.flags & AAR_SERVE_R_STOP_ASKED));
+    /* Ctrl-C still stops it */
+    hx_window_post(IDCMP_RAWKEY, 0x33, IEQUALIFIER_CONTROL, 0, 0);
+    ticks(3);
+    drain();
+    (void)aar_serve_result(S, &res);
+    CHECK((res.flags & AAR_SERVE_R_USER_STOP) && events_of(AAR_EV_STOP) >= 1);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c) || 1);
+    aar_serve_destroy(S);
+    S = NULL;
+    drain();
+    /* a window opened without the flag: the gadget stops the app */
+    nev = 0;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW));
+    hx_window_post(IDCMP_CLOSEWINDOW, 0, 0, 0, 0);
+    ticks(3);
+    drain();
+    (void)aar_serve_result(S, &res);
+    CHECK(events_of(AAR_EV_CLOSE_REQUEST) == 0 && (res.flags & AAR_SERVE_R_STOP_ASKED) &&
+          !(res.flags & AAR_SERVE_R_USER_STOP));
+    finish();
+}
+
+static void test_display_info_and_modes(void)
+{
+    struct comp c;
+    uint32_t arg[6];
+    uint32_t pal_mhz = aar_serve_refresh_mhz(525u, 113u, 3571429u);
+    uint32_t pub_mhz = aar_serve_refresh_mhz(750u, 95u, 3571429u);
+    volatile uint8_t *b;
+
+    setup("display_info");
+    make_serve();
+    /* the modes need no display: the Picasso96 modes that are available, the one of the
+     * Workbench screen's size preferred (640 x 480) */
+    memset(arg, 0, sizeof(arg));
+    CHECK(call6(AAR_OP_DISPLAY_MODES, 30, arg, 0, 24u * 8u, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_DISPLAY_MODES_COUNT] == 3 && c.out[AAR_R_DISPLAY_MODES_TOTAL] == 3);
+    b = buf(0);
+    CHECK(get_be(b + 0) == 640 && get_be(b + 4) == 480 &&
+          get_be(b + 8) == aar_serve_refresh_mhz(525u, 113u, 3571429u));
+    CHECK(get_be(b + 12) == ((1u << AAR_FMT_RGB565) | (1u << AAR_FMT_CLUT8)));
+    CHECK(get_be(b + 16) == AAR_MODEF_PREFERRED && get_be(b + 20) == 0);
+    CHECK(get_be(b + 24) == 1280 && get_be(b + 28) == 720 && get_be(b + 40) == 0);
+    CHECK(get_be(b + 36) == ((1u << AAR_FMT_RGB565) | (1u << AAR_FMT_BGRA8888) | (1u << AAR_FMT_CLUT8)));
+    CHECK(get_be(b + 48) == 1920 && get_be(b + 52) == 1080 && get_be(b + 60) == (1u << AAR_FMT_BGRA8888));
+    /* the room is two records: two written, three counted */
+    CHECK(call6(AAR_OP_DISPLAY_MODES, 31, arg, 0, 24u * 2u, &c));
+    CHECK(c.out[AAR_R_DISPLAY_MODES_COUNT] == 2 && c.out[AAR_R_DISPLAY_MODES_TOTAL] == 3);
+    /* no Picasso96: no modes */
+    aar_serve_destroy(S);
+    S = NULL;
+    drain();
+    hx_p96_present = 0;
+    make_serve();
+    CHECK(call6(AAR_OP_DISPLAY_MODES, 32, arg, 0, 24u * 8u, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_DISPLAY_MODES_COUNT] == 0 && c.out[AAR_R_DISPLAY_MODES_TOTAL] == 0);
+    aar_serve_destroy(S);
+    S = NULL;
+    drain();
+    hx_p96_present = 1;
+    make_serve();
+    /* a screen display: its mode's refresh rate, the screen is the surface's size */
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    CHECK(call6(AAR_OP_DISPLAY_INFO, 33, arg, 0, 0, &c));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_DISPLAY_INFO_WIDTH] == DW && c.out[AAR_R_DISPLAY_INFO_HEIGHT] == DH);
+    CHECK(c.out[AAR_R_DISPLAY_INFO_REFRESH_MHZ] == pal_mhz && pal_mhz != 0);
+    CHECK(c.out[AAR_R_DISPLAY_INFO_SCREEN_W] == DW && c.out[AAR_R_DISPLAY_INFO_SCREEN_H] == DH);
+    CHECK(c.out[AAR_R_DISPLAY_INFO_FLAGS] == AAR_DISPINFO_ACTIVE);
+    hx_cur_window->Flags = 0; /* another window has the focus */
+    CHECK(call6(AAR_OP_DISPLAY_INFO, 34, arg, 0, 0, &c));
+    CHECK(c.out[AAR_R_DISPLAY_INFO_FLAGS] == 0);
+    arg[0] = 5u;
+    CHECK(call6(AAR_OP_DISPLAY_INFO, 35, arg, 0, 0, &c) && c.result == AAR_E_INVAL);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 36, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* a window display: the public screen's size and mode, window and scaled flags */
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    CHECK(call6(AAR_OP_DISPLAY_INFO, 37, arg, 0, 0, &c));
+    CHECK(c.out[AAR_R_DISPLAY_INFO_SCREEN_W] == 640 && c.out[AAR_R_DISPLAY_INFO_SCREEN_H] == 480);
+    CHECK(c.out[AAR_R_DISPLAY_INFO_REFRESH_MHZ] == pub_mhz);
+    CHECK(c.out[AAR_R_DISPLAY_INFO_FLAGS] ==
+          (AAR_DISPINFO_WINDOW | AAR_DISPINFO_SCALED | AAR_DISPINFO_ACTIVE));
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 38, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
+static void test_the_title_goes_to_the_window_or_the_screen(void)
+{
+    struct comp c;
+    uint32_t arg[6];
+
+    setup("display_title");
+    cfg.screen_title = (CONST_STRPTR)"My Game";
+    make_serve();
+    memset(arg, 0, sizeof(arg));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(strcmp(hx_cur_window->hx_title, "My Game") == 0);
+    memcpy((void *)(uintptr_t)buf(0), "Zo\xC3\xAB \xE2\x82\xAC", 9);
+    CHECK(call6(AAR_OP_DISPLAY_TITLE, 30, arg, 0, 9, &c) && c.result == AAR_OK);
+    CHECK(strcmp(hx_cur_window->hx_title, "Zo\xEB ?") == 0);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 31, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* on a screen: the screen's title, through the input window */
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(call6(AAR_OP_DISPLAY_TITLE, 32, arg, 0, 9, &c) && c.result == AAR_OK);
+    CHECK(strcmp(hx_cur_window->hx_screen_title, "Zo\xEB ?") == 0);
+    /* too long, and no NUL */
+    memset((void *)(uintptr_t)buf(0), 'x', 300);
+    CHECK(call6(AAR_OP_DISPLAY_TITLE, 33, arg, 0, 256, &c) && c.result == AAR_E_INVAL);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 34, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    aar_serve_destroy(S);
+    S = NULL;
+    drain();
+    /* with no input window of ours it is the screen's own title */
+    cfg.flags |= AAR_SERVEF_NO_INPUT_WINDOW;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    memcpy((void *)(uintptr_t)buf(0), "Zo\xC3\xAB \xE2\x82\xAC", 9);
+    CHECK(call6(AAR_OP_DISPLAY_TITLE, 35, arg, 0, 9, &c) && c.result == AAR_OK);
+    CHECK(hx_cur_screen && hx_cur_screen->Title && strcmp((const char *)hx_cur_screen->Title, "Zo\xEB ?") == 0);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 36, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* and a window display without an input window: no IDCMP, none of the caps that need input */
+    CHECK(open_display(&c, AAR_FMT_RGB565, WINF_ALL));
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW));
+    CHECK(hx_cur_window->hx_idcmp == 0 && !hx_cur_window->hx_size_gadget && !hx_cur_window->hx_close_gadget);
+    memcpy((void *)(uintptr_t)buf(0), "Zo\xC3\xAB \xE2\x82\xAC", 9);
+    CHECK(call6(AAR_OP_DISPLAY_TITLE, 37, arg, 0, 9, &c) && c.result == AAR_OK);
+    CHECK(strcmp(hx_cur_window->hx_title, "Zo\xEB ?") == 0);
+    finish();
+}
+
+/* a word of the pointer bitmap's planes: the pixel value (0 to 3) at x, y */
+static unsigned pointer_pixel(const struct hx_ptr *p, unsigned x, unsigned y)
+{
+    unsigned bit = 0x80u >> (x & 7u), off = y * p->bm->BytesPerRow + (x >> 3);
+
+    return ((p->bm->Planes[0][off] & bit) ? 1u : 0u) | ((p->bm->Planes[1][off] & bit) ? 2u : 0u);
+}
+
+static void test_the_pointer_can_be_hidden_busy_or_an_image(void)
+{
+    struct comp c;
+    uint32_t arg[6], x;
+    const struct hx_ptr *p;
+
+    setup("display_pointer");
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    memset(arg, 0, sizeof(arg));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    arg[1] = AAR_POINTER_BUSY;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 30, arg, 0, 0, &c) && c.result == AAR_OK);
+    CHECK(hx_ptr_kind == 1);
+    /* hidden: an image with nothing in it */
+    arg[1] = AAR_POINTER_HIDDEN;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 31, arg, 0, 0, &c) && c.result == AAR_OK);
+    CHECK(hx_ptr_kind == 2 && hx_pointers_live == 1 && hx_bitmaps_live == 1);
+    p = hx_ptr_obj;
+    CHECK(p && pointer_pixel(p, 0, 0) == 0 && pointer_pixel(p, 15, 0) == 0);
+    /* a custom image of 5 x 3: pixels 0xAARRGGBB, quantised to the Preferences colours
+     * (black, white, orange); the hot spot is the offset of the object */
+    for (x = 0; x < 15; x++)
+        put_be(buf(0) + x * 4u, 0u);
+    put_be(buf(0) + 0, 0xFF000000u);          /* black */
+    put_be(buf(0) + 4, 0xFFFFFFFFu);          /* white */
+    put_be(buf(0) + 8, 0xFFFF8800u);          /* orange */
+    put_be(buf(0) + 12, 0x40FFFFFFu);         /* mostly transparent */
+    put_be(buf(0) + 16, 0xFFF0F0F0u);         /* nearly white */
+    put_be(buf(0) + 20 + 8, 0xFF101010u);     /* row 1, pixel 2: nearly black */
+    arg[1] = AAR_POINTER_CUSTOM;
+    arg[2] = 5;
+    arg[3] = 3;
+    arg[4] = 2;
+    arg[5] = 1;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 32, arg, 0, 5u * 3u * 4u, &c) && c.result == AAR_OK);
+    CHECK(hx_ptr_kind == 2 && hx_pointers_live == 1 && hx_bitmaps_live == 1); /* the hidden one is gone */
+    p = hx_ptr_obj;
+    CHECK(p && p->xo == -2 && p->yo == -1);
+    CHECK(pointer_pixel(p, 0, 0) == 1 && pointer_pixel(p, 1, 0) == 2 && pointer_pixel(p, 2, 0) == 3);
+    CHECK(pointer_pixel(p, 3, 0) == 0 && pointer_pixel(p, 4, 0) == 2);
+    CHECK(pointer_pixel(p, 2, 1) == 1 && pointer_pixel(p, 0, 2) == 0);
+    CHECK(p->bm->BytesPerRow >= 2); /* a width of 16 for 5 pixels */
+    /* too big, and bad hot spots */
+    arg[2] = 65;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 33, arg, 0, 65u * 3u * 4u, &c) && c.result == AAR_E_INVAL);
+    arg[2] = 5;
+    arg[4] = 5;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 34, arg, 0, 5u * 3u * 4u, &c) && c.result == AAR_E_INVAL);
+    arg[4] = 0;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 35, arg, 0, 5u * 3u * 4u - 4u, &c) && c.result == AAR_E_INVAL);
+    arg[1] = 9;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 36, arg, 0, 0, &c) && c.result == AAR_E_INVAL);
+    /* a bitmap that cannot be made is a failure, and the pointer stays */
+    hx_fail_alloc = 1;
+    arg[1] = AAR_POINTER_CUSTOM;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 37, arg, 0, 5u * 3u * 4u, &c) && c.result == AAR_E_NOMEM);
+    hx_fail_alloc = 0;
+    CHECK(hx_ptr_kind == 2 && hx_ptr_obj == p);
+    /* busy takes the image off, default gives the system's back */
+    arg[1] = AAR_POINTER_BUSY;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 38, arg, 0, 0, &c) && c.result == AAR_OK);
+    CHECK(hx_ptr_kind == 1 && hx_pointers_live == 0 && hx_bitmaps_live == 0);
+    arg[1] = AAR_POINTER_CUSTOM;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 39, arg, 0, 5u * 3u * 4u, &c) && c.result == AAR_OK);
+    arg[1] = AAR_POINTER_DEFAULT;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 40, arg, 0, 0, &c) && c.result == AAR_OK);
+    CHECK(hx_ptr_kind == 0 && hx_pointers_live == 0 && hx_bitmaps_live == 0);
+    /* an image that stays when the display closes is let go of */
+    arg[1] = AAR_POINTER_CUSTOM;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 41, arg, 0, 5u * 3u * 4u, &c) && c.result == AAR_OK);
+    CHECK(hx_pointers_live == 1);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 42, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(hx_pointers_live == 0 && hx_bitmaps_live == 0);
+    /* an Intuition before 39 has no sprite pointers */
+    hx_intuition_version = 37;
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    arg[1] = AAR_POINTER_HIDDEN;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 43, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
+    arg[1] = AAR_POINTER_CUSTOM;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 44, arg, 0, 5u * 3u * 4u, &c) && c.result == AAR_E_NOSYS);
+    /* and with no window of ours there is nothing to set it on */
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 45, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    hx_intuition_version = 47;
+    aar_serve_destroy(S);
+    S = NULL;
+    drain();
+    cfg.flags |= AAR_SERVEF_NO_INPUT_WINDOW;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    arg[1] = AAR_POINTER_BUSY;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 46, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
+    finish();
+}
+
+static void test_the_built_in_displays_cannot_see_a_vertical_blank(void)
+{
+    struct comp c;
+    uint32_t arg[6];
+
+    setup("display_vblank_nosys");
+    make_serve();
+    memset(arg, 0, sizeof(arg));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    arg[1] = 5000u;
+    /* no display, and a zero timeout */
+    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 29, arg, 0, 0, &c) && c.result == AAR_E_INVAL);
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    arg[1] = 0u;
+    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 30, arg, 0, 0, &c) && c.result == AAR_E_INVAL);
+    /* a Picasso96 screen, then a window with a scaled surface: the vertical blank that
+     * timer.device counts is the chipset's, not the RTG display's, so none is promised */
+    arg[1] = 5000u;
+    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 31, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
+    CHECK(hx_timer_open_count == 1); /* the heartbeat's timer only */
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 32, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE));
+    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 33, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
+    CHECK(hx_timer_open_count == 1);
+    finish();
+}
+
+/* A replacement display's vertical blank: the program reports each one. */
+static int xv_watch_on, xv_watch_off, xv_can = 1;
+
+static int xv_vblank(void *ctx, int watch)
+{
+    (void)ctx;
+    if (watch) {
+        xv_watch_on++;
+        return xv_can;
+    }
+    xv_watch_off++;
+    return 1;
+}
+
+/* A request posted and served at once, without waiting for a wake of the loop. */
+static int post_now(uint32_t op, uint32_t id, const uint32_t arg[6])
+{
+    if (post6(op, id, arg, 0, 0) != AAR_OK)
+        return 0;
+    aar_serve_step(S, 0);
+    return 1;
+}
+
+static void test_a_replacement_display_waits_for_its_vblank_and_times_out(void)
+{
+    static struct aar_serve_display_ops table;
+    struct comp c;
+    uint32_t arg[6];
+    uint64_t t0;
+
+    setup("repl_display_vblank");
+    memset(&rd, 0, sizeof(rd));
+    table = rd_full;
+    table.vblank = xv_vblank;
+    xv_watch_on = xv_watch_off = 0;
+    xv_can = 1;
+    cfg.poll_us = 0; /* no heartbeat: the loop must wake for the timeout itself */
+    use_hooks(&table, NULL);
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    memset(arg, 0, sizeof(arg));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    arg[1] = 400000u;
+    /* parked until the program reports the blank, while the loop serves other requests */
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 30, arg));
+    CHECK(xv_watch_on == 1 && !next_comp(&c));
+    CHECK(post_now(AAR_OP_DISPLAY_INFO, 31, arg));
+    CHECK(next_comp(&c) && c.id == 31 && c.result == AAR_OK);
+    CHECK(!next_comp(&c));
+    aar_serve_vblank(S);
+    CHECK(wait_comp(&c, 400) && c.id == 30 && c.result == AAR_OK && xv_watch_off == 1);
+    /* no blank comes: the call ends at its timeout, without a heartbeat */
+    arg[1] = 30000u;
+    t0 = hx_now;
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 32, arg));
+    CHECK(wait_comp(&c, 400) && c.id == 32 && c.result == AAR_E_TIMEDOUT);
+    CHECK(hx_now - t0 >= 29000u && hx_now - t0 <= 30000u + 1000u);
+    /* the timeout is rounded up to a millisecond */
+    arg[1] = 1u;
+    t0 = hx_now;
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 33, arg));
+    CHECK(wait_comp(&c, 400) && c.id == 33 && c.result == AAR_E_TIMEDOUT);
+    CHECK(hx_now - t0 >= 1000u && hx_now - t0 <= 2000u);
+    CHECK(xv_watch_off == 3);
+    /* a close while the call waits ends it with AAR_E_IO */
+    arg[1] = 400000u;
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 34, arg));
+    CHECK(!next_comp(&c));
+    {
+        unsigned got34 = 0, got35 = 0;
+
+        CHECK(post_now(AAR_OP_DISPLAY_CLOSE, 35, arg));
+        while (next_comp(&c)) {
+            if (c.id == 34) {
+                got34 = 1;
+                CHECK(c.result == AAR_E_IO);
+            }
+            if (c.id == 35) {
+                got35 = 1;
+                CHECK(c.result == AAR_OK);
+            }
+        }
+        CHECK(got34 && got35);
+    }
+    /* and the destroy of the loop while a call waits */
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 36, arg));
+    CHECK(!next_comp(&c));
+    aar_serve_destroy(S);
+    S = NULL;
+    {
+        unsigned got36 = 0;
+
+        while (next_comp(&c))
+            if (c.id == 36) {
+                got36 = 1;
+                CHECK(c.result == AAR_E_IO);
+            }
+        CHECK(got36 && xv_watch_off == 5);
+    }
+    /* a table that cannot see a vertical blank: not implemented, nothing parked */
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    xv_can = 0;
+    arg[1] = 5000u;
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 37, arg));
+    CHECK(next_comp(&c) && c.id == 37 && c.result == AAR_E_NOSYS);
+    CHECK(!next_comp(&c));
+    finish();
+}
+
+static void test_cd32_ports_are_read_with_lowlevel(void)
+{
+    struct comp c;
+    unsigned long reads;
+
+    setup("joystick_cd32");
+    /* lowlevel.library is needed, and only a port a bit names */
+    cfg.cd32_ports = 4;
+    CHECK(aar_serve_create(H, &cfg, &S) == AAR_E_INVAL && S == NULL);
+    hx_ll_present = 0;
+    cfg.cd32_ports = 2;
+    CHECK(aar_serve_create(H, &cfg, &S) == AAR_E_NOSYS && S == NULL);
+    hx_ll_present = 1;
+    CHECK(hx_ll_open == 0);
+    /* port 1 as a CD32 pad, port 0 as the default registers: the registers of a port that is a pad
+     * are not read */
+    hx_joydat[1] = 0x0200; /* left, if it were read */
+    hx_jp[1] = JP_TYPE_GAMECTLR | JPF_BUTTON_RED | JPF_BUTTON_BLUE | JPF_JOY_RIGHT;
+    make_serve();
+    CHECK(hx_ll_open == 1);
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    ticks(5);
+    drain();
+    CHECK(events_of(AAR_EV_JOY) == 1);
+    CHECK(evs[nev - 1].type == AAR_EV_JOY && evs[nev - 1].code == 1 && evs[nev - 1].dx == 1 &&
+          evs[nev - 1].dy == 0 && evs[nev - 1].buttons == (AAR_JOY_BUTTON1 | AAR_JOY_BUTTON2));
+    /* a change is an event; the pad is read about once a frame, not at every pass */
+    reads = hx_jp_reads;
+    hx_jp[1] = JP_TYPE_GAMECTLR | JPF_BUTTON_GREEN | JPF_BUTTON_YELLOW | JPF_BUTTON_PLAY |
+               JPF_BUTTON_FORWARD | JPF_BUTTON_REVERSE | JPF_JOY_UP | JPF_JOY_LEFT;
+    ticks(40);
+    drain();
+    CHECK(events_of(AAR_EV_JOY) == 2);
+    CHECK(evs[nev - 1].dx == -1 && evs[nev - 1].dy == -1 &&
+          evs[nev - 1].buttons == (AAR_JOY_BUTTON3 | AAR_JOY_BUTTON4 | AAR_JOY_PLAY | AAR_JOY_FORWARD |
+                                   AAR_JOY_REVERSE));
+    CHECK(hx_jp_reads - reads >= 2 && hx_jp_reads - reads <= 4);
+    /* nothing changed: nothing sent. A joystick in the port is read the same way */
+    hx_jp[1] = JP_TYPE_JOYSTK | JPF_BUTTON_RED | JPF_JOY_DOWN;
+    ticks(40);
+    drain();
+    CHECK(events_of(AAR_EV_JOY) == 3 && evs[nev - 1].dy == 1 && evs[nev - 1].buttons == AAR_JOY_BUTTON1);
+    /* a mouse, or nothing, in the port: released */
+    hx_jp[1] = JP_TYPE_MOUSE | 0x0A05u;
+    ticks(40);
+    drain();
+    CHECK(events_of(AAR_EV_JOY) == 4 && evs[nev - 1].dx == 0 && evs[nev - 1].dy == 0 &&
+          evs[nev - 1].buttons == 0);
+    hx_jp[1] = JP_TYPE_NOTAVAIL;
+    ticks(40);
+    drain();
+    CHECK(events_of(AAR_EV_JOY) == 4);
+    /* the window must have the focus, as for the registers */
+    hx_jp[1] = JP_TYPE_GAMECTLR | JPF_BUTTON_RED;
+    hx_cur_window->Flags = 0;
+    ticks(40);
+    drain();
+    CHECK(events_of(AAR_EV_JOY) == 4);
+    hx_cur_window->Flags = WFLG_WINDOWACTIVE;
+    ticks(40);
+    drain();
+    CHECK(events_of(AAR_EV_JOY) == 5 && evs[nev - 1].buttons == AAR_JOY_BUTTON1);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    aar_serve_destroy(S);
+    S = NULL;
+    CHECK(hx_ll_open == 0);
+    drain();
+    /* port 0 as a pad is polled although joy_ports does not name it */
+    nev = 0;
+    cfg.cd32_ports = 1;
+    hx_jp[0] = JP_TYPE_GAMECTLR | JPF_BUTTON_BLUE;
+    hx_joydat[1] = 0;
+    hx_ciaa_pra = 0xFF;
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    ticks(5);
+    drain();
+    CHECK(event_seen(AAR_EV_JOY, 0) && event_seen(AAR_EV_JOY, 1)); /* port 1 is the default register one */
+    {
+        unsigned i;
+
+        for (i = 0; i < nev; i++)
+            if (evs[i].type == AAR_EV_JOY && evs[i].code == 0)
+                CHECK(evs[i].buttons == AAR_JOY_BUTTON2);
+    }
+    finish();
+}
+
+static int rv_watch_on, rv_watch_off, rv_can = 1;
+
+static int rv_vblank(void *ctx, int watch)
+{
+    (void)ctx;
+    if (watch) {
+        rv_watch_on++;
+        return rv_can;
+    }
+    rv_watch_off++;
+    return 1;
+}
+
+static uint32_t canvas_px4(uint32_t x, uint32_t y)
+{
+    const uint8_t *p = hx_canvas + y * HX_CANVAS_W * 4u + x * 4u;
+
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+/* Picasso96 may move a bitmap that is not locked, and the token is the bitmap's address, so
+ * the surface is locked before the token is made and stays locked until the surface goes
+ * (a resize or the close). The flips draw from the lock's RenderInfo and do not lock again.
+ * The fake moves every unlocked bitmap when asked and trashes its old memory. */
+static void test_a_surface_is_locked_for_as_long_as_its_token_can_be_used(void)
+{
+    struct comp c;
+    struct BitMap *probe, *first, *second;
+    uint8_t *old, *addr1, *addr2;
+    uint32_t arg[6];
+
+    setup("display_surface_pinned");
+    hx_pub_w = 240;
+    hx_pub_h = 160;
+    make_serve();
+    /* the fake does move a bitmap that is not locked */
+    probe = hx_p96_alloc_bitmap(16, 8, 16, BMF_CLEAR, NULL, RGBFB_R5G6B5);
+    CHECK(probe != NULL);
+    if (probe) {
+        old = probe->Planes[0];
+        CHECK(hx_p96_relocate_unlocked() == 1 && probe->Planes[0] != old && old[0] == 0xEE);
+        hx_p96_free_bitmap(probe);
+    }
+    /* a window display: locked once, before anything is exported, and not locked again by flips */
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_DISPLAY_OPEN_FRONT] != 0);
+    first = hx_last_surface;
+    CHECK(first != NULL && first->hx_locked == 1 && hx_locks_live == 1 && hx_locks_taken == 1);
+    addr1 = first ? first->Planes[0] : NULL;
+    CHECK(hx_p96_relocate_unlocked() == 0 && first && first->Planes[0] == addr1);
+    fill_surface();
+    flip_once(21);
+    CHECK(hx_p96_relocate_unlocked() == 0 && first && first->Planes[0] == addr1);
+    flip_once(22);
+    CHECK(hx_pwa_calls == 2 && hx_locks_taken == 1 && hx_locks_live == 1);
+    CHECK(canvas_px(4 + 10, 11 + 5) == ((10u << 8) | 5u));
+    /* a resize: the new surface is locked before the old one is let go, and the old one's
+     * lock is released exactly once */
+    memset(arg, 0, sizeof(arg));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    arg[1] = 100u;
+    arg[2] = 50u;
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 30, arg, 0, 0, &c) && c.result == AAR_OK);
+    second = hx_last_surface;
+    CHECK(second != NULL && second->hx_locked == 1 && hx_p96_bitmaps_live == 1);
+    CHECK(hx_locks_live == 1 && hx_locks_taken == 2);
+    addr2 = second ? second->Planes[0] : NULL;
+    CHECK(hx_p96_relocate_unlocked() == 0 && second && second->Planes[0] == addr2);
+    /* a lock that cannot be had leaves the old surface as it was, still locked */
+    hx_p96_fail_lock = 1;
+    arg[1] = 200u;
+    arg[2] = 100u;
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 31, arg, 0, 0, &c) && c.result == AAR_E_NOMEM);
+    hx_p96_fail_lock = 0;
+    CHECK(hx_p96_bitmaps_live == 1 && hx_locks_live == 1 && hx_locks_taken == 2);
+    CHECK(second && second->hx_locked == 1 && second->Planes[0] == addr2);
+    CHECK(hx_p96_relocate_unlocked() == 0 && second && second->Planes[0] == addr2);
+    flip_once(32);
+    CHECK(hx_pwa_calls == 3 && hx_locks_taken == 2);
+    /* the close lets go of the lock and the bitmap */
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 33, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(hx_locks_live == 0 && hx_p96_bitmaps_live == 0);
+    /* a surface that cannot be locked is not exported: nothing is held */
+    hx_p96_fail_lock = 1;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(hx_locks_live == 0 && hx_p96_bitmaps_live == 0 && hx_locks_taken == 2);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 34, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    hx_p96_fail_lock = 0;
+    /* a scaled display on a screen has a surface of its own and pins it the same way */
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_SCALE));
+    CHECK(c.result == AAR_OK);
+    first = hx_last_surface;
+    CHECK(first != NULL && first->hx_locked == 1 && hx_locks_live == 1);
+    addr1 = first ? first->Planes[0] : NULL;
+    CHECK(hx_p96_relocate_unlocked() == 0 && first && first->Planes[0] == addr1);
+    flip_once(35);
+    CHECK(hx_locks_taken == 3 && hx_locks_live == 1);
+    /* the instance goes with the display open: the lock is released with the bitmap */
+    aar_serve_destroy(S);
+    S = NULL;
+    drain();
+    CHECK(hx_locks_live == 0 && hx_p96_bitmaps_live == 0);
+    finish();
+}
+
+/* The BGRA8888 surface has no RECTFMT of cybergraphics.library ScalePixelArray (RGB, RGBA,
+ * ARGB with alpha first, GREY8), so the loop scales every format itself and writes the strips
+ * with p96WritePixelArray in the surface's own format. The fake fails an OpenLibrary of
+ * cybergraphics.library. */
+static void test_a_32_bit_surface_is_scaled_by_the_loop_in_its_own_byte_order(void)
+{
+    struct comp c;
+    struct BitMap *bm;
+    uint32_t x, y, ok = 1;
+
+    setup("display_scale_bgra");
+    make_serve();
+    /* a window display of a BGRA8888 surface, the window made twice as wide and tall inside */
+    CHECK(open_display(&c, AAR_FMT_BGRA8888, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE |
+                                              AAR_DISPLAY_RESIZABLE));
+    CHECK(c.result == AAR_OK && (c.flags & AAR_DISPCAP_SCALED));
+    fill_surface();
+    /* the red and alpha bytes too, so that each byte of a pixel is told apart */
+    bm = hx_last_surface;
+    CHECK(bm != NULL);
+    for (y = 0; bm && y < bm->Rows; y++)
+        for (x = 0; x < (uint32_t)(bm->BytesPerRow / 4) && x < 256u; x++) {
+            bm->Planes[0][y * bm->BytesPerRow + x * 4u + 2u] = 0x5A;
+            bm->Planes[0][y * bm->BytesPerRow + x * 4u + 3u] = 0xA5;
+        }
+    hx_cur_window->Width = (WORD)(DW * 2u + 8u);
+    hx_cur_window->Height = (WORD)(DH * 2u + 11u + 10u);
+    hx_window_post(IDCMP_NEWSIZE, 0, 0, 0, 0);
+    ticks(3);
+    drain();
+    /* four strips of 16 rows, each written as B8G8R8A8 */
+    CHECK(hx_pwa_calls >= 4 && hx_pwa_last_rgb == RGBFB_B8G8R8A8 && S->gfx.strip != NULL);
+    for (y = 0; y < DH * 2u; y++)
+        for (x = 0; x < DW * 2u; x++)
+            if (canvas_px4(4 + x, 11 + y) !=
+                (((x / 2u) << 24) | ((y / 2u) << 16) | (0x5Au << 8) | 0xA5u))
+                ok = 0;
+    CHECK(ok);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* a 16 bit surface is scaled by the loop as well, in its own format */
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE));
+    fill_surface();
+    hx_cur_window->Width = (WORD)(DW * 2u + 8u);
+    hx_cur_window->Height = (WORD)(DH * 2u + 11u + 10u);
+    {
+        unsigned long pwa = hx_pwa_calls;
+
+        flip_once(26);
+        CHECK(hx_pwa_calls > pwa && hx_pwa_last_rgb == RGBFB_R5G6B5);
+    }
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 27, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
+
+static void test_a_replacement_display_has_no_window_caps_and_serves_the_rest(void)
+{
+    static struct aar_serve_display_ops table;
+    struct comp c;
+    uint32_t arg[6];
+
+    setup("repl_display_minor6");
+    memset(&rd, 0, sizeof(rd));
+    table = rd_full;
+    table.vblank = rv_vblank;
+    rv_watch_on = rv_watch_off = 0;
+    rv_can = 1;
+    use_hooks(&table, NULL);
+    make_serve();
+    /* the window flags are requests this table cannot meet: none is granted */
+    CHECK(open_display(&c, AAR_FMT_RGB565, WINF_ALL | AAR_DISPLAY_SCALE | AAR_DISPLAY_VSYNC));
+    CHECK(c.result == AAR_OK && c.flags == CAPS_BASE);
+    memset(arg, 0, sizeof(arg));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    CHECK(call6(AAR_OP_DISPLAY_INFO, 30, arg, 0, 0, &c) && c.result == AAR_OK);
+    CHECK(c.out[AAR_R_DISPLAY_INFO_WIDTH] == DW && c.out[AAR_R_DISPLAY_INFO_SCREEN_W] == DW &&
+          c.out[AAR_R_DISPLAY_INFO_REFRESH_MHZ] == 0 && c.out[AAR_R_DISPLAY_INFO_FLAGS] == 0);
+    arg[1] = AAR_POINTER_BUSY;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 31, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
+    arg[1] = 50u;
+    arg[2] = 50u;
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 32, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
+    CHECK(call6(AAR_OP_DISPLAY_MODES, 33, arg, 0, 240, &c) && c.result == AAR_OK &&
+          c.out[AAR_R_DISPLAY_MODES_TOTAL] == 0);
+    memcpy((void *)(uintptr_t)buf(0), "t", 2);
+    CHECK(call6(AAR_OP_DISPLAY_TITLE, 34, arg, 0, 2, &c) && c.result == AAR_E_NOSYS);
+    /* the table's vblank call is told to watch, and the program tells the loop about each blank */
+    arg[1] = 100000u;
+    CHECK(post6(AAR_OP_DISPLAY_VBLANK, 35, arg, 0, 0) == AAR_OK);
+    ticks(3);
+    CHECK(rv_watch_on == 1 && !next_comp(&c));
+    aar_serve_vblank(S);
+    CHECK(wait_comp(&c, 20) && c.id == 35 && c.result == AAR_OK && rv_watch_off == 1);
+    aar_serve_vblank(S); /* none parked: ignored */
+    ticks(2);
+    CHECK(!next_comp(&c));
+    rv_can = 0;
+    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 36, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 37, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    finish();
+}
+
+
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
 #define T(fn) { #fn, fn }
@@ -2843,6 +4052,24 @@ static const struct {
     T(test_a_replacement_console_without_an_error_hook),
     T(test_a_break_the_program_owns_is_not_consumed_by_a_dos_wait),
     T(test_the_window_keys_follow_break_mask),
+    T(test_a_window_display_shows_its_surface_in_a_window_on_the_public_screen),
+    T(test_a_window_that_the_public_screen_cannot_show_falls_back_to_a_screen),
+    T(test_a_scaled_window_keeps_the_aspect_and_follows_its_size),
+    T(test_a_scaled_screen_has_a_surface_of_its_own),
+    T(test_a_window_is_resized_by_the_app),
+    T(test_active_wheel_and_mouse_events),
+    T(test_text_input_maps_keys_with_the_keymap),
+    T(test_absolute_pointer_positions),
+    T(test_the_close_gadget_sends_a_close_request_when_asked),
+    T(test_display_info_and_modes),
+    T(test_the_title_goes_to_the_window_or_the_screen),
+    T(test_the_pointer_can_be_hidden_busy_or_an_image),
+    T(test_the_built_in_displays_cannot_see_a_vertical_blank),
+    T(test_a_replacement_display_waits_for_its_vblank_and_times_out),
+    T(test_cd32_ports_are_read_with_lowlevel),
+    T(test_a_replacement_display_has_no_window_caps_and_serves_the_rest),
+    T(test_a_32_bit_surface_is_scaled_by_the_loop_in_its_own_byte_order),
+    T(test_a_surface_is_locked_for_as_long_as_its_token_can_be_used),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

@@ -87,7 +87,11 @@ struct aar_serve_done {
  * pitch has opened nothing (AAR_E_IO, close is called). The mode follows the
  * table: change_buffer and a back token: two screen buffers; else pan and a
  * back token: pages of one bitmap at pitch * height (a third page with a spare
- * token); else one buffer. Everything but open is optional. */
+ * token); else one buffer. Everything but open is optional. The built-in table
+ * also shows the surface in a window on the public screen and scaled to the
+ * screen or window (AAR_DISPLAY_WINDOW, AAR_DISPLAY_SCALE); a replacement
+ * table is granted none of the AAR_DISPCAP_WINDOW, _RESIZE, _POINTER_ABS,
+ * _TEXT_INPUT, _CLOSE_REQUEST and _SCALED caps. */
 struct aar_serve_display_ops {
     void *ctx;                      /* the first argument of every call */
     /* DISPLAY_OPEN: opens the screen, finds the tokens of its bitmaps and fills
@@ -112,6 +116,38 @@ struct aar_serve_display_ops {
     /* Close the screen (DISPLAY_CLOSE, and at aar_serve_destroy). NULL: nothing
      * to close. Synchronous. */
     void (*close)(void *ctx);
+    /* The calls below serve the ops of API minor 6. All are optional and
+     * synchronous. */
+    /* A single buffer display after each flip: show the surface (a window, a
+     * scaled screen). NULL: nothing to show. */
+    void (*present)(void *ctx);
+    /* DISPLAY_INFO: fill refresh_mhz, screen_width, screen_height and flags
+     * (AAR_DISPINFO_*) of *out; the loop has set the surface size. NULL: the
+     * refresh rate is unknown and the screen is the surface. */
+    void (*info)(void *ctx, aar_display_info *out);
+    /* DISPLAY_MODES: write at most max records to out (the first ones) and
+     * return the number of modes the table has in all. NULL: none. */
+    uint32_t (*modes)(void *ctx, aar_display_mode *out, uint32_t max);
+    /* DISPLAY_RESIZE: change the size to the width and height in req->arg
+     * (AAR_A_DISPLAY_OPEN_W and _H, the format and flags of the open are
+     * filled in) and fill *done as open does. A failure leaves the old surface
+     * in place. NULL: AAR_E_NOSYS. */
+    void (*resize)(void *ctx, const struct aar_serve_req *req,
+                   struct aar_serve_done *done);
+    /* DISPLAY_TITLE: title is ISO-8859-1, NUL-terminated and valid for the
+     * call. AAR_OK or a negative AAR_E_*. NULL: AAR_E_NOSYS. */
+    int (*set_title)(void *ctx, const char *title);
+    /* DISPLAY_POINTER: mode is AAR_POINTER_DEFAULT, _HIDDEN, _BUSY or _CUSTOM;
+     * for _CUSTOM argb holds width * height big-endian 0xAARRGGBB words (alpha
+     * 0 is transparent), width and height are 1 to 64. AAR_OK or a negative
+     * AAR_E_*. NULL: AAR_E_NOSYS. */
+    int (*set_pointer)(void *ctx, uint32_t mode, uint32_t width, uint32_t height,
+                       int32_t hot_x, int32_t hot_y, const uint8_t *argb);
+    /* DISPLAY_VBLANK: watch (1) or stop watching (0) the vertical blank. 1:
+     * watching; the program then calls aar_serve_vblank at each vertical
+     * blank. 0: it cannot see one (the request completes with AAR_E_NOSYS).
+     * NULL: AAR_E_NOSYS. */
+    int (*vblank)(void *ctx, int watch);
 };
 
 /* The calls under the console handlers. Writes and reads are asynchronous: a
@@ -220,7 +256,9 @@ typedef struct aar_serve_config {
                                        given */
     ULONG groups;                   /* AAR_GROUP_* to serve; the other groups' ops complete with
                                        AAR_E_NOSYS. 0: every group */
-    ULONG joy_ports;                /* bit 0 port 0, bit 1 port 1; default AAR_SERVE_DEFAULT_JOY_PORTS */
+    ULONG joy_ports;                /* bit 0 port 0, bit 1 port 1; default AAR_SERVE_DEFAULT_JOY_PORTS.
+                                       These ports are read from JOYxDAT and the CIA, which reports
+                                       the directions and one fire button (AAR_JOY_BUTTON1) */
     ULONG poll_us;                  /* the heartbeat of the timer in microseconds; 0: none. Without
                                        one the loop still wakes for what waits on time (a stop
                                        that was asked, a stop event that found the queue full: 10 ms;
@@ -237,6 +275,13 @@ typedef struct aar_serve_config {
     const aar_serve_hooks *hooks;   /* may be NULL */
     APTR user;                      /* passed to every hook */
     APTR platform;                  /* reserved, 0 */
+    ULONG cd32_ports;               /* bit 0 port 0, bit 1 port 1: read these ports with
+                                       lowlevel.library ReadJoyPort, which reports a CD32 pad's seven
+                                       buttons (AAR_JOY_*). A port here is polled whether or not
+                                       joy_ports names it. ReadJoyPort senses the controller by
+                                       driving the port pins, so it is opt-in. aar_serve_create
+                                       answers AAR_E_NOSYS when lowlevel.library 40 does not open.
+                                       Default 0 */
 } aar_serve_config;
 
 /* ---- The result ---------------------------------------------------------------- */
@@ -311,10 +356,13 @@ LONG aar_serve_post_event(aar_serve *s, const aar_event *ev);
  * loop, never from inside the table call that started the work):
  *   display: aar_serve_flip_shown. A flip that change_buffer started completes
  *            with it, once per successful change_buffer. A queued second flip
- *            starts then.
+ *            starts then. aar_serve_vblank: a vertical blank came while the
+ *            table's vblank call is watching; it completes a pending
+ *            DISPLAY_VBLANK. Ignored when none is pending.
  *   console: aar_serve_write_done after write_start returned 1, and
  *            aar_serve_read_done after read_start returned 1, exactly once each. */
 void aar_serve_flip_shown(aar_serve *s);
+void aar_serve_vblank(aar_serve *s);
 
 /* The write that write_start started ended: written bytes were taken (all of
  * them, or fewer: a short write, or a negative value, fails the output and stops

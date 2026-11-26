@@ -1,6 +1,8 @@
 /*
  * aar_serve: the display backend (a Picasso96 screen, two screen buffers or a
- * panned tall screen, the palette, the input window).
+ * panned tall screen, or a surface of its own shown in a window or scaled to
+ * the screen; the palette, the input window, the pointer, the title and the mode
+ * list).
  *
  * This file is part of aar_serve.c, which includes it after the services of the
  * loop and before the public calls; it is not compiled alone. State lives in the
@@ -57,6 +59,405 @@ static void flip_wait_safe_messages(struct aar_serve *s)
     }
 }
 
+/* ---- Windows, the pointer, the title ------------------------------------------------------ */
+
+/* The window that shows or takes the input of the display: the display window
+ * of a window display, else the backdrop input window. */
+static struct Window *display_window(const struct aar_serve *s)
+{
+    return s->gfx.win ? s->gfx.win : s->gfx.input_win;
+}
+
+/* The drawing area of a display with a surface of its own: the inner area of
+ * its window, or the whole screen. */
+static struct RastPort *inner_area(const struct aar_serve *s, uint32_t *ox,
+                                   uint32_t *oy, uint32_t *iw, uint32_t *ih)
+{
+    struct Window *win = display_window(s);
+
+    *ox = *oy = *iw = *ih = 0;
+    if (win && win->RPort) {
+        int32_t w = (int32_t)win->Width - win->BorderLeft - win->BorderRight;
+        int32_t h = (int32_t)win->Height - win->BorderTop - win->BorderBottom;
+
+        *ox = (uint32_t)win->BorderLeft;
+        *oy = (uint32_t)win->BorderTop;
+        *iw = w > 0 ? (uint32_t)w : 0u;
+        *ih = h > 0 ? (uint32_t)h : 0u;
+        return win->RPort;
+    }
+    if (s->gfx.screen) {
+        *iw = (uint32_t)s->gfx.screen->Width;
+        *ih = (uint32_t)s->gfx.screen->Height;
+        return &s->gfx.screen->RastPort;
+    }
+    return NULL;
+}
+
+/* Where a scaled surface is drawn. The next flip clears the area first. */
+static void update_fit(struct aar_serve *s)
+{
+    uint32_t ox, oy, iw, ih;
+
+    s->gfx.fit_w = 0;
+    s->gfx.shown_w = 0;
+    if (!s->gfx.scaled || !inner_area(s, &ox, &oy, &iw, &ih) || !iw || !ih)
+        return;
+    aar_serve_fit_rect(s->gfx.surf_w, s->gfx.surf_h, iw, ih, &s->gfx.fit_x,
+                       &s->gfx.fit_y, &s->gfx.fit_w, &s->gfx.fit_h);
+}
+
+static void clear_inner(struct aar_serve *s)
+{
+    uint32_t ox, oy, iw, ih;
+    struct RastPort *rp = inner_area(s, &ox, &oy, &iw, &ih);
+
+    if (rp && iw && ih)
+        X_P96_RECT_FILL(s, rp, ox, oy, ox + iw - 1u, oy + ih - 1u, 0UL);
+}
+
+/* The scaled rows are made and written a strip at a time. */
+#define AAR_SERVE_STRIP_ROWS 16u
+
+static void write_scaled(struct aar_serve *s, const struct RenderInfo *ri,
+                         struct RastPort *rp, uint32_t dx, uint32_t dy,
+                         uint32_t dw, uint32_t dh)
+{
+    uint32_t bpp = s->gfx.surf_bpp, row = dw * bpp, y;
+    struct RenderInfo out;
+
+    if (row == 0 || row > 32767u)
+        return;
+    /* Not cybergraphics.library ScalePixelArray: it takes RECTFMT_RGB, RGBA, ARGB
+     * (alpha first) and GREY8 only, none of them the B, G, R, A byte order of a
+     * BGRA8888 surface, and the RGB565 and CLUT8 surfaces have no format at all. A
+     * conversion of the whole frame first would cost as much as scaling it here. */
+    if (s->gfx.strip_bytes < row * AAR_SERVE_STRIP_ROWS) {
+        if (s->gfx.strip)
+            X_FREE_MEM(s->gfx.strip, s->gfx.strip_bytes);
+        s->gfx.strip_bytes = 0;
+        s->gfx.strip = X_ALLOC_MEM(row * AAR_SERVE_STRIP_ROWS, MEMF_PUBLIC);
+        if (!s->gfx.strip) {
+            launcher_say(s, "no memory to scale the display");
+            return;
+        }
+        s->gfx.strip_bytes = row * AAR_SERVE_STRIP_ROWS;
+    }
+    out.Memory = s->gfx.strip;
+    out.BytesPerRow = (WORD)row;
+    out.pad = 0;
+    out.RGBFormat = (RGBFTYPE)s->gfx.surf_rgb;
+    for (y = 0; y < dh; y += AAR_SERVE_STRIP_ROWS) {
+        uint32_t n = dh - y < AAR_SERVE_STRIP_ROWS ? dh - y : AAR_SERVE_STRIP_ROWS;
+
+        aar_serve_scale_nn((const uint8_t *)ri->Memory, (uint32_t)(UWORD)ri->BytesPerRow,
+                           s->gfx.surf_w, s->gfx.surf_h, s->gfx.strip, row, dw, dh,
+                           bpp, y, n);
+        X_P96_WRITE_PIXEL_ARRAY(s, &out, 0, 0, rp, dx, dy + y, dw, n);
+    }
+}
+
+/* A flip of a display with a surface of its own: draw the surface into the
+ * window or the screen, scaled to the drawing area when it is a scaled display. */
+static void display_op_present(void *ctx)
+{
+    struct aar_serve *s = ctx;
+    uint32_t ox, oy, iw, ih, x = 0, y = 0, w, h;
+    struct RastPort *rp;
+
+    if (!s->gfx.surface || !s->gfx.surf_lock)
+        return;
+    rp = inner_area(s, &ox, &oy, &iw, &ih);
+    if (!rp || !iw || !ih)
+        return;
+    if (s->gfx.scaled) {
+        if (s->gfx.shown_w != iw || s->gfx.shown_h != ih || !s->gfx.fit_w) {
+            update_fit(s);
+            clear_inner(s);
+            s->gfx.shown_w = iw;
+            s->gfx.shown_h = ih;
+        }
+        x = s->gfx.fit_x;
+        y = s->gfx.fit_y;
+        w = s->gfx.fit_w;
+        h = s->gfx.fit_h;
+        if (!w || !h)
+            return;
+    } else {
+        w = s->gfx.surf_w < iw ? s->gfx.surf_w : iw;
+        h = s->gfx.surf_h < ih ? s->gfx.surf_h : ih;
+    }
+    /* The surface stays locked for the token (make_surface): draw from its RenderInfo. */
+    if (s->gfx.scaled)
+        write_scaled(s, &s->gfx.surf_ri, rp, ox + x, oy + y, w, h);
+    else
+        X_P96_WRITE_PIXEL_ARRAY(s, &s->gfx.surf_ri, 0, 0, rp, ox, oy, w, h);
+}
+
+/* The inner size of the window, for AAR_EV_RESIZE; a scaled surface follows it. */
+static void window_resized(struct aar_serve *s)
+{
+    uint32_t ox, oy, iw, ih;
+
+    if (!inner_area(s, &ox, &oy, &iw, &ih))
+        return;
+    if (s->gfx.caps & AAR_DISPCAP_RESIZE)
+        push_event(s, AAR_EV_RESIZE, 0, (int16_t)iw, (int16_t)ih, 0);
+    if (s->gfx.scaled) {
+        update_fit(s);
+        display_op_present(s);
+    }
+}
+
+/* Where the pointer is on the surface, for an absolute mouse event. */
+static void surface_position(const struct aar_serve *s, int32_t mx, int32_t my,
+                             int16_t *dx, int16_t *dy)
+{
+    struct Window *win = display_window(s);
+    int32_t px = mx, py = my, sx, sy;
+
+    if (win) {
+        px -= win->BorderLeft;
+        py -= win->BorderTop;
+    }
+    aar_serve_surface_pos(px, py, s->gfx.surf_w, s->gfx.surf_h,
+                          s->gfx.scaled ? s->gfx.fit_x : 0u,
+                          s->gfx.scaled ? s->gfx.fit_y : 0u,
+                          s->gfx.scaled ? s->gfx.fit_w : 0u,
+                          s->gfx.scaled ? s->gfx.fit_h : 0u, &sx, &sy);
+    *dx = (int16_t)(sx > 32767 ? 32767 : (sx < -32768 ? -32768 : sx));
+    *dy = (int16_t)(sy > 32767 ? 32767 : (sy < -32768 ? -32768 : sy));
+}
+
+/* A custom pointer is a BOOPSI pointer object over a two plane bitmap; it
+ * is released after the window has another pointer. */
+static void pointer_release(struct aar_serve *s)
+{
+    if (s->gfx.pointer_obj) {
+        X_DISPOSE_POINTER(s->gfx.pointer_obj);
+        s->gfx.pointer_obj = NULL;
+    }
+    if (s->gfx.pointer_bm) {
+        X_FREE_BITMAP(s->gfx.pointer_bm);
+        s->gfx.pointer_bm = NULL;
+    }
+}
+
+static void pointer_reset(struct aar_serve *s)
+{
+    struct Window *win = display_window(s);
+
+    if (win)
+        X_SET_WINDOW_POINTER(win, TAG_DONE);
+    pointer_release(s);
+}
+
+/* The three pointer colours of Preferences (colours 17 to 19), 0x00RRGGBB. */
+static void pointer_palette(struct aar_serve *s, uint32_t palette[3])
+{
+    struct Preferences prefs;
+    UWORD c[3];
+    unsigned k;
+
+    (void)s;
+    memset(&prefs, 0, sizeof(prefs));
+    X_GET_PREFS(&prefs, sizeof(prefs));
+    c[0] = prefs.color17;
+    c[1] = prefs.color18;
+    c[2] = prefs.color19;
+    for (k = 0; k < 3; k++)
+        palette[k] = ((uint32_t)((c[k] >> 8) & 15u) * 17u << 16) |
+                     ((uint32_t)((c[k] >> 4) & 15u) * 17u << 8) |
+                     ((uint32_t)(c[k] & 15u) * 17u);
+}
+
+static int display_op_set_pointer(void *ctx, uint32_t mode, uint32_t width,
+                                  uint32_t height, int32_t hot_x, int32_t hot_y,
+                                  const uint8_t *argb)
+{
+    struct aar_serve *s = ctx;
+    struct Window *win = display_window(s);
+    struct BitMap *bm;
+    APTR obj;
+    uint32_t palette[3];
+
+    if (!win)
+        return AAR_E_NOSYS;
+    if (mode == AAR_POINTER_DEFAULT) {
+        pointer_reset(s);
+        return AAR_OK;
+    }
+    if (mode == AAR_POINTER_BUSY) {
+        X_SET_WINDOW_POINTER(win, WA_BusyPointer, TRUE, WA_PointerDelay, TRUE, TAG_DONE);
+        pointer_release(s);
+        return AAR_OK;
+    }
+    /* A sprite image needs Intuition 39. */
+    if (X_INTUITION_VERSION() < 39UL)
+        return AAR_E_NOSYS;
+    if (mode == AAR_POINTER_HIDDEN) {
+        width = 16;
+        height = 1;
+        hot_x = hot_y = 0;
+    }
+    bm = X_ALLOC_BITMAP((width + 15u) & ~15u, height, 2, BMF_CLEAR | BMF_DISPLAYABLE, NULL);
+    if (!bm)
+        return AAR_E_NOMEM;
+    if (mode == AAR_POINTER_CUSTOM) {
+        pointer_palette(s, palette);
+        aar_serve_pointer_planes(argb, width, height, palette, (uint8_t *)bm->Planes[0],
+                                 (uint8_t *)bm->Planes[1], bm->BytesPerRow);
+    }
+    obj = X_NEW_POINTER(bm, -hot_x, -hot_y);
+    if (!obj) {
+        X_FREE_BITMAP(bm);
+        return AAR_E_NOMEM;
+    }
+    X_SET_WINDOW_POINTER(win, WA_Pointer, (ULONG)obj, TAG_DONE);
+    pointer_release(s);
+    s->gfx.pointer_obj = obj;
+    s->gfx.pointer_bm = bm;
+    return AAR_OK;
+}
+
+static int display_op_set_title(void *ctx, const char *title)
+{
+    struct aar_serve *s = ctx;
+
+    snprintf(s->gfx.title_buf, sizeof(s->gfx.title_buf), "%s", title);
+    if (s->gfx.win) {
+        X_SET_WINDOW_TITLES(s->gfx.win, (CONST_STRPTR)s->gfx.title_buf,
+                            (CONST_STRPTR)~0UL);
+    } else if (s->gfx.input_win) {
+        X_SET_WINDOW_TITLES(s->gfx.input_win, (CONST_STRPTR)~0UL,
+                            (CONST_STRPTR)s->gfx.title_buf);
+    } else if (s->gfx.screen) {
+        s->gfx.screen->DefaultTitle = (UBYTE *)s->gfx.title_buf;
+        s->gfx.screen->Title = (UBYTE *)s->gfx.title_buf;
+    } else {
+        return AAR_E_NOSYS;
+    }
+    return AAR_OK;
+}
+
+/* ---- Information and modes ------------------------------------------------------------------ */
+
+/* The refresh rate of a display mode in millihertz, 0 when the monitor does not
+ * say. */
+static uint32_t mode_refresh_mhz(struct aar_serve *s, ULONG id)
+{
+    struct MonitorInfo mi;
+
+    (void)s;
+    if (!id || id == (ULONG)INVALID_ID)
+        return 0;
+    memset(&mi, 0, sizeof(mi));
+    if (X_GET_DISPLAY_INFO(&mi, sizeof(mi), DTAG_MNTR, id) == 0)
+        return 0;
+    return aar_serve_refresh_mhz(mi.TotalRows, mi.TotalColorClocks, 3571429UL);
+}
+
+static void display_op_info(void *ctx, aar_display_info *out)
+{
+    struct aar_serve *s = ctx;
+    struct Window *win = display_window(s);
+
+    out->refresh_mhz = mode_refresh_mhz(s, s->gfx.mode_id);
+    if (s->gfx.scr_w && s->gfx.scr_h) {
+        out->screen_width = s->gfx.scr_w;
+        out->screen_height = s->gfx.scr_h;
+    }
+    if (win ? (win->Flags & WFLG_WINDOWACTIVE) != 0
+            : (s->gfx.screen && IntuitionBase->ActiveScreen == s->gfx.screen))
+        out->flags |= AAR_DISPINFO_ACTIVE;
+}
+
+static uint32_t mode_formats(ULONG compatible)
+{
+    return ((compatible & RGBFF_R5G6B5) ? (1u << AAR_FMT_RGB565) : 0u) |
+           ((compatible & RGBFF_B8G8R8A8) ? (1u << AAR_FMT_BGRA8888) : 0u) |
+           ((compatible & RGBFF_CLUT) ? (1u << AAR_FMT_CLUT8) : 0u);
+}
+
+/* Every Picasso96 mode that can show one of the surface formats, and the one
+ * of the Workbench screen's size marked as the preferred one. */
+static uint32_t display_op_modes(void *ctx, aar_display_mode *out, uint32_t max)
+{
+    struct aar_serve *s = ctx;
+    ULONG id = (ULONG)INVALID_ID;
+    uint32_t total = 0;
+    struct Screen *wb;
+
+    if (!s->gfx.p96 || !GfxBase)
+        return 0;
+    while ((id = X_NEXT_DISPLAY_INFO(id)) != (ULONG)INVALID_ID) {
+        struct DimensionInfo dim;
+        struct DisplayInfo disp;
+        uint32_t formats;
+
+        if (!X_P96_MODE_ATTR(s, id, P96IDA_ISP96))
+            continue;
+        formats = mode_formats(X_P96_MODE_ATTR(s, id, P96IDA_COMPATIBLEFORMATS));
+        if (!formats)
+            continue;
+        memset(&disp, 0, sizeof(disp));
+        memset(&dim, 0, sizeof(dim));
+        if (X_GET_DISPLAY_INFO(&disp, sizeof(disp), DTAG_DISP, id) == 0 ||
+            disp.NotAvailable ||
+            X_GET_DISPLAY_INFO(&dim, sizeof(dim), DTAG_DIMS, id) == 0)
+            continue;
+        if (total < max) {
+            memset(&out[total], 0, sizeof(out[total]));
+            out[total].width = (uint32_t)(dim.Nominal.MaxX - dim.Nominal.MinX + 1);
+            out[total].height = (uint32_t)(dim.Nominal.MaxY - dim.Nominal.MinY + 1);
+            out[total].refresh_mhz = mode_refresh_mhz(s, id);
+            out[total].formats = formats;
+        }
+        total++;
+    }
+    wb = X_LOCK_PUB_SCREEN(NULL);
+    if (wb) {
+        aar_serve_modes_prefer(out, total < max ? total : max, (uint32_t)wb->Width,
+                               (uint32_t)wb->Height);
+        X_UNLOCK_PUB_SCREEN(NULL, wb);
+    }
+    return total;
+}
+
+/* ---- Opening and closing ----------------------------------------------------------------------- */
+
+static ULONG format_rgb(uint32_t format)
+{
+    return format == AAR_FMT_BGRA8888 ? RGBFB_B8G8R8A8 :
+           (format == AAR_FMT_CLUT8 ? RGBFB_CLUT : RGBFB_R5G6B5);
+}
+
+/* A surface bitmap that make_surface locked: the lock is released once, then the
+ * bitmap is freed. */
+struct pinned_surface {
+    struct BitMap *bm;
+    struct RenderInfo ri;
+    LONG lock;
+};
+
+static void unpin_bitmap(struct aar_serve *s, struct BitMap *bm, LONG lock)
+{
+    if (lock)
+        X_P96_UNLOCK_BITMAP(s, bm, lock);
+    X_P96_FREE_BITMAP(s, bm);
+}
+
+/* The display's own surface goes: nothing reads its token any more. */
+static void release_surface(struct aar_serve *s)
+{
+    if (!s->gfx.surface)
+        return;
+    unpin_bitmap(s, s->gfx.surface, s->gfx.surf_lock);
+    s->gfx.surface = NULL;
+    s->gfx.surf_lock = 0;
+    memset(&s->gfx.surf_ri, 0, sizeof(s->gfx.surf_ri));
+}
+
 static void close_display(struct aar_serve *s)
 {
     if (s->gfx.have_two && s->gfx.buf_front && s->gfx.buf_back && s->gfx.screen && s->gfx.safe_port) {
@@ -70,10 +471,30 @@ static void close_display(struct aar_serve *s)
             flip_wait_safe_messages(s);
         }
     }
+    pointer_reset(s);
+    if (s->gfx.win && s->gfx.win != s->gfx.input_win)
+        X_CLOSE_WINDOW(s->gfx.win);
     if (s->gfx.input_win) {
         X_CLOSE_WINDOW(s->gfx.input_win);
         s->gfx.input_win = NULL;
     }
+    s->gfx.win = NULL;
+    release_surface(s);
+    if (s->gfx.strip) {
+        X_FREE_MEM(s->gfx.strip, s->gfx.strip_bytes);
+        s->gfx.strip = NULL;
+        s->gfx.strip_bytes = 0;
+    }
+    if (s->gfx.pub) {
+        X_UNLOCK_PUB_SCREEN(NULL, s->gfx.pub);
+        s->gfx.pub = NULL;
+    }
+    s->gfx.scaled = 0;
+    s->gfx.caps = 0;
+    s->gfx.fit_w = 0;
+    s->gfx.shown_w = 0;
+    s->gfx.scr_w = s->gfx.scr_h = 0;
+    s->gfx.mode_id = 0;
     if (s->gfx.buf_back && s->gfx.screen)
         X_FREE_SCREEN_BUFFER(s->gfx.screen, s->gfx.buf_back);
     if (s->gfx.buf_front && s->gfx.screen)
@@ -142,13 +563,164 @@ static struct Screen *open_p96_screen(struct aar_serve *s, ULONG mode,
     return scr;
 }
 
+/* The surface of a window display or a scaled one: a bitmap of the surface's
+ * format on the board, named by a token. The token is the bitmap's address, so
+ * the bitmap is locked here, before the token exists, and stays locked until the
+ * surface is replaced or the display is closed: Picasso96 may move a bitmap that
+ * is not locked (a screen change, memory management), and the runtime keeps
+ * copying frames to the token for as long as the display is open. The RenderInfo
+ * of that lock is kept for the flips, which draw from it without locking again.
+ * False when the bitmap cannot be made, locked or named (outside what the
+ * platform can see); nothing is held then. */
+static int make_surface(struct aar_serve *s, uint32_t w, uint32_t h,
+                        uint32_t format, struct pinned_surface *pin,
+                        ULONG *token, ULONG *pitch)
+{
+    ULONG rgb = format_rgb(format);
+    struct BitMap *bm;
+
+    if (w == 0 || h == 0 || w > AAR_SERVE_SCREEN_MAX || h > AAR_SERVE_SCREEN_MAX ||
+        !claim_check(s))
+        return 0;
+    bm = X_P96_ALLOC_BITMAP(s, w, h, aar_serve_display_depth(format), BMF_CLEAR, NULL, rgb);
+    if (!bm)
+        return 0;
+    memset(&pin->ri, 0, sizeof(pin->ri));
+    pin->lock = X_P96_LOCK_BITMAP(s, bm, &pin->ri, sizeof(pin->ri));
+    if (!pin->lock) {
+        X_P96_FREE_BITMAP(s, bm);
+        return 0;
+    }
+    if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb ||
+        !bitmap_token(s, bm, token, pitch)) {
+        unpin_bitmap(s, bm, pin->lock);
+        return 0;
+    }
+    pin->bm = bm;
+    return 1;
+}
+
+/* The surface made by make_surface becomes the display's; its lock goes with it. */
+static void adopt_surface(struct aar_serve *s, const struct pinned_surface *pin,
+                          uint32_t w, uint32_t h, uint32_t format)
+{
+    s->gfx.surface = pin->bm;
+    s->gfx.surf_ri = pin->ri;
+    s->gfx.surf_lock = pin->lock;
+    s->gfx.surf_rgb = format_rgb(format);
+    s->gfx.surf_w = w;
+    s->gfx.surf_h = h;
+    s->gfx.surf_bpp = aar_serve_display_depth(format) / 8u;
+}
+
+/* The IDCMP classes of the input window. The pointer position is a delta unless
+ * the display asked for absolute positions. */
+static ULONG input_idcmp(uint32_t flags, int newsize)
+{
+    return IDCMP_RAWKEY | IDCMP_MOUSEMOVE | IDCMP_MOUSEBUTTONS | IDCMP_CLOSEWINDOW |
+           IDCMP_ACTIVEWINDOW | IDCMP_INACTIVEWINDOW |
+           ((flags & AAR_DISPLAY_POINTER_ABS) ? 0UL : IDCMP_DELTAMOVE) |
+           (newsize ? IDCMP_NEWSIZE : 0UL);
+}
+
+/* The caps the open could give besides the window's: the pointer position
+ * needs an input window, text input also the keymap. Sets gfx.caps. */
+static uint32_t finish_features(struct aar_serve *s, uint32_t flags, uint32_t features)
+{
+    if (s->gfx.input_win) {
+        features |= AAR_DISPCAP_POINTER_ABS;
+        if ((flags & AAR_DISPLAY_TEXT_INPUT) && !s->in.keymap)
+            s->in.keymap = X_OPEN_LIB((CONST_STRPTR)"keymap.library", 37);
+        if (s->in.keymap)
+            features |= AAR_DISPCAP_TEXT_INPUT;
+    }
+    s->gfx.caps = aar_serve_display_caps(flags, features);
+    return features;
+}
+
+/* AAR_DISPLAY_WINDOW: the surface in a window on the default public screen. It
+ * needs a Picasso96 screen that shows at least 16 bits per pixel; CLUT8 surfaces
+ * keep a screen of their own (their palette would change the public screen's). */
+static int open_window_display(struct aar_serve *s, uint32_t w, uint32_t h,
+                               uint32_t format, uint32_t flags, ULONG *pitch,
+                               ULONG *front, uint32_t *features_out)
+{
+    int input = !(s->cfg.flags & AAR_SERVEF_NO_INPUT_WINDOW);
+    int size = input && (flags & AAR_DISPLAY_RESIZABLE);
+    struct Screen *pub;
+    struct pinned_surface pin;
+    struct Window *win;
+    uint32_t features;
+
+    if (format == AAR_FMT_CLUT8 || !s->gfx.p96 || !IntuitionBase || !GfxBase)
+        return 0;
+    pub = X_LOCK_PUB_SCREEN(NULL);
+    if (!pub)
+        return 0;
+    if (!X_P96_BITMAP_ATTR(s, pub->RastPort.BitMap, P96BMA_ISP96) ||
+        X_P96_BITMAP_ATTR(s, pub->RastPort.BitMap, P96BMA_BYTESPERPIXEL) < 2) {
+        X_UNLOCK_PUB_SCREEN(NULL, pub);
+        return 0;
+    }
+    if (!make_surface(s, w, h, format, &pin, front, pitch)) {
+        X_UNLOCK_PUB_SCREEN(NULL, pub);
+        return 0;
+    }
+    snprintf(s->gfx.title_buf, sizeof(s->gfx.title_buf), "%s", s->title);
+    win = X_OPEN_WINDOW(NULL,
+        WA_PubScreen, (ULONG)pub,
+        WA_Title, (ULONG)s->gfx.title_buf,
+        WA_InnerWidth, w,
+        WA_InnerHeight, h,
+        WA_DragBar, TRUE,
+        WA_DepthGadget, TRUE,
+        WA_CloseGadget, input ? TRUE : FALSE,
+        WA_SizeGadget, size ? TRUE : FALSE,
+        WA_SizeBRight, size ? TRUE : FALSE,
+        WA_SizeBBottom, size ? TRUE : FALSE,
+        WA_MinWidth, 64,
+        WA_MinHeight, 64,
+        WA_Activate, TRUE,
+        WA_SmartRefresh, TRUE,
+        WA_NoCareRefresh, TRUE,
+        WA_RMBTrap, TRUE,
+        WA_ReportMouse, TRUE,
+        WA_IDCMP, input ? input_idcmp(flags, size) : 0UL,
+        TAG_DONE);
+    if (!win) {
+        unpin_bitmap(s, pin.bm, pin.lock);
+        X_UNLOCK_PUB_SCREEN(NULL, pub);
+        return 0;
+    }
+    s->gfx.pub = pub;
+    s->gfx.win = win;
+    if (input)
+        s->gfx.input_win = win;
+    adopt_surface(s, &pin, w, h, format);
+    s->gfx.scaled = (flags & AAR_DISPLAY_SCALE) != 0;
+    s->gfx.scr_w = (uint32_t)pub->Width;
+    s->gfx.scr_h = (uint32_t)pub->Height;
+    s->gfx.mode_id = X_GET_VP_MODE_ID(&pub->ViewPort);
+    update_fit(s);
+    clear_inner(s);
+    features = AAR_DISPCAP_WINDOW | (input ? AAR_DISPCAP_CLOSE_REQUEST : 0u) |
+               (size ? AAR_DISPCAP_RESIZE : 0u) | (s->gfx.scaled ? AAR_DISPCAP_SCALED : 0u);
+    *features_out = finish_features(s, flags, features);
+    return 1;
+}
+
 /* Opens the P96 screen for a DISPLAY_OPEN and finds the tokens of its bitmap
- * memory (pages of one tall screen when it pans). */
+ * memory (pages of one tall screen when it pans), or opens a window display. A
+ * scaled display on a screen has a surface of its own and a screen the size of
+ * the Workbench screen. */
 static int open_screen(struct aar_serve *s, uint32_t w, uint32_t h,
-                       uint32_t format, ULONG forced_mode, ULONG *pitch_out,
-                       ULONG *front_out, ULONG *back_out, ULONG *spare_out)
+                       uint32_t format, uint32_t flags, ULONG forced_mode,
+                       ULONG *pitch_out, ULONG *front_out, ULONG *back_out,
+                       ULONG *spare_out, uint32_t *features_out)
 {
     ULONG mode, depth, rgb, pitch = 0, front = 0, back = 0, spare = 0;
+    uint32_t screen_w = w, screen_h = h, features = 0;
+    int scale_screen = (flags & AAR_DISPLAY_SCALE) != 0;
     if (w == 0 || h == 0 || w > AAR_SERVE_SCREEN_MAX || h > AAR_SERVE_SCREEN_MAX)
         return 0;
     if (format != AAR_FMT_RGB565 && format != AAR_FMT_BGRA8888 &&
@@ -156,25 +728,69 @@ static int open_screen(struct aar_serve *s, uint32_t w, uint32_t h,
         return 0;
     if (!s->gfx.p96 || !IntuitionBase || !GfxBase)
         return 0;
+    *features_out = 0;
+    if ((flags & AAR_DISPLAY_WINDOW) &&
+        open_window_display(s, w, h, format, flags, &pitch, &front, features_out)) {
+        *pitch_out = pitch;
+        *front_out = front;
+        *back_out = 0;
+        *spare_out = 0;
+        s->gfx.flip_pending = 0;
+        s->gfx.safe_pending = 0;
+        return 1;
+    }
     if (!s->gfx.pub_name[0])
         X_GET_DEFAULT_PUB_SCREEN((STRPTR)s->gfx.pub_name);
     depth = aar_serve_display_depth(format);
-    rgb = format == AAR_FMT_BGRA8888 ? RGBFB_B8G8R8A8 :
-          (format == AAR_FMT_CLUT8 ? RGBFB_CLUT : RGBFB_R5G6B5);
-    mode = mode_for(s, w, h, format, forced_mode);
-    if (mode == (ULONG)INVALID_ID)
+    rgb = format_rgb(format);
+    if (scale_screen) {
+        struct Screen *wb = X_LOCK_PUB_SCREEN(NULL);
+        uint32_t wb_w = 0, wb_h = 0;
+        struct pinned_surface pin;
+        int made = 0;
+
+        if (wb) {
+            wb_w = (uint32_t)wb->Width;
+            wb_h = (uint32_t)wb->Height;
+            X_UNLOCK_PUB_SCREEN(NULL, wb);
+        }
+        if (wb_w && wb_h && wb_w <= AAR_SERVE_SCREEN_MAX && wb_h <= AAR_SERVE_SCREEN_MAX)
+            made = make_surface(s, w, h, format, &pin, &front, &pitch);
+        if (made) {
+            adopt_surface(s, &pin, w, h, format);
+            screen_w = wb_w;
+            screen_h = wb_h;
+        } else {
+            scale_screen = 0;
+        }
+    }
+    mode = mode_for(s, screen_w, screen_h, format, forced_mode);
+    if (mode == (ULONG)INVALID_ID) {
+        close_display(s);
         return 0;
-    if (!claim_check(s))
+    }
+    if (!claim_check(s)) {
+        close_display(s);
         return 0;
-    s->gfx.screen = open_p96_screen(s, mode, w, h, depth, rgb);
-    if (!s->gfx.screen)
+    }
+    s->gfx.screen = open_p96_screen(s, mode, screen_w, screen_h, depth, rgb);
+    if (!s->gfx.screen) {
+        close_display(s);
         return 0;
-    if (!bitmap_token(s, s->gfx.screen->RastPort.BitMap, &front, &pitch)) {
+    }
+    s->gfx.mode_id = mode;
+    s->gfx.scr_w = screen_w;
+    s->gfx.scr_h = screen_h;
+    if (scale_screen) {
+        /* The surface is its own bitmap and every flip draws it scaled. */
+        s->gfx.scaled = 1;
+        features |= AAR_DISPCAP_SCALED;
+    } else if (!bitmap_token(s, s->gfx.screen->RastPort.BitMap, &front, &pitch)) {
         launcher_say(s, "display unavailable (front bitmap address)");
         close_display(s);
         return 0;
     }
-    if (s->cfg.display_strategy == AAR_SERVE_DISPLAY_BUFFERS) {
+    if (!scale_screen && s->cfg.display_strategy == AAR_SERVE_DISPLAY_BUFFERS) {
         s->gfx.buf_front = X_ALLOC_SCREEN_BUFFER(s->gfx.screen, NULL, SB_SCREEN_BITMAP);
         if (!s->gfx.buf_front) {
             launcher_say(s, "double buffering unavailable (front screen buffer)");
@@ -206,7 +822,7 @@ static int open_screen(struct aar_serve *s, uint32_t w, uint32_t h,
             }
         }
     }
-    if (!s->gfx.have_two) {
+    if (!scale_screen && !s->gfx.have_two) {
         struct Screen *tall = NULL;
         ULONG tall_front = 0, tall_pitch = 0;
 
@@ -271,14 +887,16 @@ static int open_screen(struct aar_serve *s, uint32_t w, uint32_t h,
             WA_ReportMouse, TRUE,
             WA_Activate, TRUE,
             WA_NoCareRefresh, TRUE,
-            WA_IDCMP, IDCMP_RAWKEY | IDCMP_MOUSEMOVE | IDCMP_DELTAMOVE |
-                      IDCMP_MOUSEBUTTONS | IDCMP_CLOSEWINDOW,
+            WA_IDCMP, input_idcmp(flags, 0),
             TAG_DONE);
         if (!s->gfx.input_win) {
             close_display(s);
             return 0;
         }
     }
+    if (s->gfx.scaled)
+        update_fit(s);
+    *features_out = finish_features(s, flags, features);
     *pitch_out = pitch;
     *front_out = front;
     *back_out = back;
@@ -304,11 +922,13 @@ static void open_display(struct aar_serve *s, const struct aar_serve_req *req,
                          struct aar_serve_done *done)
 {
     ULONG pitch = 0, front = 0, back = 0, spare = 0;
+    uint32_t features = 0;
 
     if (!open_screen(s, req->arg[AAR_A_DISPLAY_OPEN_W],
                      req->arg[AAR_A_DISPLAY_OPEN_H],
-                     req->arg[AAR_A_DISPLAY_OPEN_FORMAT], s->cfg.screen_mode,
-                     &pitch, &front, &back, &spare)) {
+                     req->arg[AAR_A_DISPLAY_OPEN_FORMAT],
+                     req->arg[AAR_A_DISPLAY_OPEN_FLAGS], s->cfg.screen_mode,
+                     &pitch, &front, &back, &spare, &features)) {
         launcher_say(s, "cannot open the requested screen");
         s->display_failed = 1;
         want_stop(s, AAR_SERVE_WHY_DISPLAY);
@@ -317,7 +937,8 @@ static void open_display(struct aar_serve *s, const struct aar_serve_req *req,
         return;
     }
     aar_serve_display_opened(&s->core.display, req, pitch, front, back, spare,
-                             s->gfx.have_two, s->gfx.have_pan, (uint32_t)s->gfx.pan_count, done);
+                             s->gfx.have_two, s->gfx.have_pan, (uint32_t)s->gfx.pan_count,
+                             features, done);
 }
 
 static void display_op_open(void *ctx, const struct aar_serve_req *req,
@@ -326,6 +947,36 @@ static void display_op_open(void *ctx, const struct aar_serve_req *req,
     struct aar_serve *s = ctx;
 
     open_display(s, req, done);
+}
+
+/* DISPLAY_RESIZE of a window display: a new surface bitmap of the new size. The
+ * old one stays until the new one exists, so a failure leaves the display as it
+ * was. The core records the new size from the completion. */
+static void display_op_resize(void *ctx, const struct aar_serve_req *req,
+                              struct aar_serve_done *done)
+{
+    struct aar_serve *s = ctx;
+    uint32_t w = req->arg[AAR_A_DISPLAY_OPEN_W];
+    uint32_t h = req->arg[AAR_A_DISPLAY_OPEN_H];
+    uint32_t format = req->arg[AAR_A_DISPLAY_OPEN_FORMAT];
+    ULONG pitch = 0, token = 0;
+    struct pinned_surface pin;
+
+    memset(done, 0, sizeof(*done));
+    if (!s->gfx.win || !s->gfx.surface) {
+        done->result = AAR_E_NOSYS;
+        return;
+    }
+    if (!make_surface(s, w, h, format, &pin, &token, &pitch)) {
+        done->result = AAR_E_NOMEM;
+        return;
+    }
+    release_surface(s);
+    adopt_surface(s, &pin, w, h, format);
+    update_fit(s);
+    done->result = AAR_OK;
+    done->out[AAR_R_DISPLAY_OPEN_PITCH] = pitch;
+    done->out[AAR_R_DISPLAY_OPEN_FRONT] = token;
 }
 
 static int display_op_change_buffer(void *ctx, int to_back)
@@ -370,5 +1021,8 @@ static void display_op_close(void *ctx)
 /* The display table of the built-in backend; the instance copies it and sets ctx. */
 static const struct aar_serve_display_ops aar_serve_gfx_backend = {
     NULL, display_op_open, display_op_change_buffer, display_op_pan,
-    display_op_wait_tof, display_op_load_rgb32, display_op_close
+    display_op_wait_tof, display_op_load_rgb32, display_op_close,
+    display_op_present, display_op_info, display_op_modes, display_op_resize,
+    display_op_set_title, display_op_set_pointer,
+    NULL /* no vertical blank of an RTG display: DISPLAY_VBLANK answers AAR_E_NOSYS */
 };
