@@ -42,7 +42,9 @@ LSE, AES, SHA, dot product, FP16 on A64) are never assumed. Read
 `aar_info.cpu_features` through `aar_get_info` and pick a code path; do not
 execute an instruction and trap. An app that wants to run everywhere ships one
 image per profile, for example `name.a32.elf` and `name.a64.elf`. There are no
-fat images, and a launcher picks the file that fits its platform.
+fat images, and a launcher picks the file that fits its platform; `aar-run` does
+this for `name.elf` and `name` (see its
+[manual](../client/run/README.md#profile-files)).
 
 Structures that the app and the host share are built from fixed-width
 integers, and every fixed-width field has the same offset on A32 and A64. A

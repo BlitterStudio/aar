@@ -66,7 +66,7 @@ It does not define a sandbox against hostile apps (the user chooses what to run)
 
 The A64 baseline assumes no optional extension: crypto and CRC32 are optional in ARMv8-A, and LSE (ARMv8.1) is absent from a Cortex-A72 although a Cortex-A76 has it. Optional instructions are discovered through `aar_info.cpu_features` (section 8.7), never by executing and trapping.
 
-A platform implements one or more profiles. It declares them in `AARInfo.profiles`. An app image belongs to exactly one profile. An app that wants to run everywhere ships one image per profile (for example `name.a32.elf` and `name.a64.elf`); `AARProbeFile` (section 9) lets a launcher pick. Fat images are not defined (section 13 asks whether they should be).
+A platform implements one or more profiles. It declares them in `AARInfo.profiles`. An app image belongs to exactly one profile. An app that wants to run everywhere ships one image per profile, named `name.a64.elf` and `name.a32.elf`; `AARProbeFile` (section 9) lets a launcher pick. Given `name.elf` or `name`, `aar-run` uses that file when the platform runs it, and otherwise the first of `name.a64.elf` and `name.a32.elf` (and, for `name.elf`, `name`) that the probe accepts and the platform runs, taking the profiles the platform declares first and A64 before A32. Fat images are not defined (section 13 asks whether they should be).
 
 ### 2.2 ELF rules (both profiles)
 

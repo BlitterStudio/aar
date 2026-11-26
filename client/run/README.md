@@ -56,8 +56,8 @@ anything. A launch the platform would refuse prints the limit and returns 10:
 
 | Setting | Limit from `AARInfo` | Line when exceeded |
 | --- | --- | --- |
-| app arguments | `max_args`, which counts `argv[0]` (0: no limit) | `this platform takes at most <n> arguments for the app.` |
-| one argument | `max_arg_bytes`, which counts the NUL (0: no limit) | `an argument is longer than <n> bytes, the most this platform takes.` |
+| app arguments | `max_args`, which counts `argv[0]`, the `ARGS` words and the documents of a Workbench start (0: no limit) | `this platform takes at most <n> arguments for the app.` |
+| one argument | `max_arg_bytes`, which counts the NUL, for every argument including a document's path (0: no limit) | `an argument is longer than <n> bytes, the most this platform takes.` |
 | `WEIGHT` | `weight_max` (0: the platform does not weight) | `WEIGHT must be 1 to <n> on this platform.` or `WEIGHT is not available: this platform does not weight apps.` |
 | `HOSTMEM` | `shared_max_mib`, never above 4095, the rule of `AAR_TAG_SHARED_MIB` | `HOSTMEM must be 1 to <n> MiB on this platform.` |
 | the ELF | `max_image_bytes` | reported by the load (`larger than the <n> MiB image limit`) |
@@ -133,13 +133,43 @@ for the load and probes the full name then. That needs the serving loop and so a
 claim, which aar-run opens and closes again when it refuses the image. Every
 other refusal, and a missing plain path, happens before any claim.
 
+### Profile files
+
+An app that runs on several platforms ships one image per profile, such as
+`Game.a64.elf` and `Game.a32.elf` (spec section 2.1). Given the name of the app,
+aar-run runs the first of these files that `AARProbeFile` accepts and the
+platform runs:
+
+| Given | Tried in this order |
+| --- | --- |
+| `Game.elf` | `Game.elf`, `Game.a64.elf`, `Game.a32.elf`, `Game` |
+| `Game` | `Game`, `Game.a64.elf`, `Game.a32.elf` |
+
+The name given always goes first, so a file that runs here is never replaced
+by another. The profile files come in the platform's order: the profiles of
+`AARInfo.profiles` first, A64 before A32 (the mask carries no other order), then
+the profile the platform does not run. The suffix `.elf` is matched without
+regard to case, and the other names are built from the part before it, so
+`Work:Games/Q/quake.ELF` gives `Work:Games/Q/quake.a64.elf`. A name that ends
+in `:` or `/` has no profile files. The rule applies to a Shell command, to the
+`APP` ToolType and to the project of a Workbench start alike.
+
+When aar-run takes another file than the one given it prints
+`aar-run: using Game.a64.elf instead of Game.elf` before the `loading` line, and
+`argv[0]` is the name of the file it took. When no file runs, the refusal is
+the one of the first file that exists but cannot run here (for example an A64
+image on an A32 platform), and `cannot open <name given>` when none exists.
+Every file is probed before any claim is taken, except a name with a volume or
+assign colon that the first probe does not find: that one is found on its assign
+first, as described above.
+
 ### Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | the app's | on normal app exit, aar-run returns the app exit code (0 to 255) |
 | 5 | Ctrl-C while aar-run opens, probes or loads the ELF, including when a DOS packet wait such as a file read or closing the ELF consumed the break |
-| 10 | invalid launcher arguments, a stack below 16 KiB, a missing `APP` tool type, or a launch the platform's limits refuse |
+| 10 | invalid launcher arguments, a stack below 16 KiB, a missing `APP` tool type, a bad ToolType value, an `ARGS` quote that is never closed, a document path that does not fit, or a launch the platform's limits refuse |
 | 20 | an app fault, a watchdog, lease loss or any other end the platform imposed; an unavailable runtime or no `aar.library`; a refused claim, image or load; a revoked claim; a display failure; a console that cannot be opened or written; an AHI route that cannot be opened; `STATUS` or `RELEASE` where the platform does not support them; any other launcher error |
 
 Lease expiry prints `aar-run: claim lost (lease expired).` and quarantine prints
@@ -184,28 +214,76 @@ every claim.
 
 ## Workbench ToolTypes
 
-A Workbench start reads the ToolTypes of the aar-run icon (`PROGDIR:aar-run`,
-or the icon of the tool a project icon names). Dragging an ELF project onto the
-icon, or giving a project icon whose default tool is `aar-run`, takes
-precedence over `APP`. A Workbench start has no Shell. The ELF comes from the
-project icon or `APP`, and without either aar-run requests `Set the APP
-tooltype, or start aar-run from a project icon.` and returns 10. The project
-directory lock is resolved with `NameFromLock`, and any nonzero DOS BOOLEAN
-result is success, including `DOSTRUE` (-1). The project name is then appended
-to that directory, without adding a slash after a volume colon.
+A Workbench start has no Shell. aar-run reads ToolTypes from two icons: the
+icon of the project first, then its own (the icon of the tool the start message
+names, `PROGDIR:aar-run` for a plain double-click). A key the project icon sets
+is not read from aar-run's icon, even when its value is empty; every other key
+comes from aar-run's icon. A Shell start reads `PROGDIR:aar-run` only.
+
+The project is the first icon after aar-run in the start message. That is the
+icon the user double-clicked when its default tool is aar-run, or the first
+icon selected when aar-run's own icon is shift-double-clicked. The ToolTypes of
+the project's icon are those of the app, so an app ships as `Game.elf` with a
+`Game.elf.info` whose default tool is aar-run and whose ToolTypes are its
+settings, with no copy of aar-run for each app.
+
+The first project is the app when it is an AAR image (`AARProbeFile` finds a
+valid note, whatever the platform), or a file the probe cannot open or read, so
+that the launch names the cause. Otherwise it is a document, and the app is
+the `APP` ToolType, taken from the project icon first and from aar-run's icon
+second. A drawer is never the app. A start with no project takes `APP` from
+aar-run's icon. Without an app aar-run requests `Set the APP tooltype, or start
+aar-run from a project icon.` and returns 10. The project directory lock is
+resolved with `NameFromLock`, and any nonzero DOS BOOLEAN result is success,
+including `DOSTRUE` (-1). The project name is then appended to that directory,
+without adding a slash after a volume colon. The app's name goes through the
+rule of [Profile files](#profile-files).
+
+Every icon after the app is a document, the project too when it is not the
+app. Documents follow the `ARGS` words in the app's `argv`, in the order of
+the start message. A document is passed as a path: relative to `ROOT` when it
+lies under `ROOT` (`maps/e1.bsp`), else in full (`Work:Docs/a.txt`). `ROOT`
+itself and a path on another volume are passed in full. A drawer is a document
+too and is passed as the path of the drawer. Names are compared without regard
+to case. An app opens a full path only with `ABS`, so a shipped app that takes
+documents from anywhere has `ABS` in its icon. Each document counts as an
+argument in the limits of [What the platform takes](#what-the-platform-takes).
+A path that cannot be built in aar-run's buffers is refused with `the path of a
+document is too long.`
 
 | ToolType | Meaning |
 | --- | --- |
-| `APP` | ELF path when aar-run is started without a project file. |
-| `ROOT` | Root directory for relative app file paths. |
+| `APP` | The app's file when the project is not an AAR image, or when there is no project. |
+| `ROOT` | Root directory for relative app file paths. Write it with a volume or assign name. |
 | `ABS` | Enabled when the ToolType has no value, is exactly `1` or `y`, or begins with `ye` or `t` (case-insensitive). Permits app paths containing an Amiga volume or assign colon. The root check does not apply to those paths. |
 | `MODE` | Optional Picasso96 DisplayID, in decimal, `$` hexadecimal, or `0x` hexadecimal. The app still chooses width, height, and RGB format. |
-| `ARGS` | Optional space-separated arguments. Quoting is not parsed. |
+| `ARGS` | Arguments for the app, separated by spaces or tabs. Double quotes keep spaces in one argument. |
 | `JOYPORT0` | Enabled by the same values as `ABS`. Enables joystick port 0 as well as port 1. |
 | `AUDIO=AHI` | Route app PCM to AHI. The default remains the platform's own audio path. |
 | `MAXMEM=<MiB>` | Positive decimal MiB cap on the app's private memory (`AAR_TAG_PRIVATE_MIB`). |
 | `HOSTMEM=<MiB>` | Positive decimal MiB shared memory limit (`AAR_TAG_SHARED_MIB`), up to the platform's `shared_max_mib` and 4095. |
 | `WEIGHT=<n>` | Decimal CPU share weight from 1 to the platform's `weight_max` (`AAR_TAG_WEIGHT`). |
+
+A value in the project icon replaces the one in aar-run's icon. That holds for
+a flag too: `ABS=NO` in the project icon turns off an `ABS` of aar-run's icon.
+The `ARGS` of the project replace the `ARGS` of aar-run's icon and are not
+added to them. A bad `MAXMEM`, `HOSTMEM` or `WEIGHT` prints `bad <key> ToolType`
+and the usage and returns 10.
+
+In `ARGS`, a double quote starts a quoted part and the next double quote ends
+it. Spaces and tabs inside it belong to the argument. A quoted part may sit
+inside a word, `--name="a b"` is the argument `--name=a b`, and `""` is an empty
+argument. There is no escape, so an argument cannot contain a double quote, and
+single quotes and `*` are ordinary characters. A quote that is never closed
+prints `ARGS has a double quote that is never closed.` and returns 10. The
+words of `ARGS` of a Shell start's `PROGDIR:aar-run` icon come before the words
+of the command line; the Shell splits the command line itself.
+
+```text
+ARGS=-fullscreen "My Saves:slot 1"
+ROOT=Work:Games/Game
+ABS
+```
 
 The same limits and refusals apply as in a Shell launch. The diagnostic words
 below are not ToolTypes. A Workbench start opens one console window titled

@@ -8,6 +8,8 @@
 #ifndef AAR_RUN_WORKBENCH_H
 #define AAR_RUN_WORKBENCH_H
 
+/* The full path of a WBArg: its directory and its name. A WBArg with an empty
+ * name is the directory itself (a drawer) and gives the directory's path. */
 static int aar_run_project_path(const struct WBArg *project, char *path,
                                 size_t capacity)
 {
@@ -23,7 +25,7 @@ static int aar_run_project_path(const struct WBArg *project, char *path,
 
         if (n + 1 + m < capacity) {
             memcpy(path, directory, n);
-            if (n && directory[n - 1] != ':')
+            if (m && n && directory[n - 1] != ':')
                 path[n++] = '/';
             memcpy(path + n, project->wa_Name, m + 1);
             return 1;
