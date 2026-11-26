@@ -2871,7 +2871,7 @@ static void test_a_window_display_shows_its_surface_in_a_window_on_the_public_sc
     CHECK(hx_rectfills == 1 && hx_pwa_calls == 0);
     fill_surface();
     flip_once(21);
-    CHECK(hx_pwa_calls == 1 && hx_locks_live == 0 && hx_locks_taken == 1);
+    CHECK(hx_pwa_calls == 1 && hx_locks_live == 1 && hx_locks_taken == 1); /* locked once, for the token */
     CHECK(canvas_px(4, 11) == 0x0000u);
     CHECK(canvas_px(4 + 10, 11 + 5) == ((10u << 8) | 5u));
     CHECK(canvas_px(4 + DW - 1u, 11 + DH - 1u) == (((DW - 1u) << 8) | (DH - 1u)));
@@ -3774,6 +3774,91 @@ static uint32_t canvas_px4(uint32_t x, uint32_t y)
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
 
+/* Picasso96 may move a bitmap that is not locked, and the token is the bitmap's address, so
+ * the surface is locked before the token is made and stays locked until the surface goes
+ * (a resize or the close). The flips draw from the lock's RenderInfo and do not lock again.
+ * The fake moves every unlocked bitmap when asked and trashes its old memory. */
+static void test_a_surface_is_locked_for_as_long_as_its_token_can_be_used(void)
+{
+    struct comp c;
+    struct BitMap *probe, *first, *second;
+    uint8_t *old, *addr1, *addr2;
+    uint32_t arg[6];
+
+    setup("display_surface_pinned");
+    hx_pub_w = 240;
+    hx_pub_h = 160;
+    make_serve();
+    /* the fake does move a bitmap that is not locked */
+    probe = hx_p96_alloc_bitmap(16, 8, 16, BMF_CLEAR, NULL, RGBFB_R5G6B5);
+    CHECK(probe != NULL);
+    if (probe) {
+        old = probe->Planes[0];
+        CHECK(hx_p96_relocate_unlocked() == 1 && probe->Planes[0] != old && old[0] == 0xEE);
+        hx_p96_free_bitmap(probe);
+    }
+    /* a window display: locked once, before anything is exported, and not locked again by flips */
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE));
+    CHECK(c.result == AAR_OK && c.out[AAR_R_DISPLAY_OPEN_FRONT] != 0);
+    first = hx_last_surface;
+    CHECK(first != NULL && first->hx_locked == 1 && hx_locks_live == 1 && hx_locks_taken == 1);
+    addr1 = first ? first->Planes[0] : NULL;
+    CHECK(hx_p96_relocate_unlocked() == 0 && first && first->Planes[0] == addr1);
+    fill_surface();
+    flip_once(21);
+    CHECK(hx_p96_relocate_unlocked() == 0 && first && first->Planes[0] == addr1);
+    flip_once(22);
+    CHECK(hx_pwa_calls == 2 && hx_locks_taken == 1 && hx_locks_live == 1);
+    CHECK(canvas_px(4 + 10, 11 + 5) == ((10u << 8) | 5u));
+    /* a resize: the new surface is locked before the old one is let go, and the old one's
+     * lock is released exactly once */
+    memset(arg, 0, sizeof(arg));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    arg[1] = 100u;
+    arg[2] = 50u;
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 30, arg, 0, 0, &c) && c.result == AAR_OK);
+    second = hx_last_surface;
+    CHECK(second != NULL && second->hx_locked == 1 && hx_p96_bitmaps_live == 1);
+    CHECK(hx_locks_live == 1 && hx_locks_taken == 2);
+    addr2 = second ? second->Planes[0] : NULL;
+    CHECK(hx_p96_relocate_unlocked() == 0 && second && second->Planes[0] == addr2);
+    /* a lock that cannot be had leaves the old surface as it was, still locked */
+    hx_p96_fail_lock = 1;
+    arg[1] = 200u;
+    arg[2] = 100u;
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 31, arg, 0, 0, &c) && c.result == AAR_E_NOMEM);
+    hx_p96_fail_lock = 0;
+    CHECK(hx_p96_bitmaps_live == 1 && hx_locks_live == 1 && hx_locks_taken == 2);
+    CHECK(second && second->hx_locked == 1 && second->Planes[0] == addr2);
+    CHECK(hx_p96_relocate_unlocked() == 0 && second && second->Planes[0] == addr2);
+    flip_once(32);
+    CHECK(hx_pwa_calls == 3 && hx_locks_taken == 2);
+    /* the close lets go of the lock and the bitmap */
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 33, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(hx_locks_live == 0 && hx_p96_bitmaps_live == 0);
+    /* a surface that cannot be locked is not exported: nothing is held */
+    hx_p96_fail_lock = 1;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(hx_locks_live == 0 && hx_p96_bitmaps_live == 0 && hx_locks_taken == 2);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 34, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    hx_p96_fail_lock = 0;
+    /* a scaled display on a screen has a surface of its own and pins it the same way */
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_SCALE));
+    CHECK(c.result == AAR_OK);
+    first = hx_last_surface;
+    CHECK(first != NULL && first->hx_locked == 1 && hx_locks_live == 1);
+    addr1 = first ? first->Planes[0] : NULL;
+    CHECK(hx_p96_relocate_unlocked() == 0 && first && first->Planes[0] == addr1);
+    flip_once(35);
+    CHECK(hx_locks_taken == 3 && hx_locks_live == 1);
+    /* the instance goes with the display open: the lock is released with the bitmap */
+    aar_serve_destroy(S);
+    S = NULL;
+    drain();
+    CHECK(hx_locks_live == 0 && hx_p96_bitmaps_live == 0);
+    finish();
+}
+
 /* The BGRA8888 surface has no RECTFMT of cybergraphics.library ScalePixelArray (RGB, RGBA,
  * ARGB with alpha first, GREY8), so the loop scales every format itself and writes the strips
  * with p96WritePixelArray in the surface's own format. The fake fails an OpenLibrary of
@@ -3984,6 +4069,7 @@ static const struct {
     T(test_cd32_ports_are_read_with_lowlevel),
     T(test_a_replacement_display_has_no_window_caps_and_serves_the_rest),
     T(test_a_32_bit_surface_is_scaled_by_the_loop_in_its_own_byte_order),
+    T(test_a_surface_is_locked_for_as_long_as_its_token_can_be_used),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

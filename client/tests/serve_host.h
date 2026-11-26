@@ -371,6 +371,7 @@ struct BitMap {
     UWORD Rows;
     UWORD BytesPerRow;
     int hx_rgb;
+    int hx_locked;
 };
 struct RasInfo {
     WORD RyOffset;
@@ -1960,6 +1961,9 @@ HX_UNUSED static unsigned long hx_pwa_calls, hx_rectfills, hx_locks_taken;
 HX_UNUSED static int hx_pwa_last_rgb = -1;
 HX_UNUSED static int hx_locks_live, hx_p96_bitmaps_live, hx_bitmaps_live, hx_pointers_live;
 HX_UNUSED static int hx_p96_fail_alloc_bitmap;
+HX_UNUSED static int hx_p96_fail_lock;                /* p96LockBitMap answers 0 */
+HX_UNUSED static struct BitMap *hx_p96_bms[8];        /* the live p96AllocBitMap bitmaps */
+HX_UNUSED static unsigned long hx_p96_relocated;      /* bitmaps hx_p96_relocate_unlocked moved */
 HX_UNUSED static struct BitMap *hx_last_surface;     /* the bitmap p96AllocBitMap made last */
 HX_UNUSED static int hx_ptr_kind;                    /* 0 default, 1 busy, 2 an object */
 HX_UNUSED static void *hx_ptr_obj;
@@ -2219,6 +2223,8 @@ HX_UNUSED static struct BitMap *hx_p96_alloc_bitmap(ULONG w, ULONG h, ULONG dept
     struct BitMap *bm;
     uint32_t pitch = (w * hx_bpp((int)rgb) + 15u) & ~15u;
 
+    unsigned i;
+
     (void)depth;
     (void)friend;
     if (hx_p96_fail_alloc_bitmap)
@@ -2242,18 +2248,56 @@ HX_UNUSED static struct BitMap *hx_p96_alloc_bitmap(ULONG w, ULONG h, ULONG dept
     bm->BytesPerRow = (UWORD)pitch;
     bm->hx_rgb = (int)rgb;
     hx_p96_bitmaps_live++;
+    for (i = 0; i < sizeof(hx_p96_bms) / sizeof(hx_p96_bms[0]); i++)
+        if (!hx_p96_bms[i]) {
+            hx_p96_bms[i] = bm;
+            break;
+        }
+    if (i == sizeof(hx_p96_bms) / sizeof(hx_p96_bms[0]))
+        HX_FAIL("the fake keeps track of 8 bitmaps only");
     hx_last_surface = bm;
     return bm;
 }
 
 HX_UNUSED static void hx_p96_free_bitmap(struct BitMap *bm)
 {
-    if (hx_locks_live)
-        HX_FAIL("p96FreeBitMap while a bitmap is locked");
+    unsigned i;
+
+    if (bm->hx_locked)
+        HX_FAIL("p96FreeBitMap of a locked bitmap");
+    for (i = 0; i < sizeof(hx_p96_bms) / sizeof(hx_p96_bms[0]); i++)
+        if (hx_p96_bms[i] == bm)
+            hx_p96_bms[i] = NULL;
     if (hx_last_surface == bm)
         hx_last_surface = NULL;
     hx_free(bm);
     hx_p96_bitmaps_live--;
+}
+
+/* A bitmap that is not locked may be moved by Picasso96 (a screen change, memory
+ * management): its contents go to a new place and the old memory is trashed. A
+ * locked bitmap stays. Answers how many it moved. */
+HX_UNUSED static unsigned hx_p96_relocate_unlocked(void)
+{
+    unsigned i, moved = 0;
+
+    for (i = 0; i < sizeof(hx_p96_bms) / sizeof(hx_p96_bms[0]); i++) {
+        struct BitMap *bm = hx_p96_bms[i];
+        uint32_t bytes;
+        uint8_t *old, *fresh;
+
+        if (!bm || bm->hx_locked)
+            continue;
+        bytes = (uint32_t)bm->BytesPerRow * bm->Rows;
+        old = bm->Planes[0];
+        fresh = hx_gfx_mem(bytes);
+        memcpy(fresh, old, bytes);
+        memset(old, 0xEE, bytes);
+        bm->Planes[0] = fresh;
+        moved++;
+        hx_p96_relocated++;
+    }
+    return moved;
 }
 
 HX_UNUSED static LONG hx_p96_lock_bitmap(struct BitMap *bm, UBYTE *buf, ULONG size)
@@ -2262,10 +2306,13 @@ HX_UNUSED static LONG hx_p96_lock_bitmap(struct BitMap *bm, UBYTE *buf, ULONG si
 
     if (size < sizeof(*ri))
         HX_FAIL("p96LockBitMap with too small a RenderInfo");
+    if (hx_p96_fail_lock)
+        return 0;
     ri->Memory = bm->Planes[0];
     ri->BytesPerRow = (WORD)bm->BytesPerRow;
     ri->pad = 0;
     ri->RGBFormat = (RGBFTYPE)bm->hx_rgb;
+    bm->hx_locked++;
     hx_locks_live++;
     hx_locks_taken++;
     return (LONG)hx_locks_taken;
@@ -2273,10 +2320,10 @@ HX_UNUSED static LONG hx_p96_lock_bitmap(struct BitMap *bm, UBYTE *buf, ULONG si
 
 HX_UNUSED static void hx_p96_unlock_bitmap(struct BitMap *bm, LONG lock)
 {
-    (void)bm;
     (void)lock;
-    if (!hx_locks_live)
+    if (!bm->hx_locked || !hx_locks_live)
         HX_FAIL("p96UnlockBitMap without a lock");
+    bm->hx_locked--;
     hx_locks_live--;
 }
 
@@ -2609,6 +2656,9 @@ HX_UNUSED static void hx_reset(void)
     hx_pub_mode_id = 0x50002UL;
     memset(&hx_pub_screen, 0, sizeof(hx_pub_screen));
     hx_p96_fail_alloc_bitmap = 0;
+    hx_p96_fail_lock = 0;
+    hx_p96_relocated = 0;
+    memset(hx_p96_bms, 0, sizeof(hx_p96_bms));
     hx_p96_outside_arena = 0;
     hx_p96_bitmaps_live = hx_bitmaps_live = hx_pointers_live = hx_locks_live = 0;
     hx_pwa_calls = hx_rectfills = hx_locks_taken = 0;

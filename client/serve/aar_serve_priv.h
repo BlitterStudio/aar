@@ -314,6 +314,8 @@ struct aar_serve {
         struct Window *win;             /* the display window of a window display */
         struct Screen *pub;             /* the locked public screen it is on */
         struct BitMap *surface;         /* the surface bitmap: the front token */
+        struct RenderInfo surf_ri;      /* its RenderInfo, from the lock it is held under */
+        LONG surf_lock;                 /* that p96LockBitMap lock: kept until the surface goes */
         ULONG surf_rgb;                 /* its RGBFB_* */
         uint32_t surf_w, surf_h, surf_bpp;
         int scaled;                     /* flips show the surface scaled */

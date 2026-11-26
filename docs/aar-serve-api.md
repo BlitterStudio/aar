@@ -156,8 +156,13 @@ owns the window.
 
 `AAR_DISPLAY_WINDOW` shows the surface in a window on the default public screen.
 The surface is then a bitmap of its own in the requested format, made with
-`p96AllocBitMap` on the board and named by a token like any other surface; there
-is one buffer, and each flip draws it into the window with `p96WritePixelArray`,
+`p96AllocBitMap` on the board and named by a token like any other surface. The
+token is the address of the bitmap, which Picasso96 may move while it is not
+locked, so `p96LockBitMap` pins it before the token exists and the lock is kept
+until the surface is replaced by a resize or the display is closed. A bitmap
+that cannot be locked is not used (the display opens without the window).
+There is one buffer, and each flip draws it into the window with
+`p96WritePixelArray` from the RenderInfo of that lock, without locking again,
 at the top left of the inner area and clipped to it. The window has a drag bar,
 a depth gadget and a close gadget, the title of `screen_title`, and the inner
 size of the surface. The cap `AAR_DISPCAP_WINDOW` is granted when the public
@@ -171,8 +176,9 @@ public screen's.
 in its border and the input window's `IDCMP_NEWSIZE` becomes `AAR_EV_RESIZE` with
 the new inner size. It is granted as `AAR_DISPCAP_RESIZE` only with an input
 window. `DISPLAY_RESIZE` then makes a new surface bitmap of the size the app
-asked for, frees the old one after it, and answers as `DISPLAY_OPEN` does; a bitmap
-that cannot be made leaves the display as it was and answers `AAR_E_NOMEM`. It
+asked for, locks it, frees the old one after it (releasing its lock once), and
+answers as `DISPLAY_OPEN` does; a bitmap that cannot be made or locked leaves the
+display as it was and answers `AAR_E_NOMEM`. It
 answers `AAR_E_BUSY` while a flip is pending (a window display has none, a
 replacement table may).
 

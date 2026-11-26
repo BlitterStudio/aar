@@ -1111,6 +1111,9 @@ mutant("cd32-without-lowlevel-is-served", "joystick_cd32", SL,
        ("        if (!s->in.ll) {", "        if (0) {"))
 mutant("scaled-strips-written-in-the-wrong-format", "display_scale_bgra", SG,
        ("    out.RGBFormat = (RGBFTYPE)s->gfx.surf_rgb;", "    out.RGBFormat = RGBFB_R5G6B5;"))
+mutant("surface-unlocked-after-its-token-is-named", "display_surface_pinned", SG,
+       ("    pin->bm = bm;\n    return 1;\n",
+        "    X_P96_UNLOCK_BITMAP(s, bm, pin->lock);\n    pin->lock = 0;\n    pin->bm = bm;\n    return 1;\n"))
 NAMES = {m[0]: m for m in M}
 
 
