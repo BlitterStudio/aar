@@ -396,7 +396,7 @@ All of this is performed by the client (section 9.6): the app's calls go to the 
 ### 7.1 Files
 
 - Paths are AmigaDOS paths, at most 255 bytes plus NUL (`AAR_PATH_MAX`). An empty path, or one longer than that, is `AAR_E_INVAL` for `file_open`, `file_stat` and `file_list_open`. The limit is the app interface's: a client's filesystem may accept less (names of 30 characters on an OFS volume), and the call then fails with that filesystem's error. The client decides the root and the policy. The runtime passes a path to the client unchanged after checking its length. A client that serves apps it does not trust SHOULD apply this default, which is the one `aar-run` applies:
-  - Relative paths resolve under a root directory chosen by the client (the Shell's current directory, the icon's directory, or the root given to the serving loop, `aar_serve_config.root`).
+  - Relative paths resolve under a root directory chosen by the client (the Shell's current directory, the directory of the app image, or the root given to the serving loop, `aar_serve_config.root`).
   - A path that would leave the root through `..`, a leading `/` or a link is refused with `AAR_E_ACCES`.
   - A path with a volume or assign prefix (`:`) is refused unless the client allows it (`AAR_SERVEF_ABS_PATHS`). Allowing those does not relax the check on relative paths.
 

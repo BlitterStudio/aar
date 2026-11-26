@@ -99,8 +99,14 @@ aar-run RAM:swquake.elf WEIGHT=4
 ```
 
 `ROOT` controls files requested by the app. A Shell launch defaults to the
-current directory. A Workbench launch defaults to the directory holding the
-aar-run icon. For Quake, set `ROOT` to the directory containing `id1/`.
+current directory. A Workbench launch defaults to the directory that holds the
+app image aar-run runs, the file chosen after the
+[profile files](#profile-files) are tried, so an app that ships with its data
+needs no `ROOT`. The `ROOT` ToolType overrides that default. For Quake, set
+`ROOT` to the directory containing `id1/`. An image that is found only by the
+locate after the claim (a multi-directory assign) gives its directory after the
+claim, so aar-run closes the claim and opens it again with that root before the
+load.
 
 A relative ELF path is opened from aar-run's current AmigaDOS directory. A path
 with a volume or assign prefix is resolved through `GetDeviceProc`; on a
@@ -254,7 +260,7 @@ document is too long.`
 | ToolType | Meaning |
 | --- | --- |
 | `APP` | The app's file when the project is not an AAR image, or when there is no project. |
-| `ROOT` | Root directory for relative app file paths. Write it with a volume or assign name. |
+| `ROOT` | Root directory for relative app file paths, instead of the directory of the app image. Write it with a volume or assign name. An empty value means the default. |
 | `ABS` | Enabled when the ToolType has no value, is exactly `1` or `y`, or begins with `ye` or `t` (case-insensitive). Permits app paths containing an Amiga volume or assign colon. The root check does not apply to those paths. |
 | `MODE` | Optional Picasso96 DisplayID, in decimal, `$` hexadecimal, or `0x` hexadecimal. The app still chooses width, height, and RGB format. |
 | `ARGS` | Arguments for the app, separated by spaces or tabs. Double quotes keep spaces in one argument. |
@@ -281,7 +287,6 @@ prints `ARGS has a double quote that is never closed.` and returns 10.
 
 ```text
 ARGS=-fullscreen "My Saves:slot 1"
-ROOT=Work:Games/Game
 ABS
 ```
 

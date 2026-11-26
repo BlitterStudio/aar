@@ -783,18 +783,140 @@ static int locate_and_choose(int chosen, size_t pending, int *rc)
     return 0;
 }
 
+/* The default ROOT of a Workbench start is the directory that holds the image
+ * that runs. Locks that directory (the image as a name that Lock finds) and
+ * makes it the root. Returns 1 when the root changed; 0 when it is that
+ * directory already or cannot be found, which leaves the root as it was. */
+static int retarget_root(const char *image)
+{
+    char full[512];
+    char parent[512];
+    BPTR lock;
+    BPTR dir;
+
+    lock = Lock((STRPTR)image, ACCESS_READ);
+    if (!lock)
+        return 0;
+    if (!NameFromLock(lock, (STRPTR)full, (LONG)sizeof(full))) {
+        UnLock(lock);
+        return 0;
+    }
+    UnLock(lock);
+    if (!aar_run_path_parent(full, parent, sizeof(parent)))
+        return 0;
+    dir = Lock((STRPTR)parent, ACCESS_READ);
+    if (!dir)
+        return 0;
+    if (root_lock && SameLock(root_lock, dir) == LOCK_SAME) {
+        UnLock(dir);
+        return 0;
+    }
+    if (root_lock)
+        UnLock(root_lock);
+    root_lock = dir;
+    return 1;
+}
+
+/* The arguments, WEIGHT and HOSTMEM against what the platform takes. Prints
+ * the refusal. Returns 1 when the launch is within the limits. */
+static int check_limits(void)
+{
+    struct aar_run_limits limits = aar_run_limits_from_info(&platform_info);
+    enum aar_run_limit_verdict verdict = aar_run_limits_check(
+        &limits, (uint32_t)app_args.n, app_args.longest, weight_value,
+        hostmem_mib);
+    char line[160];
+
+    if (verdict == AAR_RUN_LIMIT_OK)
+        return 1;
+    aar_run_limit_line(line, sizeof(line), verdict, &limits);
+    tell(line);
+    return 0;
+}
+
+/* The claim, the serving state on the root, and the library's options. Returns
+ * 0 with the exit code in *rc; cleanup closes what was opened. */
+static int begin_claim(int *rc)
+{
+    aar_serve_config cfg;
+    ULONG reason = 0;
+    LONG status;
+
+    status = AAROpen(&aar_handle, NULL, &reason);
+    if (status != AAR_OK) {
+        char line[200];
+
+        aar_handle = NULL;
+        aar_run_claim_failure_line(line, sizeof(line), status, reason);
+        puts(line);
+        *rc = 20;
+        return 0;
+    }
+    claim_open = 1;
+    aar_serve_config_default(&cfg);
+    cfg.flags = abs_paths ? AAR_SERVEF_ABS_PATHS : 0UL;
+    cfg.root = root_lock;
+    cfg.screen_mode = settings.have_mode ? settings.mode : 0;
+    cfg.screen_title = (CONST_STRPTR)"aar-run";
+    cfg.console_in = wb_console;
+    cfg.console_out = wb_console;
+    cfg.console_spec = _WBenchMsg && !wb_console ? (CONST_STRPTR)AAR_RUN_WB_CONSOLE : NULL;
+    cfg.audio_route = audio_ahi ? AAR_AUDIO_ROUTE_AHI : AAR_AUDIO_ROUTE_PLATFORM;
+    cfg.joy_ports = joy_port0 ? 3UL : 2UL;
+    cfg.poll_us = poll_us;
+    if (!poll_us)
+        cfg.flags |= AAR_SERVEF_USE_SIGNAL;
+    cfg.display_strategy = display_strategy;
+    status = aar_serve_create(aar_handle, &cfg, &g_serve);
+    if (status != AAR_OK) {
+        char line[160];
+
+        if (status == AAR_E_NOSYS) {
+            tell("timer.device is required.");
+        } else {
+            aar_run_failure_line(line, sizeof(line), "serve", status,
+                                 AAR_REASON_NONE);
+            tell(line);
+        }
+        *rc = 20;
+        return 0;
+    }
+    /* The options go to the library before the load. */
+    if (!apply_options()) {
+        *rc = aar_run_load_failure_exit(break_seen(), 0);
+        return 0;
+    }
+    if (claim_gone()) {
+        *rc = 20;
+        return 0;
+    }
+    return 1;
+}
+
+/* The claim and its serving state, closed again before the load. */
+static void end_claim(void)
+{
+    if (g_serve) {
+        aar_serve_destroy(g_serve);
+        g_serve = NULL;
+    }
+    if (claim_open) {
+        (void)AARClose(aar_handle);
+        aar_handle = NULL;
+        claim_open = 0;
+    }
+}
+
 #include "aar_run_zz9000.c"
 
 int main(int argc, char **argv)
 {
-    aar_serve_config cfg;
     int chosen;
     size_t pending;
-    ULONG reason = 0;
     LONG status;
     enum aar_run_query_verdict verdict;
-    enum aar_run_limit_verdict limit_verdict;
-    struct aar_run_limits limits;
+    int root_follows_image;
+    int root_final;
     int rc = 20;
     int show_status = 0;
     uint32_t release_handle = 0;
@@ -913,8 +1035,7 @@ int main(int argc, char **argv)
             }
         }
     }
-    if (!show_status && !release_handle &&
-        (!open_root(settings.root) || !add_documents())) {
+    if (!show_status && !release_handle && !open_root(settings.root)) {
         cleanup();
         return 20;
     }
@@ -964,77 +1085,36 @@ int main(int argc, char **argv)
         cleanup();
         return rc;
     }
-    /* What the platform takes decides what a launch may ask for; nothing is
-     * claimed for a launch it would refuse. */
-    limits = aar_run_limits_from_info(&platform_info);
-    limit_verdict = aar_run_limits_check(&limits, (uint32_t)app_args.n,
-                                         app_args.longest, weight_value,
-                                         hostmem_mib);
-    if (limit_verdict != AAR_RUN_LIMIT_OK) {
-        char line[160];
-
-        aar_run_limit_line(line, sizeof(line), limit_verdict, &limits);
-        tell(line);
-        cleanup();
-        return 10;
-    }
     /* The image next, still without a claim: the file asked for, then its
      * profile files. A name that may be a multi-directory assign is probed
      * after the locate below. */
     chosen = probe_candidates(&pending);
+    /* Without a ROOT ToolType the root of a Workbench start is the directory of
+     * the image that runs. The probe has found it, unless the name waits for
+     * the locate after the claim. The documents are paths relative to the root,
+     * so they are added once the root is known. */
+    root_follows_image = _WBenchMsg && !settings.root[0];
+    root_final = !root_follows_image || chosen >= 0;
+    if (root_follows_image && chosen >= 0)
+        (void)retarget_root(cand[chosen]);
+    if (root_final && !add_documents()) {
+        cleanup();
+        return 10;
+    }
+    /* What the platform takes decides what a launch may ask for; nothing is
+     * claimed for a launch it would refuse. */
+    if (!check_limits()) {
+        cleanup();
+        return 10;
+    }
     if (chosen < 0 && pending == cand_count) {
         rc = refuse_candidates();
         cleanup();
         return rc;
     }
-    status = AAROpen(&aar_handle, NULL, &reason);
-    if (status != AAR_OK) {
-        char line[200];
-
-        aar_handle = NULL;
-        aar_run_claim_failure_line(line, sizeof(line), status, reason);
-        puts(line);
-        cleanup();
-        return 20;
-    }
-    claim_open = 1;
-    aar_serve_config_default(&cfg);
-    cfg.flags = abs_paths ? AAR_SERVEF_ABS_PATHS : 0UL;
-    cfg.root = root_lock;
-    cfg.screen_mode = settings.have_mode ? settings.mode : 0;
-    cfg.screen_title = (CONST_STRPTR)"aar-run";
-    cfg.console_in = wb_console;
-    cfg.console_out = wb_console;
-    cfg.console_spec = _WBenchMsg && !wb_console ? (CONST_STRPTR)AAR_RUN_WB_CONSOLE : NULL;
-    cfg.audio_route = audio_ahi ? AAR_AUDIO_ROUTE_AHI : AAR_AUDIO_ROUTE_PLATFORM;
-    cfg.joy_ports = joy_port0 ? 3UL : 2UL;
-    cfg.poll_us = poll_us;
-    if (!poll_us)
-        cfg.flags |= AAR_SERVEF_USE_SIGNAL;
-    cfg.display_strategy = display_strategy;
-    status = aar_serve_create(aar_handle, &cfg, &g_serve);
-    if (status != AAR_OK) {
-        char line[160];
-
-        if (status == AAR_E_NOSYS) {
-            tell("timer.device is required.");
-        } else {
-            aar_run_failure_line(line, sizeof(line), "serve", status,
-                                 AAR_REASON_NONE);
-            tell(line);
-        }
-        cleanup();
-        return 20;
-    }
-    /* The options go to the library before the load. */
-    if (!apply_options()) {
-        rc = aar_run_load_failure_exit(break_seen(), 0);
+    if (!begin_claim(&rc)) {
         cleanup();
         return rc;
-    }
-    if (claim_gone()) {
-        cleanup();
-        return 20;
     }
     if (!locate_and_choose(chosen, pending, &rc)) {
         cleanup();
@@ -1045,6 +1125,21 @@ int main(int argc, char **argv)
 
         aar_run_choice_line(line, sizeof(line), cand[0], elf_path);
         puts(line);
+    }
+    if (!root_final) {
+        /* The locate found the image: its directory is the root. The serving
+         * state has the old root, so the claim is opened again on the new one. */
+        if (retarget_root(elf_full)) {
+            end_claim();
+            if (!begin_claim(&rc)) {
+                cleanup();
+                return rc;
+            }
+        }
+        if (!add_documents() || !check_limits()) {
+            cleanup();
+            return 10;
+        }
     }
     if (claim_gone()) {
         cleanup();

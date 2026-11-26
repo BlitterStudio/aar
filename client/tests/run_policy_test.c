@@ -1528,6 +1528,41 @@ static void test_too_many_documents_hit_the_platform_limit(void)
     aar_run_args_free(&a);
 }
 
+static void expect_parent(const char *full, const char *want)
+{
+    char out[64];
+
+    memset(out, 'x', sizeof(out));
+    if (want) {
+        assert(aar_run_path_parent(full, out, sizeof(out)));
+        assert(strcmp(out, want) == 0);
+    } else {
+        assert(!aar_run_path_parent(full, out, sizeof(out)));
+    }
+}
+
+static void test_the_default_root_is_the_directory_of_the_image(void)
+{
+    char small[8];
+
+    expect_parent("Work:Games/Q/quake.elf", "Work:Games/Q");
+    expect_parent("Work:Games/quake.a64.elf", "Work:Games");
+    /* a file in the root of a volume: the volume, with its colon */
+    expect_parent("Work:quake.elf", "Work:");
+    /* a name with no directory part */
+    expect_parent("quake.elf", NULL);
+    expect_parent("Work:", NULL);
+    expect_parent("Work:Games/", NULL);
+    expect_parent("", NULL);
+    expect_parent("/quake.elf", NULL);
+    expect_parent("Work:a//quake.elf", NULL);
+    /* the result has to fit with its NUL */
+    assert(aar_run_path_parent("Work:Ga/x", small, sizeof(small)) == 1 &&
+           strcmp(small, "Work:Ga") == 0);
+    assert(aar_run_path_parent("Work:Gam/x", small, sizeof(small)) == 0);
+    assert(aar_run_path_parent("Work:Games/Q/quake.elf", small, sizeof(small)) == 0);
+}
+
 static void test_the_first_project_is_the_app_unless_it_is_not_an_image(void)
 {
     /* an AAR image, or a file the probe could not open or read: the app */
@@ -1665,6 +1700,7 @@ int main(void)
     test_documents_outside_the_root_are_absolute();
     test_a_document_that_does_not_fit_is_reported();
     test_too_many_documents_hit_the_platform_limit();
+    test_the_default_root_is_the_directory_of_the_image();
     test_the_first_project_is_the_app_unless_it_is_not_an_image();
     test_profile_files_are_tried_after_the_file_asked_for();
     test_profile_candidates_for_names_without_a_file_part();

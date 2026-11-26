@@ -1181,6 +1181,30 @@ static inline int aar_run_doc_arg(const char *root, const char *path, char *out,
     return kind;
 }
 
+/* The default ROOT of a Workbench start is the directory that holds the image
+ * aar-run runs. This is the path of that directory, from the full name of the
+ * image as NameFromLock gives it: everything before the last slash, or the
+ * volume (with its colon) for a file in the volume's root. 0 when the name has
+ * no directory part (no colon and no slash, nothing after the colon, a slash
+ * with nothing before it) or `out` is too small. */
+static inline int aar_run_path_parent(const char *full, char *out, size_t cap)
+{
+    size_t n = strlen(full);
+    size_t cut = n;
+
+    while (cut > 0 && full[cut - 1] != '/' && full[cut - 1] != ':')
+        cut--;
+    if (cut == 0 || cut == n)
+        return 0;
+    if (full[cut - 1] == '/')
+        cut--; /* the slash is not part of the directory's name */
+    if (cut == 0 || full[cut - 1] == '/' || cut + 1 > cap)
+        return 0;
+    memcpy(out, full, cut);
+    out[cut] = '\0';
+    return 1;
+}
+
 /* The first project of a Workbench start is the app when it is a file whose
  * probe did not say "not an AAR image". A drawer is never the app; a file the
  * probe could not open or read is the app too, so that the launch names the
