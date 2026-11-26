@@ -1,6 +1,7 @@
 /*
  * Host runner entry. Parses runner options, installs the aar_api table of this
- * runner (groups display, input, audio and services), and calls aar_main.
+ * runner (groups display, input, audio, services and, when the host has an
+ * OpenGL context, GL), and calls aar_main.
  * argv[0] is the program name, as on a target. aar_exit does not return.
  *
  * SPDX-License-Identifier: MIT
@@ -122,7 +123,9 @@ static void usage(FILE *fp)
         "  --root DIR       file root for relative app paths (default .)\n"
         "  --abs            allow paths that contain ':' (no root check)\n"
         "  --scale N        window scale, 1..8 (default 1)\n"
-        "  --headless       dummy SDL video/audio, no visible window\n"
+        "  --headless       no visible window: dummy SDL audio, and the offscreen\n"
+        "                   video driver (GL with EGL) or else the dummy one\n"
+        "  --no-gl          do not offer the GL group\n"
         "  --frames N       stop after N presented frames\n"
         "  --input FILE     scripted AAR_EV_* events\n"
         "  --audio-null     consume PCM on yield instead of SDL audio\n"
@@ -183,6 +186,8 @@ static int parse_args(int argc, char **argv, int *app_from)
             exit(0);
         } else if (strcmp(a, "--headless") == 0) {
             opt.headless = 1;
+        } else if (strcmp(a, "--no-gl") == 0) {
+            opt.no_gl = 1;
         } else if (strcmp(a, "--abs") == 0) {
             opt.abs_paths = 1;
         } else if (strcmp(a, "--audio-null") == 0) {
@@ -352,6 +357,7 @@ static void host_finish(void)
     fprintf(stderr, "aar-host: exit=%d flips=%u audio_frames=%u\n", exit_code,
             host_display_flips(), host_audio_frames_consumed());
     host_audio_shutdown();
+    host_gl_shutdown();
     host_display_shutdown();
     host_input_shutdown();
     host_messages_shutdown();
@@ -359,6 +365,14 @@ static void host_finish(void)
     host_memory_shutdown();
     if (sdl_video || perf_freq)
         SDL_Quit();
+}
+
+static int init_video(void)
+{
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) == 0)
+        return 1;
+    fprintf(stderr, "aar-host: SDL video init failed: %s\n", SDL_GetError());
+    return 0;
 }
 
 static int run_selftest(void)
@@ -401,7 +415,8 @@ int main(int argc, char **argv)
         return 10;
     install_stop_handlers();
     if (opt.headless) {
-        SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
+        /* GL needs a driver that can make a context: offscreen (EGL). */
+        SDL_setenv("SDL_VIDEODRIVER", opt.no_gl ? "dummy" : "offscreen", 1);
         SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);
     }
     if (SDL_Init(SDL_INIT_TIMER) != 0) {
@@ -410,10 +425,16 @@ int main(int argc, char **argv)
     }
     perf_freq = SDL_GetPerformanceFrequency();
     perf_origin = SDL_GetPerformanceCounter();
-    if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) == 0)
-        sdl_video = 1;
-    else
-        fprintf(stderr, "aar-host: SDL video init failed: %s\n", SDL_GetError());
+    sdl_video = init_video();
+    if (opt.headless && !opt.no_gl && !(sdl_video && host_gl_init())) {
+        /* No offscreen GL here: keep the headless run, without the group. */
+        if (sdl_video)
+            SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK);
+        SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
+        sdl_video = init_video();
+    } else if (!opt.headless && !opt.no_gl && sdl_video) {
+        host_gl_init();
+    }
     atexit(host_finish);
     host_memory_init();
     if (host_files_init(opt.root, opt.abs_paths) != 0)
@@ -430,6 +451,7 @@ int main(int argc, char **argv)
     host_memory_bind(&api);
     host_files_bind(&api);
     host_display_bind(&api);
+    host_gl_bind(&api);
     host_input_bind(&api);
     host_audio_bind(&api);
     host_console_bind(&api);

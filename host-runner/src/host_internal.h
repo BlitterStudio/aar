@@ -37,9 +37,11 @@
 /* Private heap: an arena reserved up front, committed in AAR_HEAP_GRANULE. */
 #define HOST_ARENA_BYTES (8u << 20)
 
-/* What the table's groups word says this runner implements. */
-#define HOST_GROUPS (AAR_GROUP_DISPLAY | AAR_GROUP_INPUT | AAR_GROUP_AUDIO | \
-                     AAR_GROUP_SERVICES)
+/* What the table's groups word says this runner implements: the groups below
+ * always, and AAR_GROUP_GL when host_gl_init found a usable context. */
+#define HOST_GROUPS_BASE (AAR_GROUP_DISPLAY | AAR_GROUP_INPUT | \
+                          AAR_GROUP_AUDIO | AAR_GROUP_SERVICES)
+#define HOST_GROUPS (HOST_GROUPS_BASE | (host_gl_available() ? AAR_GROUP_GL : 0u))
 
 struct host_options {
     const char *root;
@@ -55,6 +57,7 @@ struct host_options {
     const char *msg_out;
     const char *dump_front;
     int selftest;
+    int no_gl;
 };
 
 struct host_options *host_options(void);
@@ -80,6 +83,26 @@ void host_display_pump(void);
 void host_display_dump(const char *path);
 int host_display_selftest(void);
 uint32_t host_display_flips(void);
+
+/* display.c, for hostgl.c. gl_open turns the window of the open surface into
+ * one with an OpenGL pixel format, gl_close gives it back as a software
+ * window, gl_store puts a rendered frame (RGBA, bottom row first) into the
+ * surface. */
+int host_display_gl_open(uint32_t surface_id, void **window, int32_t *w,
+                         int32_t *h);
+void host_display_gl_close(void);
+void host_display_gl_swapped(void);
+void host_display_gl_store(const uint8_t *rgba, uint32_t w, uint32_t h);
+
+/* hostgl.c. host_gl_init probes for an OpenGL compatibility context with a
+ * depth buffer of at least 16 bits and returns 1 when there is one; the video
+ * driver must be initialised. host_gl_release deletes a bound context without
+ * touching the window. */
+int host_gl_init(void);
+int host_gl_available(void);
+void host_gl_bind(aar_api *api);
+void host_gl_release(void);
+void host_gl_shutdown(void);
 
 int host_input_init(void);
 void host_input_shutdown(void);

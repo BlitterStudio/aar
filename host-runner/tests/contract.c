@@ -35,7 +35,7 @@ static int read_all(int fd, char *buf, uint32_t n)
     return AAR_OK;
 }
 
-static int test_table(void)
+static int test_table(int no_gl)
 {
     const aar_api *api = aar_api_ptr;
     aar_info info;
@@ -47,10 +47,13 @@ static int test_table(void)
         return fail(110, "table size");
     if (!AAR_API_AT_LEAST(api, AAR_API_MINOR))
         return fail(111, "table version");
-    if (api->groups != (AAR_GROUP_DISPLAY | AAR_GROUP_INPUT | AAR_GROUP_AUDIO |
-                        AAR_GROUP_SERVICES) ||
+    if ((api->groups & ~AAR_GROUP_GL) != (AAR_GROUP_DISPLAY | AAR_GROUP_INPUT |
+                                          AAR_GROUP_AUDIO |
+                                          AAR_GROUP_SERVICES) ||
         api->platform_id != AAR_PLATFORM_NONE)
         return fail(112, "table groups or platform");
+    if (no_gl && (api->groups & AAR_GROUP_GL))
+        return fail(118, "--no-gl left the GL group set");
     if (!api->exit || !api->yield || !api->should_stop || !api->time_us ||
         !api->sleep_us || !api->info || !api->heap_range || !api->heap_grow ||
         !api->heap_shrink || !api->heap_info || !api->shared_alloc ||
@@ -72,8 +75,12 @@ static int test_table(void)
         !api->image_decode || !api->image_close || !api->audio_decode_open ||
         !api->audio_decode || !api->audio_decode_close)
         return fail(116, "a services slot is NULL");
-    if (api->gl_bind || api->gl_swap || api->gl_unbind)
+    if ((api->groups & AAR_GROUP_GL) != 0u) {
+        if (!api->gl_bind || !api->gl_swap || !api->gl_unbind)
+            return fail(117, "a GL slot is NULL with the GL group");
+    } else if (api->gl_bind || api->gl_swap || api->gl_unbind) {
         return fail(117, "a GL slot is set without the GL group");
+    }
 
     memset(&info, 0xaa, sizeof info);
     info.size = (uint32_t)sizeof info;
@@ -625,7 +632,7 @@ int aar_main(int argc, char **argv)
     const char *mode = argc > 1 ? argv[1] : "";
 
     if (strcmp(mode, "table") == 0)
-        return test_table();
+        return test_table(argc > 2 && strcmp(argv[2], "nogl") == 0);
     if (strcmp(mode, "reject") == 0)
         return test_reject();
     if (strcmp(mode, "abs") == 0)
