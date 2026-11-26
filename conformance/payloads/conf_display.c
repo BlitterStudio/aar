@@ -1097,6 +1097,8 @@ static void test_new_served(void)
     aar_display_info info;
     aar_display_mode m;
     uint32_t n = 0;
+    uint64_t t0;
+    int rc;
 
     conf_begin(&t, "C-DISPLAY.29");
     if (!open_s(&t, &s, 160, 100, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC | AAR_DISPLAY_WINDOW)) {
@@ -1108,9 +1110,19 @@ static void test_new_served(void)
     conf_check(&t, aar_display_modes(&m, 1u, &n) != AAR_E_NOSYS, "display_modes is not served");
     conf_check(&t, aar_display_set_title(s.id, "AAR") != AAR_E_NOSYS, "display_set_title is not served");
     conf_check(&t, aar_display_pointer(s.id, AAR_POINTER_DEFAULT, 0) != AAR_E_NOSYS, "display_pointer is not served");
-    conf_check(&t, aar_display_wait_vblank(500000u) != AAR_E_NOSYS, "display_wait_vblank is not served");
+    t0 = aar_time_us();
+    rc = aar_display_wait_vblank(500000u);
+    if (rc != AAR_OK && rc != AAR_E_TIMEDOUT && conf_fail_first(&t))
+        cmio_why_rc(&t, "display_wait_vblank", rc);
+    conf_buf_str(&t.note, s.caps & AAR_DISPCAP_WINDOW ? "window: " : "screen fallback: ");
+    if (rc == AAR_OK) {
+        conf_buf_str(&t.note, "vertical blank after ");
+        conf_buf_u64(&t.note, (aar_time_us() - t0) / 1000u);
+        conf_buf_str(&t.note, " ms");
+    } else if (rc == AAR_E_TIMEDOUT) {
+        conf_buf_str(&t.note, "vertical blank wait timed out");
+    }
     close_s(&t, &s);
-    conf_buf_str(&t.note, "the display calls of API 0.6 that need no cap are served");
     conf_end(&t);
 }
 

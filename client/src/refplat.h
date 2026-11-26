@@ -49,6 +49,12 @@ extern "C" {
  * asks for a profiler (refplat.profile_max_hz). */
 #define REFPLAT_PROFILE_OFFSET 0xF000u
 #define REFPLAT_ARENA_BYTES (REFPLAT_CLAIMS * REFPLAT_CLAIM_STRIDE)
+/* The host-visible surface heap behind the extension's surface_alloc: stable
+ * blocks the platform can name (tokens from REFPLAT_SURFACE_TOKEN_BASE), apart
+ * from the claims' arena so that no claim token reaches them. */
+#define REFPLAT_SURFACE_TOKEN_BASE 0x08000000u
+#define REFPLAT_SURFACE_BYTES      0x80000u
+#define REFPLAT_SURFACES           8u
 
 /* The event block: 64 bytes, a global count and 15 group counts of 32 records each. */
 #define REFPLAT_EVENT_BYTES 64u
@@ -82,6 +88,12 @@ struct refplat_claim {
     uint32_t ev_seen;             /* the count it saw then */
     uint32_t releases;
     struct aar_plat_load_opts opts; /* what load_begin received */
+};
+
+/* One live block of the surface heap (surface_alloc). */
+struct refplat_surface {
+    uint32_t handle;              /* 0: the slot is free */
+    uint32_t off, bytes;          /* in the heap, bytes rounded up to 16 */
 };
 
 struct refplat_state {
@@ -135,6 +147,13 @@ struct refplat_state {
      * test uses it to look at what the library did first. */
     void (*on_release)(void *user, uint32_t handle);
     void *on_release_user;
+    /* The surface heap of the extension (surface_alloc, surface_free). */
+    struct refplat_surface surfaces[REFPLAT_SURFACES];
+    uint32_t surface_serial;      /* the last handle given */
+    int surface_alloc_rc;         /* what surface_alloc answers instead of allocating (default AAR_OK) */
+    uint32_t surface_allocs, surface_frees; /* calls that succeeded */
+    uint32_t surface_stale_frees; /* surface_free calls of a handle that was not live */
+    uint32_t surface_live;        /* blocks not yet freed */
 };
 
 extern struct refplat_state refplat;

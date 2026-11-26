@@ -430,7 +430,6 @@ struct BitMap {
     UWORD Rows;
     UWORD BytesPerRow;
     int hx_rgb;
-    int hx_locked;
 };
 struct RasInfo {
     WORD RyOffset;
@@ -2515,14 +2514,19 @@ HX_UNUSED static void hx_wait_tof(void)
 #define HX_CANVAS_H 256
 HX_UNUSED static uint8_t hx_canvas[HX_CANVAS_W * HX_CANVAS_H * 4];
 HX_UNUSED static uint32_t hx_canvas_bpp = 4;
-HX_UNUSED static unsigned long hx_pwa_calls, hx_rectfills, hx_locks_taken;
+HX_UNUSED static unsigned long hx_pwa_calls, hx_rectfills;
 HX_UNUSED static int hx_pwa_last_rgb = -1;
-HX_UNUSED static int hx_locks_live, hx_p96_bitmaps_live, hx_bitmaps_live, hx_pointers_live;
-HX_UNUSED static int hx_p96_fail_alloc_bitmap;
-HX_UNUSED static int hx_p96_fail_lock;                /* p96LockBitMap answers 0 */
-HX_UNUSED static struct BitMap *hx_p96_bms[8];        /* the live p96AllocBitMap bitmaps */
-HX_UNUSED static unsigned long hx_p96_relocated;      /* bitmaps hx_p96_relocate_unlocked moved */
-HX_UNUSED static struct BitMap *hx_last_surface;     /* the bitmap p96AllocBitMap made last */
+HX_UNUSED static const void *hx_pwa_last_mem;       /* RenderInfo.Memory of the last p96WritePixelArray */
+HX_UNUSED static int hx_bitmaps_live, hx_pointers_live;
+/* The library's ZZ9000 table (X_AAR_EXT): 0 the reference platform's, with real
+ * stable surface allocations; 1 an older table that ends at lease_pause; 2 none. */
+HX_UNUSED static int hx_surface_ext;
+/* AllocMem answers memory in the arena, which AARSharedToken names: a platform
+ * that shares Amiga RAM. The blocks live until FreeMem. */
+HX_UNUSED static int hx_exec_mem_in_arena;
+HX_UNUSED static int hx_arena_mem_live;
+/* The public screen's bitmap is in the arena too (its scanout can be named). */
+HX_UNUSED static int hx_pub_scanout;
 HX_UNUSED static int hx_ptr_kind;                    /* 0 default, 1 busy, 2 an object */
 HX_UNUSED static void *hx_ptr_obj;
 HX_UNUSED static unsigned long hx_ptr_calls;
@@ -2542,6 +2546,8 @@ HX_UNUSED static struct Screen *hx_lock_pub_screen(const char *name)
     s->bm.hx_rgb = hx_pub_rgb;
     s->bm.Rows = (UWORD)hx_pub_h;
     s->bm.BytesPerRow = (UWORD)(hx_pub_w * (WORD)hx_bpp(hx_pub_rgb));
+    if (hx_pub_scanout && !s->bm.Planes[0])
+        s->bm.Planes[0] = hx_gfx_mem((uint32_t)s->bm.BytesPerRow * s->bm.Rows);
     s->RastPort.BitMap = &s->bm;
     s->ViewPort.RasInfo = &s->ras;
     return s;
@@ -2773,117 +2779,6 @@ HX_UNUSED static void hx_free_bitmap(struct BitMap *bm)
     hx_bitmaps_live--;
 }
 
-HX_UNUSED static int hx_p96_outside_arena;           /* the next surfaces are outside the arena */
-/* Picasso96 bitmaps: in the arena, so that AARSharedToken names them */
-HX_UNUSED static struct BitMap *hx_p96_alloc_bitmap(ULONG w, ULONG h, ULONG depth, ULONG flags,
-                                                    struct BitMap *friend, ULONG rgb)
-{
-    struct BitMap *bm;
-    uint32_t pitch = (w * hx_bpp((int)rgb) + 15u) & ~15u;
-
-    unsigned i;
-
-    (void)depth;
-    (void)friend;
-    if (hx_p96_fail_alloc_bitmap)
-        return NULL;
-    bm = hx_alloc(sizeof(*bm), 1);
-    if (!bm)
-        return NULL;
-    if (hx_p96_outside_arena) {
-        /* memory the platform cannot see: AARSharedToken refuses it */
-        static uint8_t outside[16384];
-
-        if (pitch * (uint32_t)h > sizeof(outside))
-            HX_FAIL("the fake outside bitmap is too small");
-        bm->Planes[0] = outside;
-    } else {
-        bm->Planes[0] = hx_gfx_mem(pitch * (uint32_t)h);
-    }
-    if (flags & BMF_CLEAR)
-        memset(bm->Planes[0], 0, pitch * (uint32_t)h);
-    bm->Rows = (UWORD)h;
-    bm->BytesPerRow = (UWORD)pitch;
-    bm->hx_rgb = (int)rgb;
-    hx_p96_bitmaps_live++;
-    for (i = 0; i < sizeof(hx_p96_bms) / sizeof(hx_p96_bms[0]); i++)
-        if (!hx_p96_bms[i]) {
-            hx_p96_bms[i] = bm;
-            break;
-        }
-    if (i == sizeof(hx_p96_bms) / sizeof(hx_p96_bms[0]))
-        HX_FAIL("the fake keeps track of 8 bitmaps only");
-    hx_last_surface = bm;
-    return bm;
-}
-
-HX_UNUSED static void hx_p96_free_bitmap(struct BitMap *bm)
-{
-    unsigned i;
-
-    if (bm->hx_locked)
-        HX_FAIL("p96FreeBitMap of a locked bitmap");
-    for (i = 0; i < sizeof(hx_p96_bms) / sizeof(hx_p96_bms[0]); i++)
-        if (hx_p96_bms[i] == bm)
-            hx_p96_bms[i] = NULL;
-    if (hx_last_surface == bm)
-        hx_last_surface = NULL;
-    hx_free(bm);
-    hx_p96_bitmaps_live--;
-}
-
-/* A bitmap that is not locked may be moved by Picasso96 (a screen change, memory
- * management): its contents go to a new place and the old memory is trashed. A
- * locked bitmap stays. Answers how many it moved. */
-HX_UNUSED static unsigned hx_p96_relocate_unlocked(void)
-{
-    unsigned i, moved = 0;
-
-    for (i = 0; i < sizeof(hx_p96_bms) / sizeof(hx_p96_bms[0]); i++) {
-        struct BitMap *bm = hx_p96_bms[i];
-        uint32_t bytes;
-        uint8_t *old, *fresh;
-
-        if (!bm || bm->hx_locked)
-            continue;
-        bytes = (uint32_t)bm->BytesPerRow * bm->Rows;
-        old = bm->Planes[0];
-        fresh = hx_gfx_mem(bytes);
-        memcpy(fresh, old, bytes);
-        memset(old, 0xEE, bytes);
-        bm->Planes[0] = fresh;
-        moved++;
-        hx_p96_relocated++;
-    }
-    return moved;
-}
-
-HX_UNUSED static LONG hx_p96_lock_bitmap(struct BitMap *bm, UBYTE *buf, ULONG size)
-{
-    struct RenderInfo *ri = (struct RenderInfo *)(void *)buf;
-
-    if (size < sizeof(*ri))
-        HX_FAIL("p96LockBitMap with too small a RenderInfo");
-    if (hx_p96_fail_lock)
-        return 0;
-    ri->Memory = bm->Planes[0];
-    ri->BytesPerRow = (WORD)bm->BytesPerRow;
-    ri->pad = 0;
-    ri->RGBFormat = (RGBFTYPE)bm->hx_rgb;
-    bm->hx_locked++;
-    hx_locks_live++;
-    hx_locks_taken++;
-    return (LONG)hx_locks_taken;
-}
-
-HX_UNUSED static void hx_p96_unlock_bitmap(struct BitMap *bm, LONG lock)
-{
-    (void)lock;
-    if (!bm->hx_locked || !hx_locks_live)
-        HX_FAIL("p96UnlockBitMap without a lock");
-    bm->hx_locked--;
-    hx_locks_live--;
-}
 
 HX_UNUSED static void hx_p96_write_pixel_array(struct RenderInfo *ri, UWORD sx, UWORD sy,
                                                struct RastPort *rp, UWORD dx, UWORD dy,
@@ -2898,6 +2793,7 @@ HX_UNUSED static void hx_p96_write_pixel_array(struct RenderInfo *ri, UWORD sx, 
         HX_FAIL("p96WritePixelArray outside the fake drawing area");
     hx_pwa_calls++;
     hx_pwa_last_rgb = (int)ri->RGBFormat;
+    hx_pwa_last_mem = ri->Memory;
     hx_canvas_bpp = bpp;
     for (y = 0; y < h; y++)
         memcpy(hx_canvas + (uint32_t)(dy + y) * HX_CANVAS_W * 4u + (uint32_t)dx * bpp,
@@ -2909,7 +2805,7 @@ HX_UNUSED static void hx_p96_write_pixel_array(struct RenderInfo *ri, UWORD sx, 
 HX_UNUSED static void hx_p96_rect_fill(struct RastPort *rp, UWORD x0, UWORD y0, UWORD x1,
                                        UWORD y1, ULONG argb)
 {
-    uint32_t y, bpp = hx_last_surface ? hx_bpp(hx_last_surface->hx_rgb) : hx_canvas_bpp;
+    uint32_t y, bpp = hx_canvas_bpp;
 
     (void)rp;
     (void)argb;
@@ -3079,13 +2975,37 @@ HX_UNUSED static LONG hx_easy_request(void *win, struct EasyStruct *es, void *a,
 
 /* ---- Memory bindings ------------------------------------------------------------------------ */
 
+/* Exec memory: from the pool, or, as a platform that shares Amiga RAM, from the
+ * arena. A block in the arena is told apart by its address when it is freed. */
+HX_UNUSED static int hx_in_arena_slot(const void *p)
+{
+    const uint8_t *base = (const uint8_t *)(uintptr_t)refplat_ptr(REFPLAT_TOKEN_BASE +
+                                                                   HX_GFX_SLOT * REFPLAT_CLAIM_STRIDE);
+
+    return (const uint8_t *)p >= base && (const uint8_t *)p < base + REFPLAT_CLAIM_STRIDE;
+}
+
 HX_UNUSED static void *hx_alloc_mem(ULONG bytes, ULONG flags)
 {
+    if (hx_exec_mem_in_arena && !hx_fail_alloc) {
+        void *p = hx_gfx_mem(bytes);
+
+        if (flags & MEMF_CLEAR)
+            memset(p, 0, bytes);
+        hx_arena_mem_live++;
+        return p;
+    }
     return hx_alloc(bytes, (flags & MEMF_CLEAR) != 0);
 }
 
 HX_UNUSED static void hx_free_mem(void *p, ULONG bytes)
 {
+    if (hx_in_arena_slot(p)) {
+        if (!hx_arena_mem_live)
+            HX_FAIL("FreeMem of arena memory that is not live");
+        hx_arena_mem_live--;
+        return;
+    }
     if (hx_block_size(p) != bytes)
         HX_FAIL("FreeMem with another size than AllocMem");
     hx_free(p);
@@ -3100,10 +3020,17 @@ HX_UNUSED static UBYTE hx_ciaa_pra = 0xFF;
 
 HX_UNUSED static aar_core *hx_aar;
 HX_UNUSED static ULONG hx_token_add;       /* added to every token: a platform whose tokens lie elsewhere */
+HX_UNUSED static int hx_token_fail;        /* the next n AARSharedToken calls answer AAR_E_INVAL */
 
 HX_UNUSED static LONG hx_aar_shared_token(AARHandle *h, const void *p, ULONG n, ULONG *t)
 {
-    LONG rc = aar_core_shared_token(hx_aar, h, p, n, t);
+    LONG rc;
+
+    if (hx_token_fail > 0) {
+        hx_token_fail--;
+        return AAR_E_INVAL;
+    }
+    rc = aar_core_shared_token(hx_aar, h, p, n, t);
 
     if (rc == AAR_OK)
         *t += hx_token_add;
@@ -3113,6 +3040,37 @@ HX_UNUSED static LONG hx_aar_shared_token(AARHandle *h, const void *p, ULONG n, 
 HX_UNUSED static LONG hx_aar_set_log_sink(AARHandle *h, void (*sink)(void *, const void *, ULONG), void *user)
 {
     return aar_core_set_log_sink(hx_aar, h, (AARLogSink)(uintptr_t)sink, (ULONG)(uintptr_t)user);
+}
+
+/* AARExt: the reference platform's ZZ9000 table, an older one that ends at
+ * lease_pause (the member count is tested by the caller), or none. */
+HX_UNUSED static const aar_client_ext_zz9000 *hx_aar_ext(void)
+{
+    static aar_client_ext_zz9000 older;
+    const aar_client_ext_zz9000 *ext;
+
+    if (hx_surface_ext == 2)
+        return NULL;
+    ext = (const aar_client_ext_zz9000 *)aar_core_ext(hx_aar, AAR_PLATFORM_ZZ9000,
+                                                      AAR_EXT_ZZ9000_CLIENT);
+    if (ext && hx_surface_ext == 1) {
+        older = *ext;
+        older.size = (ULONG)offsetof(aar_client_ext_zz9000, surface_alloc);
+        return &older;
+    }
+    return ext;
+}
+
+/* surface_alloc with a plain pointer: the stub header's APTR is a 32-bit word. */
+HX_UNUSED static LONG hx_surface_alloc(const aar_client_ext_zz9000 *ext, ULONG bytes,
+                                       ULONG *handle, void **mem)
+{
+    uint32_t word = 0;
+    LONG rc = ext->surface_alloc(bytes, handle, &word);
+
+    if (rc == AAR_OK)
+        *mem = (void *)(uintptr_t)word;
+    return rc;
 }
 
 /* ---- Back to a clean machine ---------------------------------------------------------------------- */
@@ -3252,18 +3210,18 @@ HX_UNUSED static void hx_reset(void)
     hx_pub_is_p96 = 1;
     hx_pub_mode_id = 0x50002UL;
     memset(&hx_pub_screen, 0, sizeof(hx_pub_screen));
-    hx_p96_fail_alloc_bitmap = 0;
-    hx_p96_fail_lock = 0;
-    hx_p96_relocated = 0;
-    memset(hx_p96_bms, 0, sizeof(hx_p96_bms));
-    hx_p96_outside_arena = 0;
-    hx_p96_bitmaps_live = hx_bitmaps_live = hx_pointers_live = hx_locks_live = 0;
-    hx_pwa_calls = hx_rectfills = hx_locks_taken = 0;
+    hx_surface_ext = 0;
+    hx_exec_mem_in_arena = 0;
+    hx_arena_mem_live = 0;
+    hx_pub_scanout = 0;
+    hx_token_fail = 0;
+    hx_bitmaps_live = hx_pointers_live = 0;
+    hx_pwa_calls = hx_rectfills = 0;
     hx_pwa_last_rgb = -1;
+    hx_pwa_last_mem = NULL;
     hx_ptr_kind = 0;
     hx_ptr_obj = NULL;
     hx_ptr_calls = 0;
-    hx_last_surface = NULL;
     hx_post_iaddr = NULL;
     hx_jp[0] = hx_jp[1] = JP_TYPE_NOTAVAIL;
     hx_jp_reads = 0;
@@ -3352,6 +3310,9 @@ HX_UNUSED static void hx_reset(void)
 #define X_AAR_SET_LOG_SINK(h, sink, user) hx_aar_set_log_sink((h), (sink), (user))
 #define X_AAR_QUERY(info) aar_core_query(hx_aar, (info))
 #define X_AAR_GET_MESSAGE(h, m) aar_core_get_message(hx_aar, (h), (m))
+#define X_AAR_EXT() hx_aar_ext()
+#define X_AAR_SURFACE_ALLOC(ext, bytes, handle, mem) hx_surface_alloc((ext), (bytes), (handle), (mem))
+#define X_AAR_SURFACE_FREE(ext, handle) ((ext)->surface_free(handle))
 
 #define X_GET_SYS_TIME(s, tv)                                                                  \
     do {                                                                                       \
@@ -3376,11 +3337,6 @@ HX_UNUSED static void hx_reset(void)
 #define X_NEXT_DISPLAY_INFO(id) hx_next_display_info(id)
 #define X_GET_DISPLAY_INFO(buf, size, tag, id) hx_get_display_info((buf), (size), (tag), (id))
 #define X_INTUITION_VERSION() ((ULONG)hx_intuition_version)
-#define X_P96_ALLOC_BITMAP(s, w, h, depth, flags, friend, rgb) \
-    ((void)(s), hx_p96_alloc_bitmap((w), (h), (depth), (flags), (friend), (rgb)))
-#define X_P96_FREE_BITMAP(s, bm) ((void)(s), hx_p96_free_bitmap(bm))
-#define X_P96_LOCK_BITMAP(s, bm, ri, size) ((void)(s), hx_p96_lock_bitmap((bm), (UBYTE *)(ri), (size)))
-#define X_P96_UNLOCK_BITMAP(s, bm, lock) ((void)(s), hx_p96_unlock_bitmap((bm), (lock)))
 #define X_P96_WRITE_PIXEL_ARRAY(s, ri, sx, sy, rp, dx, dy, w, h) \
     ((void)(s), hx_p96_write_pixel_array((ri), (sx), (sy), (rp), (dx), (dy), (w), (h)))
 #define X_P96_RECT_FILL(s, rp, x0, y0, x1, y1, argb) \

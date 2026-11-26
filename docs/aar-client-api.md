@@ -951,6 +951,8 @@ the C calling convention.
 | `release_handle` | `LONG release_handle(ULONG handle)`: releases any claim by its card handle word; `AAR_E_STALE` when it is not live |
 | `stats` | `LONG stats(AARHandle *handle, AARZZ9000Stats *out)`: the library's counters of one handle |
 | `lease_pause` | `LONG lease_pause(AARHandle *handle, ULONG ms)`: stops renewing the lease for `ms` milliseconds, a test hook; 0 resumes |
+| `surface_alloc` | `LONG surface_alloc(ULONG bytes, ULONG *handle, APTR *ptr)`: a host-visible allocation of at least `bytes` bytes (padded to 4 KiB, zeroed) at an address that does not change until `surface_free`; `*handle` is nonzero, `*ptr` is the address, to be named for the app with [`AARSharedToken`](#aarsharedtoken); a negative `AAR_E_*` with both untouched on failure |
+| `surface_free` | `LONG surface_free(ULONG handle)`: releases one allocation by its handle; `AAR_E_STALE` when it is not live |
 
 `AARZZ9000List` is 64 bytes: `size`, `handle`, `state`, `committed`, `index`
 (pass `index + 1` as the next cursor), `cpu_ms`, `service_ms`, `block_reason`,
@@ -962,4 +964,12 @@ characters. `AARZZ9000Stats` is 68 bytes: `size`, `requests`, `replies`,
 
 The table has no log sink: the sink is set with
 [`AARSetLogSink`](#aarsetlogsink) on any platform. The table ends at
-`lease_pause`; a table grows only at the end.
+`surface_free`; a table grows only at the end.
+
+A surface allocation belongs to the card, not to a claim: free it with
+`surface_free` whatever happened to the claim. The allocation is independent of
+the card's graphics hardware and does not use Picasso96. A program that wants a
+surface on a platform whose table does not cover `surface_free` has no stable
+host-visible memory to ask for; it may use public memory only if
+`AARSharedToken` accepts it. `aar_serve` does exactly that for the window and
+scaled displays.

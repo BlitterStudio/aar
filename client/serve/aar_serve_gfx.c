@@ -165,7 +165,7 @@ static void display_op_present(void *ctx)
     uint32_t ox, oy, iw, ih, x = 0, y = 0, w, h;
     struct RastPort *rp;
 
-    if (!s->gfx.surface || !s->gfx.surf_lock)
+    if (!s->gfx.surf_mem)
         return;
     rp = inner_area(s, &ox, &oy, &iw, &ih);
     if (!rp || !iw || !ih)
@@ -187,7 +187,8 @@ static void display_op_present(void *ctx)
         w = s->gfx.surf_w < iw ? s->gfx.surf_w : iw;
         h = s->gfx.surf_h < ih ? s->gfx.surf_h : ih;
     }
-    /* The surface stays locked for the token (make_surface): draw from its RenderInfo. */
+    /* The pixels are a stable allocation the app writes through its token:
+     * draw from the RenderInfo of that memory, nothing is locked or copied. */
     if (s->gfx.scaled)
         write_scaled(s, &s->gfx.surf_ri, rp, ox + x, oy + y, w, h);
     else
@@ -432,29 +433,38 @@ static ULONG format_rgb(uint32_t format)
            (format == AAR_FMT_CLUT8 ? RGBFB_CLUT : RGBFB_R5G6B5);
 }
 
-/* A surface bitmap that make_surface locked: the lock is released once, then the
- * bitmap is freed. */
-struct pinned_surface {
-    struct BitMap *bm;
+/* The pixels of a window or scaled display before they are the display's. */
+struct staged_surface {
+    void *mem;
+    ULONG handle;   /* the platform's handle; 0: Amiga memory from X_ALLOC_MEM */
+    ULONG bytes;
     struct RenderInfo ri;
-    LONG lock;
 };
 
-static void unpin_bitmap(struct aar_serve *s, struct BitMap *bm, LONG lock)
+/* Gives a stable allocation back: to the platform by its handle, else to Exec. */
+static void free_stable(void *mem, ULONG handle, ULONG bytes)
 {
-    if (lock)
-        X_P96_UNLOCK_BITMAP(s, bm, lock);
-    X_P96_FREE_BITMAP(s, bm);
+    if (!mem)
+        return;
+    if (handle) {
+        const aar_client_ext_zz9000 *ext = X_AAR_EXT();
+
+        if (AAR_CLIENT_EXT_ZZ9000_COVERS(ext, surface_free) && ext->surface_free)
+            (void)X_AAR_SURFACE_FREE(ext, handle);
+    } else {
+        X_FREE_MEM(mem, bytes);
+    }
 }
 
-/* The display's own surface goes: nothing reads its token any more. */
+/* The display's own surface goes: nothing reads its token any more. The
+ * allocation is the platform's, not the claim's, so it is given back even when
+ * the claim has been revoked. */
 static void release_surface(struct aar_serve *s)
 {
-    if (!s->gfx.surface)
-        return;
-    unpin_bitmap(s, s->gfx.surface, s->gfx.surf_lock);
-    s->gfx.surface = NULL;
-    s->gfx.surf_lock = 0;
+    free_stable(s->gfx.surf_mem, s->gfx.surf_handle, s->gfx.surf_bytes);
+    s->gfx.surf_mem = NULL;
+    s->gfx.surf_handle = 0;
+    s->gfx.surf_bytes = 0;
     memset(&s->gfx.surf_ri, 0, sizeof(s->gfx.surf_ri));
 }
 
@@ -563,50 +573,72 @@ static struct Screen *open_p96_screen(struct aar_serve *s, ULONG mode,
     return scr;
 }
 
-/* The surface of a window display or a scaled one: a bitmap of the surface's
- * format on the board, named by a token. The token is the bitmap's address, so
- * the bitmap is locked here, before the token exists, and stays locked until the
- * surface is replaced or the display is closed: Picasso96 may move a bitmap that
- * is not locked (a screen change, memory management), and the runtime keeps
- * copying frames to the token for as long as the display is open. The RenderInfo
- * of that lock is kept for the flips, which draw from it without locking again.
- * False when the bitmap cannot be made, locked or named (outside what the
- * platform can see); nothing is held then. */
+/* The pixels of a window or scaled surface, in the app's format and a pitch of
+ * its own: a stable allocation that the app maps through its token and that
+ * p96WritePixelArray reads from directly. Nothing is locked, copied or moved:
+ * the address stays until the surface is replaced or the display is closed.
+ * On the ZZ9000 the platform's surface extension makes it (host-visible,
+ * zeroed, the address immutable); this needs no Picasso96 bitmap and is the
+ * same on every board. Where the library has no such table, public memory is
+ * used only if AARSharedToken names it; false when there is no such memory,
+ * and nothing is held then (the display then falls back to a screen of its
+ * own). */
 static int make_surface(struct aar_serve *s, uint32_t w, uint32_t h,
-                        uint32_t format, struct pinned_surface *pin,
+                        uint32_t format, struct staged_surface *st,
                         ULONG *token, ULONG *pitch)
 {
-    ULONG rgb = format_rgb(format);
-    struct BitMap *bm;
+    ULONG row = w * (aar_serve_display_depth(format) / 8u);
+    ULONG stride = (row + 15u) & ~15u;
+    ULONG bytes, handle = 0;
+    const aar_client_ext_zz9000 *ext;
+    void *mem = NULL;
 
+    memset(st, 0, sizeof(*st));
+    /* RenderInfo.BytesPerRow is a WORD. */
     if (w == 0 || h == 0 || w > AAR_SERVE_SCREEN_MAX || h > AAR_SERVE_SCREEN_MAX ||
-        !claim_check(s))
+        stride > 32767u || !claim_check(s))
         return 0;
-    bm = X_P96_ALLOC_BITMAP(s, w, h, aar_serve_display_depth(format), BMF_CLEAR, NULL, rgb);
-    if (!bm)
-        return 0;
-    memset(&pin->ri, 0, sizeof(pin->ri));
-    pin->lock = X_P96_LOCK_BITMAP(s, bm, &pin->ri, sizeof(pin->ri));
-    if (!pin->lock) {
-        X_P96_FREE_BITMAP(s, bm);
+    bytes = stride * h;
+    ext = X_AAR_EXT();
+    if (AAR_CLIENT_EXT_ZZ9000_COVERS(ext, surface_free) && ext->surface_alloc &&
+        ext->surface_free) {
+        if (X_AAR_SURFACE_ALLOC(ext, bytes, &handle, &mem) != AAR_OK)
+            return 0;
+        if (!handle || !mem) {
+            if (handle)
+                (void)X_AAR_SURFACE_FREE(ext, handle);
+            return 0;
+        }
+        /* the platform's allocation is zeroed */
+    } else {
+        mem = X_ALLOC_MEM(bytes, MEMF_PUBLIC | MEMF_CLEAR);
+        if (!mem)
+            return 0;
+    }
+    if (!claim_live(s) ||
+        claim_note(s, X_AAR_SHARED_TOKEN(s->handle, mem, bytes, token)) != AAR_OK) {
+        free_stable(mem, handle, bytes);
         return 0;
     }
-    if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb ||
-        !bitmap_token(s, bm, token, pitch)) {
-        unpin_bitmap(s, bm, pin->lock);
-        return 0;
-    }
-    pin->bm = bm;
+    st->mem = mem;
+    st->handle = handle;
+    st->bytes = bytes;
+    st->ri.Memory = mem;
+    st->ri.BytesPerRow = (WORD)stride;
+    st->ri.pad = 0;
+    st->ri.RGBFormat = (RGBFTYPE)format_rgb(format);
+    *pitch = stride;
     return 1;
 }
 
-/* The surface made by make_surface becomes the display's; its lock goes with it. */
-static void adopt_surface(struct aar_serve *s, const struct pinned_surface *pin,
+/* The surface made by make_surface becomes the display's. */
+static void adopt_surface(struct aar_serve *s, const struct staged_surface *st,
                           uint32_t w, uint32_t h, uint32_t format)
 {
-    s->gfx.surface = pin->bm;
-    s->gfx.surf_ri = pin->ri;
-    s->gfx.surf_lock = pin->lock;
+    s->gfx.surf_mem = st->mem;
+    s->gfx.surf_handle = st->handle;
+    s->gfx.surf_bytes = st->bytes;
+    s->gfx.surf_ri = st->ri;
     s->gfx.surf_rgb = format_rgb(format);
     s->gfx.surf_w = w;
     s->gfx.surf_h = h;
@@ -648,7 +680,7 @@ static int open_window_display(struct aar_serve *s, uint32_t w, uint32_t h,
     int input = !(s->cfg.flags & AAR_SERVEF_NO_INPUT_WINDOW);
     int size = input && (flags & AAR_DISPLAY_RESIZABLE);
     struct Screen *pub;
-    struct pinned_surface pin;
+    struct staged_surface pin;
     struct Window *win;
     uint32_t features;
 
@@ -688,7 +720,7 @@ static int open_window_display(struct aar_serve *s, uint32_t w, uint32_t h,
         WA_IDCMP, input ? input_idcmp(flags, size) : 0UL,
         TAG_DONE);
     if (!win) {
-        unpin_bitmap(s, pin.bm, pin.lock);
+        free_stable(pin.mem, pin.handle, pin.bytes);
         X_UNLOCK_PUB_SCREEN(NULL, pub);
         return 0;
     }
@@ -746,16 +778,16 @@ static int open_screen(struct aar_serve *s, uint32_t w, uint32_t h,
     if (scale_screen) {
         struct Screen *wb = X_LOCK_PUB_SCREEN(NULL);
         uint32_t wb_w = 0, wb_h = 0;
-        struct pinned_surface pin;
+        struct staged_surface pin;
         int made = 0;
 
         if (wb) {
             wb_w = (uint32_t)wb->Width;
             wb_h = (uint32_t)wb->Height;
+            if (wb_w && wb_h && wb_w <= AAR_SERVE_SCREEN_MAX && wb_h <= AAR_SERVE_SCREEN_MAX)
+                made = make_surface(s, w, h, format, &pin, &front, &pitch);
             X_UNLOCK_PUB_SCREEN(NULL, wb);
         }
-        if (wb_w && wb_h && wb_w <= AAR_SERVE_SCREEN_MAX && wb_h <= AAR_SERVE_SCREEN_MAX)
-            made = make_surface(s, w, h, format, &pin, &front, &pitch);
         if (made) {
             adopt_surface(s, &pin, w, h, format);
             screen_w = wb_w;
@@ -782,7 +814,7 @@ static int open_screen(struct aar_serve *s, uint32_t w, uint32_t h,
     s->gfx.scr_w = screen_w;
     s->gfx.scr_h = screen_h;
     if (scale_screen) {
-        /* The surface is its own bitmap and every flip draws it scaled. */
+        /* The surface is its own allocation and every flip draws it scaled. */
         s->gfx.scaled = 1;
         features |= AAR_DISPCAP_SCALED;
     } else if (!bitmap_token(s, s->gfx.screen->RastPort.BitMap, &front, &pitch)) {
@@ -923,6 +955,8 @@ static void open_display(struct aar_serve *s, const struct aar_serve_req *req,
 {
     ULONG pitch = 0, front = 0, back = 0, spare = 0;
     uint32_t features = 0;
+    struct Screen *scan;
+    ULONG scan_token = 0, scan_pitch = 0;
 
     if (!open_screen(s, req->arg[AAR_A_DISPLAY_OPEN_W],
                      req->arg[AAR_A_DISPLAY_OPEN_H],
@@ -939,6 +973,17 @@ static void open_display(struct aar_serve *s, const struct aar_serve_req *req,
     aar_serve_display_opened(&s->core.display, req, pitch, front, back, spare,
                              s->gfx.have_two, s->gfx.have_pan, (uint32_t)s->gfx.pan_count,
                              features, done);
+    /* A window or scaled display on the card's surface allocation also names
+     * the scanout of the screen it is shown on, for the card to bind. It is the
+     * screen's own bitmap, read without a lock and never an app buffer: the
+     * display records spare 0 above, and the token goes only in this reply. */
+    scan = s->gfx.surf_handle ? (s->gfx.win ? s->gfx.pub :
+                                 (s->gfx.scaled ? s->gfx.screen : NULL)) : NULL;
+    if (scan && bitmap_token(s, scan->RastPort.BitMap, &scan_token, &scan_pitch) &&
+        scan_token && scan_pitch) {
+        done->out[AAR_R_DISPLAY_OPEN_SPARE] = scan_token;
+        done->flags |= AAR_DISP_REPLY_SCANOUT;
+    }
 }
 
 static void display_op_open(void *ctx, const struct aar_serve_req *req,
@@ -949,7 +994,7 @@ static void display_op_open(void *ctx, const struct aar_serve_req *req,
     open_display(s, req, done);
 }
 
-/* DISPLAY_RESIZE of a window display: a new surface bitmap of the new size. The
+/* DISPLAY_RESIZE of a window display: a new surface of the new size. The
  * old one stays until the new one exists, so a failure leaves the display as it
  * was. The core records the new size from the completion. */
 static void display_op_resize(void *ctx, const struct aar_serve_req *req,
@@ -960,10 +1005,10 @@ static void display_op_resize(void *ctx, const struct aar_serve_req *req,
     uint32_t h = req->arg[AAR_A_DISPLAY_OPEN_H];
     uint32_t format = req->arg[AAR_A_DISPLAY_OPEN_FORMAT];
     ULONG pitch = 0, token = 0;
-    struct pinned_surface pin;
+    struct staged_surface pin;
 
     memset(done, 0, sizeof(*done));
-    if (!s->gfx.win || !s->gfx.surface) {
+    if (!s->gfx.win || !s->gfx.surf_mem) {
         done->result = AAR_E_NOSYS;
         return;
     }

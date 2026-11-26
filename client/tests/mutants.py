@@ -649,10 +649,7 @@ mutant("replace-deletes-the-source", "serve_core", SC,
 mutant("replace-does-not-delete", "file_rename_replace", SC,
        ("    return loc_named(f, to, AAR_SERVE_NAMED_DELETE, &none);", "    return AAR_OK;"))
 mutant("replace-deletes-across-volumes", "serve_core", SC,
-       ("    if (d->same_volume && d->same_volume(d->ctx, from.absolute ? 0 : from.dir,\n"
-        "                                         loc_name(&from), to.absolute ? 0 : to.dir,\n"
-        "                                         loc_name(&to)) == 0) {",
-        "    if (0) {"))
+       ("    if (replace_ok != AAR_OK)\n        return replace_ok;\n", ""))
 mutant("named-request-after-a-stop", "stop_new_files", SC,
        ("    if (open_step_allowed(d))\n        ok = d->target_named(", "    if (1)\n        ok = d->target_named("))
 mutant("rename-after-a-stop", "stop_new_files", SC,
@@ -1091,7 +1088,7 @@ mutant("text-keeps-control-characters", "serve_core", SC,
 mutant("text-ignores-the-command-qualifier", "serve_core", SC,
        ("    if (qualifiers & command_mask)\n        return 0;\n", ""))
 mutant("latin1-passes-wide-characters", "serve_core", SC,
-       ("        out[o++] = cp <= 0xFFu ? (char)cp : '?';", "        out[o++] = (char)cp;"))
+       ("        dst[o++] = cp <= 0xFFu ? (uint8_t)cp : (uint8_t)'?';", "        dst[o++] = (uint8_t)cp;"))
 mutant("resize-without-the-cap", "serve_core", SC,
        ("    if (!(d->caps & AAR_DISPCAP_RESIZE) || !d->ops.resize) {", "    if (!d->ops.resize) {"))
 mutant("resize-with-a-flip-pending", "serve_core", SC,
@@ -1161,14 +1158,32 @@ mutant("window-on-an-8-bit-public-screen", "display_window_fallback", SG,
 mutant("clut8-in-a-window", "display_window_fallback", SG,
        ("    if (format == AAR_FMT_CLUT8 || !s->gfx.p96", "    if (!s->gfx.p96"))
 mutant("surface-token-not-checked", "display_window_fallback", SG,
-       ("    if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb ||\n        !bitmap_token(s, bm, token, pitch)) {",
-        "    if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb) {\n        (void)bitmap_token(s, bm, token, pitch);"))
+       ("    if (!claim_live(s) ||\n        claim_note(s, X_AAR_SHARED_TOKEN(s->handle, mem, bytes, token)) != AAR_OK) {",
+        "    if (!claim_live(s) ||\n        (claim_note(s, X_AAR_SHARED_TOKEN(s->handle, mem, bytes, token)), 0)) {"))
+mutant("surface-calls-of-an-older-table-are-used", "display_window_fallback", SG,
+       ("    if (AAR_CLIENT_EXT_ZZ9000_COVERS(ext, surface_free) && ext->surface_alloc &&\n        ext->surface_free) {",
+        "    if (ext != NULL && ext->surface_alloc && ext->surface_free) {"))
 mutant("scaled-flip-draws-unscaled", "display_scale_window", SG,
-       ("        if (s->gfx.scaled)\n            write_scaled(s, &ri, rp, ox + x, oy + y, w, h);", "        if (0)\n            write_scaled(s, &ri, rp, ox + x, oy + y, w, h);"))
+       ("    if (s->gfx.scaled)\n        write_scaled(s, &s->gfx.surf_ri, rp, ox + x, oy + y, w, h);",
+        "    if (0)\n        write_scaled(s, &s->gfx.surf_ri, rp, ox + x, oy + y, w, h);"))
 mutant("scaled-area-not-cleared", "display_scale_window", SG,
        ("            update_fit(s);\n            clear_inner(s);\n", "            update_fit(s);\n"))
-mutant("resize-keeps-the-old-bitmap", "display_resize", SG,
-       ("    X_P96_FREE_BITMAP(s, s->gfx.surface);\n    adopt_surface(s, bm, w, h, format);", "    adopt_surface(s, bm, w, h, format);"))
+mutant("resize-keeps-the-old-surface", "display_resize", SG,
+       ("    release_surface(s);\n    adopt_surface(s, &pin, w, h, format);\n    update_fit(s);\n",
+        "    adopt_surface(s, &pin, w, h, format);\n    update_fit(s);\n"))
+mutant("failed-resize-drops-the-old-surface", "display_resize", SG,
+       ("    if (!make_surface(s, w, h, format, &pin, &token, &pitch)) {\n        done->result = AAR_E_NOMEM;",
+        "    if (!make_surface(s, w, h, format, &pin, &token, &pitch)) {\n        release_surface(s);\n        done->result = AAR_E_NOMEM;"))
+mutant("surface-pitch-is-the-unpadded-row", "display_resize", SG,
+       ("    *pitch = stride;\n", "    *pitch = row;\n"))
+mutant("close-keeps-the-surface", "display_window", SG,
+       ("    s->gfx.win = NULL;\n    release_surface(s);\n", "    s->gfx.win = NULL;\n"))
+mutant("surface-kept-with-a-lost-claim", "display_surface_revoked", SG,
+       ("    free_stable(s->gfx.surf_mem, s->gfx.surf_handle, s->gfx.surf_bytes);\n    s->gfx.surf_mem = NULL;",
+        "    if (claim_live(s))\n        free_stable(s->gfx.surf_mem, s->gfx.surf_handle, s->gfx.surf_bytes);\n    s->gfx.surf_mem = NULL;"))
+mutant("scanout-named-without-the-platform-surface", "display_window_surface", SG,
+       ("    scan = s->gfx.surf_handle ? (s->gfx.win ? s->gfx.pub :\n                                 (s->gfx.scaled ? s->gfx.screen : NULL)) : NULL;",
+        "    scan = s->gfx.win ? s->gfx.pub : (s->gfx.scaled ? s->gfx.screen : NULL);"))
 mutant("new-size-not-reported", "display_scale_window", SG,
        ("    if (s->gfx.caps & AAR_DISPCAP_RESIZE)\n        push_event(s, AAR_EV_RESIZE, 0, (int16_t)iw, (int16_t)ih, 0);",
         "    if (0)\n        push_event(s, AAR_EV_RESIZE, 0, (int16_t)iw, (int16_t)ih, 0);"))
@@ -1187,9 +1202,6 @@ mutant("cd32-without-lowlevel-is-served", "joystick_cd32", SL,
        ("        if (!s->in.ll) {", "        if (0) {"))
 mutant("scaled-strips-written-in-the-wrong-format", "display_scale_bgra", SG,
        ("    out.RGBFormat = (RGBFTYPE)s->gfx.surf_rgb;", "    out.RGBFormat = RGBFB_R5G6B5;"))
-mutant("surface-unlocked-after-its-token-is-named", "display_surface_pinned", SG,
-       ("    pin->bm = bm;\n    return 1;\n",
-        "    X_P96_UNLOCK_BITMAP(s, bm, pin->lock);\n    pin->lock = 0;\n    pin->bm = bm;\n    return 1;\n"))
 NAMES = {m[0]: m for m in M}
 
 

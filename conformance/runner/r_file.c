@@ -19,6 +19,8 @@
  */
 #include <dos/dos.h>
 #include <dos/dosextens.h>
+#include <libraries/locale.h>
+#include <proto/locale.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -27,6 +29,31 @@
 #include "../payloads/conf_file.h"
 
 /* ---- Fixtures ------------------------------------------------------------------------ */
+
+static struct DateStamp fixture_date;
+
+/* SetFileDate takes local clock fields. Build the fixture independently of
+ * libaarserve's UTC conversion, including offsets that cross midnight. */
+static void prepare_fixture_date(void)
+{
+    enum { MINUTES_PER_DAY = 24 * 60 };
+    LONG minutes = CONF_FILE_DATE_DAYS * MINUTES_PER_DAY + CONF_FILE_DATE_MINS;
+    struct LocaleBase *LocaleBase =
+        (struct LocaleBase *)OpenLibrary((CONST_STRPTR)"locale.library", 38);
+
+    if (LocaleBase) {
+        struct Locale *loc = OpenLocale(NULL);
+
+        if (loc) {
+            minutes -= (LONG)loc->loc_GMTOffset;
+            CloseLocale(loc);
+        }
+        CloseLibrary((struct Library *)LocaleBase);
+    }
+    fixture_date.ds_Days = minutes / MINUTES_PER_DAY;
+    fixture_date.ds_Minute = minutes % MINUTES_PER_DAY;
+    fixture_date.ds_Tick = CONF_FILE_DATE_TICKS;
+}
 
 static BPTR root_lock(void)
 {
@@ -151,7 +178,6 @@ static int prepare_fixtures(void)
     BPTR d5 = 0;
     BPTR cur = 0;
     BPTR old;
-    struct DateStamp ds;
     ULONG i;
     int ok = 1;
 
@@ -170,11 +196,9 @@ static int prepare_fixtures(void)
     ok &= make_file(fx, CONF_FILE_PATTERN_NAME, NULL, 0, 1);
     ok &= make_file(fx, CONF_FILE_DATED_NAME, CONF_FILE_DATED_TEXT,
                     (ULONG)strlen(CONF_FILE_DATED_TEXT), 0);
-    ds.ds_Days = (LONG)CONF_FILE_DATE_DAYS;
-    ds.ds_Minute = (LONG)CONF_FILE_DATE_MINS;
-    ds.ds_Tick = (LONG)CONF_FILE_DATE_TICKS;
+    prepare_fixture_date();
     old = CurrentDir(fx);
-    ok &= SetFileDate((STRPTR)CONF_FILE_DATED_NAME, &ds) != 0;
+    ok &= SetFileDate((STRPTR)CONF_FILE_DATED_NAME, &fixture_date) != 0;
     (void)CurrentDir(old);
 
     d5 = child_dir(fx, CONF_FILE_DIR5_NAME);
@@ -346,9 +370,9 @@ static LONG fx_size(const char *name)
     return size;
 }
 
-/* Date (days since 1978-01-01) and protection bits of a file in the fixture directory. Returns 0, or -1 when
- * the file is missing. */
-static int fx_stamp(const char *name, LONG *days, LONG *prot)
+/* Date and protection bits of a file in the fixture directory. Returns 0, or -1
+ * when the file is missing. */
+static int fx_stamp(const char *name, struct DateStamp *date, LONG *prot)
 {
     char path[256];
     struct FileInfoBlock *fib;
@@ -362,7 +386,7 @@ static int fx_stamp(const char *name, LONG *days, LONG *prot)
         return -1;
     fib = AllocDosObject(DOS_FIB, NULL);
     if (fib && Examine(lock, fib)) {
-        *days = (LONG)fib->fib_Date.ds_Days;
+        *date = fib->fib_Date;
         *prot = (LONG)fib->fib_Protection;
         rc = 0;
     }
@@ -399,7 +423,8 @@ static void on_end(const struct conf_run *run, const struct conf_outcome *out,
      * aimed at must be as the payload left them. */
     snprintf(id, sizeof id, "C-FILE.%d", 49);
     if (fx_size("stopold.tmp") >= 0 || fx_size("stopnew.tmp") >= 0) {
-        LONG days = 0, prot = 0;
+        struct DateStamp date;
+        LONG prot;
 
         if (fx_size("stopdel.tmp") != 5)
             conf_record(id, 0, "a delete after the stop request removed a file");
@@ -407,9 +432,10 @@ static void on_end(const struct conf_run *run, const struct conf_outcome *out,
             conf_record(id, 0, "a rename after the stop request moved a file");
         else if (fx_size("stopdir.tmp") >= 0)
             conf_record(id, 0, "a dir_create after the stop request made a directory");
-        else if (fx_stamp("stopdate.tmp", &days, &prot) != 0 || days == (LONG)CONF_FILE_DATE_DAYS)
+        else if (fx_stamp("stopdate.tmp", &date, &prot) != 0 ||
+                 CompareDates(&date, &fixture_date) == 0)
             conf_record(id, 0, "a set_date after the stop request changed the date of a file");
-        else if (fx_stamp("stopprot.tmp", &days, &prot) != 0 || (prot & 0x0FL) != 0)
+        else if (fx_stamp("stopprot.tmp", &date, &prot) != 0 || (prot & 0x0FL) != 0)
             conf_record(id, 0, "a set_protect after the stop request changed the protection of a file");
         else if (fx_size("stoptr.tmp") != 5)
             conf_record(id, 0, "a truncate after the stop request changed the length of a file");

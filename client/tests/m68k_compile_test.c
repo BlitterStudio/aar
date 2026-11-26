@@ -25,6 +25,7 @@ LONG aar_m68k_use(struct MsgPort *port, const char *path, const char *const *arg
     ULONG reason = 0, got = 0, token = 0;
     LONG rc = 0;
     const struct aar_client_ext_zz9000 *ext;
+    APTR surface = 0;
 
     rc += AARQuery(&info);
     rc += AAROpen(&handle, port, &reason);
@@ -51,6 +52,11 @@ LONG aar_m68k_use(struct MsgPort *port, const char *path, const char *const *arg
     ext = (const struct aar_client_ext_zz9000 *)AARExt(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_CLIENT);
     if (AAR_CLIENT_EXT_ZZ9000_COVERS(ext, list))
         rc += ext->list(0, 0);
+    if (AAR_CLIENT_EXT_ZZ9000_COVERS(ext, surface_free) && ext->surface_alloc) {
+        rc += ext->surface_alloc(4096, &got, &surface);
+        rc += AARSharedToken(handle, surface, 4096, &token);
+        rc += ext->surface_free(got);
+    }
     rc += AARSetLogSink(handle, sink, dst);
     rc += AARSetLogSink(handle, 0, 0);
     rc += AARReadStack(handle, dst, 64, &got);

@@ -176,7 +176,8 @@ static void finish(void)
     CHECK(hx_pub_locks == 0);
     CHECK(hx_host_libs_open == 0 && hx_locale_open_now == 0 && hx_clip_handles == 0);
     CHECK(hx_live_blocks == 0);
-    CHECK(hx_p96_bitmaps_live == 0 && hx_bitmaps_live == 0 && hx_pointers_live == 0 && hx_locks_live == 0);
+    CHECK(hx_bitmaps_live == 0 && hx_pointers_live == 0);
+    CHECK(refplat.surface_live == 0 && hx_arena_mem_live == 0);
     CHECK(hx_ll_open == 0 && hx_keymap_open == 0);
 }
 
@@ -723,6 +724,8 @@ static void test_a_completion_of_a_held_request_waits_for_a_full_cq(void)
 
 static int disp_open(struct comp *c, uint32_t format, uint32_t flags)
 {
+    /* the fake drawing area has the pixel size of the surface the display will draw */
+    hx_canvas_bpp = format == AAR_FMT_BGRA8888 ? 4u : (format == AAR_FMT_CLUT8 ? 1u : 2u);
     return call(AAR_OP_DISPLAY_OPEN, 20, DW, DH, format, flags, 0, 0, c);
 }
 
@@ -2804,20 +2807,45 @@ static int call6(uint32_t op, uint32_t id, const uint32_t arg[6], uint32_t off, 
     return wait_comp(c, 400);
 }
 
-/* The surface bitmap of the last open: the bytes of pixel (x, y) start with x, then y. */
-static void fill_surface(void)
+/* The block the platform allocated for the front token of an open or resize reply: its pixels,
+ * NULL when the token is no live surface. */
+static uint8_t *surface_mem(const struct comp *c)
 {
-    struct BitMap *bm = hx_last_surface;
-    uint32_t x, y, bpp;
+    uint32_t i, front = c->out[AAR_R_DISPLAY_OPEN_FRONT];
 
-    CHECK(bm != NULL);
-    if (!bm)
+    for (i = 0; i < REFPLAT_SURFACES; i++)
+        if (refplat.surfaces[i].handle != 0 &&
+            REFPLAT_SURFACE_TOKEN_BASE + refplat.surfaces[i].off == front)
+            return (uint8_t *)(uintptr_t)refplat_ptr(front);
+    return NULL;
+}
+
+/* The rows of that block at the pitch of the reply. */
+static uint32_t surface_rows(const struct comp *c)
+{
+    uint32_t i, front = c->out[AAR_R_DISPLAY_OPEN_FRONT];
+
+    for (i = 0; i < REFPLAT_SURFACES; i++)
+        if (refplat.surfaces[i].handle != 0 &&
+            REFPLAT_SURFACE_TOKEN_BASE + refplat.surfaces[i].off == front &&
+            c->out[AAR_R_DISPLAY_OPEN_PITCH] != 0)
+            return refplat.surfaces[i].bytes / c->out[AAR_R_DISPLAY_OPEN_PITCH];
+    return 0;
+}
+
+/* The surface of the last open or resize: the bytes of pixel (x, y) start with x, then y. */
+static void fill_surface(const struct comp *c, uint32_t bpp)
+{
+    uint8_t *px = surface_mem(c);
+    uint32_t pitch = c->out[AAR_R_DISPLAY_OPEN_PITCH], rows = surface_rows(c), x, y;
+
+    CHECK(px != NULL && pitch != 0 && rows != 0);
+    if (!px || !pitch || !rows)
         return;
-    bpp = hx_bpp(bm->hx_rgb);
-    for (y = 0; y < bm->Rows; y++)
-        for (x = 0; x < (uint32_t)(bm->BytesPerRow / (UWORD)bpp) && x < 256u; x++) {
-            bm->Planes[0][y * bm->BytesPerRow + x * bpp] = (uint8_t)x;
-            bm->Planes[0][y * bm->BytesPerRow + x * bpp + 1u] = (uint8_t)y;
+    for (y = 0; y < rows; y++)
+        for (x = 0; x < pitch / bpp && x < 256u; x++) {
+            px[y * pitch + x * bpp] = (uint8_t)x;
+            px[y * pitch + x * bpp + 1u] = (uint8_t)y;
         }
 }
 
@@ -2854,8 +2882,8 @@ static void test_a_window_display_shows_its_surface_in_a_window_on_the_public_sc
     CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW | AAR_DISPCAP_RESIZE | AAR_DISPCAP_POINTER_ABS |
                       AAR_DISPCAP_TEXT_INPUT | AAR_DISPCAP_CLOSE_REQUEST));
     /* no screen of its own: a window on the public screen, with a surface bitmap of the format */
-    CHECK(hx_screens == 0 && hx_windows == 1 && hx_buffers_live == 0 && hx_p96_bitmaps_live == 1);
-    CHECK(hx_pub_locks == 1);
+    CHECK(hx_screens == 0 && hx_windows == 1 && hx_buffers_live == 0 && refplat.surface_live == 1);
+    CHECK(hx_pub_locks == 1 && refplat.surface_allocs == 1);
     w = hx_cur_window;
     CHECK(w && w->hx_pub == &hx_pub_screen);
     CHECK(w->Width == (WORD)(DW + 8u) && w->Height == (WORD)(DH + 11u + 10u)); /* a size gadget below */
@@ -2870,17 +2898,18 @@ static void test_a_window_display_shows_its_surface_in_a_window_on_the_public_sc
     CHECK(c.out[AAR_R_DISPLAY_OPEN_LAYOUT] == AAR_LAYOUT_RGB565_BE);
     /* the window was cleared once; a flip draws the surface at the top-left of the inner area */
     CHECK(hx_rectfills == 1 && hx_pwa_calls == 0);
-    fill_surface();
+    fill_surface(&c, 2);
     flip_once(21);
-    CHECK(hx_pwa_calls == 1 && hx_locks_live == 1 && hx_locks_taken == 1); /* locked once, for the token */
+    /* the flip draws from the allocation itself: one allocation, no copy of the frame */
+    CHECK(hx_pwa_calls == 1 && hx_pwa_last_mem == (const void *)surface_mem(&c) && refplat.surface_allocs == 1);
     CHECK(canvas_px(4, 11) == 0x0000u);
     CHECK(canvas_px(4 + 10, 11 + 5) == ((10u << 8) | 5u));
     CHECK(canvas_px(4 + DW - 1u, 11 + DH - 1u) == (((DW - 1u) << 8) | (DH - 1u)));
     CHECK(canvas_px(4 + DW, 11) == 0xCDCDu); /* nothing outside the surface */
-    CHECK(hx_windows == 1 && hx_p96_bitmaps_live == 1);
+    CHECK(hx_windows == 1 && refplat.surface_live == 1 && refplat.surface_frees == 0);
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     CHECK(c.result == AAR_OK);
-    CHECK(hx_windows == 0 && hx_p96_bitmaps_live == 0 && hx_pub_locks == 0);
+    CHECK(hx_windows == 0 && refplat.surface_live == 0 && refplat.surface_frees == 1 && hx_pub_locks == 0);
     /* it opens again */
     CHECK(open_display(&c, AAR_FMT_BGRA8888, AAR_DISPLAY_WINDOW));
     CHECK(c.result == AAR_OK && c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW));
@@ -2899,7 +2928,7 @@ static void test_a_window_that_the_public_screen_cannot_show_falls_back_to_a_scr
     CHECK(open_display(&c, AAR_FMT_RGB565, WINF_ALL));
     CHECK(c.result == AAR_OK);
     CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_POINTER_ABS | AAR_DISPCAP_TEXT_INPUT));
-    CHECK(hx_screens == 1 && hx_pub_locks == 0 && hx_p96_bitmaps_live == 0);
+    CHECK(hx_screens == 1 && hx_pub_locks == 0 && refplat.surface_live == 0);
     CHECK(hx_cur_window && hx_cur_window->hx_custom_screen);
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     /* a public screen of 8 bits */
@@ -2913,22 +2942,130 @@ static void test_a_window_that_the_public_screen_cannot_show_falls_back_to_a_scr
     CHECK(open_display(&c, AAR_FMT_CLUT8, AAR_DISPLAY_WINDOW));
     CHECK(c.flags == CAPS_BASE && hx_screens == 1 && hx_pub_locks == 0);
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
-    /* a surface bitmap that cannot be made */
-    hx_p96_fail_alloc_bitmap = 1;
+    /* a surface the platform cannot allocate */
+    refplat.surface_alloc_rc = AAR_E_NOMEM;
     CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE));
     CHECK(c.result == AAR_OK && c.flags == CAPS_BASE && hx_screens == 1 && hx_pub_locks == 0);
+    CHECK(refplat.surface_allocs == 0 && refplat.surface_live == 0);
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 24, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
-    hx_p96_fail_alloc_bitmap = 0;
-    /* a bitmap outside what the platform can see is not used either */
-    hx_p96_outside_arena = 1;
+    refplat.surface_alloc_rc = AAR_OK;
+    /* a surface whose token the platform refuses is given back at once */
+    hx_token_fail = 1;
     CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
-    CHECK(c.result == AAR_OK && c.flags == CAPS_BASE && hx_screens == 1);
-    CHECK(hx_pub_locks == 0 && hx_p96_bitmaps_live == 0);
-    hx_p96_outside_arena = 0;
+    CHECK(c.result == AAR_OK && c.flags == CAPS_BASE && hx_screens == 1 && hx_pub_locks == 0);
+    CHECK(refplat.surface_allocs == 1 && refplat.surface_frees == 1 && refplat.surface_live == 0);
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 25, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* a library whose table ends at lease_pause, and one with no table: the surface would be Amiga
+     * memory, which AARSharedToken does not name, so the screen is the fallback and the memory
+     * that was tried is let go */
+    hx_surface_ext = 1;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(c.result == AAR_OK && c.flags == CAPS_BASE && hx_screens == 1 && hx_pub_locks == 0);
+    CHECK(refplat.surface_allocs == 1 && refplat.surface_live == 0);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 26, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    hx_surface_ext = 2;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(c.result == AAR_OK && c.flags == CAPS_BASE && hx_screens == 1 && hx_pub_locks == 0);
+    CHECK(refplat.surface_allocs == 1 && refplat.surface_live == 0);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 27, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    hx_surface_ext = 0;
     /* the flags that need a window say nothing without one: RESIZABLE alone */
     CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_RESIZABLE | AAR_DISPLAY_CLOSE_REQUEST));
     CHECK(c.flags == CAPS_BASE && hx_screens == 1);
+    finish();
+}
+
+/* The surface of a window or scaled display is the platform's stable allocation, in the app's own
+ * format and stride whatever the public screen's pixel format is, and nothing of Picasso96 is
+ * made for it. Without the platform's table, Amiga memory that AARSharedToken names is it. */
+static void test_the_window_surface_is_the_platforms_allocation_in_the_apps_format(void)
+{
+    struct comp c;
+    uint32_t arg[6], allocs;
+    uint8_t *pixels;
+    const uint8_t *px;
+
+    setup("display_window_surface");
+    cfg.flags |= AAR_SERVEF_NO_INPUT_WINDOW;
+    make_serve();
+    memset(arg, 0, sizeof(arg));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(c.result == AAR_OK && c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW));
+    CHECK(hx_cur_window && !hx_cur_window->hx_custom_screen);
+    /* the window of the display takes the pointer, with no input window */
+    arg[1] = AAR_POINTER_DEFAULT;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 60, arg, 0, 0, &c) && c.result == AAR_OK);
+    arg[1] = AAR_POINTER_BUSY;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 61, arg, 0, 0, &c) && c.result == AAR_OK && hx_ptr_kind == 1);
+    arg[1] = AAR_POINTER_HIDDEN;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 62, arg, 0, 0, &c) && c.result == AAR_OK && hx_ptr_kind == 2);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 63, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(refplat.surface_live == 0 && hx_pointers_live == 0 && hx_pub_locks == 0);
+    /* a 16 bit public screen and a 32 bit surface: the surface is the app's, 4 bytes a pixel */
+    hx_pub_rgb = RGBFB_R5G6B5;
+    CHECK(open_display(&c, AAR_FMT_BGRA8888, AAR_DISPLAY_WINDOW));
+    CHECK(c.result == AAR_OK && (c.flags & AAR_DISPCAP_WINDOW));
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_PITCH] == ((DW * 4u + 15u) & ~15u));
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_FRONT] >= REFPLAT_SURFACE_TOKEN_BASE && refplat.surface_live == 1);
+    pixels = surface_mem(&c);
+    CHECK(pixels != NULL);
+    if (pixels) {
+        size_t off = 3u * c.out[AAR_R_DISPLAY_OPEN_PITCH] + 5u * 4u;
+
+        pixels[off] = 0x01u;
+        pixels[off + 1u] = 0x02u;
+        pixels[off + 2u] = 0x03u;
+        pixels[off + 3u] = 0x04u;
+    }
+    flip_once(66);
+    px = hx_canvas + (11u + 3u) * HX_CANVAS_W * 4u + (4u + 5u) * 4u;
+    CHECK(hx_pwa_last_rgb == RGBFB_B8G8R8A8 && hx_pwa_last_mem == (const void *)pixels);
+    CHECK(px[0] == 0x01u && px[1] == 0x02u && px[2] == 0x03u && px[3] == 0x04u);
+    arg[1] = AAR_POINTER_BUSY;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 64, arg, 0, 0, &c) && c.result == AAR_OK);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 65, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(refplat.surface_live == 0 && refplat.surface_frees == 2 && hx_pub_locks == 0);
+    /* no surface calls in the library, and Amiga memory that AARSharedToken names (a platform that
+     * shares it): that memory is the surface, and FreeMem gives it back */
+    hx_surface_ext = 2;
+    hx_exec_mem_in_arena = 1;
+    allocs = refplat.surface_allocs;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(c.result == AAR_OK && c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW));
+    CHECK(refplat.surface_allocs == allocs && hx_arena_mem_live == 1);
+    pixels = (uint8_t *)(uintptr_t)refplat_ptr(c.out[AAR_R_DISPLAY_OPEN_FRONT]);
+    pixels[3u * c.out[AAR_R_DISPLAY_OPEN_PITCH] + 5u * 2u] = 0x07u;
+    pixels[3u * c.out[AAR_R_DISPLAY_OPEN_PITCH] + 5u * 2u + 1u] = 0x09u;
+    flip_once(67);
+    CHECK(hx_pwa_last_mem == (const void *)pixels && canvas_px(4 + 5, 11 + 3) == 0x0709u);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 68, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(hx_arena_mem_live == 0);
+    hx_surface_ext = 0;
+    hx_exec_mem_in_arena = 0;
+    /* the platform's allocation is named with the scanout of the screen the display is shown on:
+     * the public screen's bitmap for a window. It is read without a lock, and it is no app buffer:
+     * the display records no spare, the token is only in this reply */
+    hx_pub_w = 100;
+    hx_pub_h = 60;
+    hx_pub_rgb = RGBFB_B8G8R8A8;
+    hx_pub_scanout = 1;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(c.result == AAR_OK && c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW | AAR_DISP_REPLY_SCANOUT));
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_FRONT] >= REFPLAT_SURFACE_TOKEN_BASE);
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_SPARE] != 0 && S->core.display.spare == 0);
+    CHECK((const void *)(uintptr_t)refplat_ptr(c.out[AAR_R_DISPLAY_OPEN_SPARE]) ==
+          (const void *)hx_pub_screen.bm.Planes[0]);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 69, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* without the platform's allocation there is no scanout to name */
+    hx_surface_ext = 2;
+    hx_exec_mem_in_arena = 1;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(c.result == AAR_OK && c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW) &&
+          c.out[AAR_R_DISPLAY_OPEN_SPARE] == 0);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 70, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    hx_surface_ext = 0;
+    hx_exec_mem_in_arena = 0;
     finish();
 }
 
@@ -2945,7 +3082,7 @@ static void test_a_scaled_window_keeps_the_aspect_and_follows_its_size(void)
                            AAR_DISPLAY_POINTER_ABS));
     CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW | AAR_DISPCAP_SCALED | AAR_DISPCAP_RESIZE |
                       AAR_DISPCAP_POINTER_ABS));
-    fill_surface();
+    fill_surface(&c, 2);
     /* the user makes the window 128 x 96 inside: the 64 x 32 surface is 128 x 64 in it, with bars */
     hx_cur_window->Width = (WORD)(128 + 8);
     hx_cur_window->Height = (WORD)(96 + 11 + 10);
@@ -3007,15 +3144,19 @@ static void test_a_scaled_screen_has_a_surface_of_its_own(void)
     make_serve();
     CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_SCALE | AAR_DISPLAY_POINTER_ABS));
     CHECK(c.result == AAR_OK);
-    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_SCALED | AAR_DISPCAP_POINTER_ABS));
-    /* the screen has the size of the Workbench screen, no screen buffers, a bitmap for the surface */
-    CHECK(hx_screens == 1 && hx_buffers_live == 0 && hx_p96_bitmaps_live == 1);
+    CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_SCALED | AAR_DISPCAP_POINTER_ABS | AAR_DISP_REPLY_SCANOUT));
+    /* the screen has the size of the Workbench screen, no screen buffers, an allocation for the surface */
+    CHECK(hx_screens == 1 && hx_buffers_live == 0 && refplat.surface_live == 1);
     CHECK(hx_cur_screen && hx_cur_screen->Width == 240 && hx_cur_screen->Height == 160);
     CHECK(c.out[AAR_R_DISPLAY_OPEN_PITCH] == ((DW * 2u + 15u) & ~15u) && c.out[AAR_R_DISPLAY_OPEN_BACK] == 0);
     CHECK(hx_pub_locks == 0);
     /* the front token is the surface's, not the screen's bitmap */
-    CHECK(hx_last_surface && hx_last_surface != &hx_cur_screen->bm);
-    fill_surface();
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_FRONT] >= REFPLAT_SURFACE_TOKEN_BASE && surface_mem(&c) != NULL);
+    /* the spare word of the reply is the screen's own scanout, not a buffer of the app */
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_SPARE] != 0 && S->core.display.spare == 0);
+    CHECK((const void *)(uintptr_t)refplat_ptr(c.out[AAR_R_DISPLAY_OPEN_SPARE]) ==
+          (const void *)hx_cur_screen->bm.Planes[0]);
+    fill_surface(&c, 2);
     flip_once(21);
     /* 64 x 32 in 240 x 160: 240 x 120, 20 rows of bars above and below, drawn through the window */
     for (y = 0; y < 120; y++)
@@ -3034,9 +3175,9 @@ static void test_a_scaled_screen_has_a_surface_of_its_own(void)
     e = last_event(AAR_EV_MOUSE);
     CHECK(e && e->dx == 32 && e->dy == 16 && e->buttons == AAR_MOUSE_ABSOLUTE);
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
-    CHECK(hx_screens == 0 && hx_p96_bitmaps_live == 0);
-    /* the surface bitmap cannot be made: a screen of the surface's size, not scaled */
-    hx_p96_fail_alloc_bitmap = 1;
+    CHECK(hx_screens == 0 && refplat.surface_live == 0 && refplat.surface_frees == 1);
+    /* the surface cannot be allocated: a screen of the surface's size, not scaled */
+    refplat.surface_alloc_rc = AAR_E_NOMEM;
     CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_SCALE));
     CHECK(c.result == AAR_OK && c.flags == CAPS_BASE);
     CHECK(hx_cur_screen && hx_cur_screen->Width == (WORD)DW && hx_cur_screen->Height >= (WORD)DH);
@@ -3049,9 +3190,13 @@ static void test_a_window_is_resized_by_the_app(void)
     uint32_t arg[6], first_front, front2;
 
     setup("display_resize");
+    hx_pub_w = 100;
+    hx_pub_h = 60;
+    hx_pub_scanout = 1;
     make_serve();
     CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE));
     first_front = c.out[AAR_R_DISPLAY_OPEN_FRONT];
+    CHECK(c.result == AAR_OK && (c.flags & AAR_DISP_REPLY_SCANOUT) && c.out[AAR_R_DISPLAY_OPEN_SPARE] != 0);
     memset(arg, 0, sizeof(arg));
     arg[0] = AAR_SERVE_DISPLAY_ID;
     arg[1] = 100u;
@@ -3063,9 +3208,11 @@ static void test_a_window_is_resized_by_the_app(void)
     CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW | AAR_DISPCAP_RESIZE));
     front2 = c.out[AAR_R_DISPLAY_OPEN_FRONT];
     CHECK(front2 != 0 && front2 != first_front);
-    CHECK(hx_p96_bitmaps_live == 1 && hx_last_surface && hx_last_surface->Rows == 50);
+    /* the new surface was allocated before the old one was given back; the reply names no scanout */
+    CHECK(refplat.surface_live == 1 && refplat.surface_allocs == 2 && refplat.surface_frees == 1);
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_SPARE] == 0 && surface_rows(&c) >= 50);
     /* a flip shows the new surface (the inner area of the window did not change: 64 x 32 shown) */
-    fill_surface();
+    fill_surface(&c, 2);
     flip_once(31);
     CHECK(canvas_px(4 + 7, 11 + 9) == ((7u << 8) | 9u));
     /* the user resizes the window: the event carries the inner size */
@@ -3076,14 +3223,15 @@ static void test_a_window_is_resized_by_the_app(void)
     drain();
     CHECK(last_event(AAR_EV_RESIZE) && last_event(AAR_EV_RESIZE)->dx == 120 &&
           last_event(AAR_EV_RESIZE)->dy == 80);
-    /* a surface that cannot be made leaves the old one */
-    hx_p96_fail_alloc_bitmap = 1;
+    /* a surface that cannot be allocated leaves the old one, which the flips go on drawing */
+    refplat.surface_alloc_rc = AAR_E_NOMEM;
     arg[1] = 200u;
     arg[2] = 100u;
     CHECK(call6(AAR_OP_DISPLAY_RESIZE, 32, arg, 0, 0, &c));
-    CHECK(c.result == AAR_E_NOMEM && hx_p96_bitmaps_live == 1 && hx_last_surface->Rows == 50);
-    hx_p96_fail_alloc_bitmap = 0;
+    CHECK(c.result == AAR_E_NOMEM && refplat.surface_live == 1 && refplat.surface_frees == 1);
+    refplat.surface_alloc_rc = AAR_OK;
     flip_once(33);
+    CHECK(hx_pwa_last_mem == (const void *)(uintptr_t)refplat_ptr(front2));
     /* sizes outside 1..4096 */
     arg[1] = 0u;
     CHECK(call6(AAR_OP_DISPLAY_RESIZE, 34, arg, 0, 0, &c) && c.result == AAR_E_INVAL);
@@ -3775,88 +3923,101 @@ static uint32_t canvas_px4(uint32_t x, uint32_t y)
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
 
-/* Picasso96 may move a bitmap that is not locked, and the token is the bitmap's address, so
- * the surface is locked before the token is made and stays locked until the surface goes
- * (a resize or the close). The flips draw from the lock's RenderInfo and do not lock again.
- * The fake moves every unlocked bitmap when asked and trashes its old memory. */
-static void test_a_surface_is_locked_for_as_long_as_its_token_can_be_used(void)
+/* The token is the address of the surface's memory, so the memory is never moved and never
+ * locked: the platform allocates it once, the flips draw from that address, a resize allocates
+ * the new surface before the old one goes, a resize that fails leaves the old one in place, and
+ * the close (or the end of the instance) gives it back. No Picasso96 bitmap is made. */
+static void test_a_surface_keeps_its_address_for_as_long_as_its_token_can_be_used(void)
 {
     struct comp c;
-    struct BitMap *probe, *first, *second;
-    uint8_t *old, *addr1, *addr2;
-    uint32_t arg[6];
+    uint8_t *addr1, *addr2;
+    uint32_t arg[6], first_token;
 
-    setup("display_surface_pinned");
+    setup("display_surface_stable");
     hx_pub_w = 240;
     hx_pub_h = 160;
     make_serve();
-    /* the fake does move a bitmap that is not locked */
-    probe = hx_p96_alloc_bitmap(16, 8, 16, BMF_CLEAR, NULL, RGBFB_R5G6B5);
-    CHECK(probe != NULL);
-    if (probe) {
-        old = probe->Planes[0];
-        CHECK(hx_p96_relocate_unlocked() == 1 && probe->Planes[0] != old && old[0] == 0xEE);
-        hx_p96_free_bitmap(probe);
-    }
-    /* a window display: locked once, before anything is exported, and not locked again by flips */
     CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE));
-    CHECK(c.result == AAR_OK && c.out[AAR_R_DISPLAY_OPEN_FRONT] != 0);
-    first = hx_last_surface;
-    CHECK(first != NULL && first->hx_locked == 1 && hx_locks_live == 1 && hx_locks_taken == 1);
-    addr1 = first ? first->Planes[0] : NULL;
-    CHECK(hx_p96_relocate_unlocked() == 0 && first && first->Planes[0] == addr1);
-    fill_surface();
+    CHECK(c.result == AAR_OK && c.out[AAR_R_DISPLAY_OPEN_FRONT] >= REFPLAT_SURFACE_TOKEN_BASE);
+    CHECK(refplat.surface_allocs == 1 && refplat.surface_live == 1);
+    first_token = c.out[AAR_R_DISPLAY_OPEN_FRONT];
+    addr1 = surface_mem(&c);
+    CHECK(addr1 != NULL);
+    fill_surface(&c, 2);
     flip_once(21);
-    CHECK(hx_p96_relocate_unlocked() == 0 && first && first->Planes[0] == addr1);
+    CHECK(hx_pwa_last_mem == (const void *)addr1);
     flip_once(22);
-    CHECK(hx_pwa_calls == 2 && hx_locks_taken == 1 && hx_locks_live == 1);
+    CHECK(hx_pwa_calls == 2 && hx_pwa_last_mem == (const void *)addr1 && refplat.surface_allocs == 1);
     CHECK(canvas_px(4 + 10, 11 + 5) == ((10u << 8) | 5u));
-    /* a resize: the new surface is locked before the old one is let go, and the old one's
-     * lock is released exactly once */
+    /* a resize: the new surface exists before the old one is given back, at another address */
     memset(arg, 0, sizeof(arg));
     arg[0] = AAR_SERVE_DISPLAY_ID;
     arg[1] = 100u;
     arg[2] = 50u;
     CHECK(call6(AAR_OP_DISPLAY_RESIZE, 30, arg, 0, 0, &c) && c.result == AAR_OK);
-    second = hx_last_surface;
-    CHECK(second != NULL && second->hx_locked == 1 && hx_p96_bitmaps_live == 1);
-    CHECK(hx_locks_live == 1 && hx_locks_taken == 2);
-    addr2 = second ? second->Planes[0] : NULL;
-    CHECK(hx_p96_relocate_unlocked() == 0 && second && second->Planes[0] == addr2);
-    /* a lock that cannot be had leaves the old surface as it was, still locked */
-    hx_p96_fail_lock = 1;
+    addr2 = surface_mem(&c);
+    CHECK(addr2 != NULL && addr2 != addr1 && c.out[AAR_R_DISPLAY_OPEN_FRONT] != first_token);
+    CHECK(refplat.surface_allocs == 2 && refplat.surface_frees == 1 && refplat.surface_live == 1);
+    CHECK(addr1 && addr1[0] == 0xEE); /* the old block was given back */
+    fill_surface(&c, 2);
+    flip_once(31);
+    CHECK(hx_pwa_last_mem == (const void *)addr2);
+    /* a surface that cannot be allocated leaves the display as it was */
+    refplat.surface_alloc_rc = AAR_E_NOMEM;
     arg[1] = 200u;
     arg[2] = 100u;
-    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 31, arg, 0, 0, &c) && c.result == AAR_E_NOMEM);
-    hx_p96_fail_lock = 0;
-    CHECK(hx_p96_bitmaps_live == 1 && hx_locks_live == 1 && hx_locks_taken == 2);
-    CHECK(second && second->hx_locked == 1 && second->Planes[0] == addr2);
-    CHECK(hx_p96_relocate_unlocked() == 0 && second && second->Planes[0] == addr2);
-    flip_once(32);
-    CHECK(hx_pwa_calls == 3 && hx_locks_taken == 2);
-    /* the close lets go of the lock and the bitmap */
-    CHECK(call(AAR_OP_DISPLAY_CLOSE, 33, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
-    CHECK(hx_locks_live == 0 && hx_p96_bitmaps_live == 0);
-    /* a surface that cannot be locked is not exported: nothing is held */
-    hx_p96_fail_lock = 1;
-    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
-    CHECK(hx_locks_live == 0 && hx_p96_bitmaps_live == 0 && hx_locks_taken == 2);
+    CHECK(call6(AAR_OP_DISPLAY_RESIZE, 32, arg, 0, 0, &c) && c.result == AAR_E_NOMEM);
+    refplat.surface_alloc_rc = AAR_OK;
+    CHECK(refplat.surface_allocs == 2 && refplat.surface_frees == 1 && refplat.surface_live == 1);
+    flip_once(33);
+    CHECK(hx_pwa_last_mem == (const void *)addr2 && addr2 && addr2[2] == 1u);
+    /* the close gives the allocation back */
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 34, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
-    hx_p96_fail_lock = 0;
-    /* a scaled display on a screen has a surface of its own and pins it the same way */
-    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_SCALE));
-    CHECK(c.result == AAR_OK);
-    first = hx_last_surface;
-    CHECK(first != NULL && first->hx_locked == 1 && hx_locks_live == 1);
-    addr1 = first ? first->Planes[0] : NULL;
-    CHECK(hx_p96_relocate_unlocked() == 0 && first && first->Planes[0] == addr1);
+    CHECK(refplat.surface_live == 0 && refplat.surface_frees == 2 && addr2 && addr2[2] == 0xEE);
+    /* a scaled display on a screen has an allocation of its own in the same way, in the app's
+     * 32 bit format; the surface is no bitmap of the Workbench screen */
+    CHECK(open_display(&c, AAR_FMT_BGRA8888, AAR_DISPLAY_SCALE));
+    CHECK(c.result == AAR_OK && (c.flags & AAR_DISPCAP_SCALED));
+    CHECK(refplat.surface_allocs == 3 && refplat.surface_live == 1);
+    CHECK(c.out[AAR_R_DISPLAY_OPEN_PITCH] == ((DW * 4u + 15u) & ~15u));
+    fill_surface(&c, 4);
     flip_once(35);
-    CHECK(hx_locks_taken == 3 && hx_locks_live == 1);
-    /* the instance goes with the display open: the lock is released with the bitmap */
+    CHECK(refplat.surface_live == 1 && hx_pub_locks == 0);
+    /* the instance goes with the display open: the allocation goes with it */
     aar_serve_destroy(S);
     S = NULL;
     drain();
-    CHECK(hx_locks_live == 0 && hx_p96_bitmaps_live == 0);
+    CHECK(refplat.surface_live == 0 && refplat.surface_frees == 3 && refplat.surface_stale_frees == 0);
+    finish();
+}
+
+/* The allocation is the platform's, not the claim's: a resize with a lost claim allocates nothing
+ * and leaves the surface, and the instance gives it back although the claim was revoked. */
+static void test_a_revoked_claim_gives_its_surface_back(void)
+{
+    struct comp c;
+    struct aar_serve_req req;
+    struct aar_serve_done done;
+    uint32_t allocs;
+
+    setup("display_surface_revoked");
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE));
+    CHECK(c.result == AAR_OK && refplat.surface_live == 1);
+    allocs = refplat.surface_allocs;
+    revoke_notice_cb(NULL);
+    CHECK(!claim_check(S));
+    memset(&req, 0, sizeof(req));
+    req.op = AAR_OP_DISPLAY_RESIZE;
+    req.arg[AAR_A_DISPLAY_OPEN_W] = 100u;
+    req.arg[AAR_A_DISPLAY_OPEN_H] = 50u;
+    req.arg[AAR_A_DISPLAY_OPEN_FORMAT] = AAR_FMT_RGB565;
+    display_op_resize(S, &req, &done);
+    CHECK(done.result == AAR_E_NOMEM && refplat.surface_allocs == allocs && refplat.surface_live == 1);
+    aar_serve_destroy(S);
+    S = NULL;
+    drain();
+    CHECK(refplat.surface_live == 0 && refplat.surface_frees == 1 && refplat.surface_stale_frees == 0);
     finish();
 }
 
@@ -3867,7 +4028,8 @@ static void test_a_surface_is_locked_for_as_long_as_its_token_can_be_used(void)
 static void test_a_32_bit_surface_is_scaled_by_the_loop_in_its_own_byte_order(void)
 {
     struct comp c;
-    struct BitMap *bm;
+    uint8_t *px;
+    uint32_t pitch, rows;
     uint32_t x, y, ok = 1;
 
     setup("display_scale_bgra");
@@ -3876,14 +4038,16 @@ static void test_a_32_bit_surface_is_scaled_by_the_loop_in_its_own_byte_order(vo
     CHECK(open_display(&c, AAR_FMT_BGRA8888, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE |
                                               AAR_DISPLAY_RESIZABLE));
     CHECK(c.result == AAR_OK && (c.flags & AAR_DISPCAP_SCALED));
-    fill_surface();
+    fill_surface(&c, 4);
     /* the red and alpha bytes too, so that each byte of a pixel is told apart */
-    bm = hx_last_surface;
-    CHECK(bm != NULL);
-    for (y = 0; bm && y < bm->Rows; y++)
-        for (x = 0; x < (uint32_t)(bm->BytesPerRow / 4) && x < 256u; x++) {
-            bm->Planes[0][y * bm->BytesPerRow + x * 4u + 2u] = 0x5A;
-            bm->Planes[0][y * bm->BytesPerRow + x * 4u + 3u] = 0xA5;
+    px = surface_mem(&c);
+    pitch = c.out[AAR_R_DISPLAY_OPEN_PITCH];
+    rows = surface_rows(&c);
+    CHECK(px != NULL);
+    for (y = 0; px && y < rows; y++)
+        for (x = 0; x < pitch / 4u && x < 256u; x++) {
+            px[y * pitch + x * 4u + 2u] = 0x5A;
+            px[y * pitch + x * 4u + 3u] = 0xA5;
         }
     hx_cur_window->Width = (WORD)(DW * 2u + 8u);
     hx_cur_window->Height = (WORD)(DH * 2u + 11u + 10u);
@@ -3901,7 +4065,7 @@ static void test_a_32_bit_surface_is_scaled_by_the_loop_in_its_own_byte_order(vo
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     /* a 16 bit surface is scaled by the loop as well, in its own format */
     CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE));
-    fill_surface();
+    fill_surface(&c, 2);
     hx_cur_window->Width = (WORD)(DW * 2u + 8u);
     hx_cur_window->Height = (WORD)(DH * 2u + 11u + 10u);
     {
@@ -4099,6 +4263,7 @@ static const struct {
     T(test_the_window_keys_follow_break_mask),
     T(test_a_window_display_shows_its_surface_in_a_window_on_the_public_screen),
     T(test_a_window_that_the_public_screen_cannot_show_falls_back_to_a_screen),
+    T(test_the_window_surface_is_the_platforms_allocation_in_the_apps_format),
     T(test_a_scaled_window_keeps_the_aspect_and_follows_its_size),
     T(test_a_scaled_screen_has_a_surface_of_its_own),
     T(test_a_window_is_resized_by_the_app),
@@ -4114,7 +4279,8 @@ static const struct {
     T(test_cd32_ports_are_read_with_lowlevel),
     T(test_a_replacement_display_has_no_window_caps_and_serves_the_rest),
     T(test_a_32_bit_surface_is_scaled_by_the_loop_in_its_own_byte_order),
-    T(test_a_surface_is_locked_for_as_long_as_its_token_can_be_used),
+    T(test_a_surface_keeps_its_address_for_as_long_as_its_token_can_be_used),
+    T(test_a_revoked_claim_gives_its_surface_back),
 };
 
 /* A test that loops without the simulation moving is a failure, not a hang. */

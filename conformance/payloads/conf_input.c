@@ -162,6 +162,70 @@ static void test_sequence(const char *id, const char *kw, const struct ci_ev *wa
     conf_end(&t);
 }
 
+static int posted_event_allowed(uint16_t type, uint16_t caps)
+{
+    if (type == AAR_EV_TEXT)
+        return (caps & AAR_DISPCAP_TEXT_INPUT) != 0;
+    if (type == AAR_EV_CLOSE_REQUEST)
+        return (caps & AAR_DISPCAP_CLOSE_REQUEST) != 0;
+    return 1;
+}
+
+static void test_new_events(uint32_t groups)
+{
+    struct conf_test t;
+    aar_surface s;
+    uint16_t caps = 0;
+    uint32_t next = 0, received = 0;
+    int opened = 0, done = 0;
+    uint64_t started;
+
+    conf_begin(&t, "C-INPUT.15");
+    if (groups & AAR_GROUP_DISPLAY) {
+        opened = aar_display_open(320, 200, AAR_FMT_RGB565,
+                                  AAR_DISPLAY_WINDOW | AAR_DISPLAY_TEXT_INPUT |
+                                      AAR_DISPLAY_CLOSE_REQUEST, &s) == AAR_OK;
+        conf_check(&t, opened, "cannot open the display for capability-gated events");
+        if (opened)
+            caps = s.caps;
+    }
+    cmio_kw(CI_K_NEWEV, 0, 0, 0);
+    started = aar_time_us();
+    while (!done && aar_time_us() - started < 3000000u) {
+        aar_event events[8];
+        uint32_t n = 0, i;
+
+        if (aar_event_poll(events, 8, &n) != AAR_OK)
+            break;
+        for (i = 0; i < n; i++) {
+            uint32_t j;
+
+            /* Fixed timestamps distinguish the runner's posts from native
+             * input on the window. The last post is the end of the sequence. */
+            for (j = 0; j < CI_COUNT(ci_new) && ci_new[j].time_ms != events[i].time_ms; j++)
+                ;
+            if (j == CI_COUNT(ci_new))
+                continue;
+            while (next < CI_COUNT(ci_new) && !posted_event_allowed(ci_new[next].type, caps))
+                next++;
+            conf_check(&t, j == next && same(&events[i], &ci_new[j], 1),
+                       "a posted event was changed, missing, out of order or not granted");
+            next++;
+            received++;
+            if (j == CI_COUNT(ci_new) - 1u)
+                done = 1;
+        }
+        if (!n)
+            aar_sleep_us(1000);
+    }
+    conf_check(&t, done, "the runner's final active event did not arrive");
+    if (opened)
+        conf_check(&t, aar_display_close(s.id) == AAR_OK, "cannot close the test display");
+    conf_buf_u64(&t.note, received);
+    conf_buf_str(&t.note, " posted events in order with their granted capabilities");
+    conf_end(&t);
+}
+
 /* ---- C-INPUT.6: break signals ------------------------------------------------------------------ */
 
 static void test_breaks(void)
@@ -509,12 +573,12 @@ int aar_main(int argc, char **argv)
         test_sequence("C-INPUT.3", CI_K_KEYS, ci_keys, CI_COUNT(ci_keys), 1, "key");
         test_sequence("C-INPUT.4", CI_K_MOUSE, ci_mouse, CI_COUNT(ci_mouse), 0, "mouse");
         test_sequence("C-INPUT.5", CI_K_JOY, ci_joy, CI_COUNT(ci_joy), 0, "joystick");
-        test_sequence("C-INPUT.15", CI_K_NEWEV, ci_new, CI_COUNT(ci_new), 1, "text, wheel, close and focus");
         test_breaks();
         test_retention();
         test_mouse_full();
         test_abs_full();
         test_no_resize();
+        test_new_events(info.groups);
     }
     test_stop();
     return conf_finish("C-INPUT");

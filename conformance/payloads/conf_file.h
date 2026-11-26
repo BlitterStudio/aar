@@ -94,7 +94,7 @@
 #define CONF_FILE_PATTERN_BYTES (1024u * 1024u)
 #define CONF_FILE_BIG_BYTES ((16u * 1024u * 1024u) + 1u)
 
-/* Unix seconds 1000000000, and the AmigaDOS DateStamp that SetFileDate takes. */
+/* Unix seconds 1000000000, expressed as a DateStamp on a UTC clock. */
 #define CONF_FILE_MTIME 1000000000
 #define CONF_FILE_DATE_DAYS  8652u
 #define CONF_FILE_DATE_MINS  106u
