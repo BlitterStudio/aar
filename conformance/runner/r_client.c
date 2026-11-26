@@ -229,12 +229,11 @@ static LONG set_tag(AARHandle *h, ULONG tag, ULONG data)
 #define NOTE_HEAP 3UL
 #define NOTE_REQUIRED 0x3UL
 #define NOTE_OPTIONAL 0x14UL
-#define NOTE_MINOR 5UL
 
 static int info_matches(const AARImageInfo *ii, ULONG bytes, char *d)
 {
     if (ii->profile != conf_g.profile_value || ii->api_major != AAR_API_MAJOR ||
-        ii->api_minor_required != NOTE_MINOR || ii->note_version != 1UL) {
+        ii->api_minor_required != AAR_API_MINOR || ii->note_version != 1UL) {
         conf_detailf(d, "profile %lu, API %lu.%lu, note version %lu",
                      (unsigned long)ii->profile, (unsigned long)ii->api_major,
                      (unsigned long)ii->api_minor_required, (unsigned long)ii->note_version);
