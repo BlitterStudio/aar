@@ -335,6 +335,16 @@ static int load_tooltypes(void)
             if (project->wa_Name && project->wa_Name[0]) {
                 CurrentDir(project->wa_Lock);
                 project_icon = GetDiskObject(project->wa_Name);
+            } else if (project->wa_Lock) {
+                /* A drawer is its own lock with no name: its icon is found
+                 * by the drawer's path (a volume's by its name). */
+                char directory[512];
+                char path[512];
+
+                if (NameFromLock(project->wa_Lock, (STRPTR)directory,
+                                 (LONG)sizeof(directory)) &&
+                    aar_run_drawer_icon_path(directory, path, sizeof(path)))
+                    project_icon = GetDiskObject((STRPTR)path);
             }
         }
         CurrentDir(old);

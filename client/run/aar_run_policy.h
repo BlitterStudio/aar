@@ -1205,6 +1205,24 @@ static inline int aar_run_path_parent(const char *full, char *out, size_t cap)
     return 1;
 }
 
+/* A project WBArg with an empty name is a drawer, given as its own lock. Its
+ * icon is the .info beside it, which icon.library finds from the drawer's path
+ * without a trailing slash (`Work:Games` reads `Work:Games.info`); a volume,
+ * `Work:`, reads `Work:disk.info`. `dir` is the path NameFromLock gives. 0 when
+ * there is no path or `out` is too small. */
+static inline int aar_run_drawer_icon_path(const char *dir, char *out, size_t cap)
+{
+    size_t n = strlen(dir);
+
+    while (n > 0 && dir[n - 1] == '/')
+        n--;
+    if (n == 0 || n + 1 > cap)
+        return 0;
+    memcpy(out, dir, n);
+    out[n] = '\0';
+    return 1;
+}
+
 /* The first project of a Workbench start is the app when it is a file whose
  * probe did not say "not an AAR image". A drawer is never the app; a file the
  * probe could not open or read is the app too, so that the launch names the

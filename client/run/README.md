@@ -231,7 +231,9 @@ icon the user double-clicked when its default tool is aar-run, or the first
 icon selected when aar-run's own icon is shift-double-clicked. The ToolTypes of
 the project's icon are those of the app, so an app ships as `Game.elf` with a
 `Game.elf.info` whose default tool is aar-run and whose ToolTypes are its
-settings, with no copy of aar-run for each app.
+settings, with no copy of aar-run for each app. A drawer is a project too, and
+its icon is the one beside it (`Games.info` for the drawer `Games`, `disk.info`
+for a volume), so a drawer can carry `APP`, `ROOT` and the other ToolTypes.
 
 The first project is the app when it is an AAR image (`AARProbeFile` finds a
 valid note, whatever the platform), or a file the probe cannot open or read, so

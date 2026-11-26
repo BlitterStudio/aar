@@ -1563,6 +1563,30 @@ static void test_the_default_root_is_the_directory_of_the_image(void)
     assert(aar_run_path_parent("Work:Games/Q/quake.elf", small, sizeof(small)) == 0);
 }
 
+static void test_a_drawer_project_has_an_icon_by_its_path(void)
+{
+    char out[32];
+
+    /* the drawer's lock is its own, with no name: its path without a slash */
+    assert(aar_run_drawer_icon_path("Work:Games", out, sizeof(out)) &&
+           strcmp(out, "Work:Games") == 0);
+    assert(aar_run_drawer_icon_path("Work:Games/Q", out, sizeof(out)) &&
+           strcmp(out, "Work:Games/Q") == 0);
+    assert(aar_run_drawer_icon_path("Work:Games/", out, sizeof(out)) &&
+           strcmp(out, "Work:Games") == 0);
+    assert(aar_run_drawer_icon_path("Work:Games//", out, sizeof(out)) &&
+           strcmp(out, "Work:Games") == 0);
+    /* a volume keeps its colon: icon.library reads Work:disk.info */
+    assert(aar_run_drawer_icon_path("Work:", out, sizeof(out)) &&
+           strcmp(out, "Work:") == 0);
+    /* nothing to look up */
+    assert(!aar_run_drawer_icon_path("", out, sizeof(out)));
+    assert(!aar_run_drawer_icon_path("/", out, sizeof(out)));
+    /* the path has to fit with its NUL */
+    assert(aar_run_drawer_icon_path("Work:Ga", out, 8) && strcmp(out, "Work:Ga") == 0);
+    assert(!aar_run_drawer_icon_path("Work:Gam", out, 8));
+}
+
 static void test_the_first_project_is_the_app_unless_it_is_not_an_image(void)
 {
     /* an AAR image, or a file the probe could not open or read: the app */
@@ -1701,6 +1725,7 @@ int main(void)
     test_a_document_that_does_not_fit_is_reported();
     test_too_many_documents_hit_the_platform_limit();
     test_the_default_root_is_the_directory_of_the_image();
+    test_a_drawer_project_has_an_icon_by_its_path();
     test_the_first_project_is_the_app_unless_it_is_not_an_image();
     test_profile_files_are_tried_after_the_file_asked_for();
     test_profile_candidates_for_names_without_a_file_part();

@@ -822,6 +822,9 @@ mutant("a-drawer-can-be-the-app", "run_policy", "client/run/aar_run_policy.h",
        ("    return !is_directory && probe_rc != AAR_E_INVAL;", "    return probe_rc != AAR_E_INVAL;"))
 mutant("default-root-keeps-the-slash", "run_policy", "client/run/aar_run_policy.h",
        ("        cut--; /* the slash is not part of the directory's name */", "        ;"))
+mutant("drawer-icon-path-keeps-the-slash", "run_policy", "client/run/aar_run_policy.h",
+       ("    while (n > 0 && dir[n - 1] == '/')\n        n--;\n    if (n == 0 || n + 1 > cap)",
+        "    if (n == 0 || n + 1 > cap)"))
 mutant("dos-wait-in-a-step-arms-the-timer", "timer_ops", "client/serve/aar_serve_dos.c",
        ("    if (!s->closing && !s->in_step)", "    if (!s->closing)"))
 mutant("ahi-dry-not-counted", "ahi_gaps", "client/serve/aar_serve_ahi.c",
