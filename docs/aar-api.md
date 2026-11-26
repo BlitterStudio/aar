@@ -1848,7 +1848,8 @@ that type, and the call copies `min(bytes, *out_n)` bytes. It returns
 or one with no data of that type, is `AAR_E_NOENT`. A `unit` of
 `AAR_CLIP_UNITS` or more, or an unknown `type`, is `AAR_E_INVAL`.
 `AAR_CLIP_TEXT` is UTF-8 without a NUL; the client converts it from the FTXT
-charset, ISO-8859-1 unless a `CHRS` chunk says otherwise. The runtime moves a
+charset, ISO-8859-1 unless a `CSET` chunk says otherwise (`CHRS` chunks hold
+the text). The runtime moves a
 large clip in several requests, and the clip it reads is one consistent clip.
 Gate: `AAR_API_COVERS(api, clip_read)`. Missing slot: `AAR_E_NOSYS`. Minimum
 minor: 6.

@@ -34,6 +34,10 @@ int32_t aar_serve_errno_from_io(int32_t io_error)
         return AAR_E_NOMEM;
     case AAR_SERVE_IOERR_OBJECT_IN_USE:
         return AAR_E_BUSY;
+    case AAR_SERVE_IOERR_DIR_NOT_EMPTY:
+        return AAR_E_EXIST;
+    case AAR_SERVE_IOERR_RENAME_ACROSS_DEVICES:
+        return AAR_E_INVAL;
     case AAR_SERVE_IOERR_SEEK_ERROR:
         return AAR_E_INVAL;
     default:
@@ -47,6 +51,27 @@ uint32_t aar_serve_amiga_unix(uint32_t days, uint32_t minutes, uint32_t ticks)
         return 0;
     return (uint32_t)AAR_SERVE_UNIX_DELTA + days * 86400u + minutes * 60u +
            ticks / 50u;
+}
+
+int64_t aar_serve_utc_from_local(uint32_t local_unix, int32_t east_min)
+{
+    return (int64_t)local_unix - (int64_t)(east_min * 60);
+}
+
+int aar_serve_amiga_from_utc(int64_t utc, int32_t east_min, uint32_t *days,
+                             uint32_t *minutes, uint32_t *ticks)
+{
+    int64_t local = utc + (int64_t)(east_min * 60) - (int64_t)AAR_SERVE_UNIX_DELTA;
+    uint32_t secs;
+
+    /* A 32-bit count of seconds, as the Unix times of this file: until 2106. */
+    if (local < 0 || local > 0xffffffffLL)
+        return 0;
+    secs = (uint32_t)local;
+    *days = secs / 86400u;
+    *minutes = secs % 86400u / 60u;
+    *ticks = secs % 60u * 50u;
+    return 1;
 }
 
 static void done_clear(struct aar_serve_done *done)
@@ -79,6 +104,7 @@ void aar_serve_files_close_all(struct aar_serve_files *f)
         if (f->fh[i]) {
             f->dos->fh_end_or_close(f->dos->ctx, f->fh[i]);
             f->fh[i] = 0;
+            f->fh_write[i] = 0;
         }
         if (f->list[i]) {
             f->dos->list_close(f->dos->ctx, f->list[i]);
@@ -424,10 +450,17 @@ static int open_with_plan(const struct aar_serve_files *f,
                 *err = AAR_E_IO;
                 goto out;
             }
-            size = d->fh_set_size0(d->ctx, fh, &size_ok, &size_io);
+            size = d->fh_set_size(d->ctx, fh, 0, &size_ok, &size_io);
             if (!size_ok) {
                 d->fh_end_or_close(d->ctx, fh);
                 *err = AAR_E_IO;
+                goto out;
+            }
+            if (size > 0) {
+                /* Another handle's position kept the file from being emptied
+                 * (SetFileSize answers the size it left): not a truncation. */
+                d->fh_end_or_close(d->ctx, fh);
+                *err = AAR_E_BUSY;
                 goto out;
             }
             if (size < 0) {
@@ -529,6 +562,7 @@ static int32_t serve_open(struct aar_serve_files *f, const struct aar_serve_req 
         goto done;
     }
     f->fh[index] = fh;
+    f->fh_write[index] = (req->arg[AAR_A_FILE_OPEN_FLAGS] & AAR_FILE_WRITE) != 0;
     fh = 0;
 done:
     if (fh)
@@ -549,8 +583,10 @@ static int32_t serve_close(struct aar_serve_files *f, const struct aar_serve_req
         return AAR_E_BADF;
     if (!f->dos->fh_close(f->dos->ctx, f->fh[index], &delivered, &io))
         err = delivered ? lock_errno(io) : AAR_E_IO;
-    if (delivered)
+    if (delivered) {
         f->fh[index] = 0;
+        f->fh_write[index] = 0;
+    }
     return err;
 }
 
@@ -822,6 +858,8 @@ static int lock_named(struct aar_serve_files *f, const char *path,
     return 1;
 }
 
+static int files_utc_offset(const struct aar_serve_files *f, int32_t *east_min);
+
 static int32_t serve_stat(struct aar_serve_files *f, const struct aar_serve_req *req,
                           struct aar_serve_done *done)
 {
@@ -846,11 +884,21 @@ static int32_t serve_stat(struct aar_serve_files *f, const struct aar_serve_req 
         err = transport_ok ? lock_errno(io) : AAR_E_IO;
         goto done;
     }
-    done->out[AAR_R_STAT_SIZE_HI] = 0;
-    done->out[AAR_R_STAT_SIZE_LO] = info.size;
-    done->out[AAR_R_STAT_MTIME_HI] = 0;
-    done->out[AAR_R_STAT_MTIME_LO] = info.mtime;
+    {
+        int32_t east = 0;
+        int64_t utc = 0;
+
+        if (info.mtime) {
+            (void)files_utc_offset(f, &east);
+            utc = aar_serve_utc_from_local(info.mtime, east);
+        }
+        done->out[AAR_R_STAT_SIZE_HI] = 0;
+        done->out[AAR_R_STAT_SIZE_LO] = info.size;
+        done->out[AAR_R_STAT_MTIME_HI] = (uint32_t)((uint64_t)utc >> 32);
+        done->out[AAR_R_STAT_MTIME_LO] = (uint32_t)utc;
+    }
     done->out[AAR_R_STAT_MODE] = info.is_dir ? AAR_MODE_DIR : AAR_MODE_FILE;
+    done->out[AAR_R_STAT_PROTECT] = info.protect & 0xffu;
 done:
     if (locked)
         d->unlock(d->ctx, locked);
@@ -946,6 +994,424 @@ static int32_t serve_list_close(struct aar_serve_files *f,
     return AAR_OK;
 }
 
+/* ---- Names, dates, sizes and volumes --------------------------------------- */
+
+/* The user's UTC offset in minutes east of UTC; 1 when it is known. */
+static int files_utc_offset(const struct aar_serve_files *f, int32_t *east_min)
+{
+    *east_min = 0;
+    return f->dos->utc_offset ? f->dos->utc_offset(f->dos->ctx, east_min) : 0;
+}
+
+/* The object a request's path names: a relative path is a parent directory
+ * under the ROOT and a leaf name; a path with a volume or assign prefix (with
+ * ABS) is resolved by GetDeviceProc. A path that names the ROOT, a directory
+ * reached with `..`, or only a volume has no leaf to act on: AAR_E_ACCES. */
+struct aar_serve_loc {
+    char path[AAR_SERVE_PATH_BYTES];
+    char leaf[108];
+    uintptr_t dir;
+    int absolute;
+};
+
+static int loc_resolve(const struct aar_serve_files *f, const char *path,
+                       struct aar_serve_loc *l, int32_t *err)
+{
+    memset(l, 0, sizeof(*l));
+    if (path[0] == 0) {
+        *err = AAR_E_INVAL;
+        return 0;
+    }
+    memcpy(l->path, path, strlen(path) + 1);
+    if (strchr(path, ':')) {
+        if (!f->abs_paths || aar_serve_dos_packet_path(path)[0] == 0) {
+            *err = AAR_E_ACCES;
+            return 0;
+        }
+        l->absolute = 1;
+        return 1;
+    }
+    l->dir = resolve_rel(f, path, l->leaf, sizeof(l->leaf), err);
+    if (!l->dir)
+        return 0;
+    if (!l->leaf[0]) {
+        f->dos->unlock(f->dos->ctx, l->dir);
+        l->dir = 0;
+        *err = AAR_E_ACCES;
+        return 0;
+    }
+    return 1;
+}
+
+static void loc_release(const struct aar_serve_files *f, struct aar_serve_loc *l)
+{
+    if (l->dir) {
+        f->dos->unlock(f->dos->ctx, l->dir);
+        l->dir = 0;
+    }
+}
+
+static const char *loc_name(const struct aar_serve_loc *l)
+{
+    return l->absolute ? l->path : l->leaf;
+}
+
+/* A relative leaf that exists is under the ROOT (a link may lead out of it).
+ * What a missing leaf means depends on the plan, as for an open. */
+static int loc_confined(const struct aar_serve_files *f, const struct aar_serve_loc *l,
+                        enum aar_serve_open_plan plan, int32_t *err)
+{
+    return l->absolute || final_path_under_root(f, l->dir, l->leaf, plan, err);
+}
+
+static uintptr_t loc_lock(const struct aar_serve_files *f, const struct aar_serve_loc *l,
+                          int *transport_ok, int32_t *io)
+{
+    const struct aar_serve_dos_ops *d = f->dos;
+
+    return l->absolute ? d->lock_abs(d->ctx, l->path, transport_ok, io) :
+                         d->lock_rel(d->ctx, l->dir, l->leaf, transport_ok, io);
+}
+
+/* One packet that names the object, refused like every other change once a stop
+ * is under way. */
+static int32_t loc_named(const struct aar_serve_files *f, const struct aar_serve_loc *l,
+                         enum aar_serve_named kind,
+                         const struct aar_serve_named_args *args)
+{
+    const struct aar_serve_dos_ops *d = f->dos;
+    int transport_ok = 0;
+    int ok = 0;
+    int32_t io = 0;
+
+    d->target_begin(d->ctx, l->absolute ? 0 : l->dir, loc_name(l));
+    if (open_step_allowed(d))
+        ok = d->target_named(d->ctx, kind, args, &transport_ok, &io);
+    d->target_end(d->ctx);
+    if (ok)
+        return AAR_OK;
+    return transport_ok ? lock_errno(io) : AAR_E_IO;
+}
+
+/* FILE_DELETE, DIR_CREATE, FILE_SET_DATE and FILE_SET_PROTECT: the path in buf. */
+static int32_t serve_named(struct aar_serve_files *f, const struct aar_serve_req *req,
+                           enum aar_serve_named kind,
+                           const struct aar_serve_named_args *args)
+{
+    char path[AAR_SERVE_PATH_BYTES];
+    struct aar_serve_loc loc;
+    struct aar_serve_named_args none;
+    int32_t err = AAR_OK;
+
+    if (!args) {
+        memset(&none, 0, sizeof(none));
+        args = &none;
+    }
+
+    if (!f->dos->target_named)
+        return AAR_E_NOSYS;
+    if (!path_from_req(req, path, &err))
+        return err;
+    if (!f->dos->live(f->dos->ctx))
+        return AAR_E_IO;
+    if (!loc_resolve(f, path, &loc, &err))
+        return err;
+    if (loc_confined(f, &loc,
+                     kind == AAR_SERVE_NAMED_CREATE_DIR ? AAR_SERVE_OPEN_CREATE_EXCLUSIVE :
+                                                          AAR_SERVE_OPEN_READ_EXISTING,
+                     &err))
+        err = loc_named(f, &loc, kind, args);
+    loc_release(f, &loc);
+    return err;
+}
+
+static int32_t serve_set_date(struct aar_serve_files *f, const struct aar_serve_req *req)
+{
+    int64_t mtime = (int64_t)(((uint64_t)req->arg[AAR_A_FILE_DATE_HI] << 32) |
+                              req->arg[AAR_A_FILE_DATE_LO]);
+    struct aar_serve_named_args args;
+    int32_t east = 0;
+
+    memset(&args, 0, sizeof(args));
+    (void)files_utc_offset(f, &east);
+    if (!aar_serve_amiga_from_utc(mtime, east, &args.days, &args.minutes, &args.ticks))
+        return AAR_E_INVAL;
+    return serve_named(f, req, AAR_SERVE_NAMED_SET_DATE, &args);
+}
+
+static int32_t serve_set_protect(struct aar_serve_files *f, const struct aar_serve_req *req)
+{
+    struct aar_serve_named_args args;
+
+    memset(&args, 0, sizeof(args));
+    args.protect = req->arg[AAR_A_FILE_PROTECT];
+    if (args.protect & ~0xffu)
+        return AAR_E_INVAL;
+    return serve_named(f, req, AAR_SERVE_NAMED_SET_PROTECT, &args);
+}
+
+/* `from` NUL `to` NUL in buf. */
+static int two_paths_from_req(const struct aar_serve_req *req, char *from, char *to,
+                              int32_t *err)
+{
+    uint32_t i = 0;
+    uint32_t j;
+
+    if (!req->buf || req->buf_len == 0)
+        goto bad;
+    for (;; i++) {
+        if (i >= req->buf_len || i >= AAR_SERVE_PATH_BYTES)
+            goto bad;
+        from[i] = (char)req->buf[i];
+        if (from[i] == 0)
+            break;
+    }
+    i++;
+    for (j = 0;; j++) {
+        if (i + j >= req->buf_len || j >= AAR_SERVE_PATH_BYTES)
+            goto bad;
+        to[j] = (char)req->buf[i + j];
+        if (to[j] == 0)
+            break;
+    }
+    return 1;
+bad:
+    *err = AAR_E_INVAL;
+    return 0;
+}
+
+/* Before the rename: a target that is the source itself (the same object, found
+ * by comparing the two locks, not the two names) leaves nothing to do, with or
+ * without AAR_RENAME_REPLACE (*same). With AAR_RENAME_REPLACE any other
+ * existing target goes first. A target that is a directory with entries stays,
+ * and the call fails with AAR_E_EXIST. */
+static int32_t rename_prepare(const struct aar_serve_files *f,
+                              const struct aar_serve_loc *from,
+                              const struct aar_serve_loc *to, int replace, int *same)
+{
+    const struct aar_serve_dos_ops *d = f->dos;
+    struct aar_serve_named_args none;
+    int transport_ok = 0;
+    int32_t io = 0;
+    uintptr_t target;
+    uintptr_t source;
+    int32_t replace_ok = AAR_OK;
+
+    memset(&none, 0, sizeof(none));
+    *same = 0;
+    target = loc_lock(f, to, &transport_ok, &io);
+    if (!target) {
+        /* There is no target to compare or delete. Whatever else kept the
+         * lock from us is the rename's to report, unless it must delete. */
+        if (!replace || (transport_ok && (io == AAR_SERVE_IOERR_OBJECT_NOT_FOUND ||
+                                          io == AAR_SERVE_IOERR_DIR_NOT_FOUND)))
+            return AAR_OK;
+        return transport_ok ? lock_errno(io) : AAR_E_IO;
+    }
+    source = loc_lock(f, from, &transport_ok, &io);
+    if (!source) {
+        d->unlock(d->ctx, target);
+        return transport_ok ? lock_errno(io) : AAR_E_IO;
+    }
+    *same = d->same_lock(d->ctx, source, target);
+    if (replace && !*same)
+        replace_ok = d->check_replace ?
+            d->check_replace(d->ctx, source, target,
+                             from->absolute ? loc_name(from) : NULL,
+                             to->absolute ? loc_name(to) : NULL) : AAR_E_NOSYS;
+    d->unlock(d->ctx, source);
+    d->unlock(d->ctx, target);
+    if (*same || !replace)
+        return AAR_OK;
+    if (replace_ok != AAR_OK)
+        return replace_ok;
+    return loc_named(f, to, AAR_SERVE_NAMED_DELETE, &none);
+}
+
+static int32_t serve_rename(struct aar_serve_files *f, const struct aar_serve_req *req)
+{
+    const struct aar_serve_dos_ops *d = f->dos;
+    char from_path[AAR_SERVE_PATH_BYTES];
+    char to_path[AAR_SERVE_PATH_BYTES];
+    struct aar_serve_loc from;
+    struct aar_serve_loc to;
+    uint32_t flags = req->arg[AAR_A_FILE_RENAME_FLAGS];
+    int32_t err = AAR_OK;
+    int32_t io = 0;
+    int transport_ok = 0;
+    int same = 0;
+    int ok;
+
+    if (!d->rename || !d->target_named)
+        return AAR_E_NOSYS;
+    if (flags & ~(uint32_t)AAR_RENAME_REPLACE)
+        return AAR_E_INVAL;
+    if (!two_paths_from_req(req, from_path, to_path, &err))
+        return err;
+    if (!d->live(d->ctx))
+        return AAR_E_IO;
+    memset(&from, 0, sizeof(from));
+    memset(&to, 0, sizeof(to));
+    if (!loc_resolve(f, from_path, &from, &err) || !loc_resolve(f, to_path, &to, &err))
+        goto done;
+    if (!loc_confined(f, &from, AAR_SERVE_OPEN_READ_EXISTING, &err) ||
+        !loc_confined(f, &to,
+                      (flags & AAR_RENAME_REPLACE) ? AAR_SERVE_OPEN_CREATE_KEEP :
+                                                     AAR_SERVE_OPEN_CREATE_EXCLUSIVE,
+                      &err))
+        goto done;
+    /* An early handler check also covers a rename to a missing target.
+     * Matching ports alone do not authorise a replacement delete. */
+    if (d->same_volume && d->same_volume(d->ctx, from.absolute ? 0 : from.dir,
+                                         loc_name(&from), to.absolute ? 0 : to.dir,
+                                         loc_name(&to)) == 0) {
+        err = AAR_E_INVAL;
+        goto done;
+    }
+    err = rename_prepare(f, &from, &to, (flags & AAR_RENAME_REPLACE) != 0, &same);
+    if (err != AAR_OK || same)
+        goto done;
+    if (!open_step_allowed(d)) {
+        err = AAR_E_IO;
+        goto done;
+    }
+    ok = d->rename(d->ctx, from.absolute ? 0 : from.dir, loc_name(&from),
+                   to.absolute ? 0 : to.dir, loc_name(&to), &transport_ok, &io);
+    err = ok ? AAR_OK : (transport_ok ? lock_errno(io) : AAR_E_IO);
+done:
+    loc_release(f, &from);
+    loc_release(f, &to);
+    return err;
+}
+
+/* A file's length is set to size. Shorter: ACTION_SET_FILE_SIZE. Longer: the
+ * new bytes are written as zeros, because handlers differ on what a longer
+ * SET_FILE_SIZE leaves in them and the spec says zeros. The position stays
+ * where it was, as with ftruncate, unless the file now ends before it. */
+static int32_t serve_truncate(struct aar_serve_files *f, const struct aar_serve_req *req)
+{
+    const struct aar_serve_dos_ops *d = f->dos;
+    int32_t err = AAR_OK;
+    int index = slot_index((int32_t)req->arg[AAR_A_FILE_TRUNC_FD], &err);
+    uint64_t size = ((uint64_t)req->arg[AAR_A_FILE_TRUNC_SIZE_HI] << 32) |
+                    req->arg[AAR_A_FILE_TRUNC_SIZE_LO];
+    int32_t cur = 0;
+    int32_t length = 0;
+    int32_t io = 0;
+    uintptr_t fh;
+
+    if (index < 0 || !f->fh[index] || !f->fh_write[index])
+        return AAR_E_BADF;
+    if (size > 0x7fffffffULL)
+        return AAR_E_INVAL;
+    fh = f->fh[index];
+    if (!d->live(d->ctx) || !open_step_allowed(d))
+        return AAR_E_IO;
+    err = seek_bounds(f, fh, 1, &cur, &length, &io);
+    if (err != AAR_OK)
+        return err;
+    if (size < (uint64_t)length) {
+        int transport_ok = 0;
+        int32_t result = d->fh_set_size(d->ctx, fh, (uint32_t)size, &transport_ok, &io);
+
+        if (!transport_ok)
+            return AAR_E_IO;
+        if (result < 0)
+            return lock_errno(io);
+        /* SetFileSize cannot cut below the position of another handle on the
+         * file: it answers a larger size, not an error. The file stays longer
+         * than asked, so the truncation did not happen. */
+        if ((uint64_t)result != size)
+            return AAR_E_BUSY;
+    } else if (size > (uint64_t)length) {
+        uint64_t left = size - (uint64_t)length;
+        int transport_ok = 0;
+
+        if (d->fh_seek(d->ctx, fh, 0, 2, &transport_ok, &io) < 0)
+            return transport_ok ? lock_errno(io) : AAR_E_IO;
+        memset(f->io, 0, sizeof(f->io));
+        while (left) {
+            uint32_t chunk = left > AAR_SERVE_IO_CHUNK ? AAR_SERVE_IO_CHUNK : (uint32_t)left;
+            int32_t n;
+
+            if (!open_step_allowed(d)) {
+                err = AAR_E_IO;
+                break;
+            }
+            n = d->fh_write(d->ctx, fh, f->io, chunk, &transport_ok, &io);
+            if (!transport_ok) {
+                err = AAR_E_IO;
+                break;
+            }
+            if (n < 0) {
+                err = lock_errno(io);
+                break;
+            }
+            if (n == 0) {
+                err = AAR_E_NOSPC;
+                break;
+            }
+            left -= (uint32_t)n;
+        }
+        if (err != AAR_OK) {
+            /* The file is longer by what was written, but the descriptor stays
+             * where it was: the offset is put back, as far as that works, and
+             * the extension's own error is the answer. */
+            int back_ok = 0;
+            int32_t back_io = 0;
+
+            (void)d->fh_seek(d->ctx, fh, cur, 0, &back_ok, &back_io);
+            return err;
+        }
+    }
+    if ((uint64_t)cur <= size) {
+        int transport_ok = 0;
+
+        if (d->fh_seek(d->ctx, fh, cur, 0, &transport_ok, &io) < 0)
+            return transport_ok ? lock_errno(io) : AAR_E_IO;
+    }
+    return AAR_OK;
+}
+
+static int32_t serve_volume_info(struct aar_serve_files *f, const struct aar_serve_req *req,
+                                 struct aar_serve_done *done)
+{
+    const struct aar_serve_dos_ops *d = f->dos;
+    char path[AAR_SERVE_PATH_BYTES];
+    struct aar_serve_volume vol;
+    uintptr_t dir = 0;
+    uintptr_t locked = 0;
+    int transport_ok = 0;
+    int32_t io = 0;
+    int32_t err = AAR_OK;
+
+    if (!d->volume_info)
+        return AAR_E_NOSYS;
+    if (!path_from_req(req, path, &err))
+        return err;
+    if (path[0] == 0)
+        return AAR_E_INVAL;
+    if (!d->live(d->ctx))
+        return AAR_E_IO;
+    if (!lock_named(f, path, 0, &dir, &locked, &err))
+        goto done;
+    memset(&vol, 0, sizeof(vol));
+    if (!d->volume_info(d->ctx, locked, &vol, &transport_ok, &io)) {
+        err = transport_ok ? lock_errno(io) : AAR_E_IO;
+        goto done;
+    }
+    done->out[AAR_R_VOLUME_BLOCKS_TOTAL] = vol.blocks_total;
+    done->out[AAR_R_VOLUME_BLOCKS_USED] = vol.blocks_used;
+    done->out[AAR_R_VOLUME_BLOCK_BYTES] = vol.block_bytes;
+    done->out[AAR_R_VOLUME_FLAGS] = vol.read_only ? AAR_VOLF_READONLY : 0u;
+done:
+    if (locked)
+        d->unlock(d->ctx, locked);
+    if (dir)
+        d->unlock(d->ctx, dir);
+    return err;
+}
+
 void aar_serve_files_serve(struct aar_serve_files *f, const struct aar_serve_req *req,
                            struct aar_serve_done *done)
 {
@@ -962,6 +1428,601 @@ void aar_serve_files_serve(struct aar_serve_files *f, const struct aar_serve_req
     case AAR_OP_LIST_OPEN: result = serve_list_open(f, req); break;
     case AAR_OP_LIST_NEXT: result = serve_list_next(f, req, done); break;
     case AAR_OP_LIST_CLOSE: result = serve_list_close(f, req); break;
+    case AAR_OP_FILE_DELETE:
+        result = serve_named(f, req, AAR_SERVE_NAMED_DELETE, NULL);
+        break;
+    case AAR_OP_FILE_RENAME: result = serve_rename(f, req); break;
+    case AAR_OP_DIR_CREATE:
+        result = serve_named(f, req, AAR_SERVE_NAMED_CREATE_DIR, NULL);
+        break;
+    case AAR_OP_FILE_SET_DATE: result = serve_set_date(f, req); break;
+    case AAR_OP_FILE_SET_PROTECT: result = serve_set_protect(f, req); break;
+    case AAR_OP_FILE_TRUNCATE: result = serve_truncate(f, req); break;
+    case AAR_OP_VOLUME_INFO: result = serve_volume_info(f, req, done); break;
+    default: result = AAR_E_NOSYS; break;
+    }
+    done->result = result;
+}
+
+/* ---- Locale, time, environment and clipboard ------------------------------ */
+
+uint32_t aar_serve_latin1_to_utf8(const uint8_t *src, uint32_t n, uint8_t *dst,
+                                  uint32_t cap)
+{
+    uint32_t i;
+    uint32_t o = 0;
+
+    for (i = 0; i < n; i++) {
+        uint8_t c = src[i];
+
+        if (c < 0x80u) {
+            if (o + 1u > cap)
+                break;
+            dst[o++] = c;
+        } else {
+            if (o + 2u > cap)
+                break;
+            dst[o++] = (uint8_t)(0xC0u | (c >> 6));
+            dst[o++] = (uint8_t)(0x80u | (c & 0x3Fu));
+        }
+    }
+    return o;
+}
+
+uint32_t aar_serve_utf8_to_latin1(const uint8_t *src, uint32_t n, uint8_t *dst)
+{
+    uint32_t i = 0;
+    uint32_t o = 0;
+
+    while (i < n) {
+        uint8_t c = src[i];
+        uint32_t cp = c;
+        uint32_t len = 1;
+        int ok = 1;
+
+        if (c >= 0xC2u && c <= 0xDFu) {
+            len = 2;
+            cp = c & 0x1Fu;
+        } else if (c >= 0xE0u && c <= 0xEFu) {
+            len = 3;
+            cp = c & 0x0Fu;
+        } else if (c >= 0xF0u && c <= 0xF4u) {
+            len = 4;
+            cp = c & 0x07u;
+        } else if (c >= 0x80u) {
+            ok = 0;
+        }
+        if (ok && len > 1) {
+            uint32_t k;
+
+            if (i + len > n) {
+                ok = 0;
+            } else {
+                for (k = 1; k < len; k++) {
+                    if ((src[i + k] & 0xC0u) != 0x80u) {
+                        ok = 0;
+                        break;
+                    }
+                    cp = (cp << 6) | (src[i + k] & 0x3Fu);
+                }
+            }
+            if (ok && ((len == 3 && cp < 0x800u) || (len == 4 && cp < 0x10000u)))
+                ok = 0;
+        }
+        if (!ok) {
+            /* A malformed sequence is one '?', with the continuation bytes it
+             * carries. */
+            uint32_t skipped = 0;
+
+            dst[o++] = '?';
+            i++;
+            if (c >= 0xC0u)
+                while (i < n && skipped < 3u && (src[i] & 0xC0u) == 0x80u) {
+                    i++;
+                    skipped++;
+                }
+            continue;
+        }
+        dst[o++] = cp <= 0xFFu ? (uint8_t)cp : (uint8_t)'?';
+        i += len;
+    }
+    return o;
+}
+
+void aar_serve_host_init(struct aar_serve_host *h, const struct aar_serve_host_ops *ops,
+                         uint32_t policy)
+{
+    memset(h, 0, sizeof(*h));
+    h->ops = *ops;
+    h->policy = policy;
+}
+
+static void host_drop_read(struct aar_serve_host *h)
+{
+    if (h->rd)
+        h->ops.mem_free(h->ops.ctx, h->rd);
+    h->rd = NULL;
+    h->rd_bytes = 0;
+}
+
+static void host_drop_write(struct aar_serve_host *h)
+{
+    if (h->wr)
+        h->ops.mem_free(h->ops.ctx, h->wr);
+    h->wr = NULL;
+    h->wr_bytes = 0;
+    h->wr_total = 0;
+    h->wr_active = 0;
+}
+
+void aar_serve_host_close(struct aar_serve_host *h)
+{
+    if (!h->ops.mem_free)
+        return;
+    host_drop_read(h);
+    host_drop_write(h);
+}
+
+/* TIME_UNIX: the clock is the user's local time; the offset of locale.library
+ * (minutes west) brings it to UTC. Without locale.library the value can be off
+ * by the user's offset, and the flag says so. */
+static int32_t host_time(struct aar_serve_host *h, struct aar_serve_done *done)
+{
+    struct aar_serve_locale loc;
+    uint32_t days = 0;
+    uint32_t minutes = 0;
+    uint32_t ticks = 0;
+    int known;
+    uint32_t local;
+    int64_t utc;
+    uint64_t us;
+
+    if (!h->ops.live(h->ops.ctx))
+        return AAR_E_IO;
+    memset(&loc, 0, sizeof(loc));
+    h->ops.datestamp(h->ops.ctx, &days, &minutes, &ticks);
+    known = h->ops.locale(h->ops.ctx, &loc);
+    /* 32-bit arithmetic: the 68000 family has no 64-bit multiply or divide
+     * without a library call, and the clock is a 32-bit count of seconds
+     * until 2106. */
+    local = days * 86400u + minutes * 60u + ticks / 50u;
+    utc = (int64_t)AAR_SERVE_UNIX_DELTA + (int64_t)local;
+    if (known)
+        utc += (int64_t)(loc.gmt_west_min * 60);
+    us = (uint64_t)(uint32_t)utc * 1000000u + (uint64_t)((ticks % 50u) * 20000u);
+    done->out[AAR_R_TIME_UNIX_US_HI] = (uint32_t)(us >> 32);
+    done->out[AAR_R_TIME_UNIX_US_LO] = (uint32_t)us;
+    done->out[AAR_R_TIME_UNIX_FLAGS] = known ? AAR_LOCALEF_OFFSET_KNOWN : 0u;
+    return AAR_OK;
+}
+
+static uint32_t cstr_len(const char *s, uint32_t cap)
+{
+    uint32_t n = 0;
+
+    while (n < cap && s[n])
+        n++;
+    return n;
+}
+
+/* A string of locale.library as UTF-8 in a field of cap bytes that is
+ * NUL-terminated: only whole characters. */
+static void locale_text(uint8_t *field, uint32_t cap, const char *latin1, uint32_t max)
+{
+    uint32_t n = aar_serve_latin1_to_utf8((const uint8_t *)latin1,
+                                          cstr_len(latin1, max), field, cap - 1u);
+
+    field[n] = 0;
+}
+
+static int32_t host_locale_info(struct aar_serve_host *h, const struct aar_serve_req *req)
+{
+    static const char suffix[] = ".language";
+    struct aar_serve_locale loc;
+    uint8_t *rec = req->buf;
+    uint32_t n;
+    uint32_t shift;
+    uint32_t put = 0;
+    int known;
+
+    if (!rec || req->buf_len < AAR_LOCALE_REC_BYTES)
+        return AAR_E_INVAL;
+    if (!h->ops.live(h->ops.ctx))
+        return AAR_E_IO;
+    memset(&loc, 0, sizeof(loc));
+    known = h->ops.locale(h->ops.ctx, &loc);
+    memset(rec, 0, AAR_LOCALE_REC_BYTES);
+    aar_serve_put_be32(rec + AAR_LOCALE_REC_UTC_OFFSET_MIN,
+                       (uint32_t)(-(int64_t)loc.gmt_west_min));
+    aar_serve_put_be32(rec + AAR_LOCALE_REC_FLAGS, known ? AAR_LOCALEF_OFFSET_KNOWN : 0u);
+    /* "english.language" is "english". */
+    n = cstr_len(loc.language, sizeof(loc.language));
+    if (n >= sizeof(suffix) - 1u &&
+        memcmp(loc.language + n - (sizeof(suffix) - 1u), suffix, sizeof(suffix) - 1u) == 0)
+        n -= (uint32_t)sizeof(suffix) - 1u;
+    if (n > 31u)
+        n = 31u;
+    memcpy(rec + AAR_LOCALE_REC_LANGUAGE, loc.language, n);
+    /* The country code is up to four characters in the bytes of a ULONG. */
+    for (shift = 24; ; shift -= 8) {
+        uint8_t c = (uint8_t)(loc.country >> shift);
+
+        if (c && put < 7u)
+            rec[AAR_LOCALE_REC_COUNTRY + put++] = c;
+        if (shift == 0)
+            break;
+    }
+    locale_text(rec + AAR_LOCALE_REC_DECIMAL_POINT, 4u, loc.decimal_point,
+                sizeof(loc.decimal_point));
+    locale_text(rec + AAR_LOCALE_REC_GROUP_SEPARATOR, 4u, loc.group_separator,
+                sizeof(loc.group_separator));
+    return AAR_OK;
+}
+
+/* A name that would leave ENV: is not a variable of ENV:. AmigaDOS reads
+ * a name by components: a volume (a colon), a leading slash and an empty
+ * component (two slashes in a row: each one past the first is a parent) all
+ * climb out of the directory, so every component must be a non-empty name, and
+ * not ".." (not special to AmigaDOS, but never a variable's name). */
+static int env_name_confined(const char *name)
+{
+    const char *comp = name;
+
+    if (strchr(name, ':'))
+        return 0;
+    for (;;) {
+        const char *end = comp;
+
+        while (*end && *end != '/')
+            end++;
+        if (end == comp || (end - comp == 2 && comp[0] == '.' && comp[1] == '.'))
+            return 0;
+        if (*end == 0)
+            return 1;
+        comp = end + 1;
+    }
+}
+
+static int32_t host_env_get(struct aar_serve_host *h, const struct aar_serve_req *req,
+                            struct aar_serve_done *done)
+{
+    char name[AAR_SERVE_ENV_NAME_MAX + 1u];
+    uint32_t i;
+    uint32_t full = 0;
+    int32_t rc;
+
+    if (h->policy & AAR_SERVE_HOST_NO_ENV)
+        return AAR_E_ACCES;
+    if (!req->buf)
+        return AAR_E_INVAL;
+    for (i = 0; i <= AAR_SERVE_ENV_NAME_MAX && i < req->buf_len; i++) {
+        name[i] = (char)req->buf[i];
+        if (name[i] == 0)
+            break;
+    }
+    /* No NUL in 256 bytes, no NUL in the buffer, or an empty name. */
+    if (i > AAR_SERVE_ENV_NAME_MAX || i >= req->buf_len || i == 0)
+        return AAR_E_INVAL;
+    if (!env_name_confined(name))
+        return AAR_E_ACCES;
+    if (!h->ops.live(h->ops.ctx))
+        return AAR_E_IO;
+    rc = h->ops.env_get(h->ops.ctx, name, req->buf, req->buf_len, &full);
+    if (rc != AAR_OK)
+        return rc;
+    /* The NUL follows the value when it fits; the runtime sees the full
+     * length and decides AAR_E_NOSPC from it. */
+    if (full < req->buf_len)
+        req->buf[full] = 0;
+    done->out[AAR_R_ENV_LEN] = full;
+    return AAR_OK;
+}
+
+#define IFF_ID(a, b, c, d) (((uint32_t)(a) << 24) | ((uint32_t)(b) << 16) | \
+                            ((uint32_t)(c) << 8) | (uint32_t)(d))
+#define IFF_FORM IFF_ID('F', 'O', 'R', 'M')
+#define IFF_FTXT IFF_ID('F', 'T', 'X', 'T')
+#define IFF_CHRS IFF_ID('C', 'H', 'R', 'S')
+#define IFF_CSET IFF_ID('C', 'S', 'E', 'T')
+/* CSET code sets are IANA MIBenum values: 106 is UTF-8; 0 (the IFF default),
+ * 3 (ASCII), 4 (ISO-8859-1) and every code set not known here read as
+ * ISO-8859-1. */
+#define CSET_UTF8 106u
+
+/* The next chunk of the body of a form that ends at end: *pos is the offset of
+ * the chunk's header and moves to the next one. The data is clipped to the
+ * form. 0 at the end. */
+static int form_next(const uint8_t *raw, uint32_t end, uint32_t *pos, uint32_t *id,
+                     const uint8_t **data, uint32_t *avail)
+{
+    uint32_t size;
+    uint64_t next;
+
+    if ((uint64_t)*pos + 8u > end)
+        return 0;
+    *id = aar_serve_be32(raw + *pos);
+    size = aar_serve_be32(raw + *pos + 4u);
+    *data = raw + *pos + 8u;
+    *avail = size;
+    if (*avail > end - (*pos + 8u))
+        *avail = end - (*pos + 8u);
+    next = (uint64_t)*pos + 8u + size + (size & 1u);
+    *pos = next > end ? end : (uint32_t)next;
+    return 1;
+}
+
+/* The extent of the form at the start of raw: 8 + its size and the pad byte
+ * that follows an odd size, but not beyond the data there is. 0: it is not a
+ * form. */
+static uint32_t form_extent(const uint8_t *raw, uint32_t rawlen)
+{
+    uint32_t size;
+    uint32_t extent;
+
+    if (rawlen < 12u || aar_serve_be32(raw) != IFF_FORM)
+        return 0;
+    size = aar_serve_be32(raw + 4);
+    if (size < 4u)
+        return 0;
+    if (size > rawlen - 8u)
+        return rawlen;
+    extent = 8u + size + (size & 1u);
+    return extent > rawlen ? rawlen : extent;
+}
+
+/* The text of an FTXT form: its CHRS chunks in order, as UTF-8. */
+static int32_t clip_text_from_form(struct aar_serve_host *h, const uint8_t *raw,
+                                   uint32_t rawlen, uint8_t **out, uint32_t *out_bytes)
+{
+    uint32_t end = form_extent(raw, rawlen);
+    uint32_t pos = 12;
+    uint32_t id;
+    uint32_t avail;
+    uint64_t total = 0;
+    uint64_t need;
+    uint32_t cset = 0;
+    uint32_t n = 0;
+    uint32_t i;
+    int have_cset = 0;
+    int utf8;
+    const uint8_t *data;
+    uint8_t *text;
+
+    if (!end || aar_serve_be32(raw + 8) != IFF_FTXT)
+        return AAR_E_NOENT;
+    while (form_next(raw, end, &pos, &id, &data, &avail)) {
+        if (id == IFF_CSET && avail >= 4u && !have_cset) {
+            cset = aar_serve_be32(data);
+            have_cset = 1;
+        } else if (id == IFF_CHRS) {
+            total += avail;
+        }
+    }
+    if (total == 0)
+        return AAR_E_NOENT;
+    utf8 = have_cset && cset == CSET_UTF8;
+    /* The text limit is on the UTF-8 text, not on the stream it came in (that
+     * has the wrapper's chunk headers too): its exact length is counted, then
+     * the text is made in a buffer of that size. */
+    need = total;
+    if (!utf8) {
+        pos = 12;
+        while (form_next(raw, end, &pos, &id, &data, &avail)) {
+            if (id != IFF_CHRS)
+                continue;
+            for (i = 0; i < avail; i++)
+                if (data[i] >= 0x80u)
+                    need++;
+        }
+    }
+    if (need > AAR_SERVE_CLIP_MAX)
+        return AAR_E_NOMEM;
+    text = h->ops.mem_alloc(h->ops.ctx, (uint32_t)need);
+    if (!text)
+        return AAR_E_NOMEM;
+    pos = 12;
+    while (form_next(raw, end, &pos, &id, &data, &avail)) {
+        if (id != IFF_CHRS)
+            continue;
+        if (utf8) {
+            memcpy(text + n, data, avail);
+            n += avail;
+        } else {
+            n += aar_serve_latin1_to_utf8(data, avail, text + n, (uint32_t)need - n);
+        }
+    }
+    *out = text;
+    *out_bytes = n;
+    return AAR_OK;
+}
+
+/* The clip of unit in type, held for the read sequence. */
+static int32_t clip_load(struct aar_serve_host *h, uint32_t unit, uint32_t type)
+{
+    uint8_t *raw = NULL;
+    uint32_t rawlen = 0;
+    int32_t rc;
+
+    host_drop_read(h);
+    rc = h->ops.clip_read(h->ops.ctx, unit, &raw, &rawlen);
+    if (rc != AAR_OK)
+        return rc;
+    if (type == AAR_CLIP_TEXT) {
+        uint8_t *text = NULL;
+        uint32_t bytes = 0;
+
+        rc = clip_text_from_form(h, raw, rawlen, &text, &bytes);
+        h->ops.mem_free(h->ops.ctx, raw);
+        if (rc != AAR_OK)
+            return rc;
+        h->rd = text;
+        h->rd_bytes = bytes;
+    } else {
+        uint32_t extent = form_extent(raw, rawlen);
+
+        if (!extent) {
+            h->ops.mem_free(h->ops.ctx, raw);
+            return AAR_E_NOENT;
+        }
+        /* The raw data was taken with room for a text's wrapper: an IFF clip
+         * has the limit of the clip itself. */
+        if (extent > AAR_SERVE_CLIP_MAX) {
+            h->ops.mem_free(h->ops.ctx, raw);
+            return AAR_E_NOMEM;
+        }
+        h->rd = raw;
+        h->rd_bytes = extent;
+    }
+    h->rd_unit = unit;
+    h->rd_type = type;
+    return AAR_OK;
+}
+
+static int clip_args(const struct aar_serve_req *req, uint32_t *unit, uint32_t *type)
+{
+    *unit = req->arg[AAR_A_CLIP_UNIT];
+    *type = req->arg[AAR_A_CLIP_TYPE];
+    return *unit < AAR_CLIP_UNITS && (*type == AAR_CLIP_TEXT || *type == AAR_CLIP_IFF);
+}
+
+static int32_t host_clip_read(struct aar_serve_host *h, const struct aar_serve_req *req,
+                              struct aar_serve_done *done)
+{
+    uint32_t unit;
+    uint32_t type;
+    uint32_t offset = req->arg[AAR_A_CLIP_OFFSET];
+    uint32_t n;
+    int32_t rc;
+
+    if (h->policy & AAR_SERVE_HOST_NO_CLIP)
+        return AAR_E_ACCES;
+    if (!clip_args(req, &unit, &type) || (req->buf_len && !req->buf))
+        return AAR_E_INVAL;
+    if (!h->ops.live(h->ops.ctx))
+        return AAR_E_IO;
+    /* One read sequence reads one clip: it is taken at offset 0 and kept. */
+    if (offset == 0 || !h->rd || h->rd_unit != unit || h->rd_type != type) {
+        rc = clip_load(h, unit, type);
+        if (rc != AAR_OK)
+            return rc;
+    }
+    if (offset > h->rd_bytes)
+        return AAR_E_INVAL;
+    n = h->rd_bytes - offset;
+    if (n > req->buf_len)
+        n = req->buf_len;
+    if (n)
+        memcpy(req->buf, h->rd + offset, n);
+    done->out[AAR_R_CLIP_READ_SIZE] = h->rd_bytes;
+    done->out[AAR_R_CLIP_READ_COUNT] = n;
+    if (offset + n >= h->rd_bytes && n)
+        host_drop_read(h);
+    return AAR_OK;
+}
+
+/* The last chunk is in: the clip of the unit is replaced. */
+static int32_t clip_commit(struct aar_serve_host *h)
+{
+    uint32_t total = h->wr_total;
+    uint32_t size;
+    int32_t rc;
+
+    if (h->wr_bytes != total)
+        return AAR_E_INVAL;
+    if (h->wr_type == AAR_CLIP_TEXT) {
+        /* The Latin-1 text is never longer than the UTF-8 it came from, so it
+         * is made in place. */
+        uint32_t m = aar_serve_utf8_to_latin1(h->wr, total, h->wr);
+        uint8_t *form = h->ops.mem_alloc(h->ops.ctx, m + 24u);
+
+        if (!form)
+            return AAR_E_NOMEM;
+        size = 4u + 8u + m + (m & 1u);
+        memcpy(form, "FORM", 4);
+        aar_serve_put_be32(form + 4, size);
+        memcpy(form + 8, "FTXT", 4);
+        memcpy(form + 12, "CHRS", 4);
+        aar_serve_put_be32(form + 16, m);
+        memcpy(form + 20, h->wr, m);
+        if (m & 1u)
+            form[20 + m] = 0;
+        rc = h->ops.clip_write(h->ops.ctx, h->wr_unit, form, 8u + size);
+        h->ops.mem_free(h->ops.ctx, form);
+        return rc;
+    }
+    /* One FORM, as it came; the pad byte is added when the sender left it out. */
+    if (total < 12u || aar_serve_be32(h->wr) != IFF_FORM)
+        return AAR_E_INVAL;
+    size = aar_serve_be32(h->wr + 4);
+    if (size < 4u || size > total - 8u)
+        return AAR_E_INVAL;
+    if (size & 1u)
+        h->wr[8u + size] = 0; /* the pad byte; the buffer holds one byte more than the clip */
+    return h->ops.clip_write(h->ops.ctx, h->wr_unit, h->wr, 8u + size + (size & 1u));
+}
+
+static int32_t host_clip_write(struct aar_serve_host *h, const struct aar_serve_req *req,
+                               struct aar_serve_done *done)
+{
+    uint32_t unit;
+    uint32_t type;
+    uint32_t offset = req->arg[AAR_A_CLIP_OFFSET];
+    uint32_t total = req->arg[AAR_A_CLIP_TOTAL];
+    uint32_t count = req->buf_len;
+    int32_t rc = AAR_OK;
+
+    if (h->policy & AAR_SERVE_HOST_NO_CLIP)
+        return AAR_E_ACCES;
+    if (!clip_args(req, &unit, &type) || (count && !req->buf))
+        return AAR_E_INVAL;
+    if (!h->ops.live(h->ops.ctx))
+        return AAR_E_IO;
+    if (offset == 0) {
+        /* A sequence that was never finished is dropped: it changed nothing. */
+        host_drop_write(h);
+        if (total > AAR_SERVE_CLIP_MAX)
+            return AAR_E_NOMEM;
+        h->wr = h->ops.mem_alloc(h->ops.ctx, total + 1u);
+        if (!h->wr)
+            return AAR_E_NOMEM;
+        h->wr_active = 1;
+        h->wr_unit = unit;
+        h->wr_type = type;
+        h->wr_total = total;
+    } else if (!h->wr_active || h->wr_unit != unit || h->wr_type != type ||
+               h->wr_total != total || offset != h->wr_bytes) {
+        host_drop_write(h);
+        return AAR_E_INVAL;
+    }
+    if (count > h->wr_total - h->wr_bytes) {
+        host_drop_write(h);
+        return AAR_E_INVAL;
+    }
+    if (count)
+        memcpy(h->wr + h->wr_bytes, req->buf, count);
+    h->wr_bytes += count;
+    if (req->flags & AAR_CLIPF_LAST) {
+        rc = clip_commit(h);
+        host_drop_write(h);
+        if (rc != AAR_OK)
+            return rc;
+    }
+    done->out[AAR_R_CLIP_WRITE_COUNT] = count;
+    return AAR_OK;
+}
+
+void aar_serve_host_serve(struct aar_serve_host *h, const struct aar_serve_req *req,
+                          struct aar_serve_done *done)
+{
+    int32_t result;
+
+    done_clear(done);
+    switch (req->op) {
+    case AAR_OP_TIME_UNIX: result = host_time(h, done); break;
+    case AAR_OP_LOCALE_INFO: result = host_locale_info(h, req); break;
+    case AAR_OP_ENV_GET: result = host_env_get(h, req, done); break;
+    case AAR_OP_CLIP_READ: result = host_clip_read(h, req, done); break;
+    case AAR_OP_CLIP_WRITE: result = host_clip_write(h, req, done); break;
     default: result = AAR_E_NOSYS; break;
     }
     done->result = result;
@@ -2316,7 +3377,21 @@ int aar_serve_core_request(struct aar_serve_core *s, const struct aar_serve_req 
     case AAR_OP_LIST_OPEN:
     case AAR_OP_LIST_NEXT:
     case AAR_OP_LIST_CLOSE:
+    case AAR_OP_FILE_DELETE:
+    case AAR_OP_FILE_RENAME:
+    case AAR_OP_DIR_CREATE:
+    case AAR_OP_FILE_SET_DATE:
+    case AAR_OP_FILE_SET_PROTECT:
+    case AAR_OP_FILE_TRUNCATE:
+    case AAR_OP_VOLUME_INFO:
         aar_serve_files_serve(&s->files, req, done);
+        break;
+    case AAR_OP_TIME_UNIX:
+    case AAR_OP_LOCALE_INFO:
+    case AAR_OP_ENV_GET:
+    case AAR_OP_CLIP_READ:
+    case AAR_OP_CLIP_WRITE:
+        aar_serve_host_serve(&s->host, req, done);
         break;
     case AAR_OP_CONSOLE_WRITE:
         aar_serve_console_write_request(&s->console, req, done, &deferred);

@@ -430,8 +430,10 @@ enum aar_serve_open_plan {
     /* WRITE without CREATE: the file must exist (Lock probe, because
      * MODE_READWRITE creates a missing file); open it MODE_READWRITE. */
     AAR_SERVE_OPEN_UPDATE_EXISTING,
-    /* TRUNCATE without CREATE: as above, then SetFileSize(0). Handlers that
-     * lack ACTION_SET_FILE_SIZE get MODE_NEWFILE after the probe. */
+    /* TRUNCATE without CREATE: as above, then SetFileSize(0), whose answer must
+     * be 0: another handle's position can leave the file longer, which is
+     * AAR_E_BUSY. Handlers that lack ACTION_SET_FILE_SIZE get MODE_NEWFILE
+     * after the probe. */
     AAR_SERVE_OPEN_TRUNCATE_EXISTING,
     /* CREATE only: MODE_READWRITE on the existing file, else MODE_NEWFILE.
      * An existing file keeps its contents. */
@@ -595,6 +597,8 @@ struct aar_serve_sink {
 #define AAR_SERVE_IOERR_WRITE_PROTECTED  223
 #define AAR_SERVE_IOERR_READ_PROTECTED   224
 #define AAR_SERVE_IOERR_NO_MORE_ENTRIES  232
+#define AAR_SERVE_IOERR_RENAME_ACROSS_DEVICES 215
+#define AAR_SERVE_IOERR_DIR_NOT_EMPTY    216
 #define AAR_SERVE_IOERR_BREAK            304
 
 /* An AmigaDOS error as the AAR_E_* code the app sees; 0 maps to AAR_OK. */
@@ -605,6 +609,15 @@ int32_t aar_serve_errno_from_io(int32_t io_error);
 
 /* DateStamp fields as Unix seconds, 0 for an unset stamp. */
 uint32_t aar_serve_amiga_unix(uint32_t days, uint32_t minutes, uint32_t ticks);
+
+/* The same stamp in UTC. A DateStamp is the user's local clock, so the UTC
+ * time is the local time minus the offset east of UTC. east_min is
+ * -loc_GMTOffset (locale.library counts minutes west). */
+int64_t aar_serve_utc_from_local(uint32_t local_unix, int32_t east_min);
+/* The DateStamp of a UTC Unix time on a clock east_min east of UTC. 0 when the
+ * time is before 1978 or beyond what a DateStamp holds. */
+int aar_serve_amiga_from_utc(int64_t utc, int32_t east_min, uint32_t *days,
+                             uint32_t *minutes, uint32_t *ticks);
 
 /* ---- Files -------------------------------------------------------------- */
 
@@ -621,8 +634,30 @@ enum aar_serve_mode {
 struct aar_serve_info {
     int is_dir;
     uint32_t size;
-    uint32_t mtime; /* Unix seconds */
+    uint32_t mtime;   /* the DateStamp as Unix seconds of the local clock (aar_serve_amiga_unix) */
+    uint32_t protect; /* FIB_Protection, the AAR_PROT_* bits */
     char name[AAR_NAME_MAX + 1u];
+};
+
+/* What a packet that names an object does (target_named). */
+enum aar_serve_named {
+    AAR_SERVE_NAMED_DELETE = 1,
+    AAR_SERVE_NAMED_CREATE_DIR,
+    AAR_SERVE_NAMED_SET_DATE,
+    AAR_SERVE_NAMED_SET_PROTECT
+};
+
+struct aar_serve_named_args {
+    uint32_t days, minutes, ticks; /* SET_DATE: the DateStamp */
+    uint32_t protect;              /* SET_PROTECT */
+};
+
+/* A volume as Info() reports it. */
+struct aar_serve_volume {
+    uint32_t blocks_total;
+    uint32_t blocks_used;
+    uint32_t block_bytes;
+    int read_only;
 };
 
 /*
@@ -670,9 +705,11 @@ struct aar_serve_dos_ops {
                              int *transport_ok, int32_t *io);
     void (*target_end)(void *ctx);
 
-    /* File handles. Reads and writes return the byte count, or -1. */
-    int32_t (*fh_set_size0)(void *ctx, uintptr_t fh, int *transport_ok,
-                            int32_t *io);
+    /* File handles. Reads and writes return the byte count, or -1.
+     * fh_set_size is ACTION_SET_FILE_SIZE from the beginning; it returns the
+     * new size, or -1. */
+    int32_t (*fh_set_size)(void *ctx, uintptr_t fh, uint32_t size,
+                           int *transport_ok, int32_t *io);
     int32_t (*fh_read)(void *ctx, uintptr_t fh, uint8_t *dst, uint32_t bytes,
                        int *transport_ok, int32_t *io);
     int32_t (*fh_write)(void *ctx, uintptr_t fh, const uint8_t *src,
@@ -693,6 +730,36 @@ struct aar_serve_dos_ops {
     int (*list_next)(void *ctx, uintptr_t list, struct aar_serve_info *info,
                      int *transport_ok, int32_t *io);
     void (*list_close)(void *ctx, uintptr_t list);
+
+    /* The user's UTC offset in minutes east of UTC. Returns 1 when
+     * locale.library gave it, else 0 (the offset is then 0). NULL: unknown. */
+    int (*utc_offset)(void *ctx, int32_t *east_min);
+    /* One packet that names the object of the open target (target_begin):
+     * delete, create a directory, set the date or the protection. Returns
+     * the handler's boolean result. */
+    int (*target_named)(void *ctx, enum aar_serve_named kind,
+                        const struct aar_serve_named_args *args,
+                        int *transport_ok, int32_t *io);
+    /* ACTION_RENAME_OBJECT. Each side is a parent lock and a name relative to
+     * it, or a 0 lock and an absolute (device:path) name. Two sides on
+     * different handlers fail with ERROR_RENAME_ACROSS_DEVICES. */
+    int (*rename)(void *ctx, uintptr_t from_dir, const char *from_name,
+                  uintptr_t to_dir, const char *to_name, int *transport_ok,
+                  int32_t *io);
+    /* Info() of the volume a lock is on. */
+    int (*volume_info)(void *ctx, uintptr_t lock, struct aar_serve_volume *out,
+                       int *transport_ok, int32_t *io);
+    /* Compare the handlers that would receive the rename packet. Each side
+     * is a parent lock and name, or a 0 lock and an absolute name. Returns 1
+     * for matching handlers, 0 for different handlers, -1 if unresolved.
+     * Matching handlers do not prove that existing objects share a volume. */
+    int (*same_volume)(void *ctx, uintptr_t from_dir, const char *from_name,
+                       uintptr_t to_dir, const char *to_name);
+    /* Before deleting an existing rename target, prove the two object locks
+     * are on one volume and neither name can search later assign directories.
+     * Absolute names are passed in full; relative names are passed as NULL. */
+    int32_t (*check_replace)(void *ctx, uintptr_t source, uintptr_t target,
+                             const char *from_abs, const char *to_abs);
 };
 
 struct aar_serve_files {
@@ -700,6 +767,7 @@ struct aar_serve_files {
     uintptr_t root;
     int abs_paths;
     uintptr_t fh[AAR_SERVE_FD_COUNT];
+    uint8_t fh_write[AAR_SERVE_FD_COUNT]; /* the id was opened with AAR_FILE_WRITE */
     uintptr_t list[AAR_SERVE_FD_COUNT];
     uint8_t io[AAR_SERVE_IO_CHUNK];
 };
@@ -711,6 +779,99 @@ void aar_serve_files_close_all(struct aar_serve_files *files);
 /* Serves one AAR_OP_FILE_* or AAR_OP_LIST_* request. */
 void aar_serve_files_serve(struct aar_serve_files *files, const struct aar_serve_req *req,
                            struct aar_serve_done *done);
+
+/* ---- Locale, time, environment and clipboard ---------------------------- */
+
+/* The longest name of an environment variable. */
+#define AAR_SERVE_ENV_NAME_MAX 255u
+
+/* ISO-8859-1 to UTF-8: whole characters only, at most cap bytes, no NUL. The
+ * bytes written. */
+uint32_t aar_serve_latin1_to_utf8(const uint8_t *src, uint32_t n, uint8_t *dst,
+                                  uint32_t cap);
+/* UTF-8 to ISO-8859-1. A character above U+00FF and a malformed sequence each
+ * become '?'. Writes at most n bytes, and dst may be src. The bytes written. */
+uint32_t aar_serve_utf8_to_latin1(const uint8_t *src, uint32_t n, uint8_t *dst);
+
+/* aar_serve_host.policy: what the client refuses with AAR_E_ACCES. */
+#define AAR_SERVE_HOST_NO_ENV  (1u << 0)
+#define AAR_SERVE_HOST_NO_CLIP (1u << 1)
+
+/* The longest clip the client moves, in the type it is requested in. */
+#define AAR_SERVE_CLIP_MAX (8u << 20)
+/* What the host takes from clipboard.device for one clip: the longest text with
+ * the room of its wrapper (FORM and FTXT headers, a CSET chunk, a CHRS header
+ * and the pad byte: 61 bytes). The text limit is checked on the extracted
+ * text, the IFF limit on the form. */
+#define AAR_SERVE_CLIP_RAW_MAX (AAR_SERVE_CLIP_MAX + 64u)
+
+/* What locale.library says, as the bytes it holds (Latin-1). */
+struct aar_serve_locale {
+    int32_t gmt_west_min;   /* loc_GMTOffset: minutes WEST of GMT */
+    char language[40];      /* loc_LanguageName, with its ".language" */
+    uint32_t country;       /* loc_CountryCode, the characters in the bytes */
+    char decimal_point[8];
+    char group_separator[8];
+};
+
+/*
+ * The system calls under the locale, time, environment and clipboard
+ * handlers. Strings and clips travel as the system holds them; the handlers
+ * convert.
+ */
+struct aar_serve_host_ops {
+    void *ctx;
+    /* The request is still wanted (as aar_serve_dos_ops.live). */
+    int (*live)(void *ctx);
+    /* The user's locale. 0: there is no locale.library, *out is zero. */
+    int (*locale)(void *ctx, struct aar_serve_locale *out);
+    /* DateStamp(): the local clock. */
+    void (*datestamp)(void *ctx, uint32_t *days, uint32_t *minutes,
+                      uint32_t *ticks);
+    /* The value of ENV:name as the bytes stored: the full length in *full,
+     * and the first min(room, *full) bytes in dst. AAR_OK, AAR_E_NOENT,
+     * AAR_E_NOMEM or AAR_E_IO. */
+    int32_t (*env_get)(void *ctx, const char *name, uint8_t *dst,
+                       uint32_t room, uint32_t *full);
+    void *(*mem_alloc)(void *ctx, uint32_t bytes);
+    void (*mem_free)(void *ctx, void *mem);
+    /* The whole data of clipboard unit as clipboard.device holds it (an IFF
+     * stream), in memory from mem_alloc. AAR_OK; AAR_E_NOSYS when the
+     * clipboard cannot be opened (no iffparse.library or clipboard.device);
+     * AAR_E_NOENT for an empty clipboard; AAR_E_NOMEM, AAR_E_IO. */
+    int32_t (*clip_read)(void *ctx, uint32_t unit, uint8_t **data,
+                         uint32_t *bytes);
+    /* Replace the data of clipboard unit with an IFF stream. AAR_OK,
+     * AAR_E_NOSYS, AAR_E_NOMEM or AAR_E_IO. */
+    int32_t (*clip_write)(void *ctx, uint32_t unit, const uint8_t *data,
+                          uint32_t bytes);
+};
+
+struct aar_serve_host {
+    struct aar_serve_host_ops ops;
+    uint32_t policy;        /* AAR_SERVE_HOST_* */
+    /* A read sequence's clip, in the requested type, from offset 0 until
+     * offset 0 is asked again or the sequence ends. */
+    uint8_t *rd;
+    uint32_t rd_bytes;
+    uint32_t rd_unit;
+    uint32_t rd_type;
+    /* A write sequence's chunks, until the LAST one. */
+    uint8_t *wr;
+    uint32_t wr_bytes;
+    uint32_t wr_total;
+    uint32_t wr_unit;
+    uint32_t wr_type;
+    int wr_active;
+};
+
+void aar_serve_host_init(struct aar_serve_host *h, const struct aar_serve_host_ops *ops,
+                         uint32_t policy);
+/* Frees the clip the host still holds. */
+void aar_serve_host_close(struct aar_serve_host *h);
+/* Serves AAR_OP_TIME_UNIX, LOCALE_INFO, ENV_GET, CLIP_READ and CLIP_WRITE. */
+void aar_serve_host_serve(struct aar_serve_host *h, const struct aar_serve_req *req,
+                          struct aar_serve_done *done);
 
 /* ---- Console ------------------------------------------------------------ */
 
@@ -1031,6 +1192,7 @@ int aar_serve_events_pending(const struct aar_serve_events *e);
 
 struct aar_serve_core {
     struct aar_serve_files files;
+    struct aar_serve_host host;
     struct aar_serve_console console;
     struct aar_serve_display display;
     struct aar_serve_audio audio;

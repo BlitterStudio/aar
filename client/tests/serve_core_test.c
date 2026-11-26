@@ -32,12 +32,16 @@ struct fnode {
     uint8_t *data;
     uint32_t size;
     uint32_t mtime_days;
+    uint32_t protect;
+    int dev;            /* the volume (handler) the object is on */
 };
 
 struct flock {
     int used;
     int node;
+    int dev;            /* the volume of the node (same_lock compares it too, as a handler would) */
 };
+
 
 struct ffh {
     int used;
@@ -66,6 +70,7 @@ struct fake {
     int break_after_open; /* set `broken` once an open succeeded */
     int lose_after_open;  /* the request is lost the moment an open succeeded */
     int write_zero;       /* a write that stores nothing and reports no error */
+    int write_fail_after; /* the Nth write from now fails with ERROR_WRITE_PROTECTED */
     int set_size_lost;    /* SetFileSize loses its packet */
     int set_size_unsupported;
     int seek_model;       /* 0 FFS: refuses with ERROR_SEEK_ERROR; 1 refuses with Res2 0;
@@ -75,6 +80,19 @@ struct fake {
     int close_undelivered;
     int fail_transport_lock; /* lock_rel of this leaf name loses its packet */
     char fail_transport_name[24];
+
+    /* the calls that name an object, rename, report a volume and the offset */
+    int east;             /* minutes east of UTC that the locale reports */
+    int east_known;
+    int named_n[5];       /* calls per aar_serve_named */
+    int named_io;         /* the next named call fails with this DOS error */
+    int named_lost;       /* the next named call loses its packet */
+    struct aar_serve_named_args last_args;
+    int renames;
+    int rename_io;
+    char rename_from[256];
+    char rename_to[256];
+    int vol_ro;
 
     /* a log of what the handlers asked of DOS */
     int opens[3];        /* per aar_serve_mode */
@@ -148,6 +166,7 @@ static uintptr_t lock_new(int node)
             fk.locks[i].used = 1;
             fk.locks[i].node = node;
             fk.live_locks++;
+            fk.locks[i].dev = node >= 0 ? fk.nodes[node].dev : 0;
             return (uintptr_t)(i + 1);
         }
     }
@@ -214,7 +233,7 @@ static uintptr_t f_parent_dir(void *ctx, uintptr_t lock)
 static int f_same_lock(void *ctx, uintptr_t a, uintptr_t b)
 {
     (void)ctx;
-    return lock_node(a) == lock_node(b);
+    return lock_node(a) == lock_node(b) && fk.locks[a - 1].dev == fk.locks[b - 1].dev;
 }
 
 static uintptr_t f_lock_rel(void *ctx, uintptr_t dir, const char *name,
@@ -242,15 +261,31 @@ static uintptr_t f_lock_rel(void *ctx, uintptr_t dir, const char *name,
     return lock_new(n);
 }
 
-/* "Vol:a/b": walks from node 0. */
+/* The volume (a node with no parent) a device or assign name names, or -1. */
+static int dev_find(const char *name)
+{
+    const char *colon = strchr(name, ':');
+    int i;
+
+    if (!colon)
+        return -1;
+    for (i = 0; i < MAX_NODES; i++)
+        if (fk.nodes[i].used && fk.nodes[i].parent < 0 &&
+            strlen(fk.nodes[i].name) == (size_t)(colon - name) &&
+            strncmp(fk.nodes[i].name, name, (size_t)(colon - name)) == 0)
+            return i;
+    return -1;
+}
+
+/* "Vol:a/b": the volume, then the path below it. */
 static int abs_find(const char *name)
 {
     const char *colon = strchr(name, ':');
     char comp[24];
-    int cur = 0;
+    int cur = dev_find(name);
     const char *p;
 
-    if (!colon || strncmp(name, fk.nodes[0].name, (size_t)(colon - name)) != 0)
+    if (cur < 0)
         return -1;
     p = colon + 1;
     while (*p) {
@@ -290,6 +325,7 @@ static void info_from(int n, struct aar_serve_info *info)
     memset(info, 0, sizeof(*info));
     info->is_dir = node->is_dir;
     info->size = node->size;
+    info->protect = node->protect;
     info->mtime = aar_serve_amiga_unix(node->mtime_days, 0u, 0u);
     strcpy(info->name, node->name);
 }
@@ -403,8 +439,8 @@ static struct ffh *fh_get(uintptr_t fh)
     return &fk.fhs[fh - 1];
 }
 
-static int32_t f_fh_set_size0(void *ctx, uintptr_t fh, int *transport_ok,
-                              int32_t *io)
+static int32_t f_fh_set_size(void *ctx, uintptr_t fh, uint32_t size,
+                             int *transport_ok, int32_t *io)
 {
     (void)ctx;
     *transport_ok = 1;
@@ -418,8 +454,22 @@ static int32_t f_fh_set_size0(void *ctx, uintptr_t fh, int *transport_ok,
         *io = AAR_SERVE_IOERR_ACTION_NOT_KNOWN;
         return -1;
     }
-    fk.nodes[fh_get(fh)->node].size = 0;
-    return 0;
+    {
+        int k;
+        uint32_t keep = size;
+
+        /* the handler cannot cut below the position of another handle: it
+         * answers the size it kept */
+        for (k = 0; k < MAX_FH; k++)
+            if (fk.fhs[k].used && fk.fhs[k].node == fh_get(fh)->node &&
+                &fk.fhs[k] != fh_get(fh) && fk.fhs[k].pos > keep)
+                keep = fk.fhs[k].pos;
+        fk.nodes[fh_get(fh)->node].size = keep;
+        /* the position of this handle moves to the new end when it is past it */
+        if (fh_get(fh)->pos > keep)
+            fh_get(fh)->pos = keep;
+        return (int32_t)keep;
+    }
 }
 
 static int32_t f_fh_read(void *ctx, uintptr_t fh, uint8_t *dst, uint32_t bytes,
@@ -453,6 +503,10 @@ static int32_t f_fh_write(void *ctx, uintptr_t fh, const uint8_t *src,
     *io = 0;
     if (fk.write_zero)
         return 0;
+    if (fk.write_fail_after && --fk.write_fail_after == 0) {
+        *io = AAR_SERVE_IOERR_WRITE_PROTECTED;
+        return -1;
+    }
     fk.writes++;
     if (h->pos + bytes > FILE_CAP) {
         *io = AAR_SERVE_IOERR_DISK_FULL;
@@ -585,12 +639,182 @@ static void f_list_close(void *ctx, uintptr_t list)
     fk.live_lists--;
 }
 
+static int f_utc_offset(void *ctx, int32_t *east_min)
+{
+    (void)ctx;
+    *east_min = fk.east_known ? fk.east : 0;
+    return fk.east_known;
+}
+
+static int has_children(int n)
+{
+    int i;
+
+    for (i = 0; i < MAX_NODES; i++)
+        if (fk.nodes[i].used && fk.nodes[i].parent == n)
+            return 1;
+    return 0;
+}
+
+static int f_target_named(void *ctx, enum aar_serve_named kind,
+                          const struct aar_serve_named_args *args,
+                          int *transport_ok, int32_t *io)
+{
+    int held;
+    int n;
+
+    (void)ctx;
+    assert(kind >= AAR_SERVE_NAMED_DELETE && kind <= AAR_SERVE_NAMED_SET_PROTECT);
+    fk.named_n[kind]++;
+    fk.last_args = *args;
+    *transport_ok = 1;
+    *io = 0;
+    if (fk.named_lost) {
+        *transport_ok = 0;
+        return 0;
+    }
+    if (fk.named_io) {
+        *io = fk.named_io;
+        return 0;
+    }
+    n = target_node(&held);
+    if (kind == AAR_SERVE_NAMED_CREATE_DIR) {
+        if (n >= 0) {
+            *io = AAR_SERVE_IOERR_OBJECT_EXISTS;
+            return 0;
+        }
+        node_new(fk.t_dir ? lock_node(fk.t_dir) : 0, fk.t_name, 1);
+        return 1;
+    }
+    if (n < 0) {
+        *io = AAR_SERVE_IOERR_OBJECT_NOT_FOUND;
+        return 0;
+    }
+    switch (kind) {
+    case AAR_SERVE_NAMED_DELETE:
+        if (fk.nodes[n].protect & 1u) {
+            *io = AAR_SERVE_IOERR_DELETE_PROTECTED;
+            return 0;
+        }
+        if (held) {
+            *io = AAR_SERVE_IOERR_OBJECT_IN_USE;
+            return 0;
+        }
+        if (has_children(n)) {
+            *io = AAR_SERVE_IOERR_DIR_NOT_EMPTY;
+            return 0;
+        }
+        free(fk.nodes[n].data);
+        memset(&fk.nodes[n], 0, sizeof(fk.nodes[n]));
+        return 1;
+    case AAR_SERVE_NAMED_SET_DATE:
+        fk.nodes[n].mtime_days = args->days;
+        return 1;
+    default:
+        fk.nodes[n].protect = args->protect;
+        return 1;
+    }
+}
+
+static int f_same_volume(void *ctx, uintptr_t from_dir, const char *from_name,
+                         uintptr_t to_dir, const char *to_name);
+
+static int f_rename(void *ctx, uintptr_t from_dir, const char *from_name,
+                    uintptr_t to_dir, const char *to_name, int *transport_ok,
+                    int32_t *io)
+{
+    int from;
+
+    (void)ctx;
+    fk.renames++;
+    strncpy(fk.rename_from, from_name, sizeof(fk.rename_from) - 1u);
+    strncpy(fk.rename_to, to_name, sizeof(fk.rename_to) - 1u);
+    *transport_ok = 1;
+    *io = 0;
+    if (fk.rename_io) {
+        *io = fk.rename_io;
+        return 0;
+    }
+    from = from_dir ? child_of(lock_node(from_dir), from_name) : abs_find(from_name);
+    if (from < 0) {
+        *io = AAR_SERVE_IOERR_OBJECT_NOT_FOUND;
+        return 0;
+    }
+    if (!f_same_volume(NULL, from_dir, from_name, to_dir, to_name)) {
+        /* what the handler says of a rename it cannot do */
+        *io = AAR_SERVE_IOERR_RENAME_ACROSS_DEVICES;
+        return 0;
+    }
+    if (to_dir ? child_of(lock_node(to_dir), to_name) >= 0 : abs_find(to_name) >= 0) {
+        *io = AAR_SERVE_IOERR_OBJECT_EXISTS;
+        return 0;
+    }
+    {
+        int parent = to_dir ? lock_node(to_dir) : 0;
+        const char *leaf = to_name;
+
+        if (!to_dir) {
+            /* "Vol:a/b": the parent is "Vol:a", the name is b; "Vol:b": the volume and b */
+            const char *slash = strrchr(to_name, '/');
+
+            if (slash) {
+                char dir[256];
+
+                memcpy(dir, to_name, (size_t)(slash - to_name));
+                dir[slash - to_name] = 0;
+                parent = abs_find(dir);
+                leaf = slash + 1;
+            } else {
+                leaf = strchr(to_name, ':') + 1;
+            }
+        }
+        fk.nodes[from].parent = parent;
+        memset(fk.nodes[from].name, 0, sizeof(fk.nodes[from].name));
+        strncpy(fk.nodes[from].name, leaf, sizeof(fk.nodes[from].name) - 1u);
+    }
+    return 1;
+}
+
+static int f_same_volume(void *ctx, uintptr_t from_dir, const char *from_name,
+                         uintptr_t to_dir, const char *to_name)
+{
+    int from_dev = from_dir ? fk.locks[from_dir - 1].dev : fk.nodes[dev_find(from_name)].dev;
+    int to_dev = to_dir ? fk.locks[to_dir - 1].dev : fk.nodes[dev_find(to_name)].dev;
+
+    (void)ctx;
+    return from_dev == to_dev;
+}
+
+static int32_t f_check_replace(void *ctx, uintptr_t source, uintptr_t target,
+                               const char *from_abs, const char *to_abs)
+{
+    (void)ctx;
+    (void)from_abs;
+    (void)to_abs;
+    return fk.locks[source - 1].dev == fk.locks[target - 1].dev ? AAR_OK : AAR_E_INVAL;
+}
+
+static int f_volume_info(void *ctx, uintptr_t lock, struct aar_serve_volume *out,
+                         int *transport_ok, int32_t *io)
+{
+    (void)ctx;
+    (void)lock_node(lock);
+    *transport_ok = 1;
+    *io = 0;
+    out->blocks_total = 880u;
+    out->blocks_used = 100u;
+    out->block_bytes = 512u;
+    out->read_only = fk.vol_ro;
+    return 1;
+}
+
 static const struct aar_serve_dos_ops fake_dos = {
     NULL, f_live, f_user_break, f_stopping, f_dup_lock, f_unlock, f_parent_dir,
     f_same_lock, f_lock_rel, f_lock_abs, f_lock_examine, f_target_begin,
-    f_target_probe, f_target_open, f_target_end, f_fh_set_size0, f_fh_read,
+    f_target_probe, f_target_open, f_target_end, f_fh_set_size, f_fh_read,
     f_fh_write, f_fh_seek, f_fh_end_or_close, f_fh_close, f_list_open,
-    f_list_next, f_list_close
+    f_list_next, f_list_close, f_utc_offset, f_target_named, f_rename,
+    f_volume_info, f_same_volume, f_check_replace
 };
 
 /* ---- Completions the sink collects -------------------------------------- */
@@ -619,7 +843,17 @@ static const struct aar_serve_sink sink = { NULL, sink_complete };
 
 /* ---- Fixture: ROOT is Vol:root, with a sibling outside it --------------- */
 
-enum { N_VOL = 0, N_ROOT, N_DIR, N_HELLO, N_OUTSIDE, N_SECRET };
+enum { N_VOL = 0, N_ROOT, N_DIR, N_HELLO, N_OUTSIDE, N_SECRET, N_TOP };
+
+/* The second volume of the fixture and its root directory and file: a rename
+ * between it and Vol is refused. Their node numbers are what the fixture made. */
+static int fk_vol2, fk_root2, fk_other;
+
+/* The node of the second volume's file inside its root directory, or -1. */
+static int other_volume_file(const char *name)
+{
+    return child_of(fk_root2, name);
+}
 
 static struct aar_serve_core serve;
 static uint32_t next_id;
@@ -627,6 +861,7 @@ static uint32_t next_id;
 static void fixture(int abs_paths)
 {
     int escape;
+    int vol2;
 
     if (fk.nodes[0].used)
         data_free_all();
@@ -641,6 +876,15 @@ static void fixture(int abs_paths)
     file_new(1, "top.txt", "top");                /* 6 */
     escape = node_new(1, "escape", 0);            /* 7: a link out of ROOT */
     fk.nodes[escape].link = N_SECRET;
+    /* A second volume with a file on it: a rename between the two is refused. */
+    fk.nodes[N_VOL].dev = 0;
+    fk.nodes[N_TOP].dev = 0;
+    vol2 = node_new(-1, "Vol2", 1);                /* 8 */
+    fk.nodes[vol2].dev = 1;
+    fk_root2 = node_new(vol2, "root2", 1);         /* 9 */
+    fk_other = file_new(fk_root2, "other.txt", "other"); /* 10 */
+    fk.nodes[fk_root2].dev = fk.nodes[fk_other].dev = 1;
+    fk_vol2 = vol2;
     aar_serve_core_init(&serve, &sink);
     aar_serve_files_init(&serve.files, &fake_dos, 0, abs_paths);
     serve.files.root = lock_new(N_ROOT);
@@ -3204,6 +3448,894 @@ static void test_cd32_pad_values_map_to_joy_bits(void)
     assert(dx == -1); /* both: the left one wins, as the register reading does */
 }
 
+/* ---- The 0.6 file requests ---------------------------------------------------------- */
+
+static int32_t do_path(uint16_t op, const char *path, uint32_t a0, uint32_t a1,
+                       struct aar_serve_done *d)
+{
+    struct aar_serve_req r = mkreq(op);
+    struct aar_serve_done local;
+    uint8_t buf[AAR_SERVE_PATH_BYTES + 8u];
+
+    memset(buf, 0, sizeof(buf));
+    strcpy((char *)buf, path);
+    r.arg[0] = a0;
+    r.arg[1] = a1;
+    r.buf = buf;
+    r.buf_len = (uint32_t)strlen(path) + 1u;
+    return serve_one(&r, d ? d : &local);
+}
+
+static int32_t do_rename(const char *from, const char *to, uint32_t flags)
+{
+    struct aar_serve_req r = mkreq(AAR_OP_FILE_RENAME);
+    struct aar_serve_done d;
+    uint8_t buf[2u * AAR_SERVE_PATH_BYTES + 8u];
+    size_t lf = strlen(from) + 1u;
+    size_t lt = strlen(to) + 1u;
+
+    memcpy(buf, from, lf);
+    memcpy(buf + lf, to, lt);
+    r.arg[AAR_A_FILE_RENAME_FLAGS] = flags;
+    r.buf = buf;
+    r.buf_len = (uint32_t)(lf + lt);
+    return serve_one(&r, &d);
+}
+
+static int32_t do_truncate(uint32_t fd, uint64_t size)
+{
+    struct aar_serve_req r = mkreq(AAR_OP_FILE_TRUNCATE);
+    struct aar_serve_done d;
+
+    r.arg[AAR_A_FILE_TRUNC_FD] = fd;
+    r.arg[AAR_A_FILE_TRUNC_SIZE_HI] = (uint32_t)(size >> 32);
+    r.arg[AAR_A_FILE_TRUNC_SIZE_LO] = (uint32_t)size;
+    return serve_one(&r, &d);
+}
+
+static void test_time_conversions(void)
+{
+    uint32_t d, m, t;
+
+    /* 2023-11-14 22:13:20 UTC is 23:13:20 on a clock one hour east of it */
+    assert(aar_serve_utc_from_local(1700003600u, 60) == 1700000000);
+    assert(aar_serve_utc_from_local(1700003600u, 0) == 1700003600);
+    assert(aar_serve_utc_from_local(1700003600u, -300) == 1700003600 + 18000);
+    assert(aar_serve_amiga_from_utc(1700000000, 60, &d, &m, &t));
+    assert(d == 16753u && m == 1393u && t == 1000u);
+    assert(aar_serve_amiga_unix(d, m, t) == 1700003600u);
+    assert(aar_serve_amiga_from_utc(1700000000, 0, &d, &m, &t));
+    assert(d == 16753u && m == 1333u && t == 1000u);
+    assert(aar_serve_amiga_from_utc(1700000000, -300, &d, &m, &t));
+    assert(d == 16753u && m == 1033u && t == 1000u);
+    /* 1978-01-01 00:00:00 is the first second of a DateStamp */
+    assert(aar_serve_amiga_from_utc(252460800, 0, &d, &m, &t));
+    assert(d == 0u && m == 0u && t == 0u);
+    assert(!aar_serve_amiga_from_utc(252460799, 0, &d, &m, &t));
+    assert(!aar_serve_amiga_from_utc(0, 0, &d, &m, &t));
+    assert(!aar_serve_amiga_from_utc(-1, 0, &d, &m, &t));
+    /* a local time before 1978 is not a DateStamp, though the UTC time is after it */
+    assert(!aar_serve_amiga_from_utc(252460800 + 3599, -60, &d, &m, &t));
+    assert(aar_serve_amiga_from_utc(252460800 + 3600, -60, &d, &m, &t));
+    /* the end of a 32-bit count of seconds */
+    assert(aar_serve_amiga_from_utc(252460800 + 0xffffffffLL, 0, &d, &m, &t));
+    assert(!aar_serve_amiga_from_utc(252460800 + 0x100000000LL, 0, &d, &m, &t));
+    /* the ticks are fiftieths of a second in the minute */
+    assert(aar_serve_amiga_from_utc(252460800 + 59, 0, &d, &m, &t));
+    assert(m == 0u && t == 59u * 50u);
+}
+
+static void test_text_conversions(void)
+{
+    uint8_t out[32];
+    uint32_t n;
+
+    n = aar_serve_latin1_to_utf8((const uint8_t *)"a\xE9\xFF", 3, out, sizeof(out));
+    assert(n == 5 && memcmp(out, "a\xC3\xA9\xC3\xBF", 5) == 0);
+    /* only whole characters fit */
+    n = aar_serve_latin1_to_utf8((const uint8_t *)"\xE9\xE9", 2, out, 3);
+    assert(n == 2);
+    n = aar_serve_latin1_to_utf8((const uint8_t *)"a\xE9", 2, out, 2);
+    assert(n == 1 && out[0] == 'a');
+    assert(aar_serve_latin1_to_utf8((const uint8_t *)"", 0, out, 0) == 0);
+
+    n = aar_serve_utf8_to_latin1((const uint8_t *)"a\xC3\xA9\xC3\xBF", 5, out);
+    assert(n == 3 && memcmp(out, "a\xE9\xFF", 3) == 0);
+    /* above U+00FF: the euro sign, a letter of the Basic Multilingual Plane, a character of a plane beyond */
+    n = aar_serve_utf8_to_latin1((const uint8_t *)"\xE2\x82\xAC\xC4\x80\xF0\x9F\x98\x80", 9, out);
+    assert(n == 3 && memcmp(out, "???", 3) == 0);
+    /* malformed: a stray continuation byte, a lead byte that no sequence has, overlong forms, a
+     * truncated sequence at the end or in the middle, a surrogate */
+    n = aar_serve_utf8_to_latin1((const uint8_t *)"\x80", 1, out);
+    assert(n == 1 && out[0] == '?');
+    n = aar_serve_utf8_to_latin1((const uint8_t *)"\xC0\x80", 2, out);
+    assert(n == 1 && out[0] == '?'); /* a bad lead byte and the bytes it drags along are one '?' */
+    n = aar_serve_utf8_to_latin1((const uint8_t *)"\xF8""a", 2, out);
+    assert(n == 2 && out[0] == '?' && out[1] == 'a');
+    n = aar_serve_utf8_to_latin1((const uint8_t *)"\xE0\x80\x80z", 4, out);
+    assert(n == 2 && out[0] == '?' && out[1] == 'z');
+    n = aar_serve_utf8_to_latin1((const uint8_t *)"\xF0\x80\x80\x80z", 5, out);
+    assert(n == 2 && out[0] == '?' && out[1] == 'z');
+    n = aar_serve_utf8_to_latin1((const uint8_t *)"ab\xE2\x82", 4, out);
+    assert(n == 3 && memcmp(out, "ab?", 3) == 0);
+    n = aar_serve_utf8_to_latin1((const uint8_t *)"\xE2\x82z", 3, out);
+    assert(n == 2 && out[0] == '?' && out[1] == 'z');
+    n = aar_serve_utf8_to_latin1((const uint8_t *)"\xED\xA0\x80", 3, out);
+    assert(n == 1 && out[0] == '?');
+    /* NUL is a character like the others */
+    n = aar_serve_utf8_to_latin1((const uint8_t *)"a\0b", 3, out);
+    assert(n == 3 && out[1] == 0);
+    /* the text is converted in place */
+    memcpy(out, "\xC3\xA9\xC3\xA9x", 5);
+    n = aar_serve_utf8_to_latin1(out, 5, out);
+    assert(n == 3 && memcmp(out, "\xE9\xE9x", 3) == 0);
+}
+
+static void test_the_new_dos_errors_map_to_aar_errors(void)
+{
+    assert(aar_serve_errno_from_io(AAR_SERVE_IOERR_DIR_NOT_EMPTY) == AAR_E_EXIST);
+    assert(aar_serve_errno_from_io(AAR_SERVE_IOERR_RENAME_ACROSS_DEVICES) == AAR_E_INVAL);
+    assert(aar_serve_errno_from_io(AAR_SERVE_IOERR_DELETE_PROTECTED) == AAR_E_ACCES);
+    assert(aar_serve_errno_from_io(AAR_SERVE_IOERR_OBJECT_IN_USE) == AAR_E_BUSY);
+    assert(aar_serve_errno_from_io(AAR_SERVE_IOERR_OBJECT_EXISTS) == AAR_E_EXIST);
+    assert(aar_serve_errno_from_io(AAR_SERVE_IOERR_WRITE_PROTECTED) == AAR_E_ACCES);
+    assert(aar_serve_errno_from_io(AAR_SERVE_IOERR_OBJECT_NOT_FOUND) == AAR_E_NOENT);
+}
+
+static void test_a_named_request_maps_what_the_handler_says(void)
+{
+    static const struct {
+        int32_t io;
+        int32_t want;
+    } cases[] = {
+        { AAR_SERVE_IOERR_DELETE_PROTECTED, AAR_E_ACCES },
+        { AAR_SERVE_IOERR_WRITE_PROTECTED, AAR_E_ACCES },
+        { AAR_SERVE_IOERR_OBJECT_IN_USE, AAR_E_BUSY },
+        { AAR_SERVE_IOERR_DIR_NOT_EMPTY, AAR_E_EXIST },
+        { AAR_SERVE_IOERR_OBJECT_EXISTS, AAR_E_EXIST },
+        { AAR_SERVE_IOERR_OBJECT_NOT_FOUND, AAR_E_NOENT },
+        { AAR_SERVE_IOERR_DIR_NOT_FOUND, AAR_E_NOENT },
+        { AAR_SERVE_IOERR_DISK_FULL, AAR_E_NOSPC },
+        { AAR_SERVE_IOERR_RENAME_ACROSS_DEVICES, AAR_E_INVAL },
+        { AAR_SERVE_IOERR_ACTION_NOT_KNOWN, AAR_E_IO },
+    };
+    unsigned i;
+
+    fixture(0);
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        fk.named_io = cases[i].io;
+        assert(do_path(AAR_OP_FILE_DELETE, "top.txt", 0, 0, NULL) == cases[i].want);
+        assert(do_path(AAR_OP_DIR_CREATE, "newdir", 0, 0, NULL) == cases[i].want);
+        assert(do_path(AAR_OP_FILE_SET_PROTECT, "top.txt", 1, 0, NULL) == cases[i].want);
+        assert(do_path(AAR_OP_FILE_SET_DATE, "top.txt", 0, 1700000000u, NULL) == cases[i].want);
+        fk.rename_io = cases[i].io;
+        assert(do_rename("top.txt", "new.txt", 0) == cases[i].want);
+        fk.rename_io = 0;
+    }
+    fk.named_io = 0;
+    /* a packet that never reached the handler is an I/O error, not a DOS result */
+    fk.named_lost = 1;
+    assert(do_path(AAR_OP_FILE_DELETE, "top.txt", 0, 0, NULL) == AAR_E_IO);
+    fk.named_lost = 0;
+    assert(child_of(N_ROOT, "top.txt") >= 0 && child_of(N_ROOT, "newdir") < 0);
+    fixture_free();
+}
+
+static void test_delete_create_and_the_target(void)
+{
+    int escape;
+
+    fixture(0);
+    assert(do_path(AAR_OP_FILE_DELETE, "top.txt", 0, 0, NULL) == AAR_OK);
+    assert(child_of(N_ROOT, "top.txt") < 0 && fk.named_n[AAR_SERVE_NAMED_DELETE] == 1);
+    assert(do_path(AAR_OP_FILE_DELETE, "top.txt", 0, 0, NULL) == AAR_E_NOENT);
+    assert(fk.named_n[AAR_SERVE_NAMED_DELETE] == 1); /* the lock found it missing: no packet */
+    assert(do_path(AAR_OP_FILE_DELETE, "dir", 0, 0, NULL) == AAR_E_EXIST);
+    assert(do_path(AAR_OP_FILE_DELETE, "dir/hello.txt", 0, 0, NULL) == AAR_OK);
+    assert(do_path(AAR_OP_FILE_DELETE, "dir", 0, 0, NULL) == AAR_OK);
+    /* a link that leads out of the root is no part of it */
+    escape = child_of(N_ROOT, "escape");
+    assert(escape == N_SECRET);
+    assert(do_path(AAR_OP_FILE_DELETE, "escape", 0, 0, NULL) == AAR_E_ACCES);
+    assert(do_path(AAR_OP_FILE_DELETE, "../outside", 0, 0, NULL) == AAR_E_ACCES);
+    assert(do_path(AAR_OP_FILE_DELETE, "/outside", 0, 0, NULL) == AAR_E_ACCES);
+    assert(do_path(AAR_OP_FILE_DELETE, ".", 0, 0, NULL) == AAR_E_ACCES);
+    assert(do_path(AAR_OP_FILE_DELETE, "Vol:root/x", 0, 0, NULL) == AAR_E_ACCES);
+    assert(do_path(AAR_OP_FILE_DELETE, "", 0, 0, NULL) == AAR_E_INVAL);
+    assert(fk.named_n[AAR_SERVE_NAMED_DELETE] == 4); /* top.txt, dir (not empty), dir/hello.txt, dir */
+    /* a directory is made where its parent is */
+    assert(do_path(AAR_OP_DIR_CREATE, "made", 0, 0, NULL) == AAR_OK);
+    assert(do_path(AAR_OP_FILE_DELETE, "made/..", 0, 0, NULL) == AAR_E_ACCES);
+    assert(child_of(N_ROOT, "made") >= 0 && fk.nodes[child_of(N_ROOT, "made")].is_dir);
+    assert(do_path(AAR_OP_DIR_CREATE, "made", 0, 0, NULL) == AAR_E_EXIST);
+    assert(do_path(AAR_OP_DIR_CREATE, "nope/child", 0, 0, NULL) == AAR_E_NOENT);
+    assert(do_path(AAR_OP_DIR_CREATE, "made/child", 0, 0, NULL) == AAR_OK);
+    assert(do_path(AAR_OP_DIR_CREATE, "../out", 0, 0, NULL) == AAR_E_ACCES);
+    fixture_free();
+
+    fixture(1);
+    assert(do_path(AAR_OP_FILE_DELETE, "Vol:root/top.txt", 0, 0, NULL) == AAR_OK);
+    assert(child_of(N_ROOT, "top.txt") < 0);
+    assert(do_path(AAR_OP_FILE_DELETE, "Vol:", 0, 0, NULL) == AAR_E_ACCES);
+    fixture_free();
+}
+
+static void test_rename_and_replace(void)
+{
+    fixture(0);
+    assert(do_rename("top.txt", "moved.txt", 0) == AAR_OK);
+    assert(child_of(N_ROOT, "moved.txt") == 6 && child_of(N_ROOT, "top.txt") < 0);
+    assert(fk.renames == 1 && strcmp(fk.rename_from, "top.txt") == 0 &&
+           strcmp(fk.rename_to, "moved.txt") == 0);
+    /* the target exists: the handler says so */
+    assert(do_rename("moved.txt", "escape", 0) == AAR_E_ACCES); /* a link that leads out of the root */
+    assert(do_rename("moved.txt", "dir", 0) == AAR_E_EXIST);
+    assert(do_rename("nothing", "x", 0) == AAR_E_NOENT);
+    assert(do_rename("moved.txt", "x", 2) == AAR_E_INVAL);
+    assert(do_rename("moved.txt", "x", 0xffffffffu) == AAR_E_INVAL);
+    assert(fk.renames == 2);
+    /* REPLACE: the target goes first (a packet of its own), then the rename */
+    assert(do_rename("moved.txt", "dir/hello.txt", AAR_RENAME_REPLACE) == AAR_OK);
+    assert(fk.named_n[AAR_SERVE_NAMED_DELETE] == 1);
+    assert(child_of(N_DIR, "hello.txt") == 6 && child_of(N_ROOT, "moved.txt") < 0);
+    /* REPLACE with no target: nothing to delete */
+    assert(do_rename("dir/hello.txt", "fresh.txt", AAR_RENAME_REPLACE) == AAR_OK);
+    assert(fk.named_n[AAR_SERVE_NAMED_DELETE] == 1);
+    /* REPLACE with the source as the target: nothing happens, in particular no delete */
+    {
+        int renames = fk.renames;
+
+        assert(do_rename("fresh.txt", "fresh.txt", AAR_RENAME_REPLACE) == AAR_OK);
+        assert(do_rename("fresh.txt", "fresh.txt", 0) == AAR_OK);
+        assert(do_rename("dir/../fresh.txt", "./fresh.txt", 0) == AAR_OK);
+        assert(do_rename("fresh.txt", "./fresh.txt", AAR_RENAME_REPLACE) == AAR_OK);
+        assert(do_rename("dir/../fresh.txt", "fresh.txt", AAR_RENAME_REPLACE) == AAR_OK);
+        assert(fk.renames == renames && fk.named_n[AAR_SERVE_NAMED_DELETE] == 1);
+        assert(child_of(N_ROOT, "fresh.txt") == 6);
+    }
+    /* a target that cannot be deleted keeps the source where it is */
+    file_new(N_DIR, "inner.txt", "in");
+    assert(child_of(N_ROOT, "fresh.txt") == 6);
+    file_new(N_ROOT, "keep.txt", "keep");
+    fk.nodes[child_of(N_ROOT, "keep.txt")].protect = 1u;
+    assert(do_rename("fresh.txt", "keep.txt", AAR_RENAME_REPLACE) == AAR_E_ACCES);
+    assert(child_of(N_ROOT, "fresh.txt") == 6 && child_of(N_ROOT, "keep.txt") >= 0);
+    /* a directory with entries is no target */
+    assert(do_rename("fresh.txt", "dir", AAR_RENAME_REPLACE) == AAR_E_EXIST);
+    assert(child_of(N_ROOT, "fresh.txt") == 6);
+    /* the paths: both are checked, each needs its NUL */
+    assert(do_rename("top.txt", "../x", 0) == AAR_E_ACCES);
+    assert(do_rename("../outside/secret.txt", "x", 0) == AAR_E_ACCES);
+    assert(do_rename("", "x", 0) == AAR_E_INVAL);
+    assert(do_rename("fresh.txt", "", 0) == AAR_E_INVAL);
+    assert(do_rename("fresh.txt", "Vol:root/x", 0) == AAR_E_ACCES);
+    {
+        struct aar_serve_req r = mkreq(AAR_OP_FILE_RENAME);
+        struct aar_serve_done d;
+        uint8_t buf[16];
+
+        memcpy(buf, "fresh.txt\0", 10);
+        r.buf = buf;
+        r.buf_len = 10;
+        assert(serve_one(&r, &d) == AAR_E_INVAL);
+        r.buf = NULL;
+        r.buf_len = 0;
+        assert(serve_one(&r, &d) == AAR_E_INVAL);
+    }
+    fixture_free();
+
+    fixture(1);
+    assert(do_rename("Vol:root/top.txt", "Vol:root/abs.txt", 0) == AAR_OK);
+    assert(child_of(N_ROOT, "abs.txt") == 6);
+    assert(do_rename("abs.txt", "Vol:root/dir/rel.txt", 0) == AAR_OK);
+    assert(child_of(N_DIR, "rel.txt") == 6);
+    fixture_free();
+}
+
+/* REPLACE must not delete the target of a rename that AmigaDOS then refuses: the
+ * two objects are on different volumes. Both stay as they were. */
+static void test_a_rename_across_volumes_with_replace_keeps_both_files(void)
+{
+    int root2;
+    int other;
+    int top;
+
+    fixture(1);
+    root2 = fk_root2;
+    other = fk_other;
+    top = child_of(N_ROOT, "top.txt");
+    assert(top >= 0 && other >= 0 && fk.nodes[other].size == 5);
+    assert(do_rename("Vol:root/top.txt", "Vol2:root2/other.txt", AAR_RENAME_REPLACE) == AAR_E_INVAL);
+    assert(child_of(N_ROOT, "top.txt") == top && fk.nodes[top].size == 3 &&
+           memcmp(fk.nodes[top].data, "top", 3) == 0);
+    assert(other_volume_file("other.txt") == other && fk.nodes[other].size == 5 &&
+           memcmp(fk.nodes[other].data, "other", 5) == 0);
+    assert(fk.named_n[AAR_SERVE_NAMED_DELETE] == 0);
+    assert(other_volume_file("top.txt") < 0 && child_of(N_ROOT, "other.txt") < 0);
+    /* without REPLACE the different volumes are still the error, and nothing moves */
+    assert(do_rename("Vol:root/top.txt", "Vol2:root2/other.txt", 0) == AAR_E_INVAL);
+    assert(child_of(N_ROOT, "top.txt") == top && other_volume_file("other.txt") == other);
+    /* a relative source and a volume target, either way round */
+    assert(do_rename("top.txt", "Vol2:root2/other.txt", AAR_RENAME_REPLACE) == AAR_E_INVAL);
+    assert(do_rename("Vol2:root2/other.txt", "top.txt", AAR_RENAME_REPLACE) == AAR_E_INVAL);
+    assert(child_of(N_ROOT, "top.txt") == top && other_volume_file("other.txt") == other &&
+           fk.named_n[AAR_SERVE_NAMED_DELETE] == 0);
+    /* a target that is not there yet on the other volume: the handler refuses */
+    assert(do_rename("top.txt", "Vol2:root2/copy.txt", AAR_RENAME_REPLACE) == AAR_E_INVAL);
+    assert(child_of(N_ROOT, "top.txt") == top && other_volume_file("copy.txt") < 0);
+    /* the same object on the other volume is still a no-op */
+    assert(do_rename("Vol2:root2/other.txt", "Vol2:root2/other.txt", AAR_RENAME_REPLACE) == AAR_OK);
+    assert(do_rename("Vol2:root2/other.txt", "Vol2:root2/other.txt", 0) == AAR_OK);
+    assert(other_volume_file("other.txt") == other && fk.nodes[other].size == 5);
+    /* and a rename on one volume goes through with REPLACE */
+    assert(do_rename("Vol2:root2/other.txt", "Vol2:root2/second.txt", AAR_RENAME_REPLACE) == AAR_OK);
+    assert(child_of(root2, "second.txt") == other && child_of(root2, "other.txt") < 0);
+    fixture_free();
+}
+
+static void test_set_date_and_protect_and_stat(void)
+{
+    struct aar_serve_done d;
+
+    fixture(0);
+    /* a clock one hour east of UTC */
+    fk.east = 60;
+    fk.east_known = 1;
+    assert(do_path(AAR_OP_FILE_SET_DATE, "top.txt", 0, 1700000000u, NULL) == AAR_OK);
+    assert(fk.last_args.days == 16753u && fk.last_args.minutes == 1393u && fk.last_args.ticks == 1000u);
+    assert(fk.nodes[6].mtime_days == 16753u);
+    assert(do_stat("top.txt", &d) == AAR_OK);
+    assert(d.out[AAR_R_STAT_MTIME_HI] == 0 &&
+           d.out[AAR_R_STAT_MTIME_LO] == 252460800u + 16753u * 86400u - 3600u);
+    /* the minutes of the day are not in a node of the fake: the day alone is */
+    fk.nodes[6].mtime_days = 1000u;
+    assert(do_stat("top.txt", &d) == AAR_OK);
+    assert(d.out[AAR_R_STAT_MTIME_LO] == 252460800u + 1000u * 86400u - 3600u);
+    /* no offset known: the clock is taken as UTC */
+    fk.east_known = 0;
+    assert(do_stat("top.txt", &d) == AAR_OK);
+    assert(d.out[AAR_R_STAT_MTIME_LO] == 252460800u + 1000u * 86400u);
+    assert(do_path(AAR_OP_FILE_SET_DATE, "top.txt", 0, 100u, NULL) == AAR_E_INVAL);
+    assert(do_path(AAR_OP_FILE_SET_DATE, "top.txt", 5u, 0u, NULL) == AAR_E_INVAL);
+    assert(fk.named_n[AAR_SERVE_NAMED_SET_DATE] == 1);
+    /* a time of 1978-01-01 00:00:00 is the stamp 0, which stat reads as no date: stat says 0 for it */
+    fk.nodes[6].mtime_days = 0;
+    assert(do_stat("top.txt", &d) == AAR_OK && d.out[AAR_R_STAT_MTIME_LO] == 0);
+
+    assert(do_path(AAR_OP_FILE_SET_PROTECT, "top.txt", AAR_PROT_WRITE | AAR_PROT_HOLD, 0, NULL) == AAR_OK);
+    assert(fk.nodes[6].protect == (AAR_PROT_WRITE | AAR_PROT_HOLD));
+    assert(do_stat("top.txt", &d) == AAR_OK);
+    assert(d.out[AAR_R_STAT_PROTECT] == (AAR_PROT_WRITE | AAR_PROT_HOLD));
+    assert(do_path(AAR_OP_FILE_SET_PROTECT, "top.txt", 0x100u, 0, NULL) == AAR_E_INVAL);
+    assert(do_path(AAR_OP_FILE_SET_PROTECT, "top.txt", 0xffu, 0, NULL) == AAR_OK);
+    assert(do_path(AAR_OP_FILE_SET_PROTECT, "../outside", 1u, 0, NULL) == AAR_E_ACCES);
+    fk.nodes[6].protect = 0xabcdu;
+    assert(do_stat("top.txt", &d) == AAR_OK && d.out[AAR_R_STAT_PROTECT] == 0xcdu);
+    fixture_free();
+}
+
+/* SetFileSize cannot cut below the position of another handle on the file: it
+ * shortens as far as it can and answers that size. The call that wanted less
+ * has not truncated. */
+static void test_a_truncation_another_handle_holds_back_is_not_one(void)
+{
+    int top;
+
+    fixture(0);
+    top = child_of(N_ROOT, "top.txt");
+    assert(do_open(3, W, "top.txt") == AAR_OK);
+    assert(do_open(4, R, "top.txt") == AAR_OK);
+    assert(do_seek(4, 2, AAR_SEEK_SET, NULL) == AAR_OK);
+    /* FILE_TRUNCATE: the handler answers 2, not -1 */
+    assert(do_truncate(3, 0) == AAR_E_BUSY);
+    assert(fk.set_sizes == 1 && fk.nodes[top].size == 2u);
+    assert(do_truncate(3, 1) == AAR_E_BUSY && fk.set_sizes == 2 && fk.nodes[top].size == 2u);
+    /* the size it did reach is not a failure */
+    assert(do_truncate(3, 2) == AAR_OK && fk.set_sizes == 2);
+    /* an open with TRUNCATE: the file is not emptied, the handle is given back, and there is no
+     * MODE_NEWFILE fallback, which is for a handler without SetFileSize */
+    assert(do_open(5, W | T, "top.txt") == AAR_E_BUSY);
+    assert(fk.set_sizes == 3 && fk.live_fhs == 2 && fk.opens[AAR_SERVE_MODE_NEW] == 0);
+    assert(fk.nodes[top].size == 2u);
+    /* when no handle is in the way it works */
+    assert(do_seek(4, 0, AAR_SEEK_SET, NULL) == AAR_OK);
+    assert(do_truncate(3, 0) == AAR_OK && fk.nodes[top].size == 0u);
+    assert(do_close(3) == AAR_OK);
+    assert(do_close(4) == AAR_OK);
+    fixture_free();
+}
+
+/* An extension that fails part way leaves the file longer, but not the descriptor: its offset is
+ * what it was before the call, and the error is the extension's own. */
+static void test_a_failed_truncate_extension_restores_the_position(void)
+{
+    uint32_t n;
+    int top;
+
+    /* a full volume: the file grows as far as it fits (in whole chunks) */
+    fixture(0);
+    top = child_of(N_ROOT, "top.txt");
+    assert(do_open(3, AAR_FILE_WRITE, "top.txt") == AAR_OK);
+    assert(do_seek(3, 1, AAR_SEEK_SET, NULL) == AAR_OK);
+    assert(do_truncate(3, FILE_CAP + 10) == AAR_E_NOSPC);
+    assert(fk.nodes[top].size > 3u && fk.nodes[top].size <= FILE_CAP);
+    assert(do_seek(3, 0, AAR_SEEK_CUR, &n) == AAR_OK && n == 1u);
+    assert(do_close(3) == AAR_OK);
+    fixture_free();
+
+    /* a write error on the third chunk: two were written, and the handler's own error comes back */
+    fixture(0);
+    top = child_of(N_ROOT, "top.txt");
+    assert(do_open(3, AAR_FILE_WRITE, "top.txt") == AAR_OK);
+    assert(do_seek(3, 2, AAR_SEEK_SET, NULL) == AAR_OK);
+    fk.write_fail_after = 3;
+    assert(do_truncate(3, 30000) == AAR_E_ACCES);
+    assert(fk.nodes[top].size == 3u + 2u * AAR_SERVE_IO_CHUNK);
+    assert(do_seek(3, 0, AAR_SEEK_CUR, &n) == AAR_OK && n == 2u);
+    /* the same extension works once the volume lets it, from the same offset */
+    assert(do_truncate(3, 30000) == AAR_OK && fk.nodes[top].size == 30000u);
+    assert(do_seek(3, 0, AAR_SEEK_CUR, &n) == AAR_OK && n == 2u);
+    assert(do_close(3) == AAR_OK);
+    fixture_free();
+}
+
+static void test_truncate_through_the_handles(void)
+{
+    uint32_t n;
+    int top;
+
+    fixture(0);
+    top = child_of(N_ROOT, "top.txt");
+    assert(do_open(3, AAR_FILE_WRITE, "top.txt") == AAR_OK);
+    assert(do_open(4, AAR_FILE_READ, "top.txt") == AAR_OK);
+    memset(fk.nodes[top].data + 3, 0xAA, 20);
+    /* longer: zeros, written at the end; the position stays */
+    assert(do_seek(3, 1, AAR_SEEK_SET, NULL) == AAR_OK);
+    assert(do_truncate(3, 12) == AAR_OK);
+    assert(fk.nodes[top].size == 12 && memcmp(fk.nodes[top].data, "top", 3) == 0);
+    for (n = 3; n < 12; n++)
+        assert(fk.nodes[top].data[n] == 0);
+    assert(fk.nodes[top].data[12] == 0xAA);
+    assert(fk.set_sizes == 0 && fk.writes >= 1);
+    assert(do_seek(3, 0, AAR_SEEK_CUR, &n) == AAR_OK && n == 1);
+    /* shorter: one packet; the position stays when it is inside, goes to the end when it is not */
+    assert(do_truncate(3, 2) == AAR_OK);
+    assert(fk.set_sizes == 1 && fk.nodes[top].size == 2);
+    assert(do_seek(3, 0, AAR_SEEK_CUR, &n) == AAR_OK && n == 1);
+    assert(do_seek(3, 2, AAR_SEEK_SET, NULL) == AAR_OK);
+    assert(do_truncate(3, 1) == AAR_OK && fk.nodes[top].size == 1);
+    /* the same length: no change */
+    assert(do_truncate(3, 1) == AAR_OK && fk.set_sizes == 2);
+    /* an id that is not for writing, or not open, or past 2 GiB */
+    assert(do_truncate(4, 1) == AAR_E_BADF);
+    assert(do_truncate(5, 1) == AAR_E_BADF);
+    assert(do_truncate(2, 1) == AAR_E_BADF);
+    assert(do_truncate(3, 0x80000000ull) == AAR_E_INVAL);
+    assert(do_truncate(3, 0x100000000ull) == AAR_E_INVAL);
+    /* a handler without SET_FILE_SIZE cannot shorten */
+    fk.set_size_unsupported = 1;
+    assert(do_truncate(3, 0) == AAR_E_IO);
+    fk.set_size_unsupported = 0;
+    fk.set_size_lost = 1;
+    assert(do_truncate(3, 0) == AAR_E_IO);
+    fk.set_size_lost = 0;
+    /* a stop refuses both ways, and a lost request does too */
+    fk.stop = 1;
+    assert(do_truncate(3, 0) == AAR_E_IO && do_truncate(3, 100) == AAR_E_IO);
+    fk.stop = 0;
+    fk.live = 0;
+    assert(do_truncate(3, 0) == AAR_E_IO);
+    fk.live = 1;
+    assert(fk.nodes[top].size == 1);
+    /* a full volume */
+    assert(do_truncate(3, 0xffffu) == AAR_OK);
+    assert(do_truncate(3, FILE_CAP + 10) == AAR_E_NOSPC);
+    /* the id is gone with its close */
+    assert(do_close(3) == AAR_OK);
+    assert(do_truncate(3, 1) == AAR_E_BADF);
+    assert(do_close(4) == AAR_OK);
+    fixture_free();
+}
+
+static void test_volume_info_and_the_stop(void)
+{
+    struct aar_serve_done d;
+
+    fixture(0);
+    assert(do_path(AAR_OP_VOLUME_INFO, "top.txt", 0, 0, &d) == AAR_OK);
+    assert(d.out[AAR_R_VOLUME_BLOCKS_TOTAL] == 880u && d.out[AAR_R_VOLUME_BLOCKS_USED] == 100u &&
+           d.out[AAR_R_VOLUME_BLOCK_BYTES] == 512u && d.out[AAR_R_VOLUME_FLAGS] == 0u);
+    fk.vol_ro = 1;
+    assert(do_path(AAR_OP_VOLUME_INFO, "dir", 0, 0, &d) == AAR_OK);
+    assert(d.out[AAR_R_VOLUME_FLAGS] == AAR_VOLF_READONLY);
+    assert(do_path(AAR_OP_VOLUME_INFO, ".", 0, 0, &d) == AAR_OK);
+    assert(do_path(AAR_OP_VOLUME_INFO, "nothing", 0, 0, &d) == AAR_E_NOENT);
+    assert(do_path(AAR_OP_VOLUME_INFO, "", 0, 0, &d) == AAR_E_INVAL);
+    assert(do_path(AAR_OP_VOLUME_INFO, "../outside", 0, 0, &d) == AAR_E_ACCES);
+    assert(do_path(AAR_OP_VOLUME_INFO, "Vol:root", 0, 0, &d) == AAR_E_ACCES);
+    /* a stop leaves a read alone and stops the rest, and nothing reaches the handler */
+    fk.stop = 1;
+    assert(do_path(AAR_OP_VOLUME_INFO, "top.txt", 0, 0, &d) == AAR_OK);
+    assert(do_path(AAR_OP_FILE_DELETE, "top.txt", 0, 0, NULL) == AAR_E_IO);
+    assert(do_path(AAR_OP_DIR_CREATE, "d", 0, 0, NULL) == AAR_E_IO);
+    assert(do_path(AAR_OP_FILE_SET_DATE, "top.txt", 0, 1700000000u, NULL) == AAR_E_IO);
+    assert(do_path(AAR_OP_FILE_SET_PROTECT, "top.txt", 1, 0, NULL) == AAR_E_IO);
+    assert(do_rename("top.txt", "x", 0) == AAR_E_IO);
+    assert(do_rename("top.txt", "x", AAR_RENAME_REPLACE) == AAR_E_IO);
+    assert(fk.named_n[AAR_SERVE_NAMED_DELETE] + fk.named_n[AAR_SERVE_NAMED_CREATE_DIR] +
+           fk.named_n[AAR_SERVE_NAMED_SET_DATE] + fk.named_n[AAR_SERVE_NAMED_SET_PROTECT] +
+           fk.renames == 0);
+    fk.stop = 0;
+    fk.broken = 1;
+    assert(do_path(AAR_OP_FILE_DELETE, "top.txt", 0, 0, NULL) == AAR_E_IO);
+    fk.broken = 0;
+    fk.live = 0;
+    assert(do_path(AAR_OP_FILE_DELETE, "top.txt", 0, 0, NULL) == AAR_E_IO);
+    assert(do_rename("top.txt", "x", 0) == AAR_E_IO);
+    fk.live = 1;
+    assert(child_of(N_ROOT, "top.txt") == 6);
+    fixture_free();
+}
+
+/* ---- The host requests: time, locale, environment, clipboard ------------------------------ */
+
+static struct {
+    int live;
+    int locale_known;
+    struct aar_serve_locale loc;
+    uint32_t days, minutes, ticks;
+    char env_name[16];
+    uint8_t env_value[600];
+    uint32_t env_len;
+    int env_calls;
+    uint8_t clip[300];
+    uint32_t clip_len;
+    int clip_reads;
+    int clip_writes;
+    int32_t clip_error;
+    uint8_t written[600];
+    uint32_t written_len;
+    uint32_t written_unit;
+    int allocs;
+    int frees;
+} hk;
+
+static int h_live(void *ctx)
+{
+    (void)ctx;
+    return hk.live;
+}
+
+static int h_locale(void *ctx, struct aar_serve_locale *out)
+{
+    (void)ctx;
+    memset(out, 0, sizeof(*out));
+    if (hk.locale_known)
+        *out = hk.loc;
+    return hk.locale_known;
+}
+
+static void h_datestamp(void *ctx, uint32_t *d, uint32_t *m, uint32_t *t)
+{
+    (void)ctx;
+    *d = hk.days;
+    *m = hk.minutes;
+    *t = hk.ticks;
+}
+
+static int32_t h_env_get(void *ctx, const char *name, uint8_t *dst, uint32_t room,
+                         uint32_t *full)
+{
+    uint32_t n = hk.env_len < room ? hk.env_len : room;
+
+    (void)ctx;
+    hk.env_calls++;
+    if (strcmp(name, hk.env_name) != 0)
+        return AAR_E_NOENT;
+    memcpy(dst, hk.env_value, n);
+    *full = hk.env_len;
+    return AAR_OK;
+}
+
+static void *h_alloc(void *ctx, uint32_t bytes)
+{
+    (void)ctx;
+    hk.allocs++;
+    return malloc(bytes ? bytes : 1u);
+}
+
+static void h_free(void *ctx, void *mem)
+{
+    (void)ctx;
+    hk.frees++;
+    free(mem);
+}
+
+static int32_t h_clip_read(void *ctx, uint32_t unit, uint8_t **data, uint32_t *bytes)
+{
+    (void)ctx;
+    (void)unit;
+    hk.clip_reads++;
+    if (hk.clip_error)
+        return hk.clip_error;
+    if (hk.clip_len == 0)
+        return AAR_E_NOENT;
+    *data = h_alloc(NULL, hk.clip_len);
+    memcpy(*data, hk.clip, hk.clip_len);
+    *bytes = hk.clip_len;
+    return AAR_OK;
+}
+
+static int32_t h_clip_write(void *ctx, uint32_t unit, const uint8_t *data, uint32_t bytes)
+{
+    (void)ctx;
+    hk.clip_writes++;
+    if (hk.clip_error)
+        return hk.clip_error;
+    memcpy(hk.written, data, bytes);
+    hk.written_len = bytes;
+    hk.written_unit = unit;
+    return AAR_OK;
+}
+
+static const struct aar_serve_host_ops fake_host = {
+    NULL, h_live, h_locale, h_datestamp, h_env_get, h_alloc, h_free, h_clip_read, h_clip_write
+};
+
+static void host_fixture(uint32_t policy)
+{
+    memset(&hk, 0, sizeof(hk));
+    hk.live = 1;
+    fixture(0);
+    aar_serve_host_init(&serve.host, &fake_host, policy);
+}
+
+static void host_fixture_free(void)
+{
+    aar_serve_host_close(&serve.host);
+    assert(hk.allocs == hk.frees);
+    fixture_free();
+}
+
+static int32_t host_call(uint16_t op, uint32_t flags, uint32_t a0, uint32_t a1, uint32_t a2,
+                         uint32_t a3, uint8_t *buf, uint32_t len, struct aar_serve_done *d)
+{
+    struct aar_serve_req r = mkreq(op);
+
+    r.flags = (uint16_t)flags;
+    r.arg[0] = a0;
+    r.arg[1] = a1;
+    r.arg[2] = a2;
+    r.arg[3] = a3;
+    r.buf = buf;
+    r.buf_len = len;
+    return serve_one(&r, d);
+}
+
+static void test_host_time_and_locale(void)
+{
+    struct aar_serve_done d;
+    uint8_t rec[AAR_LOCALE_REC_BYTES];
+    uint64_t us;
+
+    host_fixture(0);
+    hk.days = 16753u;
+    hk.minutes = 1393u;
+    hk.ticks = 1025u;
+    hk.locale_known = 1;
+    hk.loc.gmt_west_min = -60;
+    strcpy(hk.loc.language, "deutsch.language");
+    hk.loc.country = 0x00004445u; /* "DE" */
+    strcpy(hk.loc.decimal_point, ",");
+    strcpy(hk.loc.group_separator, "\xB7");
+    assert(host_call(AAR_OP_TIME_UNIX, 0, 0, 0, 0, 0, NULL, 0, &d) == AAR_OK);
+    us = ((uint64_t)d.out[AAR_R_TIME_UNIX_US_HI] << 32) | d.out[AAR_R_TIME_UNIX_US_LO];
+    assert(us == 1700000000ull * 1000000ull + 500000ull);
+    assert(d.out[AAR_R_TIME_UNIX_FLAGS] == AAR_LOCALEF_OFFSET_KNOWN);
+    assert(host_call(AAR_OP_LOCALE_INFO, 0, 0, 0, 0, 0, rec, sizeof(rec), &d) == AAR_OK);
+    assert(aar_serve_be32(rec + AAR_LOCALE_REC_UTC_OFFSET_MIN) == 60u);
+    assert(strcmp((const char *)rec + AAR_LOCALE_REC_LANGUAGE, "deutsch") == 0);
+    assert(strcmp((const char *)rec + AAR_LOCALE_REC_COUNTRY, "DE") == 0);
+    assert(strcmp((const char *)rec + AAR_LOCALE_REC_DECIMAL_POINT, ",") == 0);
+    assert(strcmp((const char *)rec + AAR_LOCALE_REC_GROUP_SEPARATOR, "\xC2\xB7") == 0);
+    assert(host_call(AAR_OP_LOCALE_INFO, 0, 0, 0, 0, 0, rec, sizeof(rec) - 1u, &d) == AAR_E_INVAL);
+    assert(host_call(AAR_OP_LOCALE_INFO, 0, 0, 0, 0, 0, NULL, 0, &d) == AAR_E_INVAL);
+    /* no locale.library */
+    hk.locale_known = 0;
+    assert(host_call(AAR_OP_TIME_UNIX, 0, 0, 0, 0, 0, NULL, 0, &d) == AAR_OK);
+    us = ((uint64_t)d.out[AAR_R_TIME_UNIX_US_HI] << 32) | d.out[AAR_R_TIME_UNIX_US_LO];
+    assert(us == 1700003600ull * 1000000ull + 500000ull && d.out[AAR_R_TIME_UNIX_FLAGS] == 0u);
+    memset(rec, 0x5a, sizeof(rec));
+    assert(host_call(AAR_OP_LOCALE_INFO, 0, 0, 0, 0, 0, rec, sizeof(rec), &d) == AAR_OK);
+    {
+        unsigned i;
+
+        for (i = 0; i < sizeof(rec); i++)
+            assert(rec[i] == 0);
+    }
+    /* a request that is no longer wanted is not served */
+    hk.live = 0;
+    assert(host_call(AAR_OP_TIME_UNIX, 0, 0, 0, 0, 0, NULL, 0, &d) == AAR_E_IO);
+    assert(host_call(AAR_OP_LOCALE_INFO, 0, 0, 0, 0, 0, rec, sizeof(rec), &d) == AAR_E_IO);
+    host_fixture_free();
+}
+
+static void test_host_env(void)
+{
+    struct aar_serve_done d;
+    uint8_t buf[64];
+
+    host_fixture(0);
+    strcpy(hk.env_name, "v");
+    memcpy(hk.env_value, "value", 5);
+    hk.env_len = 5;
+    memset(buf, 0x5a, sizeof(buf));
+    memcpy(buf, "v", 2);
+    assert(host_call(AAR_OP_ENV_GET, 0, 0, 0, 0, 0, buf, 16, &d) == AAR_OK);
+    assert(d.out[AAR_R_ENV_LEN] == 5 && memcmp(buf, "value\0", 6) == 0 && buf[6] == 0x5a);
+    /* the room is as long as the value: it is all there is, and no NUL */
+    memset(buf, 0x5a, sizeof(buf));
+    memcpy(buf, "v", 2);
+    assert(host_call(AAR_OP_ENV_GET, 0, 0, 0, 0, 0, buf, 5, &d) == AAR_OK);
+    assert(d.out[AAR_R_ENV_LEN] == 5 && memcmp(buf, "value", 5) == 0 && buf[5] == 0x5a);
+    /* a room of the name only */
+    memset(buf, 0x5a, sizeof(buf));
+    memcpy(buf, "v", 2);
+    assert(host_call(AAR_OP_ENV_GET, 0, 0, 0, 0, 0, buf, 2, &d) == AAR_OK);
+    assert(d.out[AAR_R_ENV_LEN] == 5 && memcmp(buf, "va", 2) == 0 && buf[2] == 0x5a);
+    /* a room that cannot hold the name */
+    memcpy(buf, "v", 2);
+    assert(host_call(AAR_OP_ENV_GET, 0, 0, 0, 0, 0, buf, 1, &d) == AAR_E_INVAL);
+    assert(host_call(AAR_OP_ENV_GET, 0, 0, 0, 0, 0, NULL, 0, &d) == AAR_E_INVAL);
+    memcpy(buf, "w", 2);
+    assert(host_call(AAR_OP_ENV_GET, 0, 0, 0, 0, 0, buf, 16, &d) == AAR_E_NOENT);
+    /* an empty value */
+    hk.env_len = 0;
+    memset(buf, 0x5a, sizeof(buf));
+    memcpy(buf, "v", 2);
+    assert(host_call(AAR_OP_ENV_GET, 0, 0, 0, 0, 0, buf, 16, &d) == AAR_OK);
+    assert(d.out[AAR_R_ENV_LEN] == 0 && buf[0] == 0);
+    hk.live = 0;
+    memcpy(buf, "v", 2);
+    assert(host_call(AAR_OP_ENV_GET, 0, 0, 0, 0, 0, buf, 16, &d) == AAR_E_IO);
+    hk.live = 1;
+    /* the policy comes before everything else */
+    hk.env_calls = 0;
+    aar_serve_host_close(&serve.host);
+    aar_serve_host_init(&serve.host, &fake_host, AAR_SERVE_HOST_NO_ENV);
+    memcpy(buf, "v", 2);
+    assert(host_call(AAR_OP_ENV_GET, 0, 0, 0, 0, 0, buf, 16, &d) == AAR_E_ACCES);
+    assert(host_call(AAR_OP_ENV_GET, 0, 0, 0, 0, 0, NULL, 0, &d) == AAR_E_ACCES);
+    assert(hk.env_calls == 0);
+    host_fixture_free();
+}
+
+static uint32_t ftxt(uint8_t *out, const char *chrs, uint32_t n)
+{
+    memcpy(out, "FORM", 4);
+    aar_serve_put_be32(out + 4, 4 + 8 + n + (n & 1u));
+    memcpy(out + 8, "FTXT", 4);
+    memcpy(out + 12, "CHRS", 4);
+    aar_serve_put_be32(out + 16, n);
+    memcpy(out + 20, chrs, n);
+    if (n & 1u)
+        out[20 + n] = 0;
+    return 20 + n + (n & 1u);
+}
+
+static void test_host_clip_read_sequence_is_one_clip(void)
+{
+    struct aar_serve_done d;
+    uint8_t buf[16];
+    uint8_t text[40];
+    uint32_t off;
+
+    host_fixture(0);
+    memset(text, 'x', sizeof(text));
+    hk.clip_len = ftxt(hk.clip, (const char *)text, 40);
+    /* 40 bytes of text, in chunks of 16: the clip is read from the device once */
+    assert(host_call(AAR_OP_CLIP_READ, 0, 0, AAR_CLIP_TEXT, 0, 0, buf, 16, &d) == AAR_OK);
+    assert(d.out[AAR_R_CLIP_READ_SIZE] == 40 && d.out[AAR_R_CLIP_READ_COUNT] == 16);
+    assert(hk.clip_reads == 1);
+    hk.clip_len = 0; /* gone from the device */
+    assert(host_call(AAR_OP_CLIP_READ, 0, 0, AAR_CLIP_TEXT, 16, 0, buf, 16, &d) == AAR_OK);
+    assert(d.out[AAR_R_CLIP_READ_SIZE] == 40 && d.out[AAR_R_CLIP_READ_COUNT] == 16);
+    assert(host_call(AAR_OP_CLIP_READ, 0, 0, AAR_CLIP_TEXT, 32, 0, buf, 16, &d) == AAR_OK);
+    assert(d.out[AAR_R_CLIP_READ_SIZE] == 40 && d.out[AAR_R_CLIP_READ_COUNT] == 8);
+    assert(hk.clip_reads == 1);
+    /* the sequence is over: the next read asks the device again, and the cache is not kept */
+    assert(host_call(AAR_OP_CLIP_READ, 0, 0, AAR_CLIP_TEXT, 32, 0, buf, 16, &d) == AAR_E_NOENT);
+    assert(hk.clip_reads == 2);
+    assert(hk.allocs == hk.frees);
+    /* another unit or type in the middle starts again */
+    hk.clip_len = ftxt(hk.clip, (const char *)text, 40);
+    assert(host_call(AAR_OP_CLIP_READ, 0, 0, AAR_CLIP_TEXT, 0, 0, buf, 16, &d) == AAR_OK);
+    assert(host_call(AAR_OP_CLIP_READ, 0, 1, AAR_CLIP_TEXT, 16, 0, buf, 16, &d) == AAR_OK);
+    assert(hk.clip_reads == 4);
+    assert(host_call(AAR_OP_CLIP_READ, 0, 1, AAR_CLIP_IFF, 16, 0, buf, 16, &d) == AAR_OK);
+    assert(hk.clip_reads == 5);
+    /* offset 0 always reads again */
+    for (off = 0; off < 3; off++)
+        assert(host_call(AAR_OP_CLIP_READ, 0, 1, AAR_CLIP_IFF, 0, 0, buf, 16, &d) == AAR_OK);
+    assert(hk.clip_reads == 8);
+    /* errors of the device */
+    hk.clip_error = AAR_E_NOSYS;
+    assert(host_call(AAR_OP_CLIP_READ, 0, 1, AAR_CLIP_IFF, 0, 0, buf, 16, &d) == AAR_E_NOSYS);
+    hk.clip_error = AAR_E_IO;
+    assert(host_call(AAR_OP_CLIP_READ, 0, 1, AAR_CLIP_IFF, 0, 0, buf, 16, &d) == AAR_E_IO);
+    hk.clip_error = 0;
+    /* a payload that is not there */
+    assert(host_call(AAR_OP_CLIP_READ, 0, 1, AAR_CLIP_IFF, 0, 0, NULL, 16, &d) == AAR_E_INVAL);
+    host_fixture_free(); /* frees the clip a half read sequence holds */
+}
+
+static void test_host_clip_write_sequence_changes_the_clip_at_the_last_chunk(void)
+{
+    struct aar_serve_done d;
+
+    host_fixture(0);
+    assert(host_call(AAR_OP_CLIP_WRITE, 0, 2, AAR_CLIP_TEXT, 0, 6, (uint8_t *)"abc", 3, &d) == AAR_OK);
+    assert(d.out[AAR_R_CLIP_WRITE_COUNT] == 3 && hk.clip_writes == 0);
+    assert(host_call(AAR_OP_CLIP_WRITE, AAR_CLIPF_LAST, 2, AAR_CLIP_TEXT, 3, 6, (uint8_t *)"def", 3, &d) == AAR_OK);
+    assert(hk.clip_writes == 1 && hk.written_unit == 2);
+    assert(hk.written_len == 20 + 6 && memcmp(hk.written + 20, "abcdef", 6) == 0);
+    assert(aar_serve_be32(hk.written + 16) == 6 && aar_serve_be32(hk.written + 4) == 4 + 8 + 6);
+    /* an odd text gets its pad byte after the chunk, with its real length in the chunk */
+    assert(host_call(AAR_OP_CLIP_WRITE, AAR_CLIPF_LAST, 0, AAR_CLIP_TEXT, 0, 3, (uint8_t *)"xyz", 3, &d) == AAR_OK);
+    assert(hk.written_len == 20 + 4 && aar_serve_be32(hk.written + 16) == 3 && hk.written[23] == 0);
+    assert(aar_serve_be32(hk.written + 4) == 4 + 8 + 4);
+    /* a sequence that is left off changes nothing, and its memory goes at the close */
+    assert(host_call(AAR_OP_CLIP_WRITE, 0, 0, AAR_CLIP_TEXT, 0, 9, (uint8_t *)"abc", 3, &d) == AAR_OK);
+    assert(hk.clip_writes == 2);
+    /* the device's refusal is the answer of the last chunk, and the sequence is over */
+    hk.clip_error = AAR_E_NOSYS;
+    assert(host_call(AAR_OP_CLIP_WRITE, AAR_CLIPF_LAST, 0, AAR_CLIP_TEXT, 0, 1, (uint8_t *)"x", 1, &d) == AAR_E_NOSYS);
+    hk.clip_error = 0;
+    assert(host_call(AAR_OP_CLIP_WRITE, AAR_CLIPF_LAST, 0, AAR_CLIP_TEXT, 1, 2, (uint8_t *)"y", 1, &d) == AAR_E_INVAL);
+    host_fixture_free();
+
+    host_fixture(AAR_SERVE_HOST_NO_CLIP);
+    assert(host_call(AAR_OP_CLIP_WRITE, AAR_CLIPF_LAST, 0, AAR_CLIP_TEXT, 0, 1, (uint8_t *)"x", 1, &d) == AAR_E_ACCES);
+    assert(host_call(AAR_OP_CLIP_READ, 0, 0, AAR_CLIP_TEXT, 0, 0, (uint8_t *)"x", 1, &d) == AAR_E_ACCES);
+    assert(host_call(AAR_OP_CLIP_READ, 0, 999, 77, 0, 0, NULL, 0, &d) == AAR_E_ACCES);
+    assert(hk.clip_reads == 0 && hk.clip_writes == 0);
+    host_fixture_free();
+}
+
+static void test_host_ftxt_parsing_keeps_to_the_form(void)
+{
+    struct aar_serve_done d;
+    uint8_t buf[64];
+    uint32_t n;
+
+    host_fixture(0);
+    /* chunks that run past the end of the form, and bytes after it, are not text */
+    n = ftxt(hk.clip, "abcd", 4);
+    aar_serve_put_be32(hk.clip + 16, 400); /* the chunk claims more than the form has */
+    hk.clip_len = n;
+    assert(host_call(AAR_OP_CLIP_READ, 0, 0, AAR_CLIP_TEXT, 0, 0, buf, 64, &d) == AAR_OK);
+    assert(d.out[AAR_R_CLIP_READ_SIZE] == 4 && memcmp(buf, "abcd", 4) == 0);
+    n = ftxt(hk.clip, "abcd", 4);
+    memcpy(hk.clip + n, "CHRS\0\0\0\2zz", 10);
+    hk.clip_len = n + 10;
+    assert(host_call(AAR_OP_CLIP_READ, 0, 0, AAR_CLIP_TEXT, 0, 0, buf, 64, &d) == AAR_OK);
+    assert(d.out[AAR_R_CLIP_READ_SIZE] == 4);
+    /* a form shorter than its header */
+    memcpy(hk.clip, "FORM\0\0\0\4FTXT", 12);
+    hk.clip_len = 12;
+    assert(host_call(AAR_OP_CLIP_READ, 0, 0, AAR_CLIP_TEXT, 0, 0, buf, 64, &d) == AAR_E_NOENT);
+    memcpy(hk.clip, "FORM\0\0\0\4FTX", 11);
+    hk.clip_len = 11;
+    assert(host_call(AAR_OP_CLIP_READ, 0, 0, AAR_CLIP_TEXT, 0, 0, buf, 64, &d) == AAR_E_NOENT);
+    /* an IFF read stops at the end of the first form */
+    n = ftxt(hk.clip, "ab", 2);
+    memcpy(hk.clip + n, "FORM\0\0\0\4ILBM", 12);
+    hk.clip_len = n + 12;
+    assert(host_call(AAR_OP_CLIP_READ, 0, 0, AAR_CLIP_IFF, 0, 0, buf, 64, &d) == AAR_OK);
+    assert(d.out[AAR_R_CLIP_READ_SIZE] == n);
+    host_fixture_free();
+}
+
 int main(void)
 {
     test_dos_errors_map_to_aar_errors();
@@ -3257,6 +4389,23 @@ int main(void)
     test_audio_open_refusals();
     test_audio_chunk_is_a_fiftieth_of_a_second_at_most();
     test_a_stop_that_found_the_queue_full_is_retried();
+    test_time_conversions();
+    test_text_conversions();
+    test_the_new_dos_errors_map_to_aar_errors();
+    test_a_named_request_maps_what_the_handler_says();
+    test_delete_create_and_the_target();
+    test_rename_and_replace();
+    test_a_rename_across_volumes_with_replace_keeps_both_files();
+    test_set_date_and_protect_and_stat();
+    test_truncate_through_the_handles();
+    test_a_truncation_another_handle_holds_back_is_not_one();
+    test_a_failed_truncate_extension_restores_the_position();
+    test_volume_info_and_the_stop();
+    test_host_time_and_locale();
+    test_host_env();
+    test_host_clip_read_sequence_is_one_clip();
+    test_host_clip_write_sequence_changes_the_clip_at_the_last_chunk();
+    test_host_ftxt_parsing_keeps_to_the_form();
     puts("serve_core_test: ok");
     return 0;
 }

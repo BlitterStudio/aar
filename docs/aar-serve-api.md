@@ -1,7 +1,7 @@
 # aar_serve: the serving loop of an aar.library client
 
 `aar_serve` answers the service requests of an app that runs on a platform
-behind `aar.library` ([spec section 9.6](../spec/aar.md)): files, console, display and audio. It
+behind `aar.library` ([spec section 9.6](../spec/aar.md)): files, time, locale, environment and clipboard, console, display and audio. It
 also posts the input events and the stop event. The reference launcher
 [`aar-run`](../client/run/README.md) is a small program around it; a program
 with its own window and event loop can use it the same way.
@@ -32,7 +32,10 @@ m68k-amigaos-gcc -std=gnu11 -noixemul -m68030 -O2 -Iclient/include -Iinclude \
   `aar_serve` opens `timer.device`, `Picasso96API.library` (when there
   is one), `ahi.device` (for the AHI audio route), `lowlevel.library` (only for
   `cd32_ports`) and `keymap.library` (only for a display that asks for text
-  input) itself and keeps those bases to itself.
+  input) itself and keeps those bases to itself. It opens `locale.library`
+  and `iffparse.library` at the first request that needs them and closes
+  them at `aar_serve_destroy` (see "Time, locale, environment and clipboard"
+  below).
 - The calling task needs `AAR_SERVE_MIN_STACK` bytes of stack (16 KiB); a
   palette update holds a 3 KiB table. `aar_serve` does not check it.
 - A request's buffer is touched only between the request and its completion,
@@ -58,7 +61,7 @@ structure is size-first and grows at the end only.
 | `joy_ports` | bit 0 port 0, bit 1 port 1; default `AAR_SERVE_DEFAULT_JOY_PORTS` (port 1 only). These ports are read from `JOYxDAT` and the CIA: the axes and one fire button |
 | `cd32_ports` | bit 0 port 0, bit 1 port 1: read these ports with `lowlevel.library` `ReadJoyPort`, which reports the seven buttons of a CD32 pad. A port named here is polled whether or not `joy_ports` names it. Opt-in, because `ReadJoyPort` drives the port pins to sense the controller. `aar_serve_create` answers `AAR_E_NOSYS` when `lowlevel.library` does not open. Default 0 |
 | `poll_us` | the heartbeat of the timer in microseconds; 0: none. Without a heartbeat the loop still wakes for what waits on time: a stop that was asked or a stop event that found the queue full (10 ms), the joysticks of the input window (20 ms), completions waiting for room in the completion queue (1 ms), a claim that is revoked without a signal (250 ms), and the timeout of a waiting `DISPLAY_VBLANK`. Default `AAR_SERVE_DEFAULT_POLL_US` |
-| `break_mask` | the task signals the loop consumes: Ctrl-C stops the app, Ctrl-D, Ctrl-E and Ctrl-F become `AAR_EV_BREAK` events. A signal left out is the program's: the loop's DOS packet waits and the keys of its window do not wait on it, test it, or clear it either. Default `AAR_SERVE_BREAK_ALL`; 0: the program owns its signals |
+| `break_mask` | the task signals the loop consumes: Ctrl-C stops the app, Ctrl-D, Ctrl-E and Ctrl-F become `AAR_EV_BREAK` events. A signal left out is the program's: the loop's DOS packet and clipboard waits and the keys of its window do not wait on it, test it, or clear it either. Default `AAR_SERVE_BREAK_ALL`; 0: the program owns its signals |
 | `display_strategy` | `AAR_SERVE_DISPLAY_*`, the first strategy to try |
 | `hooks` | an `aar_serve_hooks`, may be NULL |
 | `user` | passed to every hook |
@@ -68,7 +71,10 @@ structure is size-first and grows at the end only.
 `root` does not confine them. `AAR_SERVEF_KEEP_MESSAGES`: the program calls
 `AARGetMessage` itself. `AAR_SERVEF_NO_INPUT_WINDOW`: no backdrop input window;
 the program feeds `aar_serve_post_event`. `AAR_SERVEF_USE_SIGNAL`: arm the
-handle and add the library signal to `aar_serve_sigmask`.
+handle and add the library signal to `aar_serve_sigmask`. `AAR_SERVEF_NO_ENV`:
+the app's reads of environment variables are refused with `AAR_E_ACCES`.
+`AAR_SERVEF_NO_CLIPBOARD`: the app's clipboard reads and writes are refused with
+`AAR_E_ACCES`. Both are served when the flag is clear.
 
 `display_strategy`: `AAR_SERVE_DISPLAY_BUFFERS` tries two screen buffers, then a
 three page tall screen that is panned, then a two page one, then a single buffer
@@ -279,6 +285,149 @@ port pins, which is why it is not the default: an earlier launcher that used it
 left the left mouse button repeating and releasing on its own after it had
 exited. The window must have the focus for either kind of reading.
 
+## Files, time, locale, environment and clipboard
+
+These requests are served by the OS-free handlers of `aar_serve_core.c` over
+AmigaDOS packets (files) and the system calls of `aar_serve_host.c`. A request
+that is not wanted any more (the claim is lost) is answered with `AAR_E_IO`
+before it touches anything.
+
+### Files
+
+Every request with a path uses the path rules of `FILE_OPEN` (see Notes): a
+relative path is resolved below `ROOT`, `..`, a leading `/` and a link out of
+`ROOT` are `AAR_E_ACCES`, a path with a volume or assign needs
+`AAR_SERVEF_ABS_PATHS`, and an empty path is `AAR_E_INVAL`. A path that names
+`ROOT` itself, a directory reached with `..`, or only a volume (`Work:`) has no
+name to act on and is `AAR_E_ACCES` for the requests below that change a name.
+
+| Request | AmigaDOS | Notes |
+|---|---|---|
+| `FILE_DELETE` | `ACTION_DELETE_OBJECT` | a file or an empty directory |
+| `FILE_RENAME` | `ACTION_RENAME_OBJECT` | Both paths are checked. A volume or assign name is sent to the first `GetDeviceProc` candidate only. If both names identify the same object, the call succeeds without changing it, with or without `AAR_RENAME_REPLACE`. Before deleting an existing target for `AAR_RENAME_REPLACE`, `SameLock` must confirm that the objects are on the same volume. A replacement that would delete a target is refused with `AAR_E_INVAL` if either name uses a multi-directory assign: the delete and rename could reach different directories. A cross-volume refusal leaves both objects unchanged. |
+| `DIR_CREATE` | `ACTION_CREATE_DIR` | one directory; the lock the handler returns is released at once |
+| `FILE_SET_DATE` | `ACTION_SET_DATE` | see Time below |
+| `FILE_SET_PROTECT` | `ACTION_SET_PROTECT` | the bits `AAR_PROT_*` (0 to 7); any other bit is `AAR_E_INVAL`. Bits 0 to 3 deny, as AmigaDOS has them |
+| `FILE_TRUNCATE` | `ACTION_SET_FILE_SIZE`, `ACTION_WRITE` | an id opened with `AAR_FILE_WRITE`, else `AAR_E_BADF`. Shorter: one `ACTION_SET_FILE_SIZE`, whose answer is checked: with another handle open on the file the handler cuts only as far as that handle's position allows and answers the size it kept, not an error. A size other than the one asked is `AAR_E_BUSY` and the file stays longer. `FILE_OPEN` with `AAR_FILE_TRUNCATE` is `AAR_E_BUSY` for the same reason when the file could not be emptied. Longer: the new bytes are written as zeros at the end, because handlers differ on what a longer `ACTION_SET_FILE_SIZE` leaves in them. The position stays where it was, unless the file now ends before it. An extension that fails part way (full volume, write error) leaves the file longer by what was written, but the position is put back where it was (as far as a seek can) and the error of the failed write is the answer. A size from 2 GiB is `AAR_E_INVAL` |
+| `VOLUME_INFO` | `ACTION_INFO` | out: blocks total, blocks used, bytes per block, and `AAR_VOLF_READONLY` when the disk is write-protected |
+| `FILE_STAT` | `ACTION_EXAMINE_OBJECT` | out5 is `fib_Protection` as `AAR_PROT_*`, bits 0 to 7 |
+
+Every request that changes the volume (delete, rename, create, set date, set
+protection, truncate) is refused with `AAR_E_IO` once a stop is under way, as
+opens and writes are (see Notes). `VOLUME_INFO` changes nothing and still runs.
+
+AmigaDOS errors become `AAR_E_*` in one function, `aar_serve_errno_from_io`:
+
+| `IoErr()` | Result |
+|---|---|
+| `ERROR_OBJECT_NOT_FOUND`, `ERROR_DIR_NOT_FOUND`, `ERROR_DEVICE_NOT_MOUNTED`, `ERROR_NO_MORE_ENTRIES` | `AAR_E_NOENT` |
+| `ERROR_OBJECT_EXISTS`, `ERROR_DIRECTORY_NOT_EMPTY` | `AAR_E_EXIST` |
+| `ERROR_DELETE_PROTECTED`, `ERROR_WRITE_PROTECTED`, `ERROR_READ_PROTECTED` | `AAR_E_ACCES` |
+| `ERROR_OBJECT_IN_USE` | `AAR_E_BUSY` |
+| `ERROR_RENAME_ACROSS_DEVICES`, `ERROR_SEEK_ERROR` | `AAR_E_INVAL` |
+| `ERROR_DISK_FULL` | `AAR_E_NOSPC` |
+| `ERROR_NO_FREE_STORE` | `AAR_E_NOMEM` |
+| any other | `AAR_E_IO` |
+
+A packet the handler never got, or whose answer was thrown away after a break,
+is `AAR_E_IO` whatever `IoErr()` says.
+
+### Time, locale, environment and clipboard
+
+These requests are always served; the two policy flags only turn the environment
+and the clipboard off.
+
+`TIME_UNIX` and `LOCALE_INFO` use `locale.library` (version 38, opened at the
+first request that needs it: a time, a locale, a `FILE_STAT` that has a date, a
+`FILE_SET_DATE`). The Amiga clock is the user's local time, and `loc_GMTOffset`
+counts minutes west of GMT, so
+
+- UTC is the `DateStamp` as Unix seconds (it counts from 1978-01-01, 2922 days
+  after 1970-01-01) plus the minutes west times 60.
+- `TIME_UNIX` answers Unix microseconds (the ticks are fiftieths of a second)
+  and `AAR_LOCALEF_OFFSET_KNOWN` when `locale.library` gave the offset.
+- `FILE_STAT` mtime and `FILE_SET_DATE` use the same conversion, so a date that
+  was set reads back the same. An unset stamp is mtime 0. A time before 1978-01-01
+  on the user's clock, or after 2106, is `AAR_E_INVAL` for `FILE_SET_DATE`.
+- Without `locale.library` the offset is 0 and the flag is clear. A locale
+  record then is all zeros and `AAR_OK`.
+
+`LOCALE_INFO` fills the 64 byte record of `transport.h`: the offset in minutes
+east (the negated `loc_GMTOffset`), the flag, the language name without
+`.language` (31 characters at most), the country code (the vehicle registration
+code in `loc_CountryCode`: its non-zero bytes, most significant first, as text such as `D` or `GB`, 7 at most), and the decimal point and group separator
+converted from ISO-8859-1 to UTF-8 (whole characters, 3 bytes at most each).
+
+`ENV_GET` reads `ENV:<name>` with `GetVar()` and `GVF_GLOBAL_ONLY |
+GVF_BINARY_VAR`, so the bytes are the stored ones. It uses the result of
+`GetVar()` of dos.library 37 and later as documented: the return is the number
+of bytes copied (a value that does not fit is cut to one byte less than the
+buffer and NUL terminated), and `IoErr()` is the full length of the
+variable. The backend takes the full length from there. It fetches again, with
+a buffer of that size (up to 1 MiB less one byte), only a value that the
+request can hold and the first 1 KiB buffer could not; a value longer than the
+request's room is counted by the first call. A variable that changes while it
+is read is fetched again, in four calls at most, then it is `AAR_E_IO`, as is
+a dos.library that leaves `IoErr()` below the bytes copied. The reply carries
+the real length in out0. The value goes to the request's buffer, which also
+held the name: the first `min(buf_len, length)` bytes, and a NUL after them
+when the length is below `buf_len`. A name of 1 to 255 bytes with a NUL inside
+the buffer is required (`AAR_E_INVAL`). A name with a volume (`:`), a leading
+`/`, an empty component (`//` anywhere, or a `/` at the end: in AmigaDOS each
+slash after the first of a run is a parent) or a `..` could leave `ENV:` and is
+`AAR_E_ACCES`; it never reaches `GetVar()`. An unset variable is `AAR_E_NOENT`.
+
+`CLIP_READ` and `CLIP_WRITE` use `clipboard.device`, opened through
+`iffparse.library`'s `OpenClipboard()` (version 37) at the first clipboard
+request. Without the library, or when the device does not open, they answer
+`AAR_E_NOSYS`. The units are 0 to 255 (`AAR_E_INVAL` above), and the types
+`AAR_CLIP_TEXT` and `AAR_CLIP_IFF`.
+
+- Text is read from the first `FORM FTXT` of the clip: its `CHRS` chunks in
+  order (the text itself). The charset is in a `CSET` chunk: code set 106
+  (UTF-8) passes the bytes through; every other code set, and no `CSET`, is
+  ISO-8859-1 and is converted to UTF-8. Those two are the charsets this
+  backend handles. A clip with no form, another kind of form or no text is
+  `AAR_E_NOENT`.
+- Text is written as `FORM FTXT` with one `CHRS` chunk in ISO-8859-1 and no
+  `CSET` chunk. A character above U+00FF, and a byte that is not UTF-8,
+  becomes `?`.
+- `AAR_CLIP_IFF` is the first form of the clip with its pad byte, as it is. A
+  write needs a `FORM` whose size fits the data; the clip gets that form only.
+- A clip is moved in chunks. A read sequence is one clip: the clip is taken at
+  offset 0 and kept until the last byte was read or offset 0 is asked again,
+  so a program that changes the clipboard in between does not mix two clips. A
+  write sequence is collected in memory and written to the device when the
+  chunk with `AAR_CLIPF_LAST` arrives; a sequence that does not reach it, or
+  breaks the order (an offset that is not the next one, a changed unit, type or
+  total), changes nothing. A new chunk at offset 0 drops an unfinished sequence.
+  A clip is at most 8 MiB (`AAR_SERVE_CLIP_MAX`), else `AAR_E_NOMEM`. The limit
+  is on what the app moves: the UTF-8 text for `AAR_CLIP_TEXT` (so a text of
+  exactly 8 MiB written is read back whole, though its `FTXT` wrapper makes
+  the stream 20 bytes longer, and ISO-8859-1 text counts the two bytes of
+  every character from U+0080), and the whole form for `AAR_CLIP_IFF`. The
+  device's stream is taken with room for the longest text's wrapper
+  (`AAR_SERVE_CLIP_RAW_MAX`, 64 bytes more) and read to its end; a longer one
+  is `AAR_E_NOMEM` without being kept, and the text or form limit is checked on
+  what was taken.
+- Every device command is an asynchronous I/O request (`SendIO`), waited for
+  on its reply port, the heartbeat timer and Ctrl-C (when `break_mask` has it),
+  as a DOS packet is. `clipboard.device` keeps a read or write back while
+  another program has a read or write sequence open on the unit (the reader
+  has not read past the end yet, the writer has not sent `CMD_UPDATE`), so a
+  request can wait as long as that program likes. A Ctrl-C (it also asks the
+  app to stop) or a claim the heartbeat finds revoked abandons the request: it
+  is aborted with `AbortIO`, once, and answers `AAR_E_IO`. Only the device's
+  reply ends the wait. The request and its buffers belong to the device until
+  then and the handle is closed only after, so a device that does not honour
+  `AbortIO` is waited for; the loop is not responsive in the meantime, exactly
+  as with a handler that does not reply. A command that was abandoned before
+  it was sent is not sent. The clip is replaced only by a `CMD_UPDATE` that
+  was sent after its `CMD_WRITE` completed in time: an abandoned or failed
+  write is dropped when the handle closes and the old clip stays. `CMD_UPDATE`
+  does not wait for another program, so it is not aborted: it is waited out
+  and its own result stands.
+
 ## Calls
 
 ### aar_serve_config_default
@@ -485,16 +634,18 @@ program's own window signals are not lost.
   the console, the input window and, with `AAR_SERVEF_USE_SIGNAL`, by the
   library.
 - A relative path is resolved below `ROOT` and checked there for every op that
-  takes one (open, stat, list), whatever `AAR_SERVEF_ABS_PATHS` says: `..`, a
+  takes one (open, stat, list, delete, rename, create, set date, set
+  protection, volume info), whatever `AAR_SERVEF_ABS_PATHS` says: `..`, a
   leading `/`, and a link whose target lies outside `ROOT` answer `AAR_E_ACCES`.
   The flag only admits paths with a volume or assign colon, which go to AmigaDOS
   as they are.
 - Once any stop is requested (a break, `aar_serve_stop`, a stop from the input
   window, or the platform ending the app) no request that changes the file
-  system runs. An open that creates, truncates, replaces or updates, and a
-  write, answer `AAR_E_IO`. Reads, seeks, closes, stat and list change nothing
-  and still run. The check is one predicate, `aar_serve_stopping`, with the
-  platform state read live before each such step.
+  system runs. An open that creates, truncates, replaces or updates, a write, a
+  delete, a rename, a directory create, a set date or protection and a truncate
+  answer `AAR_E_IO`. Reads, seeks, closes, stat, list and volume info change
+  nothing and still run. The check is one predicate, `aar_serve_stopping`, with
+  the platform state read live before each such step.
 - A requester (a Workbench console that cannot be opened) shows its text as the
   argument of a fixed `%s` format. A `%` in the screen title or in a path stays
   a `%`. No caller or app text is used as a format string anywhere in

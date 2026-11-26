@@ -60,6 +60,11 @@
 #include <proto/intuition.h>
 #include <proto/Picasso96.h>
 #include <proto/timer.h>
+#include <devices/clipboard.h>
+#include <libraries/iffparse.h>
+#include <libraries/locale.h>
+#include <proto/iffparse.h>
+#include <proto/locale.h>
 
 /* Exec: memory, ports, I/O requests, messages, signals, libraries */
 #define X_ALLOC_MEM(...) AllocMem(__VA_ARGS__)
@@ -106,6 +111,20 @@
 #define X_FREE_DEVICE_PROC(...) FreeDeviceProc(__VA_ARGS__)
 #define X_CURRENT_DIR(...) CurrentDir(__VA_ARGS__)
 #define X_NAME_FROM_LOCK(...) NameFromLock(__VA_ARGS__)
+
+/* Time, locale, environment and clipboard (aar_serve_host.c). The calls of
+ * libraries the program does not have take the instance first, like the
+ * timer's. */
+#define X_DATE_STAMP(...) DateStamp(__VA_ARGS__)
+#define X_GET_VAR(...) GetVar(__VA_ARGS__)
+#define X_OPEN_LOCALE(s, name) \
+    ({ struct Library *LocaleBase = (s)->host.locale; OpenLocale(name); })
+#define X_CLOSE_LOCALE(s, loc) \
+    ({ struct Library *LocaleBase = (s)->host.locale; CloseLocale(loc); })
+#define X_OPEN_CLIPBOARD(s, unit) \
+    ({ struct Library *IFFParseBase = (s)->host.iffparse; OpenClipboard(unit); })
+#define X_CLOSE_CLIPBOARD(s, cb) \
+    ({ struct Library *IFFParseBase = (s)->host.iffparse; CloseClipboard(cb); })
 
 /* intuition.library and graphics.library */
 #define X_OPEN_WINDOW(...) OpenWindowTags(__VA_ARGS__)
@@ -379,6 +398,14 @@ struct aar_serve {
         struct Device *base;            /* timer.device's base for GetSysTime */
         int pending;
     } tm;
+
+    /* ---- aar_serve_host.c: locale, environment and clipboard ---------------------------- */
+    struct {
+        struct Library *locale;         /* locale.library, opened at the first use, or NULL */
+        struct Library *iffparse;       /* iffparse.library, likewise: it opens clipboard.device */
+        int locale_tried;
+        int iffparse_tried;
+    } host;
 };
 
 /* ---- Services the backends take from the loop (defined in aar_serve.c) ------------------- */

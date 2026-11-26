@@ -97,6 +97,10 @@
 #define ERROR_DISK_FULL 221
 #define ERROR_NO_MORE_ENTRIES 232
 #define ERROR_BREAK 304
+#define ERROR_RENAME_ACROSS_DEVICES 215
+#define ERROR_DIRECTORY_NOT_EMPTY 216
+#define ERROR_DELETE_PROTECTED 222
+#define ERROR_WRITE_PROTECTED 223
 
 #define ACTION_LOCATE_OBJECT 8
 #define ACTION_FREE_LOCK 15
@@ -110,9 +114,23 @@
 #define ACTION_SET_FILE_SIZE 1022
 #define ACTION_READ 82
 #define ACTION_WRITE 87
+#define ACTION_DELETE_OBJECT 16
+#define ACTION_RENAME_OBJECT 17
+#define ACTION_SET_PROTECT 21
+#define ACTION_CREATE_DIR 22
+#define ACTION_INFO 26
+#define ACTION_SET_DATE 34
+#define ID_WRITE_PROTECTED 80
+#define ID_VALIDATED 82
+#define GVF_GLOBAL_ONLY 0x100UL
+#define GVF_BINARY_VAR 0x400UL
+#define CMD_READ 2
+#define CMD_UPDATE 4
 
 #define LOCK_SAME 0
+#define LOCK_SAME_VOLUME 1
 #define LOCK_DIFFERENT (-1)
+#define DVPF_ASSIGN 2UL
 #define ACCESS_READ (-2)
 #define MODE_OLDFILE 1005
 #define MODE_NEWFILE 1006
@@ -357,12 +375,53 @@ struct FileInfoBlock {
     LONG fib_DirEntryType;
     char fib_FileName[108];
     LONG fib_Size;
+    LONG fib_Protection;
     struct DateStamp fib_Date;
     LONG hx_next;                /* EXAMINE_NEXT's position */
+};
+struct InfoData {
+    LONG id_NumSoftErrors;
+    LONG id_UnitNumber;
+    LONG id_DiskState;
+    LONG id_NumBlocks;
+    LONG id_NumBlocksUsed;
+    LONG id_BytesPerBlock;
+    LONG id_DiskType;
+    BPTR id_VolumeNode;
+    LONG id_InUse;
+};
+/* The fields of locale.library's Locale that aar_serve reads. */
+struct Locale {
+    STRPTR loc_LanguageName;
+    ULONG loc_CountryCode;
+    LONG loc_GMTOffset;
+    STRPTR loc_DecimalPoint;
+    STRPTR loc_GroupSeparator;
+};
+struct IOClipReq {
+    struct Message io_Message;
+    struct Device *io_Device;
+    void *io_Unit;
+    UWORD io_Command;
+    UBYTE io_Flags;
+    BYTE io_Error;
+    /* the simulation: the same place as in struct IORequest */
+    int hx_pending;
+    int hx_done;
+    ULONG io_Actual;
+    ULONG io_Length;
+    STRPTR io_Data;
+    ULONG io_Offset;
+    LONG io_ClipID;
+};
+struct ClipboardHandle {
+    struct IOClipReq cbh_Req;
+    int hx_unit;
 };
 struct DevProc {
     struct MsgPort *dvp_Port;
     BPTR dvp_Lock;
+    ULONG dvp_Flags;
     int hx_index;
 };
 
@@ -468,7 +527,7 @@ HX_UNUSED static struct GfxBase *GfxBase = &hx_gfx_base;
 
 #define HX_SMALL 2048u
 #define HX_SMALLS 768u
-#define HX_BIG 65536u
+#define HX_BIG (AAR_SERVE_CLIP_RAW_MAX + 8192u) /* FTXT stream and final I/O chunk */
 #define HX_BIGS 8u
 
 static uint8_t hx_small[HX_SMALLS][HX_SMALL] __attribute__((aligned(16)));
@@ -510,7 +569,7 @@ HX_UNUSED static void *hx_alloc(uint32_t bytes, int clear)
             hx_big_size[i] = bytes;
             hx_live_blocks++;
             hx_live_bytes += bytes;
-            memset(hx_big[i], clear ? 0 : 0xCD, HX_BIG);
+            memset(hx_big[i], clear ? 0 : 0xCD, bytes);
             return hx_big[i];
         }
     }
@@ -571,7 +630,7 @@ HX_UNUSED static void hx_free(const void *p)
             hx_big_used[i] = 0;
             hx_live_blocks--;
             hx_live_bytes -= hx_big_size[i];
-            memset(hx_big[i], 0xA5, HX_BIG);
+            memset(hx_big[i], 0xA5, hx_big_size[i]);
             return;
         }
     }
@@ -789,7 +848,9 @@ HX_UNUSED static unsigned long hx_ahi_bytes;         /* bytes of them */
 HX_UNUSED static uint8_t hx_ahi_last[8192];          /* the last buffer sent */
 HX_UNUSED static int hx_ahi_pending_now;
 HX_UNUSED static int hx_ahi_max_pending;
-HX_UNUSED static struct Device hx_timer_dev, hx_ahi_dev;
+HX_UNUSED static struct Device hx_timer_dev, hx_ahi_dev, hx_clip_dev;
+static void hx_clip_send(struct IORequest *io);
+static void hx_clip_abort(struct IORequest *io);
 HX_UNUSED static unsigned long hx_timer_aborts;      /* timer requests aborted while still pending */
 HX_UNUSED static uint64_t hx_vblank_us = 20000;     /* the vertical blank period */
 HX_UNUSED static uint64_t hx_ahi_end;                /* when the last queued AHI write finishes playing */
@@ -925,6 +986,8 @@ HX_UNUSED static void hx_send_io(struct IORequest *io)
             hx_ahi_end = hx_now;
         hx_ahi_end += us;
         hx_sched(hx_ahi_end - hx_now, hx_io_done, io);
+    } else if (io->io_Device == &hx_clip_dev) {
+        hx_clip_send(io);
     } else {
         HX_FAIL("SendIO on a request with no device");
     }
@@ -939,6 +1002,10 @@ HX_UNUSED static void hx_abort_io(struct IORequest *io)
 {
     if (!io->hx_pending)
         return;
+    if (io->io_Device == &hx_clip_dev) {
+        hx_clip_abort(io);
+        return;
+    }
     if (io->io_Device == &hx_timer_dev)
         hx_timer_aborts++;
     hx_cancel(hx_io_done, io);
@@ -972,6 +1039,7 @@ HX_UNUSED static BYTE hx_wait_io(struct IORequest *io)
 struct hx_node {
     int used;
     int parent;
+    int volume;                  /* independent of the handler port */
     char name[24];
     int is_dir;
     int held;                    /* locks of it fail with OBJECT_IN_USE */
@@ -979,6 +1047,9 @@ struct hx_node {
     uint32_t size;
     uint32_t cap;
     uint32_t mtime_days;
+    uint32_t mtime_min;
+    uint32_t mtime_tick;
+    uint32_t protect;            /* FIB_Protection */
 };
 #define HX_FILE_CAP 65536u
 HX_UNUSED static struct hx_node hx_nodes[HX_NODES];
@@ -1002,6 +1073,8 @@ HX_UNUSED static unsigned long hx_packets_by[8];        /* 0 locate 1 free 2 exa
 HX_UNUSED static uint64_t hx_vol_delay_us = 200;
 HX_UNUSED static int hx_vol_never;                       /* the volume handler never answers */
 HX_UNUSED static int hx_vol_full;                        /* writes fail with DISK_FULL */
+HX_UNUSED static int hx_vol_readonly;                    /* the volume is write-protected: changes fail with WRITE_PROTECTED */
+HX_UNUSED static LONG hx_vol_blocks = 1000, hx_vol_blocks_used = 250;
 HX_UNUSED static uint64_t hx_con_delay_us = 100;
 HX_UNUSED static int hx_con_never_read;                  /* a console read is never answered */
 HX_UNUSED static int hx_con_fail_after;                  /* console writes beyond this many bytes fail (0: none) */
@@ -1045,6 +1118,7 @@ HX_UNUSED static int hx_node_add(int parent, const char *name, int is_dir, const
             memset(&hx_nodes[i], 0, sizeof(hx_nodes[i]));
             hx_nodes[i].used = 1;
             hx_nodes[i].parent = parent;
+            hx_nodes[i].volume = hx_nodes[parent].volume;
             strncpy(hx_nodes[i].name, name, sizeof(hx_nodes[i].name) - 1);
             hx_nodes[i].is_dir = is_dir;
             if (!is_dir) {
@@ -1155,6 +1229,9 @@ static void hx_fib_fill(struct FileInfoBlock *fib, int node)
     memcpy(fib->fib_FileName + 1, n->name, len);
     fib->fib_Size = (LONG)n->size;
     fib->fib_Date.ds_Days = (LONG)n->mtime_days;
+    fib->fib_Date.ds_Minute = (LONG)n->mtime_min;
+    fib->fib_Date.ds_Tick = (LONG)n->mtime_tick;
+    fib->fib_Protection = (LONG)n->protect;
 }
 
 static void hx_vol_reply(struct StandardPacket *pkt, LONG res1, LONG res2)
@@ -1164,6 +1241,174 @@ static void hx_vol_reply(struct StandardPacket *pkt, LONG res1, LONG res2)
     if (hx_trace)
         fprintf(stderr, "[%llu] reply res1 %ld res2 %ld\n", (unsigned long long)hx_now, (long)res1, (long)res2);
     hx_post(pkt->sp_Pkt.dp_Port, &pkt->sp_Msg);
+}
+
+/* The packets that name an object and change it (delete, create a directory,
+ * set the date or the protection, rename), and Info of a volume. The handler of
+ * a write-protected volume refuses every change. */
+static void hx_vol_names(struct StandardPacket *pkt)
+{
+    struct DosPacket *d = &pkt->sp_Pkt;
+    char name[64], name2[64];
+    struct FileLock *dir;
+    int node, err, parent, i;
+    char *leaf, *slash;
+
+    if (d->dp_Type == ACTION_INFO) {
+        struct InfoData *info = BADDR(d->dp_Arg2);
+
+        if (!hx_mem_live(info) || ((uintptr_t)info & 3u))
+            HX_FAIL("an InfoData that is not live, longword aligned memory");
+        memset(info, 0, sizeof(*info));
+        info->id_NumBlocks = hx_vol_blocks;
+        info->id_NumBlocksUsed = hx_vol_blocks_used;
+        info->id_BytesPerBlock = 512;
+        info->id_DiskState = hx_vol_readonly ? ID_WRITE_PROTECTED : ID_VALIDATED;
+        hx_vol_reply(pkt, 1, 0);
+        return;
+    }
+    if (hx_vol_readonly) {
+        hx_vol_reply(pkt, 0, ERROR_WRITE_PROTECTED);
+        return;
+    }
+    if (d->dp_Type == ACTION_RENAME_OBJECT) {
+        struct FileLock *fdir = BADDR(d->dp_Arg1), *tdir = BADDR(d->dp_Arg3);
+        int from, to;
+
+        hx_bstr_to_c(BADDR(d->dp_Arg2), name, sizeof(name));
+        hx_bstr_to_c(BADDR(d->dp_Arg4), name2, sizeof(name2));
+        if (fdir && tdir && fdir->fl_Task != tdir->fl_Task) {
+            hx_vol_reply(pkt, 0, ERROR_RENAME_ACROSS_DEVICES);
+            return;
+        }
+        from = hx_walk(fdir ? (int)fdir->fl_Key : 1, name, &err);
+        if (from <= 0) {
+            hx_vol_reply(pkt, 0, from < 0 ? err : ERROR_OBJECT_NOT_FOUND);
+            return;
+        }
+        parent = tdir ? (int)tdir->fl_Key : 1;
+        to = hx_walk(parent, name2, &err);
+        if (to < 0) {
+            hx_vol_reply(pkt, 0, err);
+            return;
+        }
+        if (hx_nodes[from].volume != hx_nodes[to > 0 ? to : parent].volume) {
+            hx_vol_reply(pkt, 0, ERROR_RENAME_ACROSS_DEVICES);
+            return;
+        }
+        if (to > 0) {
+            hx_vol_reply(pkt, 0, ERROR_OBJECT_EXISTS);
+            return;
+        }
+        for (i = 0; i < HX_OPEN_FILES; i++)
+            if (hx_opens[i].used && hx_opens[i].node == from) {
+                hx_vol_reply(pkt, 0, ERROR_OBJECT_IN_USE);
+                return;
+            }
+        leaf = name2;
+        slash = strrchr(name2, '/');
+        if (slash) {
+            *slash = 0;
+            parent = hx_walk(parent, name2, &err);
+            leaf = slash + 1;
+            if (parent <= 0) {
+                hx_vol_reply(pkt, 0, ERROR_DIR_NOT_FOUND);
+                return;
+            }
+        }
+        hx_nodes[from].parent = parent;
+        {
+            size_t n = strlen(leaf);
+
+            if (n >= sizeof(hx_nodes[from].name))
+                n = sizeof(hx_nodes[from].name) - 1;
+            memset(hx_nodes[from].name, 0, sizeof(hx_nodes[from].name));
+            memcpy(hx_nodes[from].name, leaf, n);
+        }
+        hx_vol_reply(pkt, 1, 0);
+        return;
+    }
+    if (d->dp_Type == ACTION_SET_DATE || d->dp_Type == ACTION_SET_PROTECT) {
+        if (d->dp_Arg1 != 0)
+            HX_FAIL("a SET_DATE or SET_PROTECT packet with a first argument");
+        dir = BADDR(d->dp_Arg2);
+        hx_bstr_to_c(BADDR(d->dp_Arg3), name, sizeof(name));
+    } else {
+        dir = BADDR(d->dp_Arg1);
+        hx_bstr_to_c(BADDR(d->dp_Arg2), name, sizeof(name));
+    }
+    parent = dir ? (int)dir->fl_Key : 1;
+    node = hx_walk(parent, name, &err);
+    if (node < 0) {
+        hx_vol_reply(pkt, 0, err);
+        return;
+    }
+    if (d->dp_Type == ACTION_CREATE_DIR) {
+        struct FileLock *lock;
+
+        if (node > 0) {
+            hx_vol_reply(pkt, 0, ERROR_OBJECT_EXISTS);
+            return;
+        }
+        leaf = name;
+        slash = strrchr(name, '/');
+        if (slash) {
+            *slash = 0;
+            parent = hx_walk(parent, name, &err);
+            leaf = slash + 1;
+            if (parent <= 0) {
+                hx_vol_reply(pkt, 0, ERROR_DIR_NOT_FOUND);
+                return;
+            }
+        }
+        node = hx_node_add(parent, leaf, 1, NULL, 0);
+        lock = hx_lock_new(dir ? dir->fl_Task : &hx_vol_port, node);
+        hx_vol_reply(pkt, lock ? (LONG)MKBADDR(lock) : 0, lock ? 0 : ERROR_NO_FREE_STORE);
+        return;
+    }
+    if (node == 0) {
+        hx_vol_reply(pkt, 0, ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+    switch (d->dp_Type) {
+    case ACTION_DELETE_OBJECT:
+        if (hx_nodes[node].protect & 1u) {
+            hx_vol_reply(pkt, 0, ERROR_DELETE_PROTECTED);
+            return;
+        }
+        for (i = 0; i < HX_OPEN_FILES; i++)
+            if (hx_opens[i].used && hx_opens[i].node == node) {
+                hx_vol_reply(pkt, 0, ERROR_OBJECT_IN_USE);
+                return;
+            }
+        for (i = 1; i < HX_NODES; i++)
+            if (hx_nodes[i].used && hx_nodes[i].parent == node) {
+                hx_vol_reply(pkt, 0, ERROR_DIRECTORY_NOT_EMPTY);
+                return;
+            }
+        free(hx_nodes[node].data);
+        memset(&hx_nodes[node], 0, sizeof(hx_nodes[node]));
+        hx_vol_reply(pkt, 1, 0);
+        return;
+    case ACTION_SET_DATE: {
+        struct DateStamp *ds = (struct DateStamp *)(uintptr_t)(uint32_t)d->dp_Arg4;
+
+        if (!hx_mem_live(ds) || ((uintptr_t)ds & 3u))
+            HX_FAIL("a DateStamp that is not live, longword aligned memory");
+        hx_nodes[node].mtime_days = (uint32_t)ds->ds_Days;
+        hx_nodes[node].mtime_min = (uint32_t)ds->ds_Minute;
+        hx_nodes[node].mtime_tick = (uint32_t)ds->ds_Tick;
+        hx_vol_reply(pkt, 1, 0);
+        return;
+    }
+    case ACTION_SET_PROTECT:
+        hx_nodes[node].protect = (uint32_t)d->dp_Arg4;
+        hx_vol_reply(pkt, 1, 0);
+        return;
+    default:
+        hx_vol_reply(pkt, 0, ERROR_ACTION_NOT_KNOWN);
+        return;
+    }
 }
 
 static void hx_vol_run(void *arg)
@@ -1341,10 +1586,34 @@ static void hx_vol_run(void *arg)
         hx_vol_reply(pkt, old, 0);
         return;
     }
+    case ACTION_DELETE_OBJECT:
+    case ACTION_RENAME_OBJECT:
+    case ACTION_SET_PROTECT:
+    case ACTION_CREATE_DIR:
+    case ACTION_INFO:
+    case ACTION_SET_DATE:
+        hx_vol_names(pkt);
+        return;
     case ACTION_SET_FILE_SIZE:
         of = &hx_opens[d->dp_Arg1 - 1];
-        hx_nodes[of->node].size = (uint32_t)d->dp_Arg2;
-        hx_vol_reply(pkt, d->dp_Arg2, 0);
+        {
+            uint32_t cut = (uint32_t)d->dp_Arg2;
+            uint32_t keep = cut;
+            int k;
+
+            of = &hx_opens[d->dp_Arg1 - 1];
+            /* the handler cannot cut below the position of another handle on the file: it answers
+             * the size it kept, not an error */
+            for (k = 0; k < HX_OPEN_FILES; k++)
+                if (hx_opens[k].used && hx_opens[k].node == of->node && &hx_opens[k] != of &&
+                    hx_opens[k].pos > keep)
+                    keep = hx_opens[k].pos;
+            hx_nodes[of->node].size = keep;
+            /* the position of this handle moves to the new end when it is past it */
+            if (of->pos > keep)
+                of->pos = keep;
+            hx_vol_reply(pkt, (LONG)keep, 0);
+        }
         return;
     default:
         hx_vol_reply(pkt, 0, ERROR_ACTION_NOT_KNOWN);
@@ -1505,6 +1774,7 @@ HX_UNUSED static struct DevProc *hx_get_device_proc(const char *name, struct Dev
         return NULL;
     dp->hx_index = next;
     dp->dvp_Port = hx_devs[i].port[next];
+    dp->dvp_Flags = hx_devs[i].count > 1 ? DVPF_ASSIGN : 0;
     {
         struct FileLock *l = hx_lock_new(dp->dvp_Port, hx_devs[i].node[next]);
 
@@ -1558,7 +1828,10 @@ HX_UNUSED static LONG hx_same_lock(BPTR a, BPTR b)
 {
     struct FileLock *x = BADDR(a), *y = BADDR(b);
 
-    return x->fl_Key == y->fl_Key && x->fl_Task == y->fl_Task ? LOCK_SAME : LOCK_DIFFERENT;
+    if (x->fl_Task != y->fl_Task ||
+        hx_nodes[x->fl_Key].volume != hx_nodes[y->fl_Key].volume)
+        return LOCK_DIFFERENT;
+    return x->fl_Key == y->fl_Key ? LOCK_SAME : LOCK_SAME_VOLUME;
 }
 
 HX_UNUSED static void *hx_alloc_dos_object(ULONG type, void *tags)
@@ -1733,9 +2006,74 @@ HX_UNUSED static struct Library hx_ll_lib, hx_keymap_lib;
 HX_UNUSED static int hx_ll_present = 1, hx_keymap_present = 1; /* lowlevel.library, keymap.library open */
 HX_UNUSED static int hx_ll_open, hx_keymap_open;               /* opens not closed */
 
+/* locale.library, iffparse.library with clipboard.device, GetVar, DateStamp. */
+HX_UNUSED static struct Library hx_locale_lib, hx_iffparse_lib;
+HX_UNUSED static int hx_locale_present, hx_iffparse_present;
+HX_UNUSED static int hx_host_libs_open;      /* opened and not closed */
+HX_UNUSED static unsigned hx_host_lib_opens; /* OpenLibrary calls that found one */
+HX_UNUSED static int hx_locale_open_now;     /* OpenLocale without CloseLocale */
+HX_UNUSED static char hx_loc_language[64], hx_loc_decimal[8], hx_loc_group[8];
+HX_UNUSED static ULONG hx_loc_country;
+HX_UNUSED static LONG hx_loc_gmt_west;
+HX_UNUSED static struct Locale hx_loc;
+HX_UNUSED static struct DateStamp hx_clock;
+HX_UNUSED static unsigned hx_getvar_calls;
+HX_UNUSED static uint32_t hx_getvar_max_size; /* the largest buffer GetVar was given */
+HX_UNUSED static uint32_t hx_getvar_grow_by;
+HX_UNUSED static unsigned hx_getvar_grow_times;
+HX_UNUSED static int hx_getvar_no_ioerr;
+#define HX_ENVS 8
+struct hx_env {
+    char name[64];
+    uint8_t *data;
+    uint32_t len;
+    int used;
+};
+HX_UNUSED static struct hx_env hx_envs[HX_ENVS];
+#define HX_CLIP_UNITS 256
+struct hx_clip {
+    uint8_t *data;
+    uint32_t len;
+    uint8_t *pend;
+    uint32_t pend_len;
+};
+HX_UNUSED static struct hx_clip hx_clips[HX_CLIP_UNITS];
+HX_UNUSED static int hx_clip_handles;        /* OpenClipboard without CloseClipboard */
+HX_UNUSED static int hx_clip_fail_open;
+HX_UNUSED static int hx_clip_fail_io;
+HX_UNUSED static unsigned hx_clip_updates;   /* CMD_UPDATE: clips replaced */
+HX_UNUSED static int hx_clip_last_unit = -1; /* the unit OpenClipboard was last asked for */
+HX_UNUSED static int hx_clip_hold;           /* a read or write waits until hx_clip_release: another program owns the unit */
+HX_UNUSED static int hx_clip_abort_ignored;  /* the device does not grant AbortIO */
+HX_UNUSED static unsigned long hx_clip_aborts; /* AbortIO calls on a clipboard request */
+HX_UNUSED static struct IORequest *hx_clip_held; /* the request that waits */
+
+HX_UNUSED static void hx_env_set(const char *name, const void *data, uint32_t len)
+{
+    int i;
+
+    for (i = 0; i < HX_ENVS; i++)
+        if (!hx_envs[i].used) {
+            hx_envs[i].used = 1;
+            strncpy(hx_envs[i].name, name, sizeof(hx_envs[i].name) - 1);
+            hx_envs[i].data = malloc(len ? len : 1);
+            memcpy(hx_envs[i].data, data, len);
+            hx_envs[i].len = len;
+            return;
+        }
+    HX_FAIL("too many environment variables");
+}
+
+HX_UNUSED static void hx_clip_set(unsigned unit, const void *data, uint32_t len)
+{
+    free(hx_clips[unit].data);
+    hx_clips[unit].data = malloc(len ? len : 1);
+    memcpy(hx_clips[unit].data, data, len);
+    hx_clips[unit].len = len;
+}
+
 HX_UNUSED static struct Library *hx_open_lib(const char *name, ULONG version)
 {
-    (void)version;
     if (strcmp(name, "Picasso96API.library") == 0 && hx_p96_present)
         return &hx_p96_lib;
     if (strcmp(name, "lowlevel.library") == 0 && hx_ll_present) {
@@ -1748,6 +2086,20 @@ HX_UNUSED static struct Library *hx_open_lib(const char *name, ULONG version)
     }
     if (strcmp(name, "cybergraphics.library") == 0)
         HX_FAIL("OpenLibrary of cybergraphics.library: ScalePixelArray takes no BGRA8888 format");
+    if (strcmp(name, "locale.library") == 0 && hx_locale_present) {
+        if (version > 38)
+            HX_FAIL("locale.library opened with a version newer than OS 3.0 has");
+        hx_host_libs_open++;
+        hx_host_lib_opens++;
+        return &hx_locale_lib;
+    }
+    if (strcmp(name, "iffparse.library") == 0 && hx_iffparse_present) {
+        if (version > 39)
+            HX_FAIL("iffparse.library opened with a version newer than OS 3.0 has");
+        hx_host_libs_open++;
+        hx_host_lib_opens++;
+        return &hx_iffparse_lib;
+    }
     return NULL;
 }
 
@@ -1761,8 +2113,214 @@ HX_UNUSED static void hx_close_lib(struct Library *l)
         hx_keymap_open--;
         return;
     }
+    if (l == &hx_locale_lib || l == &hx_iffparse_lib) {
+        hx_host_libs_open--;
+        return;
+    }
     if (l != &hx_p96_lib)
         HX_FAIL("CloseLibrary of a library that is not open");
+}
+
+HX_UNUSED static struct Locale *hx_open_locale(const char *name)
+{
+    if (name)
+        HX_FAIL("OpenLocale of a named locale (the user's is NULL)");
+    if (hx_host_libs_open <= 0 || !hx_locale_present)
+        HX_FAIL("OpenLocale without locale.library open");
+    hx_loc.loc_LanguageName = hx_loc_language;
+    hx_loc.loc_CountryCode = hx_loc_country;
+    hx_loc.loc_GMTOffset = hx_loc_gmt_west;
+    hx_loc.loc_DecimalPoint = hx_loc_decimal;
+    hx_loc.loc_GroupSeparator = hx_loc_group;
+    hx_locale_open_now++;
+    return &hx_loc;
+}
+
+HX_UNUSED static void hx_close_locale(struct Locale *l)
+{
+    if (l != &hx_loc || hx_locale_open_now <= 0)
+        HX_FAIL("CloseLocale of a locale that is not open");
+    hx_locale_open_now--;
+}
+
+/* GetVar with GVF_GLOBAL_ONLY | GVF_BINARY_VAR, as dos.library V37 and later
+ * document it: the value is copied cut to size - 1 bytes and NUL terminated,
+ * the return is the number of bytes copied, and IoErr() is the full size of the
+ * variable. hx_getvar_no_ioerr: IoErr() is left 0 (a dos.library that does not
+ * report the size). hx_getvar_grow_by, for the next hx_getvar_grow_times calls:
+ * the variable is that much longer after the call has answered (another
+ * program sets it). */
+HX_UNUSED static LONG hx_get_var(const char *name, char *buf, LONG size, ULONG flags)
+{
+    int i;
+
+    hx_getvar_calls++;
+    if ((uint32_t)size > hx_getvar_max_size)
+        hx_getvar_max_size = (uint32_t)size;
+    if (flags != (GVF_GLOBAL_ONLY | GVF_BINARY_VAR))
+        HX_FAIL("GetVar with flags other than GVF_GLOBAL_ONLY | GVF_BINARY_VAR");
+    if (size <= 0 || !hx_mem_live(buf))
+        HX_FAIL("GetVar into memory that is not allocated");
+    for (i = 0; i < HX_ENVS; i++) {
+        if (hx_envs[i].used && strcmp(hx_envs[i].name, name) == 0) {
+            uint32_t n = hx_envs[i].len;
+            uint32_t copied = n < (uint32_t)size ? n : (uint32_t)size - 1u;
+
+            memcpy(buf, hx_envs[i].data, copied);
+            buf[copied] = 0;
+            hx_set_io_err(hx_getvar_no_ioerr ? 0 : (LONG)n);
+            if (hx_getvar_grow_times) {
+                uint8_t *grown = realloc(hx_envs[i].data, n + hx_getvar_grow_by);
+
+                hx_getvar_grow_times--;
+                memset(grown + n, 'g', hx_getvar_grow_by);
+                hx_envs[i].data = grown;
+                hx_envs[i].len = n + hx_getvar_grow_by;
+            }
+            return (LONG)copied;
+        }
+    }
+    hx_set_io_err(ERROR_OBJECT_NOT_FOUND);
+    return -1;
+}
+
+HX_UNUSED static struct ClipboardHandle *hx_open_clipboard(LONG unit)
+{
+    struct ClipboardHandle *h;
+
+    hx_clip_last_unit = (int)unit;
+    if (hx_host_libs_open <= 0 || !hx_iffparse_present)
+        HX_FAIL("OpenClipboard without iffparse.library open");
+    if (hx_clip_fail_open || unit < 0 || unit >= HX_CLIP_UNITS)
+        return NULL;
+    h = hx_alloc(sizeof(*h), 1);
+    if (!h)
+        return NULL;
+    h->cbh_Req.io_Message.mn_ReplyPort = hx_port_new();
+    if (!h->cbh_Req.io_Message.mn_ReplyPort) {
+        hx_free(h);
+        return NULL;
+    }
+    h->cbh_Req.io_Device = &hx_clip_dev;
+    h->hx_unit = (int)unit;
+    hx_clip_handles++;
+    return h;
+}
+
+/* CloseClipboard is CloseDevice and the deletion of the reply port: neither is
+ * allowed while the device still holds the request or its reply is unread. */
+HX_UNUSED static void hx_close_clipboard(struct ClipboardHandle *h)
+{
+    if (h->cbh_Req.hx_pending)
+        HX_FAIL("CloseClipboard with a clipboard request still pending");
+    hx_port_delete(h->cbh_Req.io_Message.mn_ReplyPort);
+    hx_clip_handles--;
+    hx_free(h);
+}
+
+/* What the device does with the request of a clipboard handle when it gets to
+ * it: CMD_READ reads at io_Offset, CMD_WRITE stores at io_Offset, CMD_UPDATE
+ * makes the written data the clip. */
+static void hx_clip_exec(struct IORequest *base)
+{
+    struct IOClipReq *io = (struct IOClipReq *)base;
+    struct ClipboardHandle *h = (struct ClipboardHandle *)io;
+    struct hx_clip *c = &hx_clips[h->hx_unit];
+
+    io->io_Error = 0;
+    io->io_Actual = 0;
+    if (!hx_block_live(h))
+        HX_FAIL("a clipboard request that is not live memory");
+    if (hx_clip_fail_io) {
+        io->io_Error = -1;
+        return;
+    }
+    switch (io->io_Command) {
+    case CMD_READ: {
+        uint32_t avail = io->io_Offset < c->len ? c->len - io->io_Offset : 0;
+        uint32_t n = avail < io->io_Length ? avail : io->io_Length;
+
+        if (!hx_mem_live(io->io_Data))
+            HX_FAIL("a clipboard read into memory that is not allocated");
+        if (n)
+            memcpy(io->io_Data, c->data + io->io_Offset, n);
+        io->io_Actual = n;
+        io->io_Offset += n;
+        return;
+    }
+    case CMD_WRITE:
+        if (!hx_mem_live(io->io_Data))
+            HX_FAIL("a clipboard write from memory that is not allocated");
+        if (io->io_Offset == 0) {
+            free(c->pend);
+            c->pend = NULL;
+            c->pend_len = 0;
+        }
+        c->pend = realloc(c->pend, io->io_Offset + io->io_Length + 1);
+        memcpy(c->pend + io->io_Offset, io->io_Data, io->io_Length);
+        c->pend_len = io->io_Offset + io->io_Length;
+        io->io_Actual = io->io_Length;
+        io->io_Offset += io->io_Length;
+        return;
+    case CMD_UPDATE:
+        free(c->data);
+        c->data = c->pend;
+        c->len = c->pend_len;
+        c->pend = NULL;
+        c->pend_len = 0;
+        hx_clip_updates++;
+        return;
+    default:
+        HX_FAIL("a clipboard command the code under test must not use");
+    }
+}
+
+/* The device finishes a request: it is done, and the reply is on the port. */
+static void hx_clip_finish(void *arg)
+{
+    struct IORequest *io = arg;
+
+    if (hx_clip_held == io)
+        hx_clip_held = NULL;
+    hx_clip_exec(io);
+    hx_io_done(io);
+}
+
+/* Another program ends its sequence: the request that waited gets its turn. */
+HX_UNUSED static void hx_clip_release(void *arg)
+{
+    (void)arg;
+    if (!hx_clip_held)
+        HX_FAIL("a clipboard release with no request that waits");
+    hx_clip_finish(hx_clip_held);
+}
+
+/* SendIO: a read or write is held while hx_clip_hold says another program owns
+ * the unit; the rest are done in a moment. */
+static void hx_clip_send(struct IORequest *io)
+{
+    if (hx_clip_hold && (io->io_Command == CMD_READ || io->io_Command == CMD_WRITE)) {
+        if (hx_clip_held)
+            HX_FAIL("two clipboard requests wait at once");
+        hx_clip_held = io;
+        return;
+    }
+    hx_sched(0, hx_clip_finish, io);
+}
+
+/* AbortIO: a device that grants it stops the request and replies with
+ * IOERR_ABORTED, with no effect on the clip. One that does not (hx_clip_abort_ignored)
+ * keeps the request until its turn comes. */
+static void hx_clip_abort(struct IORequest *io)
+{
+    hx_clip_aborts++;
+    if (hx_clip_abort_ignored)
+        return;
+    if (hx_clip_held == io)
+        hx_clip_held = NULL;
+    hx_cancel(hx_clip_finish, io);
+    io->io_Error = -2;
+    hx_io_done(io);
 }
 
 static uint32_t hx_bpp(int rgb)
@@ -2589,6 +3147,45 @@ HX_UNUSED static void hx_reset(void)
     memset(hx_packets_by, 0, sizeof(hx_packets_by));
     hx_vol_delay_us = 200;
     hx_vol_never = hx_vol_full = 0;
+    hx_vol_readonly = 0;
+    hx_vol_blocks = 1000;
+    hx_vol_blocks_used = 250;
+    hx_locale_present = hx_iffparse_present = 1;
+    hx_host_libs_open = 0;
+    hx_host_lib_opens = 0;
+    hx_locale_open_now = 0;
+    strcpy(hx_loc_language, "english.language");
+    strcpy(hx_loc_decimal, ".");
+    strcpy(hx_loc_group, ",");
+    hx_loc_country = 0x00004742UL; /* "GB" */
+    hx_loc_gmt_west = 0;
+    hx_clock.ds_Days = 0;
+    hx_clock.ds_Minute = 0;
+    hx_clock.ds_Tick = 0;
+    hx_getvar_calls = 0;
+    hx_getvar_max_size = 0;
+    hx_getvar_grow_by = hx_getvar_grow_times = 0;
+    hx_getvar_no_ioerr = 0;
+    {
+        int i;
+
+        for (i = 0; i < HX_ENVS; i++) {
+            free(hx_envs[i].data);
+            memset(&hx_envs[i], 0, sizeof(hx_envs[i]));
+        }
+        for (i = 0; i < HX_CLIP_UNITS; i++) {
+            free(hx_clips[i].data);
+            free(hx_clips[i].pend);
+            memset(&hx_clips[i], 0, sizeof(hx_clips[i]));
+        }
+    }
+    hx_clip_handles = 0;
+    hx_clip_fail_open = hx_clip_fail_io = 0;
+    hx_clip_updates = 0;
+    hx_clip_last_unit = -1;
+    hx_clip_hold = hx_clip_abort_ignored = 0;
+    hx_clip_aborts = 0;
+    hx_clip_held = NULL;
     hx_con_delay_us = 100;
     hx_con_never_read = hx_con_fail_after = 0;
     hx_con_out_len = hx_sync_bytes = hx_sync_len = hx_in_len = hx_in_pos = hx_con_reads = 0;
@@ -2704,6 +3301,12 @@ HX_UNUSED static void hx_reset(void)
 #define X_SET_SIGNAL(n, m) hx_setsignal((n), (m))
 #define X_OPEN_LIB(name, ver) hx_open_lib((const char *)(name), (ver))
 #define X_CLOSE_LIB(l) hx_close_lib(l)
+#define X_DATE_STAMP(ds) (*(ds) = hx_clock)
+#define X_GET_VAR(name, buf, size, flags) hx_get_var((const char *)(name), (char *)(buf), (size), (flags))
+#define X_OPEN_LOCALE(s, name) ((void)(s), hx_open_locale((const char *)(name)))
+#define X_CLOSE_LOCALE(s, loc) ((void)(s), hx_close_locale(loc))
+#define X_OPEN_CLIPBOARD(s, unit) ((void)(s), hx_open_clipboard(unit))
+#define X_CLOSE_CLIPBOARD(s, cb) ((void)(s), hx_close_clipboard(cb))
 
 #define X_UNLOCK(l) hx_unlock(l)
 #define X_DUP_LOCK(l) hx_dup_lock(l)

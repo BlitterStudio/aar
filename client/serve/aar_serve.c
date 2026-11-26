@@ -226,11 +226,17 @@ static void timer_reap(struct aar_serve *s)
 
 /* ---- The backends -------------------------------------------------------------------------- */
 
+#include "aar_serve_host.c"
 #include "aar_serve_dos.c"
 #include "aar_serve_con.c"
 #include "aar_serve_ahi.c"
 #include "aar_serve_gfx.c"
 #include "aar_serve_input.c"
+
+_Static_assert(AAR_SERVE_IOERR_RENAME_ACROSS_DEVICES == ERROR_RENAME_ACROSS_DEVICES,
+               "the DOS error number of a rename across devices");
+_Static_assert(AAR_SERVE_IOERR_DIR_NOT_EMPTY == ERROR_DIRECTORY_NOT_EMPTY,
+               "the DOS error number of a directory that is not empty");
 
 /* ---- Serving the app's requests ----------------------------------------- */
 
@@ -524,7 +530,8 @@ static int hooks_valid(const aar_serve_config *cfg)
 static int config_valid(const aar_serve_config *cfg)
 {
     const ULONG known = AAR_SERVEF_ABS_PATHS | AAR_SERVEF_KEEP_MESSAGES |
-                        AAR_SERVEF_NO_INPUT_WINDOW | AAR_SERVEF_USE_SIGNAL;
+                        AAR_SERVEF_NO_INPUT_WINDOW | AAR_SERVEF_USE_SIGNAL |
+                        AAR_SERVEF_NO_ENV | AAR_SERVEF_NO_CLIPBOARD;
 
     return cfg->size >= sizeof(aar_serve_config) &&
            (cfg->flags & ~known) == 0 &&
@@ -556,6 +563,7 @@ static void serve_free(struct aar_serve *s)
         X_CLOSE_LIB(s->in.ll);
     if (s->in.keymap)
         X_CLOSE_LIB(s->in.keymap);
+    host_close_libs(s);
     if (s->gfx.p96)
         X_CLOSE_LIB(s->gfx.p96);
     X_FREE_VEC(s);
@@ -650,6 +658,14 @@ LONG aar_serve_create(AARHandle *h, const aar_serve_config *cfg,
     aar_serve_files_init(&s->core.files, &s->dos.ops, (uintptr_t)s->root,
                          (cfg->flags & AAR_SERVEF_ABS_PATHS) != 0);
     {
+        struct aar_serve_host_ops host_ops = aar_serve_host_backend;
+
+        host_ops.ctx = s;
+        aar_serve_host_init(&s->core.host, &host_ops,
+                            ((cfg->flags & AAR_SERVEF_NO_ENV) ? AAR_SERVE_HOST_NO_ENV : 0u) |
+                            ((cfg->flags & AAR_SERVEF_NO_CLIPBOARD) ? AAR_SERVE_HOST_NO_CLIP : 0u));
+    }
+    {
         struct aar_serve_console_ops con_ops = aar_serve_con_backend;
         struct aar_serve_display_ops gfx_ops = aar_serve_gfx_backend;
         struct aar_serve_audio_ops ahi_ops = aar_serve_ahi_backend;
@@ -713,6 +729,7 @@ void aar_serve_destroy(aar_serve *s)
         X_CLOSE(s->con.handle);
     if (s->core.files.dos)
         aar_serve_files_close_all(&s->core.files);
+    aar_serve_host_close(&s->core.host);
     serve_free(s);
 }
 

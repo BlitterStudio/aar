@@ -636,7 +636,83 @@ mutant("short-read-goes-on", "serve_core", SC,
 mutant("seek-whence-unchecked", "serve_core", SC,
        ("    } else {\n        return AAR_E_INVAL;\n    }\n    if (target > 2147483647LL", "    } else {\n        mode = 0;\n    }\n    if (target > 2147483647LL"))
 mutant("close-forgets-an-undelivered-end", "serve_core", SC,
-       ("    if (delivered)\n        f->fh[index] = 0;", "    f->fh[index] = 0;"))
+       ("    if (delivered) {\n        f->fh[index] = 0;\n        f->fh_write[index] = 0;\n    }",
+        "    f->fh[index] = 0;\n    f->fh_write[index] = 0;"))
+# ---- serve: the 0.6 file requests, time, locale, environment and clipboard ---------------
+SD = "client/serve/aar_serve_dos.c"
+mutant("dir-not-empty-is-io", "serve_core", SC,
+       ("    case AAR_SERVE_IOERR_DIR_NOT_EMPTY:\n        return AAR_E_EXIST;\n", ""))
+mutant("rename-across-devices-is-io", "serve_core", SC,
+       ("    case AAR_SERVE_IOERR_RENAME_ACROSS_DEVICES:\n        return AAR_E_INVAL;\n", ""))
+mutant("replace-deletes-the-source", "serve_core", SC,
+       ("    *same = d->same_lock(d->ctx, source, target);", "    *same = 0;"))
+mutant("replace-does-not-delete", "file_rename_replace", SC,
+       ("    return loc_named(f, to, AAR_SERVE_NAMED_DELETE, &none);", "    return AAR_OK;"))
+mutant("replace-deletes-across-volumes", "serve_core", SC,
+       ("    if (d->same_volume && d->same_volume(d->ctx, from.absolute ? 0 : from.dir,\n"
+        "                                         loc_name(&from), to.absolute ? 0 : to.dir,\n"
+        "                                         loc_name(&to)) == 0) {",
+        "    if (0) {"))
+mutant("named-request-after-a-stop", "stop_new_files", SC,
+       ("    if (open_step_allowed(d))\n        ok = d->target_named(", "    if (1)\n        ok = d->target_named("))
+mutant("rename-after-a-stop", "stop_new_files", SC,
+       ("    if (!open_step_allowed(d)) {\n        err = AAR_E_IO;\n        goto done;\n    }\n    ok = d->rename(",
+        "    ok = d->rename("))
+mutant("truncate-does-not-extend", "truncate", SC,
+       ("    } else if (size > (uint64_t)length) {", "    } else if (0) {"))
+mutant("truncate-of-a-read-id", "truncate_badf", SC,
+       ("    if (index < 0 || !f->fh[index] || !f->fh_write[index])\n        return AAR_E_BADF;",
+        "    if (index < 0 || !f->fh[index])\n        return AAR_E_BADF;"))
+mutant("set-date-ignores-the-offset", "set_date_east", SC,
+       ("aar_serve_amiga_from_utc(mtime, east, &args.days", "aar_serve_amiga_from_utc(mtime, 0, &args.days"))
+mutant("stat-ignores-the-offset", "stat_offset_east", SC,
+       ("            utc = aar_serve_utc_from_local(info.mtime, east);", "            utc = info.mtime;"))
+mutant("protection-bits-unchecked", "protect", SC,
+       ("    if (args.protect & ~0xffu)\n        return AAR_E_INVAL;\n", ""))
+mutant("stat-protection-unmasked", "serve_core", SC,
+       ("done->out[AAR_R_STAT_PROTECT] = info.protect & 0xffu;", "done->out[AAR_R_STAT_PROTECT] = info.protect;"))
+mutant("time-offset-has-the-wrong-sign", "time_unix", SC,
+       ("        utc += (int64_t)(loc.gmt_west_min * 60);", "        utc -= (int64_t)(loc.gmt_west_min * 60);"))
+mutant("locale-offset-not-negated", "locale_info", SC,
+       ("(uint32_t)(-(int64_t)loc.gmt_west_min));", "(uint32_t)loc.gmt_west_min);"))
+mutant("env-nul-without-room", "env_get", SC,
+       ("    if (full < req->buf_len)\n        req->buf[full] = 0;", "    if (full <= req->buf_len)\n        req->buf[full] = 0;"))
+mutant("env-policy-ignored", "env_policy", SC,
+       ("    if (h->policy & AAR_SERVE_HOST_NO_ENV)\n        return AAR_E_ACCES;\n", ""))
+mutant("env-name-may-leave-env", "env_get_names", SC,
+       ("    if (!env_name_confined(name))\n        return AAR_E_ACCES;\n", ""))
+mutant("env-name-empty-component-allowed", "env_get_names", SC,
+       ("        if (end == comp || (end - comp == 2 && comp[0] == '.' && comp[1] == '.'))",
+        "        if (end != comp && (end - comp == 2 && comp[0] == '.' && comp[1] == '.'))"))
+mutant("env-length-taken-from-the-copy", "env_get", "client/serve/aar_serve_host.c",
+       ("        whole = (uint32_t)err;", "        whole = (uint32_t)len;"))
+mutant("truncate-size-mismatch-ignored", "serve_core", SC,
+       ("        if ((uint64_t)result != size)\n            return AAR_E_BUSY;\n", ""))
+mutant("open-truncate-size-mismatch-ignored", "serve_core", SC,
+       ("            if (size > 0) {\n                /* Another handle's position", "            if (0) {\n                /* Another handle's position"))
+mutant("truncate-extension-error-leaves-the-offset", "serve_core", SC,
+       ("            (void)d->fh_seek(d->ctx, fh, cur, 0, &back_ok, &back_io);\n", ""))
+mutant("clip-read-limit-on-the-stream", "clip_limit_round_trip", "client/serve/aar_serve_host.c",
+       ("len + req->io_Actual > AAR_SERVE_CLIP_RAW_MAX", "len + req->io_Actual > AAR_SERVE_CLIP_MAX"))
+mutant("clip-text-limit-unchecked", "clip_read_limits", SC,
+       ("    if (need > AAR_SERVE_CLIP_MAX)\n        return AAR_E_NOMEM;\n    text =", "    text ="))
+mutant("clip-policy-ignored", "clip_policy", SC,
+       ("    if (h->policy & AAR_SERVE_HOST_NO_CLIP)\n        return AAR_E_ACCES;\n", "", 2))
+mutant("clip-replaced-before-the-last-chunk", "clip_write_text", SC,
+       ("    if (req->flags & AAR_CLIPF_LAST) {\n        rc = clip_commit(h);", "    if (1) {\n        rc = clip_commit(h);"))
+mutant("clip-read-sequence-not-cached", "clip_read_chunks", SC,
+       ("    if (offset == 0 || !h->rd || h->rd_unit != unit || h->rd_type != type) {", "    if (1) {"))
+mutant("clip-unit-unchecked", "clip_read_units", SC,
+       ("    return *unit < AAR_CLIP_UNITS && (*type == AAR_CLIP_TEXT || *type == AAR_CLIP_IFF);",
+        "    return *type == AAR_CLIP_TEXT || *type == AAR_CLIP_IFF;"))
+mutant("clip-write-restart-keeps-the-old-buffer", "clip_write_errors", SC,
+       ("        host_drop_write(h);\n        if (total > AAR_SERVE_CLIP_MAX)", "        if (total > AAR_SERVE_CLIP_MAX)"))
+mutant("created-directory-lock-leaked", "dir_create", SD,
+       ("    if (ok && request.action == ACTION_CREATE_DIR)\n        X_UNLOCK((BPTR)request.result);\n", ""))
+mutant("volume-read-only-not-reported", "volume_info", SC,
+       ("vol.read_only ? AAR_VOLF_READONLY : 0u", "0u"))
+mutant("host-libraries-not-closed", "host_libs_close", "client/serve/aar_serve.c",
+       ("    host_close_libs(s);\n", ""))
 mutant("descriptor-range-unchecked", "serve_core", SC,
        ("if (id < AAR_FD_BASE || id >= AAR_FD_BASE + (int32_t)AAR_SERVE_FD_COUNT) {", "if (id < AAR_FD_BASE) {"))
 mutant("exclusive-create-without-probe", "serve_core", SC,
