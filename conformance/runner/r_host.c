@@ -95,7 +95,33 @@ static void h_locale(struct conf_run *run, const AARMessage *msg)
     CloseLocale(loc);
 }
 
-/* CONF_HOST_LOC2: a = hash of the decimal point, b = hash of the group separator, c = hash of the country
+/* A separator of locale.library as the API reports it (spec 7.4): its bytes are ISO-8859-1 and the
+ * record holds them as UTF-8 in a field of 4 bytes with the NUL, so room for 3 bytes and only whole
+ * characters. The client reads at most 7 bytes of the native string (its copy is 8 bytes with the NUL).
+ * The expected value is made from the native bytes here, not taken from the app's record. */
+static void separator_utf8(const char *native, char dst[4])
+{
+    ULONG o = 0, i;
+
+    for (i = 0; i < 7 && native[i]; i++) {
+        UBYTE c = (UBYTE)native[i];
+
+        if (c < 0x80) {
+            if (o + 1 > 3)
+                break;
+            dst[o++] = (char)c;
+        } else {
+            if (o + 2 > 3)
+                break;
+            dst[o++] = (char)(0xC0 | (c >> 6));
+            dst[o++] = (char)(0x80 | (c & 0x3F));
+        }
+    }
+    dst[o] = '\0';
+}
+
+/* CONF_HOST_LOC2: a = hash of the decimal point, b = hash of the group separator (both the UTF-8 of the
+ * native separator, see separator_utf8), c = hash of the country
  * (0: the client reported none). The country is the non-zero bytes of loc_CountryCode, most significant
  * first (spec 7.4). */
 static void h_loc2(struct conf_run *run, const AARMessage *msg)
@@ -106,6 +132,8 @@ static void h_loc2(struct conf_run *run, const AARMessage *msg)
     struct Locale *loc = open_locale();
     const char *d;
     const char *g;
+    char dec_utf8[4];
+    char grp_utf8[4];
     char country[8];
     ULONG code, k, n = 0;
 
@@ -115,6 +143,8 @@ static void h_loc2(struct conf_run *run, const AARMessage *msg)
     }
     d = loc->loc_DecimalPoint ? (const char *)loc->loc_DecimalPoint : "";
     g = loc->loc_GroupSeparator ? (const char *)loc->loc_GroupSeparator : "";
+    separator_utf8(d, dec_utf8);
+    separator_utf8(g, grp_utf8);
     code = (ULONG)loc->loc_CountryCode;
     for (k = 0; k < 4; k++) {
         UBYTE ch = (UBYTE)(code >> (24 - 8 * k));
@@ -123,7 +153,7 @@ static void h_loc2(struct conf_run *run, const AARMessage *msg)
             country[n++] = (char)ch;
     }
     country[n] = '\0';
-    send_result(run, (hash_str(d) == dec && hash_str(g) == grp && (cty == 0UL || hash_str(country) == cty))
+    send_result(run, (hash_str(dec_utf8) == dec && hash_str(grp_utf8) == grp && (cty == 0UL || hash_str(country) == cty))
                          ? 1UL : 0UL, 0, 0);
     CloseLocale(loc);
 }

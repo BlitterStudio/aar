@@ -533,27 +533,40 @@ static void test_clip_big(void)
     conf_end(&t);
 }
 
+/* C-HOST.12: each direction is judged on its own. The probe of a direction (unit 256) that is not served
+ * (AAR_E_NOSYS or AAR_E_ACCES) leaves that direction out, noted; the direction that is served has to
+ * answer all its invalid arguments with AAR_E_INVAL. A client that serves neither passes with both noted. */
 static void test_clip_args(void)
 {
     struct conf_test t;
     uint8_t buf[8];
     uint32_t n = 0;
-    int rc;
+    int rc_read, rc_write, read_served, write_served;
 
     conf_begin(&t, "C-HOST.12");
-    rc = aar_clip_read(AAR_CLIP_UNITS, AAR_CLIP_TEXT, buf, sizeof buf, &n);
-    if (not_served(&t, rc, "clip_read")) {
-        conf_end(&t);
-        return;
+    rc_read = aar_clip_read(AAR_CLIP_UNITS, AAR_CLIP_TEXT, buf, sizeof buf, &n);
+    read_served = !not_served(&t, rc_read, "clip_read");
+    rc_write = aar_clip_write(AAR_CLIP_UNITS, AAR_CLIP_TEXT, "x", 1);
+    write_served = !not_served(&t, rc_write, "clip_write");
+    if (read_served) {
+        expect(&t, rc_read, AAR_E_INVAL, "clip_read of unit 256");
+        expect(&t, aar_clip_read(0xFFFFFFFFu, AAR_CLIP_TEXT, buf, sizeof buf, &n), AAR_E_INVAL,
+               "clip_read of unit 2^32-1");
+        expect(&t, aar_clip_read(CH_SCRATCH_UNIT, 0, buf, sizeof buf, &n), AAR_E_INVAL, "clip_read of type 0");
+        expect(&t, aar_clip_read(CH_SCRATCH_UNIT, 3, buf, sizeof buf, &n), AAR_E_INVAL, "clip_read of type 3");
     }
-    expect(&t, rc, AAR_E_INVAL, "clip_read of unit 256");
-    expect(&t, aar_clip_read(0xFFFFFFFFu, AAR_CLIP_TEXT, buf, sizeof buf, &n), AAR_E_INVAL, "clip_read of unit 2^32-1");
-    expect(&t, aar_clip_read(CH_SCRATCH_UNIT, 0, buf, sizeof buf, &n), AAR_E_INVAL, "clip_read of type 0");
-    expect(&t, aar_clip_read(CH_SCRATCH_UNIT, 3, buf, sizeof buf, &n), AAR_E_INVAL, "clip_read of type 3");
-    expect(&t, aar_clip_write(AAR_CLIP_UNITS, AAR_CLIP_TEXT, "x", 1), AAR_E_INVAL, "clip_write to unit 256");
-    expect(&t, aar_clip_write(CH_SCRATCH_UNIT, 0, "x", 1), AAR_E_INVAL, "clip_write of type 0");
-    expect(&t, aar_clip_write(CH_SCRATCH_UNIT, 3, "x", 1), AAR_E_INVAL, "clip_write of type 3");
-    conf_buf_str(&t.note, "unit 256 and types 0 and 3 are AAR_E_INVAL");
+    if (write_served) {
+        expect(&t, rc_write, AAR_E_INVAL, "clip_write to unit 256");
+        expect(&t, aar_clip_write(CH_SCRATCH_UNIT, 0, "x", 1), AAR_E_INVAL, "clip_write of type 0");
+        expect(&t, aar_clip_write(CH_SCRATCH_UNIT, 3, "x", 1), AAR_E_INVAL, "clip_write of type 3");
+    }
+    if (read_served || write_served) {
+        if (t.note.n)
+            conf_buf_str(&t.note, "; ");
+        conf_buf_str(&t.note, read_served && write_served ? "unit 256 and types 0 and 3 are AAR_E_INVAL"
+                              : read_served ? "only clip_read was checked: unit 256 and types 0 and 3 are AAR_E_INVAL"
+                                            : "only clip_write was checked: unit 256 and types 0 and 3 are AAR_E_INVAL");
+    }
     conf_end(&t);
 }
 
