@@ -247,7 +247,7 @@ if(BUILD_TESTING)
 
   # The API 0.6 calls and events (tests/api06.c); api06_pads needs SDL's
   # virtual joystick and exits 77 where that is missing.
-  foreach(t files time locale env clip display present resize events input pads window)
+  foreach(t failure files time locale env clip display present resize events input pads window)
     aar_host_test(api06_${t} EXE api06)
   endforeach()
   set_tests_properties(api06_pads api06_window PROPERTIES SKIP_RETURN_CODE 77)

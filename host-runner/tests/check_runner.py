@@ -712,6 +712,14 @@ def api06_run(exe, mode, *, options=(), env=None, cwd=None, expect=0):
     return proc.stdout.decode("utf-8", "replace")
 
 
+def check_api06_failure(exe):
+    for mode, check_id in (("fail-check", 256), ("fail-rc", 333)):
+        proc = run(exe, ["--headless", "--", mode])
+        if proc.returncode != 1 or f"check {check_id}:".encode("ascii") not in proc.stderr:
+            show(proc)
+            raise SystemExit(f"api06 {mode}: expected check {check_id} and exit 1, got {proc.returncode}")
+
+
 def check_api06_files(exe):
     import re
     import stat
@@ -1051,6 +1059,7 @@ CHECKS = {
     "pixelsstop": check_pixelsstop,
     "msgwaitstop": check_msgwaitstop,
     "msgwaitidle": check_msgwaitidle,
+    "api06_failure": check_api06_failure,
     "api06_files": check_api06_files,
     "api06_time": check_api06_time,
     "api06_locale": check_api06_locale,

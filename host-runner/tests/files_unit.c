@@ -46,12 +46,15 @@ static void put_file(const char *leaf, const char *data)
 static int file_size(const char *leaf)
 {
     char path[4096];
-    struct stat st;
 
     snprintf(path, sizeof path, "%s/%s", UNIT_ROOT, leaf);
-    if (path_stat(path, &st) != 0)
-        return -1;
-    return (int)st.st_size;
+#ifdef _WIN32
+    struct _stat64 st;
+    return _stat64(path, &st) == 0 ? (int)st.st_size : -1;
+#else
+    struct stat st;
+    return stat(path, &st) == 0 ? (int)st.st_size : -1;
+#endif
 }
 
 static void rm_file(const char *leaf)
@@ -229,6 +232,10 @@ static void test_list_survives_a_rename(void)
     }
     assert(dirs == 1 && files == 1);
     assert(api_file_list_close(list) == AAR_OK);
+    assert(api_file_delete("top2/moved/plain.txt") == AAR_OK);
+    assert(api_file_delete("top2/moved/inner") == AAR_OK);
+    assert(api_file_delete("top2/moved") == AAR_OK);
+    assert(api_file_delete("top2") == AAR_OK);
     host_files_shutdown();
 }
 #endif
@@ -458,8 +465,8 @@ static void test_rename(void)
         assert(unlink(to) == 0);
     }
 #endif
-    /* The REPLACE target is deleted first: one that is in use is refused and
-     * keeps its contents. The same-object no-op comes before that check. */
+    /* Replacing an open target is refused and preserves its contents.
+     * The same-object no-op comes before that check. */
     put_file("rt.txt", "old");
     put_file("rs.txt", "new");
     {
@@ -480,13 +487,22 @@ static void test_rename(void)
         /* An empty directory that a listing reads is in use too. */
         assert(api_dir_create("rl.dir") == AAR_OK);
         assert(api_dir_create("rs.dir") == AAR_OK);
+        put_file("rs.dir/source.txt", "x");
         lst = api_file_list_open("rl.dir");
         assert(lst >= HOST_FD_BASE);
         assert(api_file_rename("rs.dir", "rl.dir", AAR_RENAME_REPLACE) == AAR_E_BUSY);
         assert(api_dir_create("rs.dir") == AAR_E_EXIST); /* nothing moved */
         assert(api_file_rename("rl.dir", "rl.dir", AAR_RENAME_REPLACE) == AAR_OK);
         assert(api_file_list_close(lst) == AAR_OK);
+#ifdef _WIN32
+        assert(api_file_rename("rs.dir", "rl.dir", AAR_RENAME_REPLACE) == AAR_E_NOSYS);
+        assert(file_size("rs.dir/source.txt") == 1);
+        assert(api_file_delete("rs.dir/source.txt") == AAR_OK);
+        assert(api_file_delete("rs.dir") == AAR_OK);
+#else
         assert(api_file_rename("rs.dir", "rl.dir", AAR_RENAME_REPLACE) == AAR_OK);
+        assert(api_file_delete("rl.dir/source.txt") == AAR_OK);
+#endif
         assert(api_file_delete("rl.dir") == AAR_OK);
     }
 #ifndef _WIN32
@@ -576,13 +592,12 @@ static void test_protect_and_date(void)
     put_file("pm.txt", "x");
     assert(api_file_stat("pm.txt", &st) == AAR_OK);
     assert((st.protect & (AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_READ)) == 0u);
-#ifndef _WIN32
-    /* READ, WRITE and EXECUTE are the owner's bits with the sense of
-     * AmigaDOS, and DELETE follows WRITE. */
+    /* Both hosts map the read-only state to WRITE and DELETE together. */
     assert(api_file_set_protect("pm.txt", AAR_PROT_WRITE | AAR_PROT_DELETE) == AAR_OK);
     assert(api_file_stat("pm.txt", &st) == AAR_OK);
     assert(st.protect == (AAR_PROT_WRITE | AAR_PROT_DELETE));
     assert(api_file_delete("pm.txt") == AAR_E_ACCES); /* delete-protected */
+#ifndef _WIN32
     /* Every mask of the four lower bits that the host can store round-trips;
      * any other is AAR_E_NOSYS and leaves the protection as it was. */
     {
@@ -600,6 +615,9 @@ static void test_protect_and_date(void)
             stored = st.protect;
         }
     }
+#else
+    assert(api_file_set_protect("pm.txt", AAR_PROT_READ) == AAR_E_NOSYS);
+    assert(api_file_set_protect("pm.txt", AAR_PROT_EXECUTE) == AAR_E_NOSYS);
 #endif
     /* Bits the host has nowhere to keep, and DELETE without WRITE (or the
      * other way round): refused before anything changes. */
@@ -613,7 +631,7 @@ static void test_protect_and_date(void)
     assert(st.protect == (AAR_PROT_READ | AAR_PROT_WRITE | AAR_PROT_DELETE |
                           AAR_PROT_EXECUTE)); /* the last mask of the loop */
 #else
-    assert(st.protect == 0u);
+    assert(st.protect == (AAR_PROT_WRITE | AAR_PROT_DELETE));
 #endif
     assert(api_file_set_protect("pm.txt", 0x100u) == AAR_E_INVAL);
     assert(api_file_set_protect("pm.txt", 0u) == AAR_OK);

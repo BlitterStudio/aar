@@ -93,6 +93,29 @@ static int objid_equal(const struct host_objid *a, const struct host_objid *b)
 }
 
 #ifdef _WIN32
+static int win_err(void);
+
+#define WIN_FILETIME_EPOCH_SEC 11644473600ll
+#define WIN_FILETIME_TICKS_PER_SEC 10000000ull
+
+static int64_t unix_seconds_from_filetime(FILETIME ft)
+{
+    uint64_t ticks = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+
+    return (int64_t)(ticks / WIN_FILETIME_TICKS_PER_SEC) - WIN_FILETIME_EPOCH_SEC;
+}
+
+static HANDLE open_path_handle(const char *path, DWORD access)
+{
+    return CreateFileA(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                       NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+}
+
+static uint32_t win_protect_of(int readonly)
+{
+    return readonly ? AAR_PROT_WRITE | AAR_PROT_DELETE : 0u;
+}
+
 static int objid_of_handle(HANDLE h, struct host_objid *id)
 {
     BY_HANDLE_FILE_INFORMATION info;
@@ -116,8 +139,7 @@ static int objid_of_path(const char *path, struct host_objid *id)
     HANDLE h;
     int rc;
 
-    h = CreateFileA(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    h = open_path_handle(path, 0);
     rc = objid_of_handle(h, id);
     if (h != INVALID_HANDLE_VALUE)
         CloseHandle(h);
@@ -261,13 +283,10 @@ static int path_stat(const char *path, struct stat *st)
     struct _stat64 wide;
     if (_stat64(path, &wide) != 0)
         return -1;
-    memset(st, 0, sizeof *st);
     st->st_mode = ((wide.st_mode & _S_IFDIR) ? S_IFDIR : S_IFREG) |
                   /* No EXECUTE: the host has no execute permission, and the
                    * CRT's guess from the file name would not round-trip. */
                   (wide.st_mode & (_S_IREAD | _S_IWRITE));
-    st->st_size = (off_t)wide.st_size;
-    st->st_mtime = (time_t)wide.st_mtime;
     return 0;
 #else
     return stat(path, st);
@@ -609,15 +628,37 @@ static int api_file_seek(int fd, int64_t off, int whence, int64_t *out_pos)
 
 static int fill_stat(const char *full, aar_stat *out)
 {
+#ifdef _WIN32
+    BY_HANDLE_FILE_INFORMATION info;
+    HANDLE h = open_path_handle(full, 0);
+
+    if (h == INVALID_HANDLE_VALUE)
+        return win_err();
+    if (!GetFileInformationByHandle(h, &info)) {
+        int rc = win_err();
+
+        CloseHandle(h);
+        return rc;
+    }
+    CloseHandle(h);
+    memset(out, 0, sizeof *out);
+    out->size = ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+    out->mtime = unix_seconds_from_filetime(info.ftLastWriteTime);
+    out->mode = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? AAR_MODE_DIR : AAR_MODE_FILE;
+    out->protect = win_protect_of((info.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0);
+#else
     struct stat st;
 
     if (path_stat(full, &st) != 0)
         return io_err();
     memset(out, 0, sizeof *out);
     out->size = (uint64_t)st.st_size;
-    out->mtime = st.st_mtime > 0 ? (int64_t)st.st_mtime : 0;
+    out->mtime = (int64_t)st.st_mtime;
     out->mode = S_ISDIR(st.st_mode) ? AAR_MODE_DIR : AAR_MODE_FILE;
     out->protect = protect_of(&st);
+#endif
+    if (out->mtime < 0)
+        out->mtime = 0;
     return AAR_OK;
 }
 
@@ -901,15 +942,19 @@ static int win_err(void)
  */
 static uint32_t protect_of(const struct stat *st)
 {
+#ifdef _WIN32
+    return win_protect_of(!(st->st_mode & S_IWUSR));
+#else
     uint32_t p = 0;
 
-    if (!(st->st_mode & S_IRUSR))
-        p |= AAR_PROT_READ;
     if (!(st->st_mode & S_IWUSR))
         p |= AAR_PROT_WRITE | AAR_PROT_DELETE;
+    if (!(st->st_mode & S_IRUSR))
+        p |= AAR_PROT_READ;
     if (!S_ISDIR(st->st_mode) && !(st->st_mode & S_IXUSR))
         p |= AAR_PROT_EXECUTE;
     return p;
+#endif
 }
 
 /* An open id holds its file, and an open listing holds its directory:
@@ -1013,12 +1058,16 @@ static int api_file_rename(const char *from, const char *to, uint32_t flags)
         if (!IS_LNK(sb.st_mode)) {
             if (protect_of(&sb) & AAR_PROT_DELETE)
                 return AAR_E_ACCES;
-            /* The target is deleted first: like a delete, it must be free. */
+            /* Replacing the target removes it, so it must be free. */
             if (object_in_use(&sb, b))
                 return AAR_E_BUSY;
         }
     }
 #ifdef _WIN32
+    /* MoveFileEx cannot replace a directory. Deleting the target ourselves
+     * would lose it if the move failed. */
+    if (exists && S_ISDIR(sa.st_mode) && S_ISDIR(sb.st_mode))
+        return AAR_E_NOSYS;
     if (!MoveFileExA(a, b, (flags & AAR_RENAME_REPLACE) ? MOVEFILE_REPLACE_EXISTING : 0))
         return win_err();
 #else
@@ -1068,12 +1117,10 @@ static int api_file_set_date(const char *path, int64_t mtime)
 
         if (mtime > 910692730085ll) /* the FILETIME range */
             return AAR_E_INVAL;
-        ticks.QuadPart = ((ULONGLONG)mtime + 11644473600ull) * 10000000ull;
+        ticks.QuadPart = ((uint64_t)mtime + WIN_FILETIME_EPOCH_SEC) * WIN_FILETIME_TICKS_PER_SEC;
         ft.dwLowDateTime = ticks.LowPart;
         ft.dwHighDateTime = ticks.HighPart;
-        h = CreateFileA(full, FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES,
-                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                        NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        h = open_path_handle(full, FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES);
         if (h == INVALID_HANDLE_VALUE)
             return win_err();
         if (!SetFileTime(h, NULL, NULL, &ft)) {
@@ -1090,9 +1137,7 @@ static int api_file_set_date(const char *path, int64_t mtime)
             return rc;
         }
         CloseHandle(h);
-        ticks.LowPart = got.dwLowDateTime;
-        ticks.HighPart = got.dwHighDateTime;
-        if (ticks.QuadPart / 10000000ull != (ULONGLONG)mtime + 11644473600ull)
+        if (unix_seconds_from_filetime(got) != mtime)
             return AAR_E_INVAL;
     }
 #else
@@ -1256,13 +1301,18 @@ static int api_volume_info(const char *path, aar_volume_info *out)
 #ifdef _WIN32
     {
         ULARGE_INTEGER avail, total, unused;
+        struct stat st;
         char dir[4096];
         char drive[4] = {0, 0, 0, 0};
         DWORD spc, bps, nfree, nclusters, flags = 0;
         const char *root = 0;
 
+        /* The query below uses a directory even when the requested path is
+         * a file. Do not report its volume if that file does not exist. */
+        if (path_stat(full, &st) != 0)
+            return op_err();
         memcpy(dir, full, strlen(full) + 1u);
-        if (!is_dir_path(dir)) {
+        if (!S_ISDIR(st.st_mode)) {
             char *slash = strrchr(dir, '/');
             if (slash && slash != dir)
                 *slash = 0;

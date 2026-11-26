@@ -455,25 +455,31 @@ the same object (the same device and inode, so a hard link counts, or the same
 file index on Windows) are `AAR_OK` and nothing changes, with or without the
 flag. An existing other target is `AAR_E_EXIST` without `AAR_RENAME_REPLACE`;
 that is a check before the rename, so another process can still slip a file
-in. With the flag the host's rename semantics apply: a file replaces a file and
-a directory an empty directory. A directory against a file, or a directory that
-is not empty, is `AAR_E_EXIST`; a delete-protected target is `AAR_E_ACCES`; a
-target in use (as for `aar_file_delete`) is `AAR_E_BUSY` and keeps its
-contents, because the flag deletes the target first; a target on another file
-system, or a directory moved into itself, is `AAR_E_INVAL`.
-`aar_file_set_date` sets the modification time (`utimensat`, the access time
-stays) and refuses a negative time or one that the host's `time_t` cannot hold
-with `AAR_E_INVAL`. It reads the time back and answers `AAR_E_INVAL` when the
-filesystem kept another value (ext4 ends in 2446, FAT keeps two-second steps);
-the file then has that other value. `aar_file_truncate` flushes the stream of
-the id and calls `ftruncate` (`_chsize_s` on Windows), so it shortens or
-zero-extends the file and leaves the position alone. It also clears the
-stream's end-of-file flag, so a read after an extension returns the new bytes
-without a seek.
+in. With the flag a file can replace a file. A delete-protected target is
+`AAR_E_ACCES` and a target in use (as for `aar_file_delete`) is `AAR_E_BUSY`.
+On POSIX a directory can replace an empty directory; a file and a directory
+cannot replace each other, and replacing a non-empty directory returns
+`AAR_E_EXIST`. Moving a directory into itself or moving across file systems
+returns `AAR_E_INVAL`. On Windows `MoveFileEx` cannot replace a directory.
+Replacing one directory with a different directory returns `AAR_E_NOSYS`
+after the protection and in-use checks, leaving both directories unchanged.
+`aar_file_set_date` sets the modification time (`utimensat` on POSIX,
+`SetFileTime` on Windows) and leaves the access time alone. It refuses a
+negative time or one outside the host API's range with `AAR_E_INVAL`. It
+reads the time back and answers `AAR_E_INVAL` when the filesystem kept
+another value (ext4 ends in 2446, FAT keeps two-second steps); the file then
+has that other value. `aar_file_stat` on Windows reads the modification
+time as UTC and the full 64-bit size from native file metadata.
+
+`aar_file_truncate` flushes the stream of the id and calls `ftruncate`
+(`_chsize_s` on Windows), so it shortens or zero-extends the file and leaves
+the position alone. It also clears the stream's end-of-file flag, so a read
+after an extension returns the new bytes without a seek.
+
 `aar_get_volume_info` is `statvfs` of the path: the fragment size as
 `block_bytes`, the blocks as `total_bytes`, the blocks available to a user as
 `free_bytes`, and `AAR_VOLF_READONLY` for a read-only mount
-(`GetDiskFreeSpaceEx` on Windows). The path of the root is `.`.
+(`GetDiskFreeSpaceEx` on Windows). The path must exist. Use `.` for the root.
 
 POSIX has three owner permission bits where AmigaDOS has eight protection
 bits. `aar_stat.protect` and `aar_file_set_protect` map the owner's r, w and x

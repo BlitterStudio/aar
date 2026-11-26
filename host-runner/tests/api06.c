@@ -4,8 +4,8 @@
  * resize, vertical blank estimate, the new flags, and the events (SDL events
  * that the app pushes itself, and the --input script). check_runner.py runs
  * each mode with the options and the environment it needs, and compares what
- * the app prints. The exit status is the failing check, 77 when the host has
- * no game controller support for the virtual joystick of "pads".
+ * the app prints. Failures exit 1 and print the failing check's ID. "pads"
+ * exits 77 when the host has no virtual game controller support.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -20,23 +20,23 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define FAIL(code, msg) \
+#define FAIL(id, msg) \
     do { \
-        fprintf(stderr, "api06: %s (line %d)\n", (msg), __LINE__); \
-        return (code); \
+        fprintf(stderr, "api06: check %d: %s (line %d)\n", (id), (msg), __LINE__); \
+        return 1; \
     } while (0)
-#define CHECK(cond, code) \
+#define CHECK(cond, id) \
     do { \
         if (!(cond)) \
-            FAIL((code), #cond); \
+            FAIL((id), #cond); \
     } while (0)
-#define CHECK_RC(call, want, code) \
+#define CHECK_RC(call, want, id) \
     do { \
         int rc_ = (call); \
         if (rc_ != (want)) { \
-            fprintf(stderr, "api06: %s returned %d, want %d (line %d)\n", \
-                    #call, rc_, (int)(want), __LINE__); \
-            return (code); \
+            fprintf(stderr, "api06: check %d: %s returned %d, want %d (line %d)\n", \
+                    (id), #call, rc_, (int)(want), __LINE__); \
+            return 1; \
         } \
     } while (0)
 
@@ -139,8 +139,8 @@ static int test_files(void)
     CHECK_RC(aar_file_rename("ok.txt", "sub//ok.txt", 0), AAR_OK, 48);
     CHECK_RC(aar_file_rename("sub", "sub", AAR_RENAME_REPLACE), AAR_OK, 48);
     CHECK(size_of("ok.txt") == 6 && size_of("sub") >= 0, 48);
-    /* The REPLACE target is deleted first: one that is in use is refused and
-     * keeps its contents. The same-object no-op comes before that check. */
+    /* Replacing an open target is refused and preserves its contents.
+     * The same-object no-op comes before that check. */
     CHECK_RC(write_text("rt.txt", "old"), AAR_OK, 49);
     CHECK_RC(write_text("rs.txt", "new"), AAR_OK, 49);
     fd = aar_file_open("rt.txt", AAR_FILE_READ);
@@ -162,13 +162,22 @@ static int test_files(void)
     /* An empty directory that a listing reads is in use too. */
     CHECK_RC(aar_dir_create("rl.dir"), AAR_OK, 49);
     CHECK_RC(aar_dir_create("rs.dir"), AAR_OK, 49);
+    CHECK_RC(write_text("rs.dir/source.txt", "x"), AAR_OK, 49);
     list = aar_file_list_open("rl.dir");
     CHECK(list >= AAR_FD_BASE, 49);
     CHECK_RC(aar_file_rename("rs.dir", "rl.dir", AAR_RENAME_REPLACE), AAR_E_BUSY, 49);
     CHECK_RC(aar_dir_create("rs.dir"), AAR_E_EXIST, 49); /* nothing moved */
     CHECK_RC(aar_file_rename("rl.dir", "rl.dir", AAR_RENAME_REPLACE), AAR_OK, 49);
     CHECK_RC(aar_file_list_close(list), AAR_OK, 49);
+#ifdef _WIN32
+    CHECK_RC(aar_file_rename("rs.dir", "rl.dir", AAR_RENAME_REPLACE), AAR_E_NOSYS, 49);
+    CHECK(size_of("rs.dir/source.txt") == 1, 49);
+    CHECK_RC(aar_file_delete("rs.dir/source.txt"), AAR_OK, 49);
+    CHECK_RC(aar_file_delete("rs.dir"), AAR_OK, 49);
+#else
     CHECK_RC(aar_file_rename("rs.dir", "rl.dir", AAR_RENAME_REPLACE), AAR_OK, 49);
+    CHECK_RC(aar_file_delete("rl.dir/source.txt"), AAR_OK, 49);
+#endif
     CHECK_RC(aar_file_delete("rl.dir"), AAR_OK, 49);
 
     /* set_date: Python reads the modification time of dated.txt afterwards */
@@ -199,24 +208,31 @@ static int test_files(void)
     CHECK_RC(aar_file_set_date("dated.txt", 1000000000), AAR_OK, 57);
 
     /* set_protect: Python reads the mode bits of perm.txt afterwards */
-    CHECK_RC(write_text("perm.txt", "p"), AAR_OK, 60);
-    CHECK_RC(aar_file_stat("perm.txt", &st), AAR_OK, 61);
-    CHECK((st.protect & (AAR_PROT_READ | AAR_PROT_WRITE | AAR_PROT_DELETE)) == 0u, 62);
-    CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_EXECUTE), AAR_OK, 63);
-    CHECK_RC(aar_file_stat("perm.txt", &st), AAR_OK, 64);
-    CHECK(st.protect == (AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_EXECUTE), 65);
-    CHECK_RC(aar_file_delete("perm.txt"), AAR_E_ACCES, 66);
-    CHECK_RC(aar_file_set_protect("perm.txt", 0x100u), AAR_E_INVAL, 67);
-    CHECK_RC(aar_file_set_protect("absent.txt", 0u), AAR_E_NOENT, 68);
-    /* A mask of known bits that the host cannot store is AAR_E_NOSYS, and
-     * the protection does not change. */
-    CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_SCRIPT), AAR_E_NOSYS, 68);
-    CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_ARCHIVE), AAR_E_NOSYS, 68);
-    CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_DELETE), AAR_E_NOSYS, 68);
-    CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_WRITE), AAR_E_NOSYS, 68);
-    CHECK_RC(aar_file_stat("perm.txt", &st), AAR_OK, 68);
-    CHECK(st.protect == (AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_EXECUTE), 68);
-    CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_EXECUTE), AAR_OK, 69);
+    {
+#ifdef _WIN32
+        const uint32_t protected = AAR_PROT_WRITE | AAR_PROT_DELETE;
+#else
+        const uint32_t protected = AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_EXECUTE;
+#endif
+
+        CHECK_RC(write_text("perm.txt", "p"), AAR_OK, 60);
+        CHECK_RC(aar_file_set_protect("perm.txt", 0u), AAR_OK, 61);
+        CHECK_RC(aar_file_stat("perm.txt", &st), AAR_OK, 62);
+        CHECK(st.protect == 0u, 62);
+        CHECK_RC(aar_file_set_protect("perm.txt", protected), AAR_OK, 63);
+        CHECK_RC(aar_file_stat("perm.txt", &st), AAR_OK, 64);
+        CHECK(st.protect == protected, 65);
+        CHECK_RC(aar_file_delete("perm.txt"), AAR_E_ACCES, 66);
+        CHECK_RC(aar_file_set_protect("perm.txt", 0x100u), AAR_E_INVAL, 67);
+        CHECK_RC(aar_file_set_protect("absent.txt", 0u), AAR_E_NOENT, 68);
+        /* Refusing a known but unsupported mask leaves the file unchanged. */
+        CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_SCRIPT), AAR_E_NOSYS, 68);
+        CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_ARCHIVE), AAR_E_NOSYS, 68);
+        CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_DELETE), AAR_E_NOSYS, 68);
+        CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_WRITE), AAR_E_NOSYS, 68);
+        CHECK_RC(aar_file_stat("perm.txt", &st), AAR_OK, 68);
+        CHECK(st.protect == protected, 68);
+    }
 
     /* volume_info */
     memset(&vi, 0xaa, sizeof vi);
@@ -1310,55 +1326,45 @@ static int test_pads(void)
     for (i = 0; i < sizeof map / sizeof map[0]; i++) {
         SDL_JoystickSetVirtualButton(joy, map[i].sdl_button, 1);
         n = drain(ev, 16);
-        if (!expect_joy(map[i].name, ev, n, 2u, 0, 0, map[i].bit))
-            return 502;
+        CHECK(expect_joy(map[i].name, ev, n, 2u, 0, 0, map[i].bit), 502);
         SDL_JoystickSetVirtualButton(joy, map[i].sdl_button, 0);
         n = drain(ev, 16);
-        if (!expect_joy("release", ev, n, 2u, 0, 0, 0))
-            return 503;
+        CHECK(expect_joy("release", ev, n, 2u, 0, 0, 0), 503);
     }
     /* The d-pad and the left stick. */
     SDL_JoystickSetVirtualButton(joy, 9, 1);
     n = drain(ev, 16);
-    if (!expect_joy("d-pad left", ev, n, 2u, -1, 0, 0))
-        return 504;
+    CHECK(expect_joy("d-pad left", ev, n, 2u, -1, 0, 0), 504);
     SDL_JoystickSetVirtualButton(joy, 9, 0);
     SDL_JoystickSetVirtualButton(joy, 8, 1);
     SDL_JoystickSetVirtualButton(joy, 10, 1);
     n = drain(ev, 16);
-    if (!expect_joy("d-pad down right", ev, n, 2u, 1, 1, 0))
-        return 505;
+    CHECK(expect_joy("d-pad down right", ev, n, 2u, 1, 1, 0), 505);
     SDL_JoystickSetVirtualButton(joy, 8, 0);
     SDL_JoystickSetVirtualButton(joy, 10, 0);
     SDL_JoystickSetVirtualButton(joy, 7, 1);
     n = drain(ev, 16);
-    if (!expect_joy("d-pad up", ev, n, 2u, 0, -1, 0))
-        return 506;
+    CHECK(expect_joy("d-pad up", ev, n, 2u, 0, -1, 0), 506);
     SDL_JoystickSetVirtualButton(joy, 7, 0);
     SDL_JoystickSetVirtualAxis(joy, 0, 30000);
     SDL_JoystickSetVirtualAxis(joy, 1, -30000);
     n = drain(ev, 16);
-    if (!expect_joy("left stick", ev, n, 2u, 1, -1, 0))
-        return 507;
+    CHECK(expect_joy("left stick", ev, n, 2u, 1, -1, 0), 507);
     SDL_JoystickSetVirtualAxis(joy, 0, 8000); /* inside the dead zone */
     n = drain(ev, 16);
-    if (!expect_joy("stick x to the dead zone", ev, n, 2u, 0, -1, 0))
-        return 508;
+    CHECK(expect_joy("stick x to the dead zone", ev, n, 2u, 0, -1, 0), 508);
     SDL_JoystickSetVirtualAxis(joy, 1, 0);
     n = drain(ev, 16);
-    if (!expect_joy("stick centred", ev, n, 2u, 0, 0, 0))
-        return 509;
+    CHECK(expect_joy("stick centred", ev, n, 2u, 0, 0, 0), 509);
     /* Two buttons at once, then the device goes away with one held. */
     SDL_JoystickSetVirtualButton(joy, 0, 1);
     SDL_JoystickSetVirtualButton(joy, 3, 1);
     n = drain(ev, 16);
-    if (!expect_joy("A and Y", ev, n, 2u, 0, 0, AAR_JOY_BUTTON1 | AAR_JOY_BUTTON4))
-        return 510;
+    CHECK(expect_joy("A and Y", ev, n, 2u, 0, 0, AAR_JOY_BUTTON1 | AAR_JOY_BUTTON4), 510);
     SDL_JoystickClose(joy);
     SDL_JoystickDetachVirtual(idx);
     n = drain(ev, 16);
-    if (!expect_joy("removal releases the buttons", ev, n, 2u, 0, 0, 0))
-        return 511;
+    CHECK(expect_joy("removal releases the buttons", ev, n, 2u, 0, 0, 0), 511);
     return 0;
 }
 
@@ -1407,7 +1413,13 @@ int aar_main(int argc, char **argv)
         return test_merge(argc, argv);
     if (strcmp(mode, "pads") == 0)
         return test_pads();
+    /* The launcher must see a failure even when an ID's low byte is 0 or 77. */
+    if (strcmp(mode, "fail-check") == 0)
+        CHECK(0, 256);
+    if (strcmp(mode, "fail-rc") == 0)
+        CHECK_RC(AAR_E_INVAL, AAR_OK, 333);
     fprintf(stderr, "usage: api06 <files|time|locale|envdir|envproc|clip|display|present|"
-                    "resize|events|events_nocap|events_scaled|script|merge|pads>\n");
+                    "resize|events|events_nocap|events_scaled|script|merge|pads|"
+                    "fail-check|fail-rc>\n");
     return 1;
 }
