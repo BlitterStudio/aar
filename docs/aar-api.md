@@ -1646,10 +1646,12 @@ int aar_file_set_protect(const char *path, uint32_t protect);
 
 Sets the protection bits of a file or directory. `protect` is a combination of
 the `AAR_PROT_*` constants, with bits 0 to 3 set to deny. A bit that no
-`AAR_PROT_*` constant names is `AAR_E_INVAL`. The path rules and the policy are
-those of `aar_file_open`, and the call is refused after a stop. Parks for one
-client reply. Gate: `AAR_API_COVERS(api, file_set_protect)`. Missing slot:
-`AAR_E_NOSYS`. Minimum minor: 6.
+`AAR_PROT_*` constant names is `AAR_E_INVAL`. A mask of known bits that the
+platform cannot store is `AAR_E_NOSYS`, and the protection does not change;
+after `AAR_OK`, `aar_file_stat` reports the mask that was set. The path rules
+and the policy are those of `aar_file_open`, and the call is refused after a
+stop. Parks for one client reply. Gate: `AAR_API_COVERS(api, file_set_protect)`.
+Missing slot: `AAR_E_NOSYS`. Minimum minor: 6.
 
 ### aar_file_truncate
 

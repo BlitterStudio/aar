@@ -121,6 +121,8 @@ static void usage(FILE *fp)
         "\n"
         "Runner options:\n"
         "  --root DIR       file root for relative app paths (default .)\n"
+        "  --env DIR        serve aar_env_get from the files of DIR (default: the\n"
+        "                   environment of this process)\n"
         "  --abs            allow paths that contain ':' (no root check)\n"
         "  --scale N        window scale, 1..8 (default 1)\n"
         "  --headless       no visible window: dummy SDL audio, and the offscreen\n"
@@ -196,6 +198,10 @@ static int parse_args(int argc, char **argv, int *app_from)
             if (need_value(i, argc, argv, &val) != 0)
                 return -1;
             opt.root = val;
+            i++;
+        } else if (strcmp(a, "--env") == 0) {
+            if (need_value(i, argc, argv, &opt.env_dir) != 0)
+                return -1;
             i++;
         } else if (strcmp(a, "--scale") == 0) {
             uint32_t n = 0;
@@ -346,170 +352,6 @@ static void bind_lifecycle(aar_api *api)
     api->ext = api_ext;
 }
 
-/* The host implementation of the API 0.6 core and display calls follows. Until
- * then the runner answers each with AAR_E_NOSYS, which a client that does not
- * serve an op is allowed to do, and 0 for display_last_present_us. */
-static int api_nosys_path(const char *path)
-{
-    (void)path;
-    return AAR_E_NOSYS;
-}
-
-static int api_file_rename(const char *from, const char *to, uint32_t flags)
-{
-    (void)from;
-    (void)to;
-    (void)flags;
-    return AAR_E_NOSYS;
-}
-
-static int api_file_set_date(const char *path, int64_t mtime)
-{
-    (void)path;
-    (void)mtime;
-    return AAR_E_NOSYS;
-}
-
-static int api_file_set_protect(const char *path, uint32_t protect)
-{
-    (void)path;
-    (void)protect;
-    return AAR_E_NOSYS;
-}
-
-static int api_file_truncate(int fd, uint64_t size)
-{
-    (void)fd;
-    (void)size;
-    return AAR_E_NOSYS;
-}
-
-static int api_volume_info(const char *path, aar_volume_info *out)
-{
-    (void)path;
-    (void)out;
-    return AAR_E_NOSYS;
-}
-
-static int api_time_unix_us(int64_t *out_us)
-{
-    (void)out_us;
-    return AAR_E_NOSYS;
-}
-
-static int api_locale_info(aar_locale_info *out)
-{
-    (void)out;
-    return AAR_E_NOSYS;
-}
-
-static int api_env_get(const char *name, char *buf, uint32_t bytes,
-                       uint32_t *out_n)
-{
-    (void)name;
-    (void)buf;
-    (void)bytes;
-    (void)out_n;
-    return AAR_E_NOSYS;
-}
-
-static int api_clip_read(uint32_t unit, uint32_t type, void *buf,
-                         uint32_t bytes, uint32_t *out_n)
-{
-    (void)unit;
-    (void)type;
-    (void)buf;
-    (void)bytes;
-    (void)out_n;
-    return AAR_E_NOSYS;
-}
-
-static int api_clip_write(uint32_t unit, uint32_t type, const void *data,
-                          uint32_t bytes)
-{
-    (void)unit;
-    (void)type;
-    (void)data;
-    (void)bytes;
-    return AAR_E_NOSYS;
-}
-
-static int api_display_info(uint32_t id, aar_display_info *out)
-{
-    (void)id;
-    (void)out;
-    return AAR_E_NOSYS;
-}
-
-static int api_display_modes(aar_display_mode *out, uint32_t max,
-                             uint32_t *out_n)
-{
-    (void)out;
-    (void)max;
-    (void)out_n;
-    return AAR_E_NOSYS;
-}
-
-static int api_display_resize(uint32_t id, uint32_t w, uint32_t h,
-                              aar_surface *out)
-{
-    (void)id;
-    (void)w;
-    (void)h;
-    (void)out;
-    return AAR_E_NOSYS;
-}
-
-static int api_display_set_title(uint32_t id, const char *title)
-{
-    (void)id;
-    (void)title;
-    return AAR_E_NOSYS;
-}
-
-static int api_display_pointer(uint32_t id, uint32_t mode,
-                               const aar_pointer *image)
-{
-    (void)id;
-    (void)mode;
-    (void)image;
-    return AAR_E_NOSYS;
-}
-
-static int api_display_wait_vblank(uint32_t timeout_us)
-{
-    (void)timeout_us;
-    return AAR_E_NOSYS;
-}
-
-static uint64_t api_display_last_present_us(void)
-{
-    return 0;
-}
-
-static void bind_minor6_pending(aar_api *api)
-{
-    api->file_delete = api_nosys_path;
-    api->file_rename = api_file_rename;
-    api->dir_create = api_nosys_path;
-    api->file_set_date = api_file_set_date;
-    api->file_set_protect = api_file_set_protect;
-    api->file_truncate = api_file_truncate;
-    api->volume_info = api_volume_info;
-    api->time_unix_us = api_time_unix_us;
-    api->locale_info = api_locale_info;
-    api->env_get = api_env_get;
-    api->clip_read = api_clip_read;
-    api->clip_write = api_clip_write;
-    api->display_info = api_display_info;
-    api->display_modes = api_display_modes;
-    api->display_resize = api_display_resize;
-    api->display_set_title = api_display_set_title;
-    api->display_pointer = api_display_pointer;
-    api->display_wait_vblank = api_display_wait_vblank;
-    api->display_last_present_us = api_display_last_present_us;
-}
-
 static void host_finish(void)
 {
     if (finished)
@@ -601,7 +443,7 @@ int main(int argc, char **argv)
     }
     atexit(host_finish);
     host_memory_init();
-    if (host_files_init(opt.root, opt.abs_paths) != 0)
+    if (host_files_init(opt.root, opt.abs_paths) != 0 || host_env_init() != 0)
         return 10;
     if (host_display_init() != 0 || host_input_init() != 0 ||
         host_audio_init() != 0 || host_messages_init() != 0)
@@ -612,7 +454,7 @@ int main(int argc, char **argv)
     api.groups = HOST_GROUPS;
     api.platform_id = AAR_PLATFORM_NONE;
     bind_lifecycle(&api);
-    bind_minor6_pending(&api);
+    host_env_bind(&api);
     host_memory_bind(&api);
     host_files_bind(&api);
     host_display_bind(&api);

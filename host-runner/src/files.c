@@ -13,6 +13,10 @@
  * ZZ9000. A larger file is AAR_E_NOSPC. A zero-length file is AAR_E_NOMEM,
  * because a shared buffer cannot be empty.
  *
+ * The API 0.6 calls (delete, rename, dir_create, set_date, set_protect,
+ * truncate, volume_info) resolve their paths the same way. Protection bits
+ * map to the owner permission bits of the host (see protect_of).
+ *
  * SPDX-License-Identifier: MIT
  */
 #ifndef _WIN32
@@ -28,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #ifdef _WIN32
 #ifndef S_IFDIR
@@ -50,18 +55,126 @@
 #include <io.h>
 #else
 #include <dirent.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
+#endif
+
+#ifndef S_IRUSR
+#define S_IRUSR 0400
+#endif
+#ifndef S_IWUSR
+#define S_IWUSR 0200
+#endif
+#ifndef S_IXUSR
+#define S_IXUSR 0100
+#endif
+
+static uint32_t protect_of(const struct stat *st);
+
+/* What tells two paths, or a path and an open handle, apart on the host: the
+ * device and inode, or on Windows the volume and file index. */
+struct host_objid {
+#ifdef _WIN32
+    DWORD volume, index_hi, index_lo;
+#else
+    dev_t dev;
+    ino_t ino;
+#endif
+};
+
+static int objid_equal(const struct host_objid *a, const struct host_objid *b)
+{
+#ifdef _WIN32
+    return a->volume == b->volume && a->index_hi == b->index_hi &&
+           a->index_lo == b->index_lo;
+#else
+    return a->dev == b->dev && a->ino == b->ino;
+#endif
+}
+
+#ifdef _WIN32
+static int win_err(void);
+
+#define WIN_FILETIME_EPOCH_SEC 11644473600ll
+#define WIN_FILETIME_TICKS_PER_SEC 10000000ull
+
+static int64_t unix_seconds_from_filetime(FILETIME ft)
+{
+    uint64_t ticks = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+
+    return (int64_t)(ticks / WIN_FILETIME_TICKS_PER_SEC) - WIN_FILETIME_EPOCH_SEC;
+}
+
+static HANDLE open_path_handle(const char *path, DWORD access)
+{
+    return CreateFileA(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                       NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+}
+
+static uint32_t win_protect_of(int readonly)
+{
+    return readonly ? AAR_PROT_WRITE | AAR_PROT_DELETE : 0u;
+}
+
+static int objid_of_handle(HANDLE h, struct host_objid *id)
+{
+    BY_HANDLE_FILE_INFORMATION info;
+
+    if (h == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(h, &info))
+        return -1;
+    id->volume = info.dwVolumeSerialNumber;
+    id->index_hi = info.nFileIndexHigh;
+    id->index_lo = info.nFileIndexLow;
+    return 0;
+}
+
+static int objid_of_fd(int fd, struct host_objid *id)
+{
+    return objid_of_handle((HANDLE)_get_osfhandle(fd), id);
+}
+
+/* The object a path names, through a handle of a moment. */
+static int objid_of_path(const char *path, struct host_objid *id)
+{
+    HANDLE h;
+    int rc;
+
+    h = open_path_handle(path, 0);
+    rc = objid_of_handle(h, id);
+    if (h != INVALID_HANDLE_VALUE)
+        CloseHandle(h);
+    return rc;
+}
+#else
+static int objid_of_stat(const struct stat *st, struct host_objid *id)
+{
+    id->dev = st->st_dev;
+    id->ino = st->st_ino;
+    return 0;
+}
+
+static int objid_of_fd(int fd, struct host_objid *id)
+{
+    struct stat st;
+
+    if (fstat(fd, &st) != 0)
+        return -1;
+    return objid_of_stat(&st, id);
+}
 #endif
 
 struct host_fd {
     int used;
     uint32_t access;  /* AAR_FILE_READ and AAR_FILE_WRITE as opened */
     FILE *fp;
+    struct host_objid id; /* the object this id holds, when have_id */
+    int have_id;
 };
 
 struct host_list {
     int used;
-    char path[4096];
+    struct host_objid id; /* the directory this listing reads, when have_id */
+    int have_id;
 #ifdef _WIN32
     HANDLE find;
     WIN32_FIND_DATAA data;
@@ -170,10 +283,10 @@ static int path_stat(const char *path, struct stat *st)
     struct _stat64 wide;
     if (_stat64(path, &wide) != 0)
         return -1;
-    memset(st, 0, sizeof *st);
-    st->st_mode = (wide.st_mode & _S_IFDIR) ? S_IFDIR : S_IFREG;
-    st->st_size = (off_t)wide.st_size;
-    st->st_mtime = (time_t)wide.st_mtime;
+    st->st_mode = ((wide.st_mode & _S_IFDIR) ? S_IFDIR : S_IFREG) |
+                  /* No EXECUTE: the host has no execute permission, and the
+                   * CRT's guess from the file name would not round-trip. */
+                  (wide.st_mode & (_S_IREAD | _S_IWRITE));
     return 0;
 #else
     return stat(path, st);
@@ -433,6 +546,7 @@ static int api_file_open(const char *path, uint32_t flags)
     fds[slot].used = 1;
     fds[slot].access = flags & (AAR_FILE_READ | AAR_FILE_WRITE);
     fds[slot].fp = fp;
+    fds[slot].have_id = objid_of_fd(fd, &fds[slot].id) == 0;
     return HOST_FD_BASE + slot;
 }
 
@@ -514,14 +628,37 @@ static int api_file_seek(int fd, int64_t off, int whence, int64_t *out_pos)
 
 static int fill_stat(const char *full, aar_stat *out)
 {
+#ifdef _WIN32
+    BY_HANDLE_FILE_INFORMATION info;
+    HANDLE h = open_path_handle(full, 0);
+
+    if (h == INVALID_HANDLE_VALUE)
+        return win_err();
+    if (!GetFileInformationByHandle(h, &info)) {
+        int rc = win_err();
+
+        CloseHandle(h);
+        return rc;
+    }
+    CloseHandle(h);
+    memset(out, 0, sizeof *out);
+    out->size = ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+    out->mtime = unix_seconds_from_filetime(info.ftLastWriteTime);
+    out->mode = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? AAR_MODE_DIR : AAR_MODE_FILE;
+    out->protect = win_protect_of((info.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0);
+#else
     struct stat st;
 
     if (path_stat(full, &st) != 0)
         return io_err();
     memset(out, 0, sizeof *out);
     out->size = (uint64_t)st.st_size;
-    out->mtime = st.st_mtime > 0 ? (int64_t)st.st_mtime : 0;
+    out->mtime = (int64_t)st.st_mtime;
     out->mode = S_ISDIR(st.st_mode) ? AAR_MODE_DIR : AAR_MODE_FILE;
+    out->protect = protect_of(&st);
+#endif
+    if (out->mtime < 0)
+        out->mtime = 0;
     return AAR_OK;
 }
 
@@ -574,7 +711,6 @@ static int api_file_list_open(const char *path)
     if (ix == HOST_FD_COUNT)
         return AAR_E_NOMEM;
     memset(&lists[ix], 0, sizeof lists[ix]);
-    memcpy(lists[ix].path, full, strlen(full) + 1u);
 #ifdef _WIN32
     {
         char pattern[4096];
@@ -585,11 +721,14 @@ static int api_file_list_open(const char *path)
         if (lists[ix].find == INVALID_HANDLE_VALUE)
             return AAR_E_IO;
         lists[ix].have = 1;
+        /* A FindFirstFile search handle is not a file handle. */
+        lists[ix].have_id = objid_of_path(full, &lists[ix].id) == 0;
     }
 #else
     lists[ix].dir = opendir(full);
     if (!lists[ix].dir)
         return io_err();
+    lists[ix].have_id = objid_of_fd(dirfd(lists[ix].dir), &lists[ix].id) == 0;
 #endif
     lists[ix].used = 1;
     id = HOST_FD_BASE + ix;
@@ -641,13 +780,13 @@ static int api_file_list_next(int list, aar_dirent *out)
         memset(out, 0, sizeof *out);
         strncpy(out->name, ent->d_name, AAR_NAME_MAX);
         out->mode = AAR_MODE_FILE;
+        /* Through the open directory, not through the path it was opened
+         * with: the directory, or a parent of it, may have been renamed. */
         {
-            char child[4096];
             struct stat st;
 
-            if (compose(child, sizeof child, lists[ix].path, ent->d_name) ==
-                    AAR_OK &&
-                path_stat(child, &st) == 0 && S_ISDIR(st.st_mode))
+            if (fstatat(dirfd(lists[ix].dir), ent->d_name, &st, 0) == 0 &&
+                S_ISDIR(st.st_mode))
                 out->mode = AAR_MODE_DIR;
         }
         return AAR_OK;
@@ -725,6 +864,496 @@ static void api_unmap_file(const void *data)
     host_shared_free_runtime(data);
 }
 
+/* ---- API 0.6: delete, rename, dir_create, set_date, set_protect, truncate,
+ * volume_info. They use the path policy of file_open. The ones that change
+ * a file are refused after a stop with AAR_E_ACCES (spec 7.1). ---- */
+
+#ifdef _WIN32
+#define host_unlink _unlink
+#define host_rmdir _rmdir
+#define host_mkdir(path) _mkdir(path)
+#define path_lstat path_stat
+#define IS_LNK(mode) 0
+#else
+#define host_unlink unlink
+#define host_rmdir rmdir
+#define host_mkdir(path) mkdir((path), 0777)
+#define path_lstat lstat
+#define IS_LNK(mode) S_ISLNK(mode)
+#endif
+
+/* errno of a path operation. */
+static int op_err(void)
+{
+    if (errno == ENOTEMPTY || errno == EEXIST || errno == EISDIR)
+        return AAR_E_EXIST;
+    if (errno == EXDEV || errno == EINVAL || errno == ENAMETOOLONG)
+        return AAR_E_INVAL;
+    if (errno == ENOTDIR)
+        return AAR_E_NOENT;
+    if (errno == EROFS)
+        return AAR_E_ACCES;
+    if (errno == ETXTBSY)
+        return AAR_E_BUSY;
+    return io_err();
+}
+
+#ifdef _WIN32
+static int win_err(void)
+{
+    switch (GetLastError()) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+        return AAR_E_NOENT;
+    case ERROR_ACCESS_DENIED:
+    case ERROR_WRITE_PROTECT:
+        return AAR_E_ACCES;
+    case ERROR_ALREADY_EXISTS:
+    case ERROR_FILE_EXISTS:
+    case ERROR_DIR_NOT_EMPTY:
+        return AAR_E_EXIST;
+    case ERROR_NOT_SAME_DEVICE:
+    case ERROR_INVALID_NAME:
+    case ERROR_INVALID_PARAMETER:
+        return AAR_E_INVAL;
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION:
+        return AAR_E_BUSY;
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL:
+        return AAR_E_NOSPC;
+    default:
+        return AAR_E_IO;
+    }
+}
+#endif
+
+/*
+ * POSIX has three owner permission bits where AmigaDOS has eight protection
+ * bits. READ, WRITE and EXECUTE are the owner's r, w and x with the DENY sense
+ * of AmigaDOS (a clear owner bit is a set AAR_PROT_ bit). A directory has no
+ * EXECUTE: its x bit is left alone. AAR_PROT_DELETE is reported as set when
+ * AAR_PROT_WRITE is, and file_delete refuses such an object. ARCHIVE, PURE,
+ * SCRIPT and HOLD have no home on the host, and stat reports them clear: a
+ * mask that asks for one is refused by set_protect (protect_storable), so
+ * that a mask it accepts reads back as it was set. On Windows the read-only
+ * attribute is WRITE and DELETE together, and READ and EXECUTE are never
+ * reported.
+ */
+static uint32_t protect_of(const struct stat *st)
+{
+#ifdef _WIN32
+    return win_protect_of(!(st->st_mode & S_IWUSR));
+#else
+    uint32_t p = 0;
+
+    if (!(st->st_mode & S_IWUSR))
+        p |= AAR_PROT_WRITE | AAR_PROT_DELETE;
+    if (!(st->st_mode & S_IRUSR))
+        p |= AAR_PROT_READ;
+    if (!S_ISDIR(st->st_mode) && !(st->st_mode & S_IXUSR))
+        p |= AAR_PROT_EXECUTE;
+    return p;
+#endif
+}
+
+/* An open id holds its file, and an open listing holds its directory:
+ * deleting either is AAR_E_BUSY, as on AmigaDOS, where the object is locked.
+ * The objects are compared by identity, so another name of the same file (a
+ * hard link) counts, and the listing of a parent does not hold a child. */
+static int object_in_use(const struct stat *st, const char *full)
+{
+    struct host_objid id;
+    int i;
+
+#ifdef _WIN32
+    (void)st;
+    if (objid_of_path(full, &id) != 0)
+        return 0;
+#else
+    (void)full; /* the identity is in the stat the caller already has */
+    objid_of_stat(st, &id);
+#endif
+    for (i = 0; i < HOST_FD_COUNT; i++) {
+        if (fds[i].used && fds[i].have_id && objid_equal(&fds[i].id, &id))
+            return 1;
+        if (lists[i].used && lists[i].have_id && objid_equal(&lists[i].id, &id))
+            return 1;
+    }
+    return 0;
+}
+
+static int api_file_delete(const char *path)
+{
+    char full[4096];
+    struct stat st;
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    rc = resolve_open(path, full, sizeof full, 0);
+    if (rc != AAR_OK)
+        return rc;
+    if (path_lstat(full, &st) != 0)
+        return op_err();
+    if (!IS_LNK(st.st_mode)) {
+        if (protect_of(&st) & AAR_PROT_DELETE)
+            return AAR_E_ACCES;
+        if (object_in_use(&st, full))
+            return AAR_E_BUSY;
+    }
+    if ((S_ISDIR(st.st_mode) ? host_rmdir(full) : host_unlink(full)) != 0)
+        return op_err();
+    return AAR_OK;
+}
+
+/* Whether two paths name one object: the same device and inode, or on Windows
+ * the same volume and file index. */
+static int same_object(const struct stat *sa, const struct stat *sb,
+                       const char *a, const char *b)
+{
+#ifdef _WIN32
+    struct host_objid ia, ib;
+
+    (void)sa;
+    (void)sb;
+    return objid_of_path(a, &ia) == 0 && objid_of_path(b, &ib) == 0 &&
+           objid_equal(&ia, &ib);
+#else
+    (void)a;
+    (void)b;
+    return sa->st_dev == sb->st_dev && sa->st_ino == sb->st_ino;
+#endif
+}
+
+static int api_file_rename(const char *from, const char *to, uint32_t flags)
+{
+    char a[4096];
+    char b[4096];
+    struct stat sa;
+    struct stat sb;
+    int exists;
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    if ((flags & ~(uint32_t)AAR_RENAME_REPLACE) != 0u)
+        return AAR_E_INVAL;
+    rc = resolve_open(from, a, sizeof a, 0);
+    if (rc != AAR_OK)
+        return rc;
+    rc = resolve_open(to, b, sizeof b, 1);
+    if (rc != AAR_OK)
+        return rc;
+    if (path_lstat(a, &sa) != 0)
+        return op_err();
+    exists = path_lstat(b, &sb) == 0;
+    /* The same object (not just the same string, and a hard link counts):
+     * nothing to do, with or without the flag. */
+    if (exists && same_object(&sa, &sb, a, b))
+        return AAR_OK;
+    if (exists) {
+        if (!(flags & AAR_RENAME_REPLACE))
+            return AAR_E_EXIST;
+        if (!IS_LNK(sb.st_mode)) {
+            if (protect_of(&sb) & AAR_PROT_DELETE)
+                return AAR_E_ACCES;
+            /* Replacing the target removes it, so it must be free. */
+            if (object_in_use(&sb, b))
+                return AAR_E_BUSY;
+        }
+    }
+#ifdef _WIN32
+    /* MoveFileEx cannot replace a directory. Deleting the target ourselves
+     * would lose it if the move failed. */
+    if (exists && S_ISDIR(sa.st_mode) && S_ISDIR(sb.st_mode))
+        return AAR_E_NOSYS;
+    if (!MoveFileExA(a, b, (flags & AAR_RENAME_REPLACE) ? MOVEFILE_REPLACE_EXISTING : 0))
+        return win_err();
+#else
+    if (rename(a, b) != 0) {
+        /* A directory over a file, or a file over a directory. */
+        if (errno == ENOTDIR)
+            return AAR_E_EXIST;
+        return op_err();
+    }
+#endif
+    return AAR_OK;
+}
+
+static int api_dir_create(const char *path)
+{
+    char full[4096];
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    rc = resolve_open(path, full, sizeof full, 1);
+    if (rc != AAR_OK)
+        return rc;
+    if (host_mkdir(full) != 0)
+        return op_err();
+    return AAR_OK;
+}
+
+static int api_file_set_date(const char *path, int64_t mtime)
+{
+    char full[4096];
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    rc = resolve_open(path, full, sizeof full, 0);
+    if (rc != AAR_OK)
+        return rc;
+    /* Unix seconds from 1970 up to what the host can store. */
+    if (mtime < 0)
+        return AAR_E_INVAL;
+#ifdef _WIN32
+    {
+        HANDLE h;
+        ULARGE_INTEGER ticks;
+        FILETIME ft, got;
+
+        if (mtime > 910692730085ll) /* the FILETIME range */
+            return AAR_E_INVAL;
+        ticks.QuadPart = ((uint64_t)mtime + WIN_FILETIME_EPOCH_SEC) * WIN_FILETIME_TICKS_PER_SEC;
+        ft.dwLowDateTime = ticks.LowPart;
+        ft.dwHighDateTime = ticks.HighPart;
+        h = open_path_handle(full, FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES);
+        if (h == INVALID_HANDLE_VALUE)
+            return win_err();
+        if (!SetFileTime(h, NULL, NULL, &ft)) {
+            rc = win_err();
+            CloseHandle(h);
+            return rc;
+        }
+        /* The filesystem keeps what it can (FAT keeps two-second steps): read
+         * the time back through the same handle. */
+        memset(&got, 0, sizeof got);
+        if (!GetFileTime(h, NULL, NULL, &got)) {
+            rc = win_err();
+            CloseHandle(h);
+            return rc;
+        }
+        CloseHandle(h);
+        if (unix_seconds_from_filetime(got) != mtime)
+            return AAR_E_INVAL;
+    }
+#else
+    {
+        struct timespec ts[2];
+        struct stat st;
+
+        if ((int64_t)(time_t)mtime != mtime)
+            return AAR_E_INVAL;
+        ts[0].tv_sec = 0;
+        ts[0].tv_nsec = UTIME_OMIT; /* leave the access time */
+        ts[1].tv_sec = (time_t)mtime;
+        ts[1].tv_nsec = 0;
+        if (utimensat(AT_FDCWD, full, ts, 0) != 0) {
+            if (errno == EOVERFLOW)
+                return AAR_E_INVAL;
+            return op_err();
+        }
+        /* The filesystem keeps what it can (ext4 ends in 2446, FAT keeps
+         * two-second steps): the call is a success only when the file holds
+         * the time that was asked for. */
+        if (path_stat(full, &st) != 0)
+            return op_err();
+        if ((int64_t)st.st_mtime != mtime)
+            return AAR_E_INVAL;
+    }
+#endif
+    return AAR_OK;
+}
+
+/* Whether the host can store this mask, so that aar_file_stat reports it
+ * back as it was set. */
+static int protect_storable(int is_dir, uint32_t protect)
+{
+#ifdef _WIN32
+    (void)is_dir;
+    /* The read-only attribute is all the host has: WRITE and DELETE together. */
+    return (protect & ~(AAR_PROT_WRITE | AAR_PROT_DELETE)) == 0u &&
+           ((protect & AAR_PROT_WRITE) != 0u) == ((protect & AAR_PROT_DELETE) != 0u);
+#else
+    if (protect & (AAR_PROT_ARCHIVE | AAR_PROT_PURE | AAR_PROT_SCRIPT |
+                   AAR_PROT_HOLD))
+        return 0;
+    /* DELETE is reported as WRITE is, so the two must agree. */
+    if (((protect & AAR_PROT_WRITE) != 0u) != ((protect & AAR_PROT_DELETE) != 0u))
+        return 0;
+    /* A directory has no EXECUTE. */
+    if (is_dir && (protect & AAR_PROT_EXECUTE))
+        return 0;
+    return 1;
+#endif
+}
+
+static int api_file_set_protect(const char *path, uint32_t protect)
+{
+    static const uint32_t known = AAR_PROT_DELETE | AAR_PROT_EXECUTE |
+        AAR_PROT_WRITE | AAR_PROT_READ | AAR_PROT_ARCHIVE | AAR_PROT_PURE |
+        AAR_PROT_SCRIPT | AAR_PROT_HOLD;
+    char full[4096];
+    struct stat st;
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    if ((protect & ~known) != 0u)
+        return AAR_E_INVAL;
+    rc = resolve_open(path, full, sizeof full, 0);
+    if (rc != AAR_OK)
+        return rc;
+    if (path_stat(full, &st) != 0)
+        return op_err();
+    /* A mask of known bits that the host cannot store is refused before
+     * anything changes: the call would say yes, and aar_file_stat would show
+     * other bits. */
+    if (!protect_storable(S_ISDIR(st.st_mode), protect))
+        return AAR_E_NOSYS;
+#ifdef _WIN32
+    if (_chmod(full, (protect & AAR_PROT_WRITE) ? _S_IREAD
+                                                : (_S_IREAD | _S_IWRITE)) != 0)
+        return op_err();
+#else
+    {
+        int mode = (int)(st.st_mode & 07777);
+
+        mode &= ~(S_IRUSR | S_IWUSR);
+        if (!(protect & AAR_PROT_READ))
+            mode |= S_IRUSR;
+        if (!(protect & AAR_PROT_WRITE))
+            mode |= S_IWUSR;
+        if (!S_ISDIR(st.st_mode)) {
+            mode &= ~S_IXUSR;
+            if (!(protect & AAR_PROT_EXECUTE))
+                mode |= S_IXUSR;
+        }
+        if (chmod(full, (mode_t)mode) != 0)
+            return op_err();
+    }
+#endif
+    return AAR_OK;
+}
+
+static int api_file_truncate(int fd, uint64_t size)
+{
+    int ix = slot_of(fd);
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    if (ix < 0 || !fds[ix].used)
+        return AAR_E_BADF;
+    if (!(fds[ix].access & AAR_FILE_WRITE))
+        return AAR_E_BADF;
+    if (size > (uint64_t)INT64_MAX)
+        return AAR_E_INVAL;
+    /* Flush the stream's buffers so that the new length is the one stdio
+     * sees; a later read does not return bytes from before it. */
+    if (fflush(fds[ix].fp) != 0)
+        return io_err();
+#ifdef _WIN32
+    rc = _chsize_s(_fileno(fds[ix].fp), (__int64)size);
+    if (rc != 0) {
+        errno = rc;
+        return rc == ENOSPC ? AAR_E_NOSPC : op_err();
+    }
+#else
+    if ((uint64_t)(off_t)size != size)
+        return AAR_E_INVAL;
+    rc = ftruncate(fileno(fds[ix].fp), (off_t)size);
+    if (rc != 0)
+        return errno == EFBIG ? AAR_E_NOSPC : op_err();
+#endif
+    /* A read that reached the old end set the stream's end-of-file flag, and
+     * the flag stays after the file grew: clear it, so that the next read
+     * returns the new bytes without a seek. clearerr is the only portable way
+     * and clears the error flag too; a failed fflush above was reported. */
+    clearerr(fds[ix].fp);
+    return AAR_OK;
+}
+
+static int api_volume_info(const char *path, aar_volume_info *out)
+{
+    char full[4096];
+    aar_volume_info vi;
+    uint32_t size;
+    int rc;
+
+    if (!out)
+        return AAR_E_INVAL;
+    size = out->size;
+    if (size < (uint32_t)sizeof out->size)
+        return AAR_E_INVAL;
+    if (path && strcmp(path, ".") == 0) {
+        memcpy(full, root_abs, strlen(root_abs) + 1u);
+    } else {
+        rc = resolve_open(path, full, sizeof full, 0);
+        if (rc != AAR_OK)
+            return rc;
+    }
+    memset(&vi, 0, sizeof vi);
+    vi.size = size;
+#ifdef _WIN32
+    {
+        ULARGE_INTEGER avail, total, unused;
+        struct stat st;
+        char dir[4096];
+        char drive[4] = {0, 0, 0, 0};
+        DWORD spc, bps, nfree, nclusters, flags = 0;
+        const char *root = 0;
+
+        /* The query below uses a directory even when the requested path is
+         * a file. Do not report its volume if that file does not exist. */
+        if (path_stat(full, &st) != 0)
+            return op_err();
+        memcpy(dir, full, strlen(full) + 1u);
+        if (!S_ISDIR(st.st_mode)) {
+            char *slash = strrchr(dir, '/');
+            if (slash && slash != dir)
+                *slash = 0;
+        }
+        if (!GetDiskFreeSpaceExA(dir, &avail, &total, &unused))
+            return win_err();
+        if (dir[0] && dir[1] == ':') {
+            drive[0] = dir[0];
+            drive[1] = ':';
+            drive[2] = '\\';
+            root = drive;
+        }
+        if (GetDiskFreeSpaceA(root, &spc, &bps, &nfree, &nclusters))
+            vi.block_bytes = (uint32_t)(spc * bps);
+        vi.total_bytes = total.QuadPart;
+        vi.free_bytes = avail.QuadPart;
+        if (GetVolumeInformationA(root, NULL, 0, NULL, NULL, &flags, NULL, 0) &&
+            (flags & FILE_READ_ONLY_VOLUME))
+            vi.flags |= AAR_VOLF_READONLY;
+    }
+#else
+    {
+        struct statvfs sv;
+        uint64_t unit;
+
+        if (statvfs(full, &sv) != 0)
+            return op_err();
+        unit = sv.f_frsize ? (uint64_t)sv.f_frsize : (uint64_t)sv.f_bsize;
+        vi.block_bytes = (uint32_t)unit;
+        vi.total_bytes = (uint64_t)sv.f_blocks * unit;
+        vi.free_bytes = (uint64_t)sv.f_bavail * unit;
+        if (sv.f_flag & ST_RDONLY)
+            vi.flags |= AAR_VOLF_READONLY;
+    }
+#endif
+    memcpy(out, &vi, size < sizeof vi ? size : sizeof vi);
+    if (size > sizeof vi)
+        memset((uint8_t *)out + sizeof vi, 0, size - sizeof vi);
+    return AAR_OK;
+}
+
 int host_files_init(const char *root, int allow_abs)
 {
     struct stat st;
@@ -772,4 +1401,11 @@ void host_files_bind(aar_api *api)
     api->file_list_close = api_file_list_close;
     api->map_file = api_map_file;
     api->unmap_file = api_unmap_file;
+    api->file_delete = api_file_delete;
+    api->file_rename = api_file_rename;
+    api->dir_create = api_dir_create;
+    api->file_set_date = api_file_set_date;
+    api->file_set_protect = api_file_set_protect;
+    api->file_truncate = api_file_truncate;
+    api->volume_info = api_volume_info;
 }

@@ -402,11 +402,133 @@ static int test_pump(void)
     return 0;
 }
 
+/* The scene of draw_scene at any size: red clear colour, green triangle on the
+ * lower left half. */
+static void draw_scene_sized(int w, int h)
+{
+    glViewport(0, 0, w, h);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0.0, w, 0.0, h, -1.0, 1.0);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(0.0f, 1.0f, 0.0f);
+    glBegin(GL_TRIANGLES);
+    glVertex2f(0.0f, 0.0f);
+    glVertex2f((float)w, 0.0f);
+    glVertex2f(0.0f, (float)h);
+    glEnd();
+}
+
+/* The window and the context follow aar_display_resize: bound, unbound, and
+ * bound again. */
+static int window_is(int w, int h)
+{
+    SDL_Window *win = SDL_GL_GetCurrentWindow();
+    int ww = 0, wh = 0, dw = 0, dh = 0;
+
+    if (!win)
+        return 0;
+    SDL_GetWindowSize(win, &ww, &wh);
+    SDL_GL_GetDrawableSize(win, &dw, &dh);
+    return ww == w && wh == h && dw == w && dh == h;
+}
+
+static int test_resize(void)
+{
+    aar_surface surface;
+    aar_surface bigger;
+    aar_display_info di;
+    const aar_gl *gl;
+
+    if (!(aar_api_ptr->groups & AAR_GROUP_GL) || !aar_api_ptr->gl_bind)
+        return 77;
+    if (aar_display_open(WIDTH, HEIGHT, AAR_FMT_RGB565,
+                         AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE, &surface) != AAR_OK)
+        return fail(100, "display_open");
+    if ((surface.caps & AAR_DISPCAP_RESIZE) == 0u)
+        return fail(101, "no resize cap");
+    gl = aar_gl_bind(surface.id);
+    if (!gl)
+        return fail(102, "aar_gl_bind");
+    if (!window_is(WIDTH, HEIGHT))
+        return fail(103, "the GL window is not the size of the surface");
+    draw_scene();
+    if (!scene_ok())
+        return fail(104, "the scene");
+    aar_gl_swap();
+
+    /* Resize with the context bound: the window and the context follow. */
+    if (aar_display_resize(surface.id, 80u, 60u, &bigger) != AAR_OK)
+        return fail(110, "display_resize with GL bound");
+    if (bigger.width != 80u || bigger.height != 60u)
+        return fail(111, "the surface size");
+    if (!window_is(80, 60))
+        return fail(112, "the GL window did not follow display_resize");
+    draw_scene_sized(80, 60);
+    if (!pixel_is(8, 8, 0, 255, 0) || !pixel_is(76, 56, 255, 0, 0) ||
+        !pixel_is(76, 4, 255, 0, 0) || !pixel_is(4, 50, 0, 255, 0))
+        return fail(113, "the context does not draw at the new size");
+    aar_gl_swap();
+    di.size = (uint32_t)sizeof di;
+    if (aar_display_get_info(surface.id, &di) != AAR_OK || di.width != 80u ||
+        di.height != 60u)
+        return fail(114, "display_get_info after the resize");
+
+    /* Unbind: the software window has the new size, and flips. */
+    aar_gl_unbind();
+    if (aar_display_refresh(&bigger) != AAR_OK || bigger.width != 80u)
+        return fail(120, "refresh after unbind");
+    memset(bigger.back, 0x33, (size_t)bigger.pitch * bigger.height);
+    if (aar_display_flip(surface.id) != AAR_OK)
+        return fail(121, "flip after the resize and unbind");
+
+    /* A resize with no context, then a bind at that size. */
+    if (aar_display_resize(surface.id, 40u, 30u, &bigger) != AAR_OK)
+        return fail(122, "display_resize without GL");
+    gl = aar_gl_bind(surface.id);
+    if (!gl)
+        return fail(123, "bind after a resize");
+    if (!window_is(40, 30))
+        return fail(124, "the new GL window has the old size");
+    draw_scene_sized(40, 30);
+    if (!pixel_is(4, 4, 0, 255, 0) || !pixel_is(36, 26, 255, 0, 0))
+        return fail(125, "drawing at 40x30");
+    aar_gl_swap();
+
+    /* A window that already has the size (the user dragged it) stays: the
+     * context is not moved to another window. */
+    {
+        SDL_Window *before = SDL_GL_GetCurrentWindow();
+
+        SDL_SetWindowSize(before, 120, 90);
+        if (aar_display_resize(surface.id, 120u, 90u, &bigger) != AAR_OK)
+            return fail(126, "display_resize to the size of the window");
+        if (SDL_GL_GetCurrentWindow() != before)
+            return fail(127, "the GL window was replaced by a resize to its own size");
+    }
+
+    /* The last frame, which the runner dumps: 100x70, left bound at exit. */
+    if (aar_display_resize(surface.id, 100u, 70u, &bigger) != AAR_OK)
+        return fail(130, "display_resize to 100x70");
+    if (!window_is(100, 70))
+        return fail(131, "the GL window is not 100x70");
+    draw_scene_sized(100, 70);
+    if (!pixel_is(8, 8, 0, 255, 0) || !pixel_is(96, 66, 255, 0, 0))
+        return fail(132, "the scene at 100x70");
+    aar_gl_swap();
+    return 0;
+}
+
 int aar_main(int argc, char **argv)
 {
     int mode_absent = argc > 1 && strcmp(argv[1], "absent") == 0;
     int front = argc > 1 && strcmp(argv[1], "front") == 0;
 
+    if (argc > 1 && strcmp(argv[1], "resize") == 0)
+        return test_resize();
     if (argc > 1 && strcmp(argv[1], "pump") == 0)
         return test_pump();
     return mode_absent ? test_absent() : test_gl(front);

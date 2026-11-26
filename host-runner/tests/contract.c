@@ -318,7 +318,7 @@ static int test_display(void)
         aar_display_open(0u, 2u, AAR_FMT_RGB565, 0, &s) != AAR_E_INVAL ||
         aar_display_open(AAR_DISPLAY_MAX_DIM + 1u, 2u, AAR_FMT_RGB565, 0, &s) !=
             AAR_E_INVAL ||
-        aar_display_open(4u, 2u, AAR_FMT_RGB565, 4u, &s) != AAR_E_INVAL ||
+        aar_display_open(4u, 2u, AAR_FMT_RGB565, 1u << 8, &s) != AAR_E_INVAL ||
         aar_display_open(4u, 2u, AAR_FMT_RGB565, 0, 0) != AAR_E_INVAL)
         return fail(61, "bad open arguments");
 
