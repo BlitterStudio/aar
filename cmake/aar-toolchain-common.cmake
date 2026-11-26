@@ -64,15 +64,9 @@ set(CMAKE_LINKER "${AAR_CROSS}gcc" CACHE FILEPATH "AAR linker" FORCE)
 # Same flags as mk/aar.mk. The linker script is not here: aar_add_executable
 # picks aar.ld or, for a target with C++ sources, aar-cxx.ld.
 set(CMAKE_C_FLAGS_INIT "${AAR_PROFILE_FLAGS} -fPIE -O2 -fno-strict-aliasing -ffunction-sections -fdata-sections -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -ffp-contract=off -Wall -Wextra -Werror -std=c11")
-if(NOT DEFINED AAR_CXX_EXCEPTIONS)
-  set(AAR_CXX_EXCEPTIONS ON)
-endif()
-if(AAR_CXX_EXCEPTIONS)
-  set(AAR_CXX_EH_FLAGS "-fexceptions")
-else()
-  set(AAR_CXX_EH_FLAGS "-fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables")
-endif()
-set(CMAKE_CXX_FLAGS_INIT "${AAR_PROFILE_FLAGS} -fPIE -O2 -fno-strict-aliasing -ffunction-sections -fdata-sections ${AAR_CXX_EH_FLAGS} -ffp-contract=off -Wall -Wextra -Werror -std=c++17")
+# C++ exception flags are per target (aar_add_executable), so that flipping
+# AAR_CXX_EXCEPTIONS in an existing build directory takes effect.
+set(CMAKE_CXX_FLAGS_INIT "${AAR_PROFILE_FLAGS} -fPIE -O2 -fno-strict-aliasing -ffunction-sections -fdata-sections -ffp-contract=off -Wall -Wextra -Werror -std=c++17")
 set(CMAKE_ASM_FLAGS_INIT "${AAR_PROFILE_FLAGS}")
 set(CMAKE_EXE_LINKER_FLAGS_INIT "${AAR_PROFILE_FLAGS} -nostdlib -fPIE -pie -Wl,--gc-sections -Wl,--no-dynamic-linker -Wl,-z,text -Wl,-Bstatic -Wl,--no-undefined -Wl,-z,max-page-size=4096 -Wl,-z,common-page-size=4096${AAR_SYSROOT_LINK_FLAG}")
 

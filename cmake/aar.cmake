@@ -125,6 +125,19 @@ function(aar_add_executable name)
     "-Wl,-T,${ld_script}"
     "-Wl,-Map=$<TARGET_FILE:${name}>.map")
   set_target_properties(${name} PROPERTIES LINK_DEPENDS "${ld_script}")
+  if(has_cxx)
+    # Per target and read at every configure, so flipping AAR_CXX_EXCEPTIONS in
+    # an existing build directory takes effect.
+    if(NOT DEFINED AAR_CXX_EXCEPTIONS OR AAR_CXX_EXCEPTIONS)
+      target_compile_options(${name} PRIVATE
+        "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions>")
+    else()
+      target_compile_options(${name} PRIVATE
+        "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>"
+        "$<$<COMPILE_LANGUAGE:CXX>:-fno-unwind-tables>"
+        "$<$<COMPILE_LANGUAGE:CXX>:-fno-asynchronous-unwind-tables>")
+    endif()
+  endif()
   target_include_directories(${name} PRIVATE
     "${AAR_SDK}/include"
     "${AAR_SDK}/libaar/src")

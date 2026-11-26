@@ -169,7 +169,9 @@ AAR_SYSLIBS := -lc -lgcc -lm
 endif
 endif
 
-APP_OBJS := $(addprefix $(OBJ)/,$(addsuffix .o,$(basename $(SRCS))))
+# The source extension stays in the object name, so main.c and main.cpp do not
+# share main.o.
+APP_OBJS := $(addprefix $(OBJ)/,$(addsuffix .o,$(SRCS)))
 DEPS := $(APP_OBJS:.o=.d) $(LIB_OBJS:.o=.d) $(AAR_CXX_OBJ:.o=.d) $(OBJ)/crt0.d
 
 .PHONY: all check clean FORCE
@@ -182,12 +184,15 @@ check: $(AAR_ELF)
 
 # The image is the same file in both flavours. The stamp holds the flavour of
 # the last link and is rewritten only when that changes, so a change makes the
-# image older than the stamp and forces the link.
+# image older than the stamp and forces the link. It holds the flavour and the
+# exception mode: the objects of the two exception modes live in different
+# directories, so switching back leaves the old objects older than the image.
 AAR_MODE_STAMP := $(BUILD)/$(APP).mode
+AAR_MODE_STAMP_TEXT := $(AAR_FREESTANDING) $(AAR_CXX_EXCEPTIONS)
 
 $(AAR_MODE_STAMP): FORCE
 	@mkdir -p $(dir $@)
-	@echo "$(AAR_FREESTANDING)" | cmp -s - $@ || echo "$(AAR_FREESTANDING)" > $@
+	@echo "$(AAR_MODE_STAMP_TEXT)" | cmp -s - $@ || echo "$(AAR_MODE_STAMP_TEXT)" > $@
 
 FORCE:
 
@@ -217,19 +222,19 @@ $(OBJ)/libaar/%.o: $(AAR_SDK)/libaar/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(AAR_LIB_CFLAGS) $(AAR_DEPFLAGS) -c -o $@ $<
 
-$(OBJ)/%.o: %.c
+$(OBJ)/%.c.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(AAR_APP_CFLAGS) $(AAR_DEPFLAGS) -c -o $@ $<
 
-$(OBJ)/%.o: %.cpp
+$(OBJ)/%.cpp.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(AAR_APP_CXXFLAGS) $(AAR_DEPFLAGS) -c -o $@ $<
 
-$(OBJ)/%.o: %.cc
+$(OBJ)/%.cc.o: %.cc
 	@mkdir -p $(dir $@)
 	$(CXX) $(AAR_APP_CXXFLAGS) $(AAR_DEPFLAGS) -c -o $@ $<
 
-$(OBJ)/%.o: %.cxx
+$(OBJ)/%.cxx.o: %.cxx
 	@mkdir -p $(dir $@)
 	$(CXX) $(AAR_APP_CXXFLAGS) $(AAR_DEPFLAGS) -c -o $@ $<
 

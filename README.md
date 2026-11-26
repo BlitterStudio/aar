@@ -75,6 +75,9 @@ available (`PROFILES=a32` limits the run):
   (`check-mode-switch`), rejection of a freestanding libc link
   (`check-freestanding-guard`) and of freestanding C++ (`check-cxx-guard`), and
   that `aar-cxx.ld` matches `aar.ld` apart from the unwind tables (`check-cxx-ld`);
+- C++ build behaviour (`check-cxx-build`): switching `AAR_CXX_EXCEPTIONS` relinks,
+  `main.c` and `main.cpp` in one app are both linked, and a CMake reconfigure
+  applies `AAR_CXX_EXCEPTIONS`;
 - the conformance catalogue, tools and bundle tests, and generated negative-image
   corpus (`check-conf-catalogue`).
 
