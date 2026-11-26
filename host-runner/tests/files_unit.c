@@ -9,6 +9,15 @@
 
 #include <assert.h>
 
+/* files.c refuses the calls that change a file after a stop; the runner's
+ * stop flag is this one here. */
+static int unit_stop;
+
+int host_stop_requested(void)
+{
+    return unit_stop;
+}
+
 #define UNIT_ROOT "aar_files_unit_root"
 
 static void make_dir(const char *path)
@@ -274,6 +283,242 @@ static void test_map_file_is_a_runtime_block(void)
     host_memory_shutdown();
 }
 
+static int read_file(const char *leaf, char *buf, size_t n)
+{
+    char path[4096];
+    FILE *fp;
+    size_t got;
+
+    snprintf(path, sizeof path, "%s/%s", UNIT_ROOT, leaf);
+    fp = fopen(path, "rb");
+    if (!fp)
+        return -1;
+    got = fread(buf, 1, n, fp);
+    fclose(fp);
+    return (int)got;
+}
+
+static void test_delete_and_dir_create(void)
+{
+    int fd;
+
+    host_files_init(UNIT_ROOT, 0);
+    put_file("del.txt", "x");
+    assert(api_file_delete("del.txt") == AAR_OK);
+    assert(file_size("del.txt") == -1);
+    assert(api_file_delete("del.txt") == AAR_E_NOENT);
+    assert(api_dir_create("deldir") == AAR_OK);
+    assert(api_dir_create("deldir") == AAR_E_EXIST);
+    assert(api_dir_create("nope/sub") == AAR_E_NOENT);
+    put_file("deldir/in.txt", "x");
+    assert(api_file_delete("deldir") == AAR_E_EXIST); /* not empty */
+    assert(api_file_delete("deldir/in.txt") == AAR_OK);
+    assert(api_file_delete("deldir") == AAR_OK);
+    /* The path rules of file_open. */
+    assert(api_file_delete("../outside") == AAR_E_ACCES);
+    assert(api_file_delete("vol:x") == AAR_E_ACCES);
+    assert(api_file_delete("") == AAR_E_INVAL);
+    assert(api_file_delete(0) == AAR_E_INVAL);
+    assert(api_dir_create("../outside") == AAR_E_ACCES);
+    assert(api_dir_create("") == AAR_E_INVAL);
+#ifndef _WIN32
+    /* An open id holds its file. */
+    put_file("busy.txt", "x");
+    fd = api_file_open("busy.txt", AAR_FILE_READ);
+    assert(fd >= HOST_FD_BASE);
+    assert(api_file_delete("busy.txt") == AAR_E_BUSY);
+    assert(file_size("busy.txt") == 1);
+    assert(api_file_close(fd) == AAR_OK);
+    assert(api_file_delete("busy.txt") == AAR_OK);
+#else
+    (void)fd;
+#endif
+    /* After a stop nothing is created or removed. */
+    put_file("stop.txt", "x");
+    unit_stop = 1;
+    assert(api_file_delete("stop.txt") == AAR_E_ACCES);
+    assert(api_dir_create("stopdir") == AAR_E_ACCES);
+    unit_stop = 0;
+    assert(file_size("stop.txt") == 1);
+    assert(api_dir_create("stopdir") == AAR_OK);
+    assert(api_file_delete("stopdir") == AAR_OK);
+    assert(api_file_delete("stop.txt") == AAR_OK);
+    host_files_shutdown();
+}
+
+static void test_rename(void)
+{
+    char buf[8];
+
+    host_files_init(UNIT_ROOT, 0);
+    put_file("ra.txt", "aaa");
+    put_file("rb.txt", "b");
+    assert(api_file_rename("ra.txt", "rc.txt", 0) == AAR_OK);
+    assert(file_size("ra.txt") == -1 && file_size("rc.txt") == 3);
+    /* An existing target is refused unless the flag says replace. */
+    assert(api_file_rename("rc.txt", "rb.txt", 0) == AAR_E_EXIST);
+    assert(file_size("rb.txt") == 1 && file_size("rc.txt") == 3);
+    assert(api_file_rename("rc.txt", "rb.txt", AAR_RENAME_REPLACE) == AAR_OK);
+    assert(file_size("rb.txt") == 3 && file_size("rc.txt") == -1);
+    assert(read_file("rb.txt", buf, sizeof buf) == 3 && memcmp(buf, "aaa", 3) == 0);
+    assert(api_file_rename("rb.txt", "rb2.txt", 2u) == AAR_E_INVAL);
+    assert(api_file_rename("absent.txt", "x.txt", 0) == AAR_E_NOENT);
+    assert(api_file_rename("rb.txt", "../out.txt", 0) == AAR_E_ACCES);
+    assert(api_file_rename("../out.txt", "rb.txt", 0) == AAR_E_ACCES);
+    assert(api_file_rename("", "rb.txt", 0) == AAR_E_INVAL);
+    assert(api_file_rename("rb.txt", 0, 0) == AAR_E_INVAL);
+#ifndef _WIN32
+    assert(api_dir_create("rd1") == AAR_OK);
+    assert(api_dir_create("rd2") == AAR_OK);
+    put_file("rd2/f", "x");
+    assert(api_file_rename("rd1", "rd2", 0) == AAR_E_EXIST);
+    assert(api_file_rename("rd1", "rd2", AAR_RENAME_REPLACE) == AAR_E_EXIST);
+    assert(api_file_rename("rd2", "rd2/sub", 0) == AAR_E_INVAL);
+    assert(api_file_rename("rb.txt", "rd2", AAR_RENAME_REPLACE) == AAR_E_EXIST);
+    assert(api_file_delete("rd2/f") == AAR_OK);
+    assert(api_file_delete("rd2") == AAR_OK);
+    assert(api_file_delete("rd1") == AAR_OK);
+#endif
+    unit_stop = 1;
+    assert(api_file_rename("rb.txt", "rb3.txt", 0) == AAR_E_ACCES);
+    unit_stop = 0;
+    assert(file_size("rb.txt") == 3);
+    assert(api_file_delete("rb.txt") == AAR_OK);
+    host_files_shutdown();
+}
+
+static void test_truncate(void)
+{
+    char buf[16];
+    uint32_t n = 0;
+    int fd;
+    int ro;
+
+    host_files_init(UNIT_ROOT, 0);
+    put_file("tr.bin", "abcdef");
+    fd = api_file_open("tr.bin", AAR_FILE_READ | AAR_FILE_WRITE);
+    assert(fd >= HOST_FD_BASE);
+    assert(api_file_truncate(fd, 3u) == AAR_OK);
+    assert(api_file_close(fd) == AAR_OK);
+    assert(file_size("tr.bin") == 3);
+    /* Longer: the new bytes are zero. */
+    fd = api_file_open("tr.bin", AAR_FILE_READ | AAR_FILE_WRITE);
+    assert(api_file_truncate(fd, 8u) == AAR_OK);
+    assert(api_file_close(fd) == AAR_OK);
+    assert(read_file("tr.bin", buf, sizeof buf) == 8);
+    assert(memcmp(buf, "abc\0\0\0\0\0", 8) == 0);
+    /* A write that is still buffered is flushed first, and cut. */
+    fd = api_file_open("tr.bin", AAR_FILE_READ | AAR_FILE_WRITE);
+    assert(api_file_write(fd, "xyz", 3u, &n) == AAR_OK && n == 3u);
+    assert(api_file_truncate(fd, 2u) == AAR_OK);
+    assert(api_file_close(fd) == AAR_OK);
+    assert(read_file("tr.bin", buf, sizeof buf) == 2 && memcmp(buf, "xy", 2) == 0);
+    /* The id must be open for writing. */
+    ro = api_file_open("tr.bin", AAR_FILE_READ);
+    assert(api_file_truncate(ro, 0u) == AAR_E_BADF);
+    assert(api_file_close(ro) == AAR_OK);
+    assert(api_file_truncate(HOST_FD_BASE + 15, 0u) == AAR_E_BADF);
+    assert(api_file_truncate(-1, 0u) == AAR_E_BADF);
+    assert(api_file_truncate(HOST_FD_BASE, UINT64_MAX) != AAR_OK);
+    fd = api_file_open("tr.bin", AAR_FILE_READ | AAR_FILE_WRITE);
+    unit_stop = 1;
+    assert(api_file_truncate(fd, 0u) == AAR_E_ACCES);
+    unit_stop = 0;
+    assert(api_file_truncate(fd, (uint64_t)INT64_MAX + 1u) == AAR_E_INVAL);
+    assert(api_file_close(fd) == AAR_OK);
+    assert(file_size("tr.bin") == 2);
+    assert(api_file_delete("tr.bin") == AAR_OK);
+    host_files_shutdown();
+}
+
+static void test_protect_and_date(void)
+{
+    aar_stat st;
+
+    host_files_init(UNIT_ROOT, 0);
+    put_file("pm.txt", "x");
+    assert(api_file_stat("pm.txt", &st) == AAR_OK);
+    assert((st.protect & (AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_READ)) == 0u);
+#ifndef _WIN32
+    /* READ, WRITE and EXECUTE are the owner's bits with the sense of
+     * AmigaDOS; DELETE follows WRITE; the rest is not stored. */
+    assert(api_file_set_protect("pm.txt", AAR_PROT_WRITE | AAR_PROT_DELETE) == AAR_OK);
+    assert(api_file_stat("pm.txt", &st) == AAR_OK);
+    assert(st.protect == (AAR_PROT_WRITE | AAR_PROT_DELETE));
+    assert(api_file_delete("pm.txt") == AAR_E_ACCES); /* delete-protected */
+    assert(api_file_set_protect("pm.txt", AAR_PROT_READ | AAR_PROT_EXECUTE) == AAR_OK);
+    assert(api_file_stat("pm.txt", &st) == AAR_OK);
+    assert(st.protect == (AAR_PROT_READ | AAR_PROT_EXECUTE));
+    assert(api_file_set_protect("pm.txt", AAR_PROT_ARCHIVE | AAR_PROT_PURE |
+                                AAR_PROT_SCRIPT | AAR_PROT_HOLD) == AAR_OK);
+    assert(api_file_stat("pm.txt", &st) == AAR_OK);
+    assert(st.protect == 0u);
+    assert(api_file_set_protect("pm.txt", 0x100u) == AAR_E_INVAL);
+    assert(api_file_set_protect("pm.txt", 0u) == AAR_OK);
+    assert(api_file_set_protect("absent.txt", 0u) == AAR_E_NOENT);
+    assert(api_file_set_protect("../out", 0u) == AAR_E_ACCES);
+    assert(api_dir_create("pd") == AAR_OK);
+    assert(api_file_set_protect("pd", AAR_PROT_EXECUTE) == AAR_OK);
+    assert(api_file_stat("pd", &st) == AAR_OK);
+    assert(st.mode == AAR_MODE_DIR && st.protect == 0u); /* a directory has no EXECUTE */
+    assert(api_file_delete("pd") == AAR_OK);
+#endif
+    assert(api_file_set_date("pm.txt", 1000000000) == AAR_OK);
+    assert(api_file_stat("pm.txt", &st) == AAR_OK);
+    assert(st.mtime == 1000000000);
+    assert(api_file_set_date("pm.txt", -1) == AAR_E_INVAL);
+    assert(api_file_set_date("absent.txt", 1000000000) == AAR_E_NOENT);
+    assert(api_file_set_date("../out", 1000000000) == AAR_E_ACCES);
+    assert(api_file_set_date("", 1000000000) == AAR_E_INVAL);
+    unit_stop = 1;
+    assert(api_file_set_date("pm.txt", 1100000000) == AAR_E_ACCES);
+    assert(api_file_set_protect("pm.txt", AAR_PROT_WRITE) == AAR_E_ACCES);
+    unit_stop = 0;
+    assert(api_file_stat("pm.txt", &st) == AAR_OK && st.mtime == 1000000000);
+    assert(api_file_delete("pm.txt") == AAR_OK);
+    host_files_shutdown();
+}
+
+static void test_volume_info(void)
+{
+    aar_volume_info vi;
+    unsigned char big[sizeof(aar_volume_info) + 8];
+    uint32_t i;
+
+    host_files_init(UNIT_ROOT, 0);
+    put_file("vol.txt", "x");
+    memset(&vi, 0xaa, sizeof vi);
+    vi.size = (uint32_t)sizeof vi;
+    assert(api_volume_info(".", &vi) == AAR_OK);
+    assert(vi.size == sizeof vi && vi.block_bytes > 0u && vi.total_bytes > 0u);
+    assert(vi.free_bytes <= vi.total_bytes);
+    for (i = 0; i < 3u; i++)
+        assert(vi.reserved[i] == 0u);
+    memset(&vi, 0, sizeof vi);
+    vi.size = (uint32_t)sizeof vi;
+    assert(api_volume_info("vol.txt", &vi) == AAR_OK && vi.total_bytes > 0u);
+    assert(api_volume_info("absent.txt", &vi) == AAR_E_NOENT);
+    assert(api_volume_info("../out", &vi) == AAR_E_ACCES);
+    assert(api_volume_info("", &vi) == AAR_E_INVAL);
+    assert(api_volume_info(".", 0) == AAR_E_INVAL);
+    vi.size = 2u;
+    assert(api_volume_info(".", &vi) == AAR_E_INVAL);
+    /* The caller's size bounds what is written. */
+    memset(big, 0xaa, sizeof big);
+    ((aar_volume_info *)(void *)big)->size = 8u;
+    assert(api_volume_info(".", (aar_volume_info *)(void *)big) == AAR_OK);
+    assert(((aar_volume_info *)(void *)big)->block_bytes > 0u);
+    for (i = 8u; i < sizeof big; i++)
+        assert(big[i] == 0xaau);
+    memset(big, 0xaa, sizeof big);
+    ((aar_volume_info *)(void *)big)->size = (uint32_t)sizeof big;
+    assert(api_volume_info(".", (aar_volume_info *)(void *)big) == AAR_OK);
+    for (i = sizeof(aar_volume_info); i < sizeof big; i++)
+        assert(big[i] == 0u);
+    assert(api_file_delete("vol.txt") == AAR_OK);
+    host_files_shutdown();
+}
+
 int main(void)
 {
     make_dir(UNIT_ROOT);
@@ -284,5 +529,10 @@ int main(void)
     test_close_reports_flush_failure();
     test_access_mode_is_kept_per_id();
     test_map_file_is_a_runtime_block();
+    test_delete_and_dir_create();
+    test_rename();
+    test_truncate();
+    test_protect_and_date();
+    test_volume_info();
     return 0;
 }

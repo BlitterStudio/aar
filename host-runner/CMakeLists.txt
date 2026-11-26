@@ -68,6 +68,7 @@ add_library(aar-host STATIC
   src/main.c
   src/memory.c
   src/files.c
+  src/hostenv.c
   src/display.c
   src/hostgl.c
   src/input.c

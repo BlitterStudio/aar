@@ -58,6 +58,7 @@ struct host_options {
     const char *dump_front;
     int selftest;
     int no_gl;
+    const char *env_dir;
 };
 
 struct host_options *host_options(void);
@@ -76,6 +77,9 @@ int host_files_init(const char *root, int abs_paths);
 void host_files_shutdown(void);
 void host_files_bind(aar_api *api);
 
+int host_env_init(void);
+void host_env_bind(aar_api *api);
+
 int host_display_init(void);
 void host_display_shutdown(void);
 void host_display_bind(aar_api *api);
@@ -83,6 +87,19 @@ void host_display_pump(void);
 void host_display_dump(const char *path);
 int host_display_selftest(void);
 uint32_t host_display_flips(void);
+
+/* display.c, for input.c: the caps the open display was granted (0 without
+ * one) and the events of its window. host_display_focus returns 1 when the
+ * focus state changed. host_display_window_resized returns 1, with the new
+ * surface size, when the app should get AAR_EV_RESIZE. host_display_to_surface
+ * turns a window position into surface pixels. */
+uint32_t host_display_caps(void);
+uint32_t host_display_window_id(void);
+int host_display_focus(uint32_t window_id, int gained);
+int host_display_window_resized(uint32_t window_id, int w, int h,
+                                uint32_t *sw, uint32_t *sh);
+void host_display_expose(uint32_t window_id);
+void host_display_to_surface(int x, int y, int *sx, int *sy);
 
 /* display.c, for hostgl.c. gl_open turns the window of the open surface into
  * one with an OpenGL pixel format, gl_close gives it back as a software
@@ -103,6 +120,8 @@ int host_gl_available(void);
 void host_gl_bind(aar_api *api);
 void host_gl_release(void);
 void host_gl_shutdown(void);
+/* The surface of a bound GL window was resized: the context's size. */
+void host_gl_resized(int32_t w, int32_t h);
 
 int host_input_init(void);
 void host_input_shutdown(void);

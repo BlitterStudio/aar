@@ -640,6 +640,17 @@ void host_gl_shutdown(void)
     host_gl_release();
 }
 
+/* The window of the bound context has the new surface size. The framebuffer
+ * follows the window by itself; the readback for --dump-front needs the size.
+ * glViewport stays the app's business. */
+void host_gl_resized(int32_t w, int32_t h)
+{
+    if (!gl.bound)
+        return;
+    gl.w = w;
+    gl.h = h;
+}
+
 static const aar_gl *api_gl_bind(uint32_t surface_id)
 {
     void *win = 0;

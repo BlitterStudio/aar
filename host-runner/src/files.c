@@ -13,6 +13,10 @@
  * ZZ9000. A larger file is AAR_E_NOSPC. A zero-length file is AAR_E_NOMEM,
  * because a shared buffer cannot be empty.
  *
+ * The API 0.6 calls (delete, rename, dir_create, set_date, set_protect,
+ * truncate, volume_info) resolve their paths the same way. Protection bits
+ * map to the owner permission bits of the host (see protect_of).
+ *
  * SPDX-License-Identifier: MIT
  */
 #ifndef _WIN32
@@ -28,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #ifdef _WIN32
 #ifndef S_IFDIR
@@ -50,13 +55,30 @@
 #include <io.h>
 #else
 #include <dirent.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 #endif
+
+#ifndef S_IRUSR
+#define S_IRUSR 0400
+#endif
+#ifndef S_IWUSR
+#define S_IWUSR 0200
+#endif
+#ifndef S_IXUSR
+#define S_IXUSR 0100
+#endif
+
+static uint32_t protect_of(const struct stat *st);
 
 struct host_fd {
     int used;
     uint32_t access;  /* AAR_FILE_READ and AAR_FILE_WRITE as opened */
     FILE *fp;
+#ifndef _WIN32
+    dev_t dev;        /* the file this id holds, for file_delete */
+    ino_t ino;
+#endif
 };
 
 struct host_list {
@@ -171,7 +193,8 @@ static int path_stat(const char *path, struct stat *st)
     if (_stat64(path, &wide) != 0)
         return -1;
     memset(st, 0, sizeof *st);
-    st->st_mode = (wide.st_mode & _S_IFDIR) ? S_IFDIR : S_IFREG;
+    st->st_mode = ((wide.st_mode & _S_IFDIR) ? S_IFDIR : S_IFREG) |
+                  (wide.st_mode & (_S_IREAD | _S_IWRITE | _S_IEXEC));
     st->st_size = (off_t)wide.st_size;
     st->st_mtime = (time_t)wide.st_mtime;
     return 0;
@@ -433,6 +456,16 @@ static int api_file_open(const char *path, uint32_t flags)
     fds[slot].used = 1;
     fds[slot].access = flags & (AAR_FILE_READ | AAR_FILE_WRITE);
     fds[slot].fp = fp;
+#ifndef _WIN32
+    {
+        struct stat held;
+
+        memset(&held, 0, sizeof held);
+        (void)fstat(fd, &held);
+        fds[slot].dev = held.st_dev;
+        fds[slot].ino = held.st_ino;
+    }
+#endif
     return HOST_FD_BASE + slot;
 }
 
@@ -522,6 +555,7 @@ static int fill_stat(const char *full, aar_stat *out)
     out->size = (uint64_t)st.st_size;
     out->mtime = st.st_mtime > 0 ? (int64_t)st.st_mtime : 0;
     out->mode = S_ISDIR(st.st_mode) ? AAR_MODE_DIR : AAR_MODE_FILE;
+    out->protect = protect_of(&st);
     return AAR_OK;
 }
 
@@ -725,6 +759,391 @@ static void api_unmap_file(const void *data)
     host_shared_free_runtime(data);
 }
 
+/* ---- API 0.6: delete, rename, dir_create, set_date, set_protect, truncate,
+ * volume_info. They use the path policy of file_open. The ones that change
+ * a file are refused after a stop with AAR_E_ACCES (spec 7.1). ---- */
+
+#ifdef _WIN32
+#define host_unlink _unlink
+#define host_rmdir _rmdir
+#define host_mkdir(path) _mkdir(path)
+#define path_lstat path_stat
+#define IS_LNK(mode) 0
+#else
+#define host_unlink unlink
+#define host_rmdir rmdir
+#define host_mkdir(path) mkdir((path), 0777)
+#define path_lstat lstat
+#define IS_LNK(mode) S_ISLNK(mode)
+#endif
+
+/* errno of a path operation. */
+static int op_err(void)
+{
+    if (errno == ENOTEMPTY || errno == EEXIST || errno == EISDIR)
+        return AAR_E_EXIST;
+    if (errno == EXDEV || errno == EINVAL || errno == ENAMETOOLONG)
+        return AAR_E_INVAL;
+    if (errno == ENOTDIR)
+        return AAR_E_NOENT;
+    if (errno == EROFS)
+        return AAR_E_ACCES;
+    if (errno == ETXTBSY)
+        return AAR_E_BUSY;
+    return io_err();
+}
+
+#ifdef _WIN32
+static int win_err(void)
+{
+    switch (GetLastError()) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+        return AAR_E_NOENT;
+    case ERROR_ACCESS_DENIED:
+    case ERROR_WRITE_PROTECT:
+        return AAR_E_ACCES;
+    case ERROR_ALREADY_EXISTS:
+    case ERROR_FILE_EXISTS:
+    case ERROR_DIR_NOT_EMPTY:
+        return AAR_E_EXIST;
+    case ERROR_NOT_SAME_DEVICE:
+    case ERROR_INVALID_NAME:
+    case ERROR_INVALID_PARAMETER:
+        return AAR_E_INVAL;
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION:
+        return AAR_E_BUSY;
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL:
+        return AAR_E_NOSPC;
+    default:
+        return AAR_E_IO;
+    }
+}
+#endif
+
+/*
+ * POSIX has three owner permission bits where AmigaDOS has eight protection
+ * bits. READ, WRITE and EXECUTE are the owner's r, w and x with the DENY sense
+ * of AmigaDOS (a clear owner bit is a set AAR_PROT_ bit). A directory has no
+ * EXECUTE: its x bit is left alone. AAR_PROT_DELETE is reported as set when
+ * AAR_PROT_WRITE is, and file_delete refuses such an object. ARCHIVE, PURE,
+ * SCRIPT and HOLD have no home on the host: set_protect accepts them and
+ * stat reports them clear.
+ */
+static uint32_t protect_of(const struct stat *st)
+{
+    uint32_t p = 0;
+
+    if (!(st->st_mode & S_IRUSR))
+        p |= AAR_PROT_READ;
+    if (!(st->st_mode & S_IWUSR))
+        p |= AAR_PROT_WRITE | AAR_PROT_DELETE;
+    if (!S_ISDIR(st->st_mode) && !(st->st_mode & S_IXUSR))
+        p |= AAR_PROT_EXECUTE;
+    return p;
+}
+
+#ifndef _WIN32
+/* An id that is open holds its file: deleting it is AAR_E_BUSY, as on
+ * AmigaDOS, where the file is locked. */
+static int file_is_open(const struct stat *st)
+{
+    int i;
+
+    for (i = 0; i < HOST_FD_COUNT; i++) {
+        if (fds[i].used && fds[i].dev == st->st_dev && fds[i].ino == st->st_ino)
+            return 1;
+    }
+    return 0;
+}
+#endif
+
+static int api_file_delete(const char *path)
+{
+    char full[4096];
+    struct stat st;
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    rc = resolve_open(path, full, sizeof full, 0);
+    if (rc != AAR_OK)
+        return rc;
+    if (path_lstat(full, &st) != 0)
+        return op_err();
+    if (!IS_LNK(st.st_mode)) {
+        if (protect_of(&st) & AAR_PROT_DELETE)
+            return AAR_E_ACCES;
+#ifndef _WIN32
+        if (file_is_open(&st))
+            return AAR_E_BUSY;
+#endif
+    }
+    if ((S_ISDIR(st.st_mode) ? host_rmdir(full) : host_unlink(full)) != 0)
+        return op_err();
+    return AAR_OK;
+}
+
+static int api_file_rename(const char *from, const char *to, uint32_t flags)
+{
+    char a[4096];
+    char b[4096];
+    struct stat sa;
+    struct stat sb;
+    int exists;
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    if ((flags & ~(uint32_t)AAR_RENAME_REPLACE) != 0u)
+        return AAR_E_INVAL;
+    rc = resolve_open(from, a, sizeof a, 0);
+    if (rc != AAR_OK)
+        return rc;
+    rc = resolve_open(to, b, sizeof b, 1);
+    if (rc != AAR_OK)
+        return rc;
+    if (path_lstat(a, &sa) != 0)
+        return op_err();
+    exists = path_lstat(b, &sb) == 0;
+    if (exists) {
+        if (!(flags & AAR_RENAME_REPLACE))
+            return AAR_E_EXIST;
+        if (!IS_LNK(sb.st_mode) && (protect_of(&sb) & AAR_PROT_DELETE))
+            return AAR_E_ACCES;
+    }
+#ifdef _WIN32
+    if (!MoveFileExA(a, b, (flags & AAR_RENAME_REPLACE) ? MOVEFILE_REPLACE_EXISTING : 0))
+        return win_err();
+#else
+    if (rename(a, b) != 0) {
+        /* A directory over a file, or a file over a directory. */
+        if (errno == ENOTDIR)
+            return AAR_E_EXIST;
+        return op_err();
+    }
+#endif
+    return AAR_OK;
+}
+
+static int api_dir_create(const char *path)
+{
+    char full[4096];
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    rc = resolve_open(path, full, sizeof full, 1);
+    if (rc != AAR_OK)
+        return rc;
+    if (host_mkdir(full) != 0)
+        return op_err();
+    return AAR_OK;
+}
+
+static int api_file_set_date(const char *path, int64_t mtime)
+{
+    char full[4096];
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    rc = resolve_open(path, full, sizeof full, 0);
+    if (rc != AAR_OK)
+        return rc;
+    /* Unix seconds from 1970 up to what the host can store. */
+    if (mtime < 0)
+        return AAR_E_INVAL;
+#ifdef _WIN32
+    {
+        HANDLE h;
+        ULARGE_INTEGER ticks;
+        FILETIME ft;
+
+        if (mtime > 910692730085ll) /* the FILETIME range */
+            return AAR_E_INVAL;
+        ticks.QuadPart = ((ULONGLONG)mtime + 11644473600ull) * 10000000ull;
+        ft.dwLowDateTime = ticks.LowPart;
+        ft.dwHighDateTime = ticks.HighPart;
+        h = CreateFileA(full, FILE_WRITE_ATTRIBUTES,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        if (h == INVALID_HANDLE_VALUE)
+            return win_err();
+        if (!SetFileTime(h, NULL, NULL, &ft)) {
+            rc = win_err();
+            CloseHandle(h);
+            return rc;
+        }
+        CloseHandle(h);
+    }
+#else
+    {
+        struct timespec ts[2];
+
+        if ((int64_t)(time_t)mtime != mtime)
+            return AAR_E_INVAL;
+        ts[0].tv_sec = 0;
+        ts[0].tv_nsec = UTIME_OMIT; /* leave the access time */
+        ts[1].tv_sec = (time_t)mtime;
+        ts[1].tv_nsec = 0;
+        if (utimensat(AT_FDCWD, full, ts, 0) != 0) {
+            if (errno == EOVERFLOW)
+                return AAR_E_INVAL;
+            return op_err();
+        }
+    }
+#endif
+    return AAR_OK;
+}
+
+static int api_file_set_protect(const char *path, uint32_t protect)
+{
+    static const uint32_t known = AAR_PROT_DELETE | AAR_PROT_EXECUTE |
+        AAR_PROT_WRITE | AAR_PROT_READ | AAR_PROT_ARCHIVE | AAR_PROT_PURE |
+        AAR_PROT_SCRIPT | AAR_PROT_HOLD;
+    char full[4096];
+    struct stat st;
+    int mode;
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    if ((protect & ~known) != 0u)
+        return AAR_E_INVAL;
+    rc = resolve_open(path, full, sizeof full, 0);
+    if (rc != AAR_OK)
+        return rc;
+    if (path_stat(full, &st) != 0)
+        return op_err();
+    mode = (int)(st.st_mode & 07777);
+    mode &= ~(S_IRUSR | S_IWUSR);
+    if (!(protect & AAR_PROT_READ))
+        mode |= S_IRUSR;
+    if (!(protect & AAR_PROT_WRITE))
+        mode |= S_IWUSR;
+    if (!S_ISDIR(st.st_mode)) {
+        mode &= ~S_IXUSR;
+        if (!(protect & AAR_PROT_EXECUTE))
+            mode |= S_IXUSR;
+    }
+#ifdef _WIN32
+    if (_chmod(full, mode & (_S_IREAD | _S_IWRITE)) != 0)
+        return op_err();
+#else
+    if (chmod(full, (mode_t)mode) != 0)
+        return op_err();
+#endif
+    return AAR_OK;
+}
+
+static int api_file_truncate(int fd, uint64_t size)
+{
+    int ix = slot_of(fd);
+    int rc;
+
+    if (host_stop_requested())
+        return AAR_E_ACCES;
+    if (ix < 0 || !fds[ix].used)
+        return AAR_E_BADF;
+    if (!(fds[ix].access & AAR_FILE_WRITE))
+        return AAR_E_BADF;
+    if (size > (uint64_t)INT64_MAX)
+        return AAR_E_INVAL;
+    /* Flush the stream's buffers so that the new length is the one stdio
+     * sees; a later read does not return bytes from before it. */
+    if (fflush(fds[ix].fp) != 0)
+        return io_err();
+#ifdef _WIN32
+    rc = _chsize_s(_fileno(fds[ix].fp), (__int64)size);
+    if (rc != 0) {
+        errno = rc;
+        return rc == ENOSPC ? AAR_E_NOSPC : op_err();
+    }
+#else
+    if ((uint64_t)(off_t)size != size)
+        return AAR_E_INVAL;
+    rc = ftruncate(fileno(fds[ix].fp), (off_t)size);
+    if (rc != 0)
+        return errno == EFBIG ? AAR_E_NOSPC : op_err();
+#endif
+    return AAR_OK;
+}
+
+static int api_volume_info(const char *path, aar_volume_info *out)
+{
+    char full[4096];
+    aar_volume_info vi;
+    uint32_t size;
+    int rc;
+
+    if (!out)
+        return AAR_E_INVAL;
+    size = out->size;
+    if (size < (uint32_t)sizeof out->size)
+        return AAR_E_INVAL;
+    if (path && strcmp(path, ".") == 0) {
+        memcpy(full, root_abs, strlen(root_abs) + 1u);
+    } else {
+        rc = resolve_open(path, full, sizeof full, 0);
+        if (rc != AAR_OK)
+            return rc;
+    }
+    memset(&vi, 0, sizeof vi);
+    vi.size = size;
+#ifdef _WIN32
+    {
+        ULARGE_INTEGER avail, total, unused;
+        char dir[4096];
+        char drive[4] = {0, 0, 0, 0};
+        DWORD spc, bps, nfree, nclusters, flags = 0;
+        const char *root = 0;
+
+        memcpy(dir, full, strlen(full) + 1u);
+        if (!is_dir_path(dir)) {
+            char *slash = strrchr(dir, '/');
+            if (slash && slash != dir)
+                *slash = 0;
+        }
+        if (!GetDiskFreeSpaceExA(dir, &avail, &total, &unused))
+            return win_err();
+        if (dir[0] && dir[1] == ':') {
+            drive[0] = dir[0];
+            drive[1] = ':';
+            drive[2] = '\\';
+            root = drive;
+        }
+        if (GetDiskFreeSpaceA(root, &spc, &bps, &nfree, &nclusters))
+            vi.block_bytes = (uint32_t)(spc * bps);
+        vi.total_bytes = total.QuadPart;
+        vi.free_bytes = avail.QuadPart;
+        if (GetVolumeInformationA(root, NULL, 0, NULL, NULL, &flags, NULL, 0) &&
+            (flags & FILE_READ_ONLY_VOLUME))
+            vi.flags |= AAR_VOLF_READONLY;
+    }
+#else
+    {
+        struct statvfs sv;
+        uint64_t unit;
+
+        if (statvfs(full, &sv) != 0)
+            return op_err();
+        unit = sv.f_frsize ? (uint64_t)sv.f_frsize : (uint64_t)sv.f_bsize;
+        vi.block_bytes = (uint32_t)unit;
+        vi.total_bytes = (uint64_t)sv.f_blocks * unit;
+        vi.free_bytes = (uint64_t)sv.f_bavail * unit;
+        if (sv.f_flag & ST_RDONLY)
+            vi.flags |= AAR_VOLF_READONLY;
+    }
+#endif
+    memcpy(out, &vi, size < sizeof vi ? size : sizeof vi);
+    if (size > sizeof vi)
+        memset((uint8_t *)out + sizeof vi, 0, size - sizeof vi);
+    return AAR_OK;
+}
+
 int host_files_init(const char *root, int allow_abs)
 {
     struct stat st;
@@ -772,4 +1191,11 @@ void host_files_bind(aar_api *api)
     api->file_list_close = api_file_list_close;
     api->map_file = api_map_file;
     api->unmap_file = api_unmap_file;
+    api->file_delete = api_file_delete;
+    api->file_rename = api_file_rename;
+    api->dir_create = api_dir_create;
+    api->file_set_date = api_file_set_date;
+    api->file_set_protect = api_file_set_protect;
+    api->file_truncate = api_file_truncate;
+    api->volume_info = api_volume_info;
 }
