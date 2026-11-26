@@ -35,7 +35,12 @@
  * it is asked for and then stays as it was found; setenv, unsetenv and putenv
  * change only this table, never the host's. A pointer that getenv returned
  * stays valid until that name is set or unset. newlib's `environ` is not
- * used and stays empty.
+ * used and stays empty. This file defines `__wrap_getenv` and
+ * `__wrap__getenv_r`, not `getenv` and `_getenv_r`: libstdc++ pulls newlib's
+ * getenv.o out of libc, and a second definition would clash with it or lose to
+ * it by archive order. The link must pass -Wl,--wrap=getenv
+ * -Wl,--wrap=_getenv_r (mk/aar.mk and cmake/aar.cmake do), which sends every
+ * reference to the wrappers and keeps newlib's members out.
  *
  * Not provided, and so a link error when used: _link (so `link`), fchmod,
  * futimes, symlink, readlink, fsync. The table has no such calls.
@@ -858,7 +863,13 @@ static struct env_var *env_lookup(const char *name, size_t len)
     return v;
 }
 
-char *getenv(const char *name)
+/* The link wraps these two (-Wl,--wrap=getenv -Wl,--wrap=_getenv_r, set by
+ * mk/aar.mk and cmake/aar.cmake): every undefined reference to getenv or
+ * _getenv_r, from the app, libstdc++ and newlib alike, resolves to the
+ * __wrap_ names below. newlib's own getenv.o and getenv_r.o, which define the
+ * same names, are then never extracted, whatever the order of libaar.a, libc
+ * and libstdc++ on the link line. */
+char *__wrap_getenv(const char *name)
 {
     size_t len;
     struct env_var *v;
@@ -869,10 +880,10 @@ char *getenv(const char *name)
     return v ? v->value : NULL;
 }
 
-char *_getenv_r(struct _reent *reent, const char *name)
+char *__wrap__getenv_r(struct _reent *reent, const char *name)
 {
     (void)reent;
-    return getenv(name);
+    return __wrap_getenv(name);
 }
 
 /* Gives `name` the value `value` (NULL unsets it). */

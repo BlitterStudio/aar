@@ -113,6 +113,11 @@ function(aar_add_executable name)
       "${AAR_SDK}/libaar/src/syscalls.c"
       ${cxx_support}
       ${AA_SOURCES})
+    # syscalls.c defines getenv and _getenv_r as __wrap_getenv and
+    # __wrap__getenv_r; the wrap sends every reference (app, libstdc++, newlib)
+    # to them, so newlib's getenv.o and getenv_r.o are never extracted.
+    target_link_options(${name} PRIVATE
+      "-Wl,--wrap=getenv" "-Wl,--wrap=_getenv_r")
     if(has_cxx)
       target_link_libraries(${name} PRIVATE
         -Wl,--start-group stdc++ c gcc_eh gcc m -Wl,--end-group)

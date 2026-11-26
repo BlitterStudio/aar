@@ -5,7 +5,10 @@
 # runs both images under qemu. The template checks its own results (global
 # constructor, containers, new and delete, virtual calls, RTTI, and throw and
 # catch when the build has exceptions) and logs "cxx_hello PASS"; its global
-# destructor runs from exit() and logs after that.
+# destructor runs from exit() and logs after that. libaar/tests/cxx_env_test.cpp
+# then reads the host environment with std::getenv and _getenv_r from a C++
+# image, where libstdc++ also references getenv: it fails if the link took
+# newlib's getenv instead of libaar's.
 #
 #   tests/cxx_runtime_test.sh <SDK directory> <a32|a64>
 #
@@ -37,14 +40,16 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/root"
 cd "$SDK"
 
-build() { # app exceptions
+build() { # app exceptions [source]
   make -s -f "$SDK/mk/aar.mk" AAR_SDK="$SDK" AAR_PROFILE="$PROFILE" \
-    CROSS="$CROSS" APP="$1" SRCS=templates/cxx_hello.cpp BUILD="$WORK/build" \
+    CROSS="$CROSS" APP="$1" SRCS="${3:-templates/cxx_hello.cpp}" BUILD="$WORK/build" \
     AAR_CXX_EXCEPTIONS="$2" all
 }
 
 build cxx_hello 1
 build cxx_hello_noexc 0
+build cxx_env 1 libaar/tests/cxx_env_test.cpp
+build cxx_env_noexc 0 libaar/tests/cxx_env_test.cpp
 # shellcheck disable=SC2086
 "$HOSTCC" -static $LOADER_FLAGS -O1 -Wall -Wextra -Werror -I"$SDK/include" \
   "$SDK/libaar/tests/loader.c" "$SDK/loader/aar_load.c" "$SDK/loader/aar_image.c" -o "$WORK/loader"
@@ -53,7 +58,7 @@ run() { # label app expected-text...
   label=$1; app=$2; shift 2
   rm -rf "$WORK/root"
   mkdir "$WORK/root"
-  out=$(env AAR_ROOT="$WORK/root" ENTRY_CONTRACT=1 HEAP_INIT_MIB=2 \
+  out=$(env AAR_ROOT="$WORK/root" ENTRY_CONTRACT=1 HEAP_INIT_MIB=2 AAR_TEST_VAR=hello \
     "$QEMU" "$WORK/loader" "$WORK/build/$app.elf" 2>&1) \
     || { echo "$out"; echo "C++ runtime test ($PROFILE): $label failed"; exit 1; }
   for want in "$@"; do
@@ -72,3 +77,5 @@ run "with exceptions" cxx_hello "global constructor ran" "hello from c++" \
   "exceptions: on, 3 caught" "cxx_hello PASS" "global destructor ran"
 run "without exceptions" cxx_hello_noexc "global constructor ran" "hello from c++" \
   "exceptions: off" "cxx_hello PASS" "global destructor ran"
+run "environment, with exceptions" cxx_env "cxx_env PASS"
+run "environment, without exceptions" cxx_env_noexc "cxx_env PASS"

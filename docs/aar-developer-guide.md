@@ -581,8 +581,14 @@ program run:
   pointer it returns stays valid until that name is set or unset and later
   changes on the Amiga are not seen. `setenv`, `unsetenv` and `putenv` change
   only that table and never the Amiga's variables; `putenv` copies its string.
-  Newlib's own readers of the environment, such as `tzset`, see the same
-  table. `environ` stays empty.
+  Newlib's own readers of the environment, such as `tzset`, and `libstdc++`
+  see the same table. `environ` stays empty. `libaar` defines these as
+  `__wrap_getenv` and `__wrap__getenv_r`, and the make include and
+  `aar_add_executable` link with `-Wl,--wrap=getenv -Wl,--wrap=_getenv_r`, so
+  every reference lands on `libaar` and newlib's `getenv.o` and `getenv_r.o`
+  are never taken from `libc`, whatever the order of the archives. A link
+  that does not use those two includes must pass the same two options, or
+  `getenv` comes from newlib and reads an empty `environ`.
 - `exit` flushes stdio, runs the `atexit` handlers, and ends in `aar_exit`.
 - `aar_alloc(bytes, align)` and `aar_free(p)` are `malloc` with an alignment.
   Shared memory is `aar_shared_alloc`, and the two allocators do not mix.
@@ -634,6 +640,9 @@ What works:
   writes `std::cout` to the console, and `<fstream>` works over the file calls.
   Both pull in the locale code and add 600 to 700 KiB to the image, so a small
   app prefers `aar_log` or `printf`.
+- `std::chrono::system_clock::now()` uses the platform wall clock through
+  newlib's `_gettimeofday`. For monotonic intervals and frame timing, use
+  `aar_time_us()` rather than relying on the bare-metal `steady_clock`.
 - Exceptions and RTTI, on by default. See the next paragraphs.
 
 Exceptions. With `AAR_CXX_EXCEPTIONS=1` (the make default) or
@@ -666,9 +675,6 @@ What does not work:
 - Threads. The runtime has no thread model. `std::mutex` and
   `std::condition_variable` are not declared, and `std::thread` has no
   constructor that starts a thread.
-- The wall-clock and steady clocks of `<chrono>`. `system_clock::now()` and
-  `steady_clock::now()` need `_gettimeofday`, which the libc layer leaves out
-  because the table has no such call: the link fails. Use `aar_time_us()`.
 - `std::random_device` returns a fixed sequence, because there is no entropy
   source. Seed a generator from `aar_time_us()`.
 
