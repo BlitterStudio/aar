@@ -52,10 +52,12 @@ The runtime has to do the following, in this order of dependence:
 ### The host transport
 
 A platform supplies three things (see [transport.md](transport.md), "What a
-platform supplies"): shared memory that both sides reach, a doorbell in each
-direction (a hint only, since the queues stay authoritative, so a platform
-that can only poll is correct), and a client mapping from a token to a 68k
-pointer with its cache mode.
+platform supplies"):
+
+- Shared memory that both sides reach.
+- A doorbell in each direction. It is a hint only, since the queues stay
+  authoritative, so a platform that can only poll is correct.
+- A client mapping from a token to a 68k pointer with its cache mode.
 
 The layouts are byte offsets in `aar/transport.h`, not C structures, and every
 word is big-endian. `aar_cb_init`, `aar_cb_check` and the `aar_queue_*`
@@ -93,17 +95,18 @@ interface, `client/src/aar_plat.h`, which a platform fills in:
 `client/src/refplat.c` is an in-memory test platform with fault injection. It
 shows how each operation is called, and the core's host tests run on it
 (`client/tests/`). It is not an ARM runtime or a conformance target.
-The library's calls are in [aar-client-api.md](aar-client-api.md). `aar-run` (`client/run/`) and
-the serving loop `aar_serve` (`client/serve/`) are built on the library and
-need no change for a new platform: they serve the app's files, console,
-display, input and audio through it.
+The library's calls are in [aar-client-api.md](aar-client-api.md). `aar-run`
+(`client/run/`) and the serving loop `aar_serve` (`client/serve/`) are built on
+the library and need no change for a new platform. They serve the app's files,
+console, display, input and audio through it.
 
 ## The image rules and `loader/`
 
 An app is a position-independent ELF of one profile. Apply the
 [ELF and note rules in spec sections 2.2 and 2.3](../spec/aar.md).
 
-The checker is independent of the C validator; the probe and loader share it:
+The checker is independent of the C validator. The probe and the loader share
+the validator:
 
 | Implementation | Language | Use |
 |---|---|---|
@@ -114,12 +117,12 @@ The checker is independent of the C validator; the probe and loader share it:
 `loader/` is a module a runtime compiles in, as it is: portable C99, no OS
 calls, no allocation, both profiles in one build, for 32-bit and 64-bit hosts.
 Take its four files (`aar_image.[ch]`, `aar_load.[ch]`) and the headers of
-`include/aar`; nothing else is needed. The rules themselves are in
+`include/aar`. Nothing else is needed. The rules themselves are in
 `loader/aar_image.c`, which the loader and the image probe of `aar.library`
-share, so they cannot drift apart; `aar-check` stays the independent second
+share, so they cannot drift apart. `aar-check` stays the independent second
 implementation. The loader reads the relocations from `PT_DYNAMIC` only and
 never reads section headers, so an image without them loads, as the standard
-allows. It does not know where memory is or how the platform maps it; the
+allows. It does not know where memory is or how the platform maps it. The
 runtime tells it. The interface is `loader/aar_load.h`:
 
 ```c
@@ -136,11 +139,11 @@ int aar_load_place(const struct aar_load_plan *plan, aar_load_read_fn read, void
 **Reading.** Every byte of the image comes through the read callback, which
 returns `AAR_OK` or a negative `AAR_E_*` (the loader then returns `AAR_E_IO`).
 The module does not require the file to be resident in memory.
-Every size and offset it reads from the file is untrusted: no arithmetic wraps,
-and no read goes
-outside `length` (below 2^62), and `aar_load_place` writes nowhere outside the
-memory it was given. `aar_load_plan` reads headers and tables in pieces of at
-most 512 bytes; `aar_load_place` copies segments in pieces of at most 256 MiB.
+Every size and offset it reads from the file is untrusted. No arithmetic wraps,
+no read goes outside `length` (below 2^62), and `aar_load_place` writes nowhere
+outside the memory it was given. `aar_load_plan` reads headers and tables in
+pieces of at most 512 bytes; `aar_load_place` copies segments in pieces of at
+most 256 MiB.
 
 **Planning.** `aar_load_plan` applies every rule of 2.2 and 2.3 and fills
 `struct aar_load_plan`:
@@ -272,12 +275,12 @@ code shows what that takes on each profile (search for `enter_contract`):
   1 MiB stack, clears `r3` to `r12`, sets `lr` to 0, clears the 16 quad
   registers (`q0` to `q15`, which is `d0` to `d31`), writes 0 to `FPSCR`, and
   jumps with `ldr pc`, reading the entry address from the stack so that no
-  register holds it. `r0` to `r2` carry the table, `argc` and `argv` from the
+  register holds it. `r0` to `r2` hold the table, `argc` and `argv` from the
   call.
 - **A64** (a stub copied to a page next to the image). It sets `sp`, clears
   `x3` to `x30` (so `x29` and `x30` are 0), clears `v0` to `v31`, writes 0 to
   `FPCR` and `FPSR`, and ends in a branch patched to the entry, again so that
-  no register carries the entry address. `w1` is zero-extended.
+  no register holds the entry address. `w1` is zero-extended.
 
 On a bare-metal runtime the same state comes from restoring a prepared exception
 frame at the drop to user mode (EL0, or user mode on A32), with the argument
@@ -303,7 +306,7 @@ profiles, together with the corpus (`conformance/tests/negative_run.sh`).
 A port implements the transport on both sides. [transport.md](transport.md)
 describes the control block (its lines and their writers), the queue pair
 (depth, ordering, backpressure, message credits), the entry layout and the
-operation codes, the doorbell, and the optional event counts. The points that
+operation codes, the doorbell, and the optional event counts. These points
 decide whether a port works:
 
 - Every word has one writer, and the layouts are byte offsets in big-endian.
@@ -323,7 +326,6 @@ and the host tests of the library core show how the two sides use it.
 
 The suite is described in [conformance/README.md](../conformance/README.md);
 the catalogue of every test and its spec reference is `conformance/TESTS.md`.
-What follows is the order a port works in.
 
 ### During bring-up
 
@@ -359,10 +361,11 @@ aar-conf DIR=<the directory> PROFILE=a64 TO=RAM:conf-a64.txt
 ```
 
 `PROFILE` is `a32` or `a64`. Run the suite once for every profile the platform
-declares: a platform that runs only A64 runs only `PROFILE=a64`, and the A32
-payloads in the bundle are not used. `ONLY` runs one area or one test (`ONLY=C-FILE`,
-`ONLY=C-TIME.1`) and gives the verdict `PARTIAL`, which is for debugging, not for a
-report. The options are in [conformance/README.md](../conformance/README.md).
+declares. A platform that runs only A64 runs only `PROFILE=a64`, and the A32
+payloads in the bundle are not used. `ONLY` runs one area or one test
+(`ONLY=C-FILE`, `ONLY=C-TIME.1`) and gives the verdict `PARTIAL`, which is for
+debugging, not for a report. The options are in
+[conformance/README.md](../conformance/README.md).
 
 **Operator tests.** Four tests need a person: C-LIFE.24 (reset the machine,
 a MUST), C-DISPLAY.17 (a picture), C-INPUT.11 (keys, mouse and joystick) and
@@ -383,10 +386,10 @@ validates a report and fails if its verdict is not `CONFORMS`.
 ### Reporting
 
 Keep the report file and the `MANIFEST.txt` of the bundle you used. A report
-for a profile is the file the runner wrote with `TO=`; it contains the suite
+for a profile is the file the runner wrote with `TO=`. It contains the suite
 version, the `AAR-CONF-INFO` lines, and the line of every test. If a test
 fails because the text of the standard is unclear, say which id and what reading
-the platform takes: `conformance/TESTS.md` ends with the questions that earlier
+the platform takes. `conformance/TESTS.md` ends with the questions that earlier
 runs raised, and a new one belongs there.
 
 ## A short checklist

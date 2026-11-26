@@ -97,7 +97,8 @@ A task may hold as many handles as admission allows. Closing the last base
 of `aar.library` that a task has open closes all that task's handles. If a task
 exits or is removed without closing, the library notices within about a
 second, stops the app, releases it and frees the handle. Do not rename a task
-that owns a handle: the library takes the new name for a different task.
+that owns a handle, because the library takes the new name for a different
+task.
 
 A handle pointer is valid until `AARClose`. After that a call with it returns
 `AAR_E_STALE`, as does a call on a handle whose claim the platform has
@@ -147,31 +148,31 @@ Events coalesce. The type is `AAR_NOTIFY_MESSAGE` if a message is waiting, else
 serve the requests. Before `AARClose` drain the port and then the message ring.
 
 The end of the app is never lost behind an earlier event. If the app ends while
-an event is still on the port, the library posts nothing at that moment; as
-soon as the client has taken the old event, it posts one that carries the end
-status (its type is `AAR_NOTIFY_MESSAGE` while a message is still waiting,
-else `AAR_NOTIFY_COMPLETE` or `AAR_NOTIFY_FAULT`). Until then the owner is
-signalled at each vertical blank. Read `AARStatus` after every event: the
-status in an event is the one of the moment it was posted.
+an event is still on the port, the library posts nothing at that moment. Until
+the client has taken the old event, the owner is signalled at each vertical
+blank. After that the library posts one event that carries the end status. Its
+type is `AAR_NOTIFY_MESSAGE` while a message is still waiting, else
+`AAR_NOTIFY_COMPLETE` or `AAR_NOTIFY_FAULT`. Read `AARStatus` after every
+event, because the status in an event is the one of the moment it was posted.
 
 Only handles that have been armed are watched: calling `AARMessageSignal` or
 giving a notify port arms one. A client that polls from its own timer (aar-run
-does, every millisecond by default) never arms and costs the library nothing:
-a handle that is not armed and has no doorbell or mouse event waiting is not
-visited at all by the library's dispatcher, so the cost of the library does not
-grow with the number of such handles. A client that needs a faster response
-polls `AARServiceNext` itself.
+does, every millisecond by default) never arms and costs the library nothing.
+The library's dispatcher does not visit a handle that is not armed and has no
+doorbell or mouse event waiting, so the cost of the library does not grow with
+the number of such handles. A client that needs a faster response polls
+`AARServiceNext` itself.
 
 **ZZ9000 note.** The library looks at armed handles at each vertical blank,
 so a wake-up takes up to 20 ms on a PAL machine.
 
 On a platform that publishes event counts, an armed handle that has nothing
-pending costs one read per vertical blank
-for all such handles together: the library reads one word, the platform's global
-event count, and reads the control block of an armed handle (three reads, each
-slow on a 68060) only when the count of its group changed, while it has a request
-or message waiting, or until its end has been announced. On a platform without
-event counts each armed handle costs three reads of its control block per blank.
+pending costs one read per vertical blank for all such handles together. The
+library reads one word, the platform's global event count. It reads the control
+block of an armed handle (three reads, each slow on a 68060) only when the count
+of its group changed, while the handle has a request or message waiting, or
+until its end has been announced. On a platform without event counts each armed
+handle costs three reads of its control block per blank.
 The counts are only a hint; the queues stay authoritative, so nothing about
 notification differs for the client.
 
@@ -184,7 +185,7 @@ The platform revokes a claim whose client stops answering. The library renews
 the lease from a vertical-blank interrupt, so a client that is blocked for
 a long time, in a requester or under `Forbid()`, keeps its app. A client that
 is stuck for good but still exists keeps its app too, until someone kills the
-client, then the library releases it as for any dead owner. If the library's
+client. Then the library releases it as for any dead owner. If the library's
 own dispatcher process dies or stalls for five seconds, the library stops
 renewing and the platform's lease expires, so a crashed library cannot hold an
 app for ever. The interrupt renews one fifth of the claims at each vertical
@@ -233,7 +234,7 @@ limit or does not report it.
 ### AARImageInfo
 
 What the probe reports (48 bytes). It is what the image declares in its note.
-The probe does not judge it against the platform: compare `profile` with
+The probe does not judge it against the platform. Compare `profile` with
 `AARInfo.profiles` and the group masks with `AARInfo.groups` yourself.
 
 | Offset | Field | Meaning |
@@ -370,12 +371,14 @@ The values of `AARSharedMap.flags`, 1 and 2.
 A `reply_flags` bit for the completion of `AAR_OP_DISPLAY_FLIP`. The client has
 submitted the pan or buffer change and relies on the platform's vertical blank
 to show it. Without the bit the flip is complete when the completion arrives.
+
 **ZZ9000 note.** This platform uses the submitted-pan flag.
 
 ### AAR_CCAP_DISPLAY_CLUT8, AAR_CCAP_DISPLAY_PAN_ACK, AAR_CCAP_DISPLAY_LATEST, AAR_CCAP_KNOWN
 
 What the serving code can do, for `AAR_TAG_CLIENT_CAPS`. They are bits 0 to 2.
-`AAR_CCAP_KNOWN` is the mask of all of them. A platform ignores a bit it cannot use.
+`AAR_CCAP_KNOWN` is the mask of all of them. A platform ignores a bit it cannot
+use.
 
 | Bit | Meaning |
 |---|---|
@@ -405,7 +408,7 @@ in full before any tag is applied, so a list with a bad tag changes nothing.
 | `AAR_TAG_CLIENT_CAPS` | `ULONG` | a mask of `AAR_CCAP_*`; a bit outside `AAR_CCAP_KNOWN` is `AAR_E_INVAL` |
 
 An id the library does not know is `AAR_E_INVAL`. A defined tag that the
-platform cannot carry is `AAR_E_NOSYS`.
+platform cannot support is `AAR_E_NOSYS`.
 
 What the launcher alone needs is not a tag. The root directory for relative
 paths, absolute paths, the console windows and the screen mode belong to the
@@ -421,7 +424,7 @@ All calls return a `LONG`: `AAR_OK` (0) or a negative `AAR_E_*`, except
 when the handle is closed or revoked. The owner is checked first, then whether
 the claim is still live, and only then the arguments and any file open. A
 revoked handle therefore returns `AAR_E_STALE`, not `AAR_E_INVAL` or
-`AAR_E_NOENT`, and `AARGetMessage` does not hand out a message that arrived
+`AAR_E_NOENT`, and `AARGetMessage` does not return a message that arrived
 before the revoke. `AARClose` is the exception: it still releases the claim
 and returns `AAR_OK` when the platform has already revoked it. These codes are
 not repeated below.
@@ -477,13 +480,13 @@ LONG AARProbeFile(const char *path, AARImageInfo *info);
 
 Reads the AAR note of an image without loading it. It needs no handle. The
 probe applies the image rules of the specification (2.2 and 2.3) as the
-platform's loader does: an image that breaks one is refused, and an image the
+platform's loader does. An image that breaks one is refused, and an image the
 loader would accept is accepted, with or without section headers.
 `tools/aar-check` is stricter: it also requires the section headers and compares
 them with the segments, which is a check of build output. The probe does not
-judge the image against the platform: profile, groups, heap and stack are
+judge the image against the platform. Profile, groups, heap and stack are
 reported, not checked. The note's API numbers are judged against the API this
-library was built with: a note for another major, or one that needs a newer
+library was built with. A note for another major, or one that needs a newer
 minor, is refused.
 
 | Error | Cause |
@@ -515,7 +518,7 @@ LONG AARSetTags(AARHandle *handle, Tag tag1, ...);
 Sets the options of [Tags](#tags). `AARSetTags` is the same call with the tags
 written out, ended by `TAG_DONE`. Returns `AAR_E_BUSY` once the load has begun
 or the app has started, `AAR_E_INVAL` for an out-of-range value or an unknown
-tag id, and `AAR_E_NOSYS` for a tag the platform cannot carry.
+tag id, and `AAR_E_NOSYS` for a tag the platform cannot support.
 
 ### AARLoadFile
 
@@ -524,7 +527,7 @@ LONG AARLoadFile(AARHandle *handle, const char *path);
 ```
 
 Loads the image in the file. The library opens `path` itself and resolves
-nothing: pass a path that `Open()` can open (a launcher that searches assigns
+nothing, so pass a path that `Open()` can open (a launcher that searches assigns
 does it first). It reads in chunks and checks `SIGBREAKF_CTRL_C` between them.
 On a break it returns `AAR_E_IO` and leaves the signal set. The load may take
 seconds. A load that keeps making progress is not timed out.
@@ -561,11 +564,11 @@ LONG AARStart(AARHandle *handle, const char *const *argv, ULONG argc);
 
 Starts the loaded image with `argc` strings, at most `AARInfo.max_args`
 (`argv[0]` included), each at most `AARInfo.max_arg_bytes` bytes including
-its NUL. The first is the program name. `argv` may be NULL when `argc` is 0. Returns `AAR_E_INVAL` for a bad
-argument, or when no image is loaded (a load that failed or was cut short counts as
-none), or the app has started already. When the platform itself fails the start,
-the error is returned, the handle cannot be started again, and the next step is
-`AARClose`.
+its NUL. The first is the program name. `argv` may be NULL when `argc` is 0.
+Returns `AAR_E_INVAL` for a bad argument, or when no image is loaded (a load
+that failed or was cut short counts as none), or the app has started already.
+When the platform itself fails the start, the error is returned, the handle
+cannot be started again, and the next step is `AARClose`.
 
 ### AARStop
 
@@ -605,8 +608,8 @@ LONG AARGetMessage(AARHandle *handle, AARMessage *message);
 ```
 
 Takes the next message from the app. Returns `AAR_E_BUSY` when there is none.
-Drain it until `AAR_E_BUSY` after a signal, and serve requests as well: a full
-message inbox holds up the requests behind it. Log records in front of the
+Drain it until `AAR_E_BUSY` after a signal, and serve requests as well, because
+a full message inbox holds up the requests behind it. Log records in front of the
 message go to the sink of [`AARSetLogSink`](#aarsetlogsink), as in
 `AARServiceNext`.
 
@@ -681,11 +684,12 @@ LONG AARServiceNext(AARHandle *handle, AARServiceReq *req);
 ```
 
 Takes the next request from the app. Messages and log records in front of it
-are moved aside; log records go to the sink of [`AARSetLogSink`](#aarsetlogsink). Returns `AAR_OK` with `req` filled, `AAR_E_BUSY` when none is
-waiting, or `AAR_E_IO` when the queue is corrupt. A request whose buffer cannot
-be mapped is answered with `AAR_E_INVAL` by the library and not returned.
-`req->ptr` is the mapped payload. `out`, `result` and `reply_flags` come back
-zero.
+are moved aside. Log records go to the sink of
+[`AARSetLogSink`](#aarsetlogsink). Returns `AAR_OK` with `req` filled,
+`AAR_E_BUSY` when none is waiting, or `AAR_E_IO` when the queue is corrupt. A
+request whose buffer cannot be mapped is answered with `AAR_E_INVAL` by the
+library and not returned. `req->ptr` is the mapped payload. `out`, `result` and
+`reply_flags` come back zero.
 
 ### AARServiceReply
 
@@ -697,17 +701,18 @@ Posts the completion for a request: its `op`, `id`, `result`, `reply_flags` and
 `out`. It resumes the app if the app is parked on that request. Every request
 needs one, including those that do not park the app, because the completion
 releases the request's staging storage. Returns `AAR_E_BUSY` when the
-completion queue is full: keep the request and try again. A reply whose `op`
-and `id` match no outstanding request is `AAR_E_INVAL` and changes nothing: the
+completion queue is full. Keep the request and try again. A reply whose `op`
+and `id` match no outstanding request is `AAR_E_INVAL` and changes nothing. The
 app is not resumed and no storage is released. The late completion of a request
 the app has given up on (a timeout) is not such a reply: it is accepted and
-releases the storage. The library notes an
-`AAR_OP_AUDIO_OPEN` completion with `AAR_OK` to attach the audio ring for
-`AARAudioRead`, and `AAR_OP_AUDIO_CLOSE` to detach it. If the ring does not
-check out (a bad header, a frame count that is not a power of two or does not
-fit the ring), the app is not told it is open: the library posts a refusal
-completion (the error as `result`, `out` zero) instead of the client's, and
-`AARServiceReply` returns that error (`AAR_E_IO` or `AAR_E_INVAL`) so the
+releases the storage.
+
+The library notes an `AAR_OP_AUDIO_OPEN` completion with `AAR_OK` to attach the
+audio ring for `AARAudioRead`, and `AAR_OP_AUDIO_CLOSE` to detach it. If the
+ring does not check out (a bad header, a frame count that is not a power of two
+or does not fit the ring), the app is not told it is open. The library posts a
+refusal completion (the error as `result`, `out` zero) instead of the client's,
+and `AARServiceReply` returns that error (`AAR_E_IO` or `AAR_E_INVAL`) so the
 client learns that the ring was refused. The request is answered either way and
 must not be replied to again.
 
@@ -725,13 +730,13 @@ LONG AARPostEvent(AARHandle *handle, const aar_event *event);
 Pushes an input event to the app: a key, the mouse, a joystick, a stop request
 or a break. It takes the app's event structure from `aar/app.h`, not an
 `AAREvent`. The event reaches the app as given (the reserved word is 0). Mouse
-motion is merged while the queue is full or an event is pending, or counted
-when it is dropped, never lost without a count. A posted `AAR_EV_STOP` is an
+motion is merged while the queue is full or an event is pending. Dropped motion
+is counted, so it is never lost without a count. A posted `AAR_EV_STOP` is an
 event only: it does not stop the app, which `AARStop` does. Returns
-`AAR_E_BUSY` when a full queue drops the event; the library
-counts the drop in `AARStatusInfo.events_dropped`. A merged mouse event that the
-queue had no room for is posted by the library's dispatcher as soon as there is
-room (within a vertical blank); the client does not have to call again.
+`AAR_E_BUSY` when a full queue drops the event. The library counts the drop in
+`AARStatusInfo.events_dropped`. A merged mouse event that the queue had no room
+for is posted by the library's dispatcher as soon as there is room (within a
+vertical blank); the client does not have to call again.
 
 ### AARAudioRead
 
@@ -787,35 +792,35 @@ typedef void (*AARLogSink)(APTR user, const void *data, ULONG len);
 
 Sends the app's log records (`AAR_OP_LOG`) to `sink`, a function of type
 `AARLogSink`, one call per record, in the order the app wrote them and once
-each. `data` is the record, `len` its
-length (at most `AAR_LOG_MAX`, longer records are truncated), and `user` is the
-pointer given here. `data` is valid for the call only. `NULL` as `sink` removes
-the sink. A new handle has none, and a record that arrives while there is none
-is dropped; it is not held for a sink set later. Setting a sink again replaces
-the old one: from the next record on, neither the old sink nor its `user` is
-called. The call needs no platform support and works the same on every platform.
+each. `data` is the record, `len` its length (at most `AAR_LOG_MAX`; longer
+records are truncated), and `user` is the pointer given here. `data` is valid
+for the call only. `NULL` as `sink` removes the sink. A new handle has none, and
+a record that arrives while there is none is dropped; it is not held for a sink
+set later. Setting a sink again replaces the old one: from the next record on,
+neither the old sink nor its `user` is called. The call needs no platform
+support and works the same on every platform.
 
 **ZZ9000 note.** Unclaimed records are counted in
 `AARZZ9000Stats.logs_unclaimed`.
 
 The library calls the sink in the owner task, from inside `AARServiceNext` or
 `AARGetMessage`, so it must return quickly. From inside the sink a program may
-call `AARSetLogSink` (to remove or replace the sink: the record in hand is still
-delivered once, and the rest of the queue goes to the new sink or is dropped)
-and `AARPostEvent`. It must not call `AARServiceNext`, `AARGetMessage` or
-`AARClose`.
+call `AARSetLogSink` and `AARPostEvent`. It must not call `AARServiceNext`,
+`AARGetMessage` or `AARClose`. When the sink is removed or replaced from inside,
+the record in hand is still delivered once, and the rest of the queue goes to
+the new sink or is dropped.
 
 The sink may be removed at any time, and a program that keeps its `user` in
 memory it frees must remove the sink first. `AARClose` forgets the sink, and so
-does the library when it takes a handle whose owner task has gone: after the
+does the library when it takes a handle whose owner task has gone. After the
 close no call reaches the old sink or `user`. The handle calls order their
 checks as every other call does: `AAR_E_OWNER`, then `AAR_E_STALE`. A task
 other than the owner cannot set or remove the sink, and a call on a revoked
 handle leaves the sink as it was.
 
 The sink is called with the C calling convention of the compiler that built the
-library, not through registers like the library's own vectors (the way the
-functions of the extension tables are called). With GCC for m68k-amigaos that
+library, as are the functions of the extension tables, and not through
+registers like the library's own vectors. With GCC for m68k-amigaos that
 is arguments on the stack. A program built with a compiler that passes C
 arguments in registers by default (SAS/C, or GCC with `-mregparm`) must declare
 the sink with the stack convention (`__stdargs` in SAS/C); the library cannot
@@ -845,8 +850,8 @@ return them. A client puts them in `AARServiceReq.result` as the service demands
 ## ZZ9000 extension
 
 `<libraries/aar_zz9000.h>`. Only the ZZ9000 build of the library has it. The
-base calls stay the same on every platform; what a launcher needs of the card
-beyond them lives here. `AARInfo.platform` holds, for `AAR_PLATFORM_ZZ9000`, the
+base calls stay the same on every platform. What a launcher needs of the card
+beyond them is here. `AARInfo.platform` holds, for `AAR_PLATFORM_ZZ9000`, the
 words of the table below.
 
 | Index | Word |

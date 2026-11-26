@@ -49,20 +49,28 @@ does not claim conformance for every OpenGL implementation. It assumes at least
 4 bits per texture component and at least 5 bits of fragment alpha; the
 MiniGL backend provides 8. Cases compare all four components within 8.
 
-- **Texture precision.** For an unsized internal format the GL chooses the
-  component resolutions (GL 2.1 section 3.8.1). The half-alpha texel is
-  `aa883388`, exactly representable in 4 bits per component, so any storage of
-  at least that precision holds it unchanged.
-- **Alpha-test rounding.** The reference 0.5 converts with rounding to nearest
-  (sections 4.1.4 and 2.14.9). At 8 bits that is 127.5, a tie, and rounding it
-  up or down are both valid. The fragment alphas the fixtures produce are 255,
-  136, 119 and 63, none near the tie, so every width of 5 bits or more gives
-  the same result.
-- **RGB565 alpha.** The Arm app reads back from an `AAR_FMT_RGB565` target. A
-  framebuffer without alpha returns A as 1.0 (section 4.3.2), so the expected
-  alpha is 255 after the fragment alpha has been used for the alpha test and
-  the blend, including for a discarded fragment. The comparison itself stays
-  RGBA. The 68k probe does not change: it does not declare its pixel format.
-
-The sections are in the OpenGL 2.1 specification,
+The section numbers below are from the OpenGL 2.1 specification,
 <https://registry.khronos.org/OpenGL/specs/gl/glspec21.pdf>.
+
+### Texture precision
+
+For an unsized internal format the GL chooses the
+component resolutions (GL 2.1 section 3.8.1). The half-alpha texel is
+`aa883388`, exactly representable in 4 bits per component, so any storage of
+at least that precision holds it unchanged.
+
+### Alpha-test rounding
+
+The reference 0.5 converts with rounding to nearest
+(sections 4.1.4 and 2.14.9). At 8 bits that is 127.5, a tie, and rounding it
+up or down are both valid. The fragment alphas the fixtures produce are 255,
+136, 119 and 63, none near the tie, so every width of 5 bits or more gives
+the same result.
+
+### RGB565 alpha
+
+The Arm app reads back from an `AAR_FMT_RGB565` target. A
+framebuffer without alpha returns A as 1.0 (section 4.3.2), so the expected
+alpha is 255 after the fragment alpha has been used for the alpha test and
+the blend, including for a discarded fragment. The comparison itself stays
+RGBA. The 68k probe does not change: it does not declare its pixel format.

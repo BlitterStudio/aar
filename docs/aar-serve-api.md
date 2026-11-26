@@ -6,8 +6,8 @@ also posts the input events and the stop event. The reference launcher
 [`aar-run`](../client/run/README.md) is a small program around it; a program
 with its own window and event loop can use it the same way.
 
-It is MIT code in this repository: `client/serve/aar_serve.c` is the one
-translation unit of the loop (it includes the Amiga backends), and
+It is MIT code in this repository. `client/serve/aar_serve.c` is the one
+translation unit of the loop and includes the Amiga backends.
 `client/serve/aar_serve_core.c` holds the OS-free request handlers. The public
 header is `libraries/aar_serve.h`. The calls are plain C functions linked into
 the program, not library vectors. Link `libaarserve.a`, or compile both `.c`
@@ -96,7 +96,7 @@ not call the hook.
 
 ## Requests and the replaceable tables
 
-`struct aar_serve_req` is a request as `aar.library` hands it out with its
+`struct aar_serve_req` is a request as `aar.library` gives it out with its
 payload buffer mapped into this process; `struct aar_serve_done` is the
 completion a handler produces: `result` (`AAR_OK` or an `AAR_E_*`), the entry
 `flags` and the result words `out[]`.
@@ -106,19 +106,24 @@ completion a handler produces: `result` (`AAR_OK` or an `AAR_E_*`), the entry
 pitch, front, back and spare tokens), `change_buffer`, `pan`, `wait_tof`,
 `load_rgb32` and `close` (all optional). The loop records the screen from the
 completion that `open` filled, so flips, palettes and the close work on a
-replacement table; the table decides the mode: `change_buffer` and a back token
-make two screen buffers (a flip completes at `aar_serve_flip_shown`), else `pan`
-and a back token make the pages of one bitmap, else there is one buffer. An
-`open` that gives no front token or pitch has opened nothing (`AAR_E_IO`, `close`
-is called); a negative result is the table's own failure. `load_rgb32` NULL:
-palette requests complete with `AAR_E_NOSYS`. `close` is called at
-`DISPLAY_CLOSE` and at `aar_serve_destroy`.
+replacement table. The table decides the mode:
+
+- `change_buffer` and a back token make two screen buffers (a flip completes at
+  `aar_serve_flip_shown`).
+- Otherwise `pan` and a back token make the pages of one bitmap.
+- Otherwise there is one buffer.
+
+An `open` that gives no front token or pitch has opened nothing: the result is
+`AAR_E_IO` and `close` is called. A negative result is the table's own failure.
+With `load_rgb32` NULL, palette requests complete with `AAR_E_NOSYS`. `close` is
+called at `DISPLAY_CLOSE` and at `aar_serve_destroy`.
+
 `struct aar_serve_console_ops` is the table under the console handlers:
 `write_start`, `read_start` and `live` are required, `open`, `read_allowed` and
 `output_error` optional. A start that returns 1 is completed by exactly one
 `aar_serve_write_done` or `aar_serve_read_done`, outside the table call, in the
-task that runs the loop; `output_error` is called after the loop has asked the
-app to stop, and `aar_serve_destroy` does not wait for a replacement console. The
+task that runs the loop. `output_error` is called after the loop has asked the
+app to stop. `aar_serve_destroy` does not wait for a replacement console. The
 first member of both tables is the `ctx` that every call receives.
 `aar_serve_create` answers `AAR_E_INVAL` for a table without what it requires.
 The other hooks (`status`, `log`, `message`, `stop_wanted`) are synchronous
@@ -153,8 +158,8 @@ the app has ended. Returns `AAR_SERVE_ENDED` or `AAR_SERVE_LOST`.
 now: the break signals of `break_mask`, the timer, the console packet port, the
 input window, the SafeMessage port of a flip and the AHI port when they exist,
 and the library signal with `AAR_SERVEF_USE_SIGNAL`. It changes while the app
-runs: ask again before each `Wait`. The heartbeat timer is armed whenever it is
-in the mask: `aar_serve_create`, the end of every step and every call that
+runs, so ask again before each `Wait`. The heartbeat timer is armed whenever it
+is in the mask. `aar_serve_create`, the end of every step and every call that
 waits on DOS (`aar_serve_locate` included) arm it again, so a program may call
 those between `aar_serve_create` and its first `Wait`.
 
@@ -165,9 +170,9 @@ those between `aar_serve_create` and its first `Wait`.
 window and the joystick, flushes the stop event, serves up to 16 requests, pumps
 the console, the display and the audio, flushes the completion backlog and reads
 the state. It returns `AAR_SERVE_CONTINUE` until the app has ended and the
-output that must be written is written (`AAR_SERVE_ENDED`, also when both grace
-periods have elapsed after a stop), or `AAR_SERVE_LOST` when the claim is gone
-(revoked, quarantined, reset).
+output that must be written is written. Then it returns `AAR_SERVE_ENDED`, also
+when both grace periods have elapsed after a stop. It returns `AAR_SERVE_LOST`
+when the claim is gone (revoked, quarantined, reset).
 
 ### aar_serve_post_event
 
@@ -184,9 +189,9 @@ loop that the flip it started with `change_buffer` is on the screen.
 
 `void aar_serve_write_done(aar_serve *s, LONG written)`: a replacement console
 tells the loop how the write that `write_start` started ended: `written` bytes
-were taken. All of them completes the app's request (or the launcher's line);
-fewer, or a negative value, fails the output: the app is stopped once and every
-later write completes with `AAR_E_IO`. Ignored when no write is started.
+were taken. If that is all of them, the app's request (or the launcher's line)
+completes. Fewer, or a negative value, fails the output: the app is stopped once
+and every later write completes with `AAR_E_IO`. Ignored when no write is started.
 
 ### aar_serve_read_done
 
@@ -211,9 +216,9 @@ diagnostic line before the app's console text.
 `LONG aar_serve_locate(aar_serve *s, BPTR dir, const char *name, char *full, ULONG size)`:
 finds a file through every directory of a multi-directory assign (`dir` is the
 directory a relative `name` is searched from, 0 for a volume or assign path) and
-gives its full name. `AAR_OK`; `AAR_E_NOENT` when it is not found; `AAR_E_IO`
-when the name could not be built. A Ctrl-C during the search counts as a user
-stop.
+gives its full name. Returns `AAR_OK`, `AAR_E_NOENT` when it is not found, or
+`AAR_E_IO` when the name could not be built. A Ctrl-C during the search counts
+as a user stop.
 
 ### aar_serve_result
 
@@ -266,74 +271,75 @@ program's own window signals are not lost.
 
 ## Notes
 
-- **Console to NIL:**, or to any handle with no handler port, is written with a
-  plain `Write()`, which cannot block; the result is delivered on the next pass.
-  A destination that really fails stops the app and the note about it goes to
-  the user's console (`CONSOLE:`), not into the destination that failed.
-- **Messages.** The library keeps 64 unread app messages, and a message the full
-  inbox cannot take blocks every request behind it. Unless
-  `AAR_SERVEF_KEEP_MESSAGES` is set the loop takes them every pass: the
-  `message` hook gets each one, or it is dropped and counted in
-  `aar_serve_result.dropped_messages`.
-- **Log records.** The runtime drops a log record when its queue is full and
-  counts it (`AARStatusInfo.log_dropped`, copied into
+- Console output to `NIL:`, or to any handle with no handler port, is written
+  with a plain `Write()`, which cannot block; the result is delivered on the
+  next pass. A destination that fails stops the app, and the note about it goes
+  to the user's console (`CONSOLE:`), not into the destination that failed.
+- The library keeps 64 unread app messages, and a message the full inbox cannot
+  take blocks every request behind it. Unless `AAR_SERVEF_KEEP_MESSAGES` is set
+  the loop takes them every pass: the `message` hook gets each one, or it is
+  dropped and counted in `aar_serve_result.dropped_messages`.
+- The runtime drops a log record when its queue is full and counts it
+  (`AARStatusInfo.log_dropped`, copied into
   `aar_serve_result.runtime_dropped_logs` by `aar_serve_result`). The launcher's
   console queue counts the records it had no room for in
   `aar_serve_result.dropped_logs`. A program that reports lost output adds the
   two. After the claim is lost `aar_serve_result` returns `AAR_E_STALE` and
   `runtime_dropped_logs` is the value of the last successful call.
-- **AHI counters.** `aar_serve_result.ahi_underruns` sums the AHI ring headers'
-  underrun counts across streams (the app wrote less than AHI needed).
-  `ahi_gaps` counts the times AHI ran dry while the app was still writing, which
-  no ring counter shows. `ahi_requests`, `ahi_min_frames` and `ahi_avg_frames`
-  give the number of requests sent and their shortest and average length in
-  frames: whole requests are all the same size, only the last one of a sound is
-  shorter. All are sampled while the claim runs, survive audio close and app end,
-  and are 0 on the platform route. AHI needs a heartbeat of 1..20000 us (1000 by
+- `aar_serve_result.ahi_underruns` sums the AHI ring headers' underrun counts
+  across streams (the app wrote less than AHI needed). `ahi_gaps` counts the
+  times AHI ran dry while the app was still writing, which no ring counter
+  shows. `ahi_requests`, `ahi_min_frames` and `ahi_avg_frames` give the number
+  of requests sent and their shortest and average length in frames. Whole
+  requests are all the same size; only the last one of a sound is shorter. All
+  are sampled while the claim runs, survive audio close and app end, and are 0
+  on the platform route. AHI needs a heartbeat of 1..20000 us (1000 by
   default). aar-run prints them with its heartbeat for `AUDIO=AHI`.
-- **The stop grace** is `AARInfo.stop_grace_ms` (read by `aar_serve_create`);
+- The stop grace is `AARInfo.stop_grace_ms` (read by `aar_serve_create`). It is
   500 ms only when the platform reports none.
-- **Framebuffer tokens** are checked by the library and the platform. The loop
-  has no window of its own for them.
-- **A refused audio ring** (the library turns an `AUDIO_OPEN` completion whose
-  ring does not check out into an error) closes AHI again.
-- **Held requests** at `aar_serve_destroy` (a console read that never started, a
-  console write, a flip waiting for its SafeMessage) are answered with
+- Framebuffer tokens are checked by the library and the platform. The loop has
+  no window of its own for them.
+- A refused audio ring closes AHI again. The library refuses it by turning an
+  `AUDIO_OPEN` completion whose ring does not check out into an error.
+- Requests still held at `aar_serve_destroy` (a console read that never started,
+  a console write, a flip waiting for its SafeMessage) are answered with
   `AAR_E_IO`, once. A completion that cannot be posted because the completion
-  queue is full stays unanswered: the app has gone away with the claim.
-- **The AHI queue.** PCM goes from the app's ring into a reserve (a FIFO of up to
-  two requests' worth, at most 20 ms read from the ring per pass) and from there
-  into two AHI requests of up to 3/50 s (60 ms), as in the AHI developer guide's
-  double buffering: each is linked to the other while that one is queued, and a
-  request is sent again as soon as it has finished (`io_Offset` is set to 0 every
-  time: the device trashes it). AHI is started when two requests' worth is in the
-  reserve (about 120 ms); after that every request is whole. When the app stops
-  writing for 30 ms the rest is played as a last, short request; at `AUDIO_CLOSE`
-  the queued audio plays out before AHI is closed (`aar_serve_destroy` cuts it).
-  If AHI runs dry while the app is still writing, `ahi_gaps` counts it, the empty
-  ring is read once (a ring underrun) and the stream is buffered again. The
-  added latency is about 120 ms (240 ms in all). More than two requests in
-  flight are not used by this backend.
-- **The heartbeat.** The AHI route needs one of at most 20 ms (a buffer has to
-  be refilled well before the other one has played); `aar_serve_create` answers `AAR_E_NOSYS` for
-  other values with it. Without AHI, `poll_us` 0 is allowed: the program is woken
-  by the flip and AHI ports, the console, the input window and, with
-  `AAR_SERVEF_USE_SIGNAL`, by the library.
-- **Paths.** A relative path is resolved below `ROOT` and checked there for every
-  op that takes one (open, stat, list), whatever `AAR_SERVEF_ABS_PATHS` says:
-  `..`, a leading `/`, and a link whose target lies outside `ROOT` answer
-  `AAR_E_ACCES`. The flag only admits paths with a volume or assign colon, which
-  go to AmigaDOS as they are.
-- **Stops.** Once any stop is requested (a break, `aar_serve_stop`, a stop from
-  the input window, or the platform ending the app) no request that changes the
-  file system runs: an open that creates, truncates, replaces or updates, and a
+  queue is full stays unanswered. The app has gone away with the claim.
+- PCM goes from the app's ring into a reserve and from there into two AHI
+  requests of up to 3/50 s (60 ms). The reserve is a FIFO of up to the size of
+  two requests, and at most 20 ms is read from the ring per pass. The two
+  requests follow the double buffering of the AHI developer guide: each is
+  linked to the other while that one is queued, and a request is sent again as
+  soon as it has finished (`io_Offset` is set to 0 every time, because the
+  device trashes it). AHI is started when the reserve holds the size of two
+  requests (about 120 ms). After that every request is whole. When the app stops
+  writing for 30 ms the rest is played as a last, short request. At
+  `AUDIO_CLOSE` the queued audio plays out before AHI is closed
+  (`aar_serve_destroy` cuts it). If AHI runs dry while the app is still
+  writing, `ahi_gaps` counts it, the empty ring is read once (a ring underrun)
+  and the stream is buffered again. The added latency is about 120 ms (240 ms in
+  all). More than two requests in flight are not used by this backend.
+- The AHI route needs a heartbeat of at most 20 ms, because a buffer has to be
+  refilled well before the other one has played. With the AHI route,
+  `aar_serve_create` answers `AAR_E_NOSYS` for other values. Without AHI,
+  `poll_us` 0 is allowed. The program is then woken by the flip and AHI ports,
+  the console, the input window and, with `AAR_SERVEF_USE_SIGNAL`, by the
+  library.
+- A relative path is resolved below `ROOT` and checked there for every op that
+  takes one (open, stat, list), whatever `AAR_SERVEF_ABS_PATHS` says: `..`, a
+  leading `/`, and a link whose target lies outside `ROOT` answer `AAR_E_ACCES`.
+  The flag only admits paths with a volume or assign colon, which go to AmigaDOS
+  as they are.
+- Once any stop is requested (a break, `aar_serve_stop`, a stop from the input
+  window, or the platform ending the app) no request that changes the file
+  system runs. An open that creates, truncates, replaces or updates, and a
   write, answer `AAR_E_IO`. Reads, seeks, closes, stat and list change nothing
   and still run. The check is one predicate, `aar_serve_stopping`, with the
   platform state read live before each such step.
-- **Text for the user.** A requester (a Workbench console that cannot be opened)
-  shows its text as the argument of a fixed `%s` format: a `%` in the screen
-  title or in a path stays a `%`. No caller or app text is used as a format
-  string anywhere in `client/serve`, `client/run` or the example.
+- A requester (a Workbench console that cannot be opened) shows its text as the
+  argument of a fixed `%s` format. A `%` in the screen title or in a path stays
+  a `%`. No caller or app text is used as a format string anywhere in
+  `client/serve`, `client/run` or the example.
 
 ## The example and the library
 

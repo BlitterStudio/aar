@@ -21,9 +21,9 @@ The ZZ9000 is the reference platform (A32, Cortex-A9); see the
 
 Version 0.x. The app API is **0.5**, the first AAR version, and may still
 change before 1.0. The specification is [spec/aar.md](spec/aar.md) (review
-draft 1). It is the normative text: what the standard requires of an app, a
-runtime, the Amiga library and a platform. Comments and questions are welcome
-as issues in this repository.
+draft 1). It is the normative text and states what the standard requires of an
+app, a runtime, the Amiga library and a platform. Comments and questions are
+welcome as issues in this repository.
 
 The firmware in [BlitterStudio/zz9000-firmware](https://github.com/BlitterStudio/zz9000-firmware)
 pins the commit of this repository it builds against in `sdk/AAR_REF`.
@@ -137,14 +137,14 @@ target.
 - [docs/aar-api.md](docs/aar-api.md): the API reference, every call, type and
   constant.
 - [docs/aar-client-api.md](docs/aar-client-api.md): the Amiga client library,
-  `aar.library`: every call, structure, tag and error, for launchers and tools.
+  `aar.library`. It lists every call, structure, tag and error, for launchers and tools.
 - [docs/aar-developer-guide.md](docs/aar-developer-guide.md): how an app is
   built, loaded and run, with the rules for shared buffers, messages and events.
 - [docs/transport.md](docs/transport.md): the transport contract for platform
   implementers.
-- [docs/porting.md](docs/porting.md): the guide for a platform implementer: what a
-  platform provides, the image rules and the loader, the entry contract, and how
-  to run the conformance suite (the CI bundle) and report.
+- [docs/porting.md](docs/porting.md): the guide for a platform implementer. It
+  covers what a platform provides, the image rules and the loader, the entry
+  contract, and how to run the conformance suite (the CI bundle) and report.
 - [docs/aar-serve-api.md](docs/aar-serve-api.md): `aar_serve` and
   `libaarserve.a`, for a client that serves app requests.
 - [client/run/README.md](client/run/README.md): the aar-run manual, including

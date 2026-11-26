@@ -46,7 +46,7 @@ fat images, and a launcher picks the file that fits its platform.
 
 Structures that the app and the host share are built from fixed-width
 integers, and every fixed-width field has the same offset on A32 and A64. A
-structure that carries pointers puts them last, so no padding differs between
+structure that contains pointers puts them last, so no padding differs between
 the profiles. Use `uint64_t` for sizes that can exceed 4 GiB and `uintptr_t`
 for pointer arithmetic, and never assume `long` is 32 bits.
 
@@ -55,7 +55,7 @@ for pointer arithmetic, and never assume `long` is 32 bits.
 The client, an AmigaOS task, opens one app instance and gets a handle. It
 streams the ELF, then starts it with an argument list. The runtime checks the
 note, applies the relocations, zeroes BSS, and enters at `e_entry`. The ELF
-entry symbol is `aar_start`, which is crt0: it stores the table pointer through
+entry symbol is `aar_start`, which is crt0. It stores the table pointer through
 `aar_crt0_bind`, runs the `.preinit_array` and `.init_array` functions (C++
 globals and `constructor` functions work), calls `aar_main(argc, argv)`, and
 passes the result to `exit` (libc flavor) or `aar_exit` (freestanding flavor).
@@ -69,8 +69,8 @@ app by force (`AAR_END_FORCED`). Read the platform's reported value; the
 exit code is the return value of `aar_main` or the argument of `aar_exit`.
 
 A fault in app code (a bad data or instruction access, an undefined
-instruction, an alignment fault) ends that app only and leaves a profile
-neutral fault class, the raw syndrome and the registers for the client to read.
+instruction, an alignment fault) ends that app only and leaves a profile-neutral
+fault class, the raw syndrome and the registers for the client to read.
 A fault in runtime code ends every app and the platform restarts its runtime.
 A platform reset ends every app. The end reason and the fault record stay
 readable until the client closes its handle: `AAR_END_EXIT`, `_FORCED`,
@@ -95,7 +95,7 @@ stuck-call limits and their end reasons are defined in
 A call parked in a declared wait counts toward neither limit.
 `aar_yield` is enough to count as activity. `aar_sleep_us`, file
 calls, console reads, a flip wait and `aar_msg_wait` are already inside an API
-call, and `aar_should_stop` and `aar_time_us` count too: a loop that only polls
+call, and `aar_should_stop` and `aar_time_us` count too. A loop that only polls
 them is not a stall. A loop that only touches app memory is.
 
 **ZZ9000 note.** Its watchdog and scheduler choices are platform behaviour,
@@ -106,11 +106,12 @@ not app guarantees; see [spec section 5.4](../spec/aar.md#54-watchdog).
 ### Private memory
 
 An app has private memory: its image, its stack and a heap. The platform decides
-where it lives, so apps are position-independent and must not assume an
+where it is, so apps are position-independent and must not assume an
 address. The heap starts at the end of the image. `aar_heap_range` reports its
 current base and length. `aar_heap_grow` extends it by a whole number of
-`heap_granule` units (1 MiB) and returns the old end, which equals the previous
-end. Existing pointers never move and new memory is zeroed. `aar_heap_shrink`
+`heap_granule` units (1 MiB) and returns the old end, where the heap ended
+before the call. The new memory starts there, so the heap stays contiguous.
+Existing pointers never move and new memory is zeroed. `aar_heap_shrink`
 returns whole granules at the top. A failed growth is `AAR_E_NOMEM`, and in the
 libc flavor it makes `malloc` return NULL. It does not fault.
 
@@ -133,7 +134,7 @@ Memory that the Amiga side must read or write is a shared buffer, allocated
 with `aar_shared_alloc` (see the next section). Shared buffers are accounted
 separately from private memory, up to 16 MiB per app by default
 (`AAR_SHARED_DEFAULT_MIB`). The client can change that limit at load. It is a
-cap, not a reservation, so an allocation can still fail below it while the
+cap and reserves nothing, so an allocation can still fail below it while the
 platform's shared region is busy. `aar_get_info` reports `shared_limit` and
 `shared_used`. The runtime itself uses shared buffers for the console, the audio
 ring and file payloads. They are charged to `shared_used` but do not count
@@ -153,8 +154,8 @@ documents what happens.
 
 A shared buffer is app memory that the host can read and write. It is how bulk
 data, such as pixels or a file image, moves between the app and the Amiga side.
-Large payloads never travel inside a message: a message is 32 bytes, so it
-carries a token and a range.
+Large payloads never travel inside a message. A message is 32 bytes, so it
+holds a token and a range.
 
 ```c
 aar_shared buf;
@@ -224,14 +225,14 @@ address, and a platform with a non-coherent bridge needs privileged maintenance.
 The calls are no-ops with a barrier on a coherent platform. Always call them;
 skipping them requires a buffer that reports `AAR_SHAREDF_COHERENT`.
 
-**Surfaces are the exception.** A display flip publishes the surface itself:
-before the host sees the frame the runtime cleans the presented range. A
+**Surfaces are the exception.** A display flip publishes the surface itself.
+Before the host sees the frame the runtime cleans the presented range. A
 surface needs no `aar_publish`.
 
 ### What the client does
 
-For completeness, the Amiga client library maps a shared buffer with a call that
-reports whether the 68k cache holds the range and whether the map is coherent.
+The Amiga client library maps a shared buffer with a call that reports whether
+the 68k cache holds the range and whether the map is coherent.
 Before it posts a message that announces data it wrote, it calls its publish
 function (which pushes dirty 68k cache lines). After it receives a message that
 announces data you wrote, it calls its acquire function (which invalidates the
@@ -248,9 +249,9 @@ For the ZZ9000's ACP path and cache-inhibited client mapping, see the
 
 A message is exactly `AAR_MSG_BYTES` (32) opaque bytes, delivered in order in
 each direction. The runtime and the library never look inside. The content is
-your protocol. A convention that works: word 0 is a type, and the words are
-little-endian when the app writes them. Use `aar_bswap32` if the protocol says
-big-endian.
+your protocol. A convention that works is that word 0 is a type and the words
+are little-endian when the app writes them. Use `aar_bswap32` if the protocol
+says big-endian.
 
 - `aar_msg_send(msg)` copies 32 bytes toward the host. A full queue is
   `AAR_E_BUSY` and the call never blocks. `aar_info.msg_capacity` messages fit
@@ -294,8 +295,8 @@ mark). A runtime with `AAR_GROUP_INPUT` also delivers `AAR_EV_KEY_DOWN`,
 the up bit, or an `AAR_BREAK_*` value. `dx` and `dy` are mouse deltas, or
 joystick axes in -1, 0 and 1. `buttons` holds the key qualifiers, mouse buttons
 in bits 0 to 2 (left, right, middle), or joystick fire in bit 0. Map raw keys
-yourself. The runtime keeps at least 64 events; when the completion queue is
-full the client drops the newest event and counts the drop. The client
+yourself. The runtime keeps at least 64 events. When the completion queue is
+full, the client drops the newest event and counts the drop. The client
 coalesces mouse motion before it posts.
 
 Ctrl-D, Ctrl-E and Ctrl-F in the display window are raw keys and also
@@ -310,12 +311,16 @@ does not spin on `aar_event_poll`.
 The app does not see the disk. Every file call goes through the client, which
 serves it with dos.library and its own AmigaDOS rights. Paths are AmigaDOS
 paths, at most 255 bytes plus a NUL. The client chooses the root. The
-recommended default, which aar-run follows: relative paths resolve under the
-Shell's current directory, the icon's directory, or an explicit root; a path
-that would leave the root through `..` or a leading `/` is refused with
-`AAR_E_ACCES`; a path with a volume or assign prefix (a `:`) is refused unless
-the client allowed absolute paths. This is path hygiene, not a security
-boundary.
+recommended default, which aar-run follows, is:
+
+- Relative paths resolve under the Shell's current directory, the icon's
+  directory, or an explicit root.
+- A path that would leave the root through `..` or a leading `/` is refused
+  with `AAR_E_ACCES`.
+- A path with a volume or assign prefix (a `:`) is refused unless the client
+  allowed absolute paths.
+
+This is path hygiene, not a security boundary.
 
 At least 16 files and, in a separate table, 16 directory lists can be open.
 Ids are small integers from `AAR_FD_BASE` (3), chosen by the runtime, and a bad
@@ -442,15 +447,20 @@ tools/aar-check --no-libc app.map
 
 The profile is inferred from the ELF class when `--profile` is omitted. The exit
 code is 0 when every check passes, 1 when a check failed, and 2 for a usage
-error. `aar-check` applies the rules the runtime applies at load: the image is a
-position-independent executable (`ET_DYN`); the ELF class, data, machine and
-flags match the profile (A32: `ELFCLASS32`, `EM_ARM`, EABI version 5, hard-float
-flag set; A64: `ELFCLASS64`, `EM_AARCH64`, flags 0); no `PT_INTERP`, no
-`DT_NEEDED`, at most four `PT_LOAD` and none both writable and executable;
-relocations come from the dynamic segment and are `R_ARM_RELATIVE` (A32) or
-`R_AARCH64_RELATIVE` (A64) only, with no symbol; the entry point is inside an
-executable segment; and exactly one AAR note is present and valid. `--no-libc`
-checks the link map of a freestanding build.
+error. `aar-check` applies the rules the runtime applies at load:
+
+- The image is a position-independent executable (`ET_DYN`).
+- The ELF class, data, machine and flags match the profile (A32: `ELFCLASS32`,
+  `EM_ARM`, EABI version 5, hard-float flag set; A64: `ELFCLASS64`,
+  `EM_AARCH64`, flags 0).
+- There is no `PT_INTERP` and no `DT_NEEDED`, there are at most four `PT_LOAD`,
+  and none is both writable and executable.
+- Relocations come from the dynamic segment and are `R_ARM_RELATIVE` (A32) or
+  `R_AARCH64_RELATIVE` (A64) only, with no symbol.
+- The entry point is inside an executable segment.
+- Exactly one AAR note is present and valid.
+
+`--no-libc` checks the link map of a freestanding build.
 
 ## Freestanding apps
 
@@ -477,7 +487,7 @@ What differs:
   over the heap. `aar_heap_range` reports the committed span, `aar_heap_grow`
   commits whole granules at its end and returns the old break, and
   `aar_heap_shrink` gives them back. Shared buffers work as before.
-- `libaar` carries weak `memcpy`, `memmove`, `memset` and `memcmp`
+- `libaar` has weak `memcpy`, `memmove`, `memset` and `memcmp`
   (`libaar/src/freestanding.c`). GCC calls them for struct copies and zero
   initialisers even when the source never names them, and `libgcc` does not
   provide them. Define your own strong versions to replace them. No other
@@ -621,14 +631,14 @@ for acknowledgement. `aar_display_flip_async` (when `AAR_DISPCAP_ASYNC` is set)
 plus `aar_display_flip_idle` overlaps the next frame with scanout. With
 `AAR_DISPLAY_LATEST` and `AAR_DISPCAP_LATEST`, a flip replaces a pending frame
 instead of waiting. `aar_event_poll` never blocks. Pace a game loop with
-`aar_sleep_us` or `aar_yield`, not a spin; a spin burns the CPU and can sit next
-to the stall watchdog if you never enter the API.
+`aar_sleep_us` or `aar_yield`, not a spin. A spin burns the CPU and can trip
+the stall watchdog if you never enter the API.
 
 Audio is interleaved S16LE stereo at 22050 Hz, which every platform supports.
 A platform may also grant 44100 and 48000 Hz; read the granted rate from the
 `aar_audio` structure rather than assuming. Write ahead of `*read_frame` and
 never more than `frames` ahead. Store the samples first, then publish
-`*write_frame` with a release store; read `*read_frame` with an acquire load
+`*write_frame` with a release store. Read `*read_frame` with an acquire load
 before you work out the free space (`__atomic_store_n` and `__atomic_load_n`
 on GCC and Clang). `volatile` alone does not order the samples against the
 index. See `templates/tone.c`. The audio contract is in
@@ -641,10 +651,8 @@ Their codec availability is platform-defined.
 ## ZZ9000 note: bit-identical maths
 
 A lockstep simulation or a replay needs the same floating-point results on
-every run. This section states what the A32 profile does on the ZZ9000's
-Cortex-A9 and which compiler flags keep an app inside it.
-`tests/fp_codegen_test.py` (part of `make check`, arm-none-eabi-gcc 15.3.1)
-checks the code generation claims, except two that come from the GCC
+every run. `tests/fp_codegen_test.py` (part of `make check`, arm-none-eabi-gcc
+15.3.1) checks the code generation claims, except two that come from the GCC
 documentation: that `__FLT_EVAL_METHOD__` is 0 and that fast-math reassociates
 reductions. The entry value and the denormal behaviour can be checked on the
 card with `templates/fpenv.c`.
@@ -748,7 +756,7 @@ There is no SDL window and no event pump thread. The loop is ordinary C.
 6. Require `AAR_GROUP_DISPLAY` and `AAR_GROUP_INPUT` in the note, and list
    `AAR_GROUP_AUDIO` if you open audio.
 
-`templates/pixels.c` is the display and input shape. `templates/tone.c` is the
+`templates/pixels.c` shows display and input. `templates/tone.c` shows the
 audio ring. GL goes through `aar_gl_bind` and the `gl*` wrappers, not through a
 second library. The GL implementation stays in the platform. Apps reach it only
 through the table.
