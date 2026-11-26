@@ -39,6 +39,26 @@ struct Global {
 };
 Global g_global;
 
+/* The earliest priority an app may use. Its constructor throws and catches
+ * before any other constructor runs, so the unwinder's tables must already be
+ * registered (on A64 libaar does that from .preinit_array). */
+struct EarlyCatch {
+    bool caught;
+    EarlyCatch() : caught(false)
+    {
+#if defined(__cpp_exceptions)
+        try {
+            throw 7;
+        } catch (int) {
+            caught = true;
+        }
+#else
+        caught = true;
+#endif
+    }
+};
+EarlyCatch g_early __attribute__((init_priority(101)));
+
 struct Shape {
     virtual ~Shape() {}
     virtual int sides() const = 0;
@@ -75,6 +95,7 @@ extern "C" int aar_main(int argc, char **argv)
     (void)argv;
 
     expect(g_global.value == 42, "global constructor");
+    expect(g_early.caught, "throw and catch in a priority-101 constructor");
 
     std::vector<int> numbers;
     for (int i = 0; i < 1000; ++i)

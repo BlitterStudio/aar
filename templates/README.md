@@ -194,8 +194,9 @@ instruction set.
 - `sbrk_smoke.c`: a link fixture, not a template. It pulls newlib `malloc` so
   the relocation check sees more than the `hello` pointer.
 - `cxx_hello.cpp`: the C++ template. A global object with a constructor and a
-  destructor, `std::vector` and `std::string`, a function-level static, `new`
-  and `delete`, a virtual call, RTTI, and three throw and catch cases. It writes
+  destructor, a priority-101 constructor that throws and catches, `std::vector`
+  and `std::string`, a function-level static, `new` and `delete`, a virtual
+  call, RTTI, and three throw and catch cases. It writes
   each step with `aar_log`, logs `cxx_hello PASS` and exits 0 when every check
   held, and logs the exception mode it was built with.
 

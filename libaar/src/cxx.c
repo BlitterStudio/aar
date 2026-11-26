@@ -10,10 +10,12 @@
  *
  * On A64 the unwinder finds frame descriptions through a registry, because
  * there is no dl_iterate_phdr. The linker script libaar/a64/aar-cxx.ld puts
- * .eh_frame between __eh_frame_start and a zero word, and the constructor
- * registers it. Priority 101 is the first a program may use, so it runs before
- * any C++ constructor of the app. On A32 the unwinder reads .ARM.exidx between
- * __exidx_start and __exidx_end and needs nothing here.
+ * .eh_frame between __eh_frame_start and a zero word, and a .preinit_array
+ * entry registers it. crt0 runs .preinit_array after it binds the table (so
+ * malloc works) and before every .init_array entry, whatever priority a
+ * constructor of the app has, so a constructor that throws and catches finds
+ * its frames. On A32 the unwinder reads .ARM.exidx between __exidx_start and
+ * __exidx_end and needs nothing here.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -26,10 +28,12 @@ __attribute__((visibility("hidden"))) void *__dso_handle = NULL;
 extern const char __eh_frame_start[] __attribute__((visibility("hidden")));
 extern void __register_frame(void *begin);
 
-__attribute__((constructor(101)))
 static void aar_cxx_register_frames(void)
 {
     __register_frame((void *)__eh_frame_start);
 }
+
+__attribute__((section(".preinit_array"), used))
+static void (*aar_cxx_preinit)(void) = aar_cxx_register_frames;
 
 #endif

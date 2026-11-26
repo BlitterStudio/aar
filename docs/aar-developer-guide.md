@@ -594,8 +594,8 @@ Exceptions. With `AAR_CXX_EXCEPTIONS=1` (the make default) or
 `-fexceptions`. On A32 the unwind tables are `.ARM.exidx` and `.ARM.extab`,
 which `aar-cxx.ld` places in the read-only segment between `__exidx_start` and
 `__exidx_end`. On A64 they are `.eh_frame` and `.gcc_except_table`; the
-constructor in `libaar/src/cxx.c` registers `.eh_frame` with `__register_frame`
-before any C++ constructor runs, because bare-metal libgcc has no
+`.preinit_array` entry in `libaar/src/cxx.c` registers `.eh_frame` with
+`__register_frame` before any C++ constructor runs, at any priority, because bare-metal libgcc has no
 `dl_iterate_phdr`. Both table forms hold PC-relative words, so the image still
 has no relocation but `R_ARM_RELATIVE` or `R_AARCH64_RELATIVE`, and `aar-check`
 passes: the rules of the specification are unchanged. An exception thrown in
