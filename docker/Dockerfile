@@ -1,6 +1,7 @@
 # AAR app SDK: Arm GNU Toolchain 15.3.rel2 for arm-none-eabi (profile A32) and
-# aarch64-none-elf (profile A64), a PIC newlib for each, and the SDK sources in
-# /opt/aar-sdk. Build from the repository root:
+# aarch64-none-elf (profile A64), a PIC newlib and a PIC C++ runtime (libstdc++,
+# libsupc++, libgcc_eh) for each, and the SDK sources in /opt/aar-sdk. Build
+# from the repository root:
 #   docker build -f docker/Dockerfile -t ghcr.io/blitterstudio/aar-sdk .
 #
 # The image sets AAR_SDK, AAR_SYSROOT_A32 and AAR_SYSROOT_A64, which
@@ -86,6 +87,44 @@ RUN chmod 755 /tmp/build_pic_newlib.sh \
        /tmp/build_pic_newlib.sh \
     && rm -rf /tmp/newlib-cache /tmp/newlib-build /tmp/build_pic_newlib.sh
 
+# ---- PIC C++ runtime, built from the GCC source of the toolchain release into
+# the same sysroot as newlib. The stage needs the host libraries that GCC's own
+# configure wants.
+FROM build-base AS cxx-base
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        flex libgmp-dev libmpfr-dev libmpc-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM cxx-base AS cxx-a32
+
+COPY --from=toolchain-a32 /opt/arm-gnu-toolchain-a32 /opt/arm-gnu-toolchain-a32
+COPY build_pic_libstdcxx.sh /tmp/build_pic_libstdcxx.sh
+RUN chmod 755 /tmp/build_pic_libstdcxx.sh \
+    && PATH=/opt/arm-gnu-toolchain-a32/bin:${PATH} \
+       AAR_PROFILE=a32 \
+       AAR_SYSROOT=/opt/aar-sysroot-a32 \
+       AAR_GCC_CACHE=/tmp/gcc-cache \
+       AAR_GCC_BUILD=/tmp/gcc-build \
+       JOBS="$(nproc)" \
+       /tmp/build_pic_libstdcxx.sh \
+    && rm -rf /tmp/gcc-cache /tmp/gcc-build /tmp/build_pic_libstdcxx.sh
+
+FROM cxx-base AS cxx-a64
+
+COPY --from=toolchain-a64 /opt/arm-gnu-toolchain-a64 /opt/arm-gnu-toolchain-a64
+COPY build_pic_libstdcxx.sh /tmp/build_pic_libstdcxx.sh
+RUN chmod 755 /tmp/build_pic_libstdcxx.sh \
+    && PATH=/opt/arm-gnu-toolchain-a64/bin:${PATH} \
+       AAR_PROFILE=a64 \
+       AAR_SYSROOT=/opt/aar-sysroot-a64 \
+       AAR_GCC_CACHE=/tmp/gcc-cache \
+       AAR_GCC_BUILD=/tmp/gcc-build \
+       JOBS="$(nproc)" \
+       /tmp/build_pic_libstdcxx.sh \
+    && rm -rf /tmp/gcc-cache /tmp/gcc-build /tmp/build_pic_libstdcxx.sh
+
 # ---- The SDK image.
 FROM debian:bookworm-slim
 
@@ -99,6 +138,8 @@ COPY --from=toolchain-a32 /opt/arm-gnu-toolchain-a32 /opt/arm-gnu-toolchain-a32
 COPY --from=toolchain-a64 /opt/arm-gnu-toolchain-a64 /opt/arm-gnu-toolchain-a64
 COPY --from=newlib-a32 /opt/aar-sysroot-a32 /opt/aar-sysroot-a32
 COPY --from=newlib-a64 /opt/aar-sysroot-a64 /opt/aar-sysroot-a64
+COPY --from=cxx-a32 /opt/aar-sysroot-a32 /opt/aar-sysroot-a32
+COPY --from=cxx-a64 /opt/aar-sysroot-a64 /opt/aar-sysroot-a64
 COPY . /opt/aar-sdk
 
 ENV PATH=/opt/arm-gnu-toolchain-a32/bin:/opt/arm-gnu-toolchain-a64/bin:${PATH}

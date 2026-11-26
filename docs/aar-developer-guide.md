@@ -368,7 +368,8 @@ the console cannot cancel the line read it has open, and aar-run prints
 The SDK image `ghcr.io/blitterstudio/aar-sdk` has Arm GNU Toolchain 15.3.rel2
 for both targets (`arm-none-eabi` and `aarch64-none-elf`), a PIC newlib sysroot
 for each (stock newlib is not position-independent and cannot satisfy the
-loader) and this repository at `/opt/aar-sdk`. It sets `AAR_SDK`,
+loader), a PIC C++ runtime in the same sysroots ([C++ apps](#c-apps)) and this
+repository at `/opt/aar-sdk`. It sets `AAR_SDK`,
 `AAR_SYSROOT_A32` and `AAR_SYSROOT_A64`. Build it yourself with:
 
 ```sh
@@ -377,9 +378,11 @@ docker build -f docker/Dockerfile -t aar-sdk .
 
 from the root of this repository. Outside the image, install Arm GNU Toolchain
 15.3.rel2, run `AAR_PROFILE=a32 ./build_pic_newlib.sh` and
-`AAR_PROFILE=a64 ./build_pic_newlib.sh` for the profiles you need, point
-`AAR_SYSROOT_A32` and `AAR_SYSROOT_A64` at their output, and set `AAR_SDK` to
-the root of this repository. Freestanding apps (below) need no sysroot.
+`AAR_PROFILE=a64 ./build_pic_newlib.sh` for the profiles you need, and
+`./build_pic_libstdcxx.sh` with the same `AAR_PROFILE` and `AAR_SYSROOT` if
+apps use C++. Point `AAR_SYSROOT_A32` and `AAR_SYSROOT_A64` at their output, and
+set `AAR_SDK` to the root of this repository. Freestanding apps (below) need no
+sysroot.
 
 ### The note
 
@@ -423,8 +426,9 @@ include $(AAR_SDK)/mk/aar.mk
 `make` builds `build/a32/myapp.elf` and `build/a32/myapp.map`. Set
 `AAR_PROFILE=a64` for the A64 image (`build/a64/myapp.elf`); `a32` is the
 default. `make check` also runs `aar-check`, and `make clean` removes the build.
-`CFLAGS` and `LDLIBS` set before the include are added to the SDK's flags.
-`AAR_FREESTANDING=1` selects the freestanding mode.
+`CFLAGS`, `CXXFLAGS` and `LDLIBS` set before the include are added to the SDK's
+flags. `AAR_FREESTANDING=1` selects the freestanding mode. A `.cpp`, `.cc` or
+`.cxx` file in `SRCS` makes it a C++ app ([C++ apps](#c-apps)).
 
 ### With CMake
 
@@ -440,7 +444,8 @@ Configure with
 `aar-toolchain-a64.cmake`). `aar_add_executable(<name> SOURCES ... [FREESTANDING]
 [PROFILE a32|a64])` links the image and runs `aar-check` after the link. A
 project that builds both profiles configures twice, once per toolchain file, or
-passes `PROFILE` to build one target for a profile.
+passes `PROFILE` to build one target for a profile. A project with C++ sources
+lists `CXX` in `project()`: `project(myapp C CXX ASM)`.
 
 ### Checking an image
 
@@ -481,8 +486,11 @@ defined for the app's sources, so one file can build in both modes.
 What differs:
 
 - `crt0` still runs `.preinit_array` and `.init_array`, so a `constructor`
-  function and C++ globals work, and passes the value `aar_main` returns to
+  function works, and passes the value `aar_main` returns to
   `aar_exit`. Nothing flushes stdio or runs `atexit` handlers.
+- There is no C++ runtime. The make include and `aar_add_executable` refuse C++
+  sources in this mode, because `libstdc++` sits on newlib. Use the libc flavor
+  for C++.
 - The link has no `-lc` and no `-lm`, and `--no-undefined` stays. A call to
   `malloc`, `printf`, `strlen` or `sinf` fails at link time. Integer division
   comes from `libgcc` where the CPU has no divide instruction.
@@ -531,6 +539,91 @@ program run:
 - `exit` flushes stdio, runs the `atexit` handlers, and ends in `aar_exit`.
 - `aar_alloc(bytes, align)` and `aar_free(p)` are `malloc` with an alignment.
   Shared memory is `aar_shared_alloc`, and the two allocators do not mix.
+
+## C++ apps
+
+A C++ app uses the libc flavor. List `.cpp`, `.cc` or `.cxx` files in `SRCS`
+(make) or `SOURCES` (CMake, with `CXX` in `project()`), next to C files or
+instead of them. `templates/cxx_hello.cpp` is a worked app: a global object
+with a constructor and a destructor, `std::vector` and `std::string`, `new` and
+`delete`, a virtual call, RTTI, and `throw` and `catch`. `aar_main` has C
+linkage in `aar/app.h`, so a definition after the include keeps it; the template
+writes `extern "C"` to make that visible.
+
+What the build does:
+
+- C++ sources compile with `arm-none-eabi-g++` or `aarch64-none-elf-g++`, the
+  profile flags and the code-generation flags of the C sources (`-fPIE -O2
+  -ffp-contract=off -Wall -Wextra -Werror`), and `-std=c++17`. Flags in
+  `CXXFLAGS` (make) or `CMAKE_CXX_FLAGS` (CMake) come after them, so
+  `-std=c++20` or `-fno-rtti` there takes effect.
+- The link adds `libstdc++` and `libgcc_eh` from the sysroot, and uses
+  `libaar/<profile>/aar-cxx.ld` in place of `aar.ld`. `libaar/src/cxx.c` is
+  linked in as an object. A C-only app keeps `aar.ld` and does not change.
+- The runtime is not the toolchain's. The archives that come with Arm GNU
+  Toolchain cannot be linked into an app: on A32 they are Thumb code with
+  absolute relocations, and on A64 `ld -z text` stops with `read-only segment
+  has dynamic relocations`. `build_pic_libstdcxx.sh` builds `libstdc++`,
+  `libsupc++` and `libgcc_eh` with `-fPIC` from the GCC source of the toolchain
+  release (GCC 15.3.1), in ARM state on A32, with the toolchain's own library
+  configuration, and installs them next to the PIC newlib. The headers stay the
+  toolchain's, and the script stops unless the `bits/c++config.h` it generates
+  is the one the toolchain ships for the profile. Without the PIC runtime in the
+  sysroot, a build with C++ sources stops with a message that names the script.
+
+What works:
+
+- Global and namespace-scope objects. Their constructors run from
+  `.init_array` before `aar_main`, and their destructors run when `aar_main`
+  returns or the app calls `exit`, because `libaar/src/cxx.c` supplies
+  `__dso_handle` and newlib's `exit` runs the `__cxa_atexit` list. Function-level
+  statics work.
+- `operator new` and `operator delete`, including the sized and aligned forms,
+  call newlib's `malloc` and `free`, so they use the private heap that
+  `_sbrk` grows ([The libc layer](#the-libc-layer)). A failed allocation throws
+  `std::bad_alloc`, or ends in `std::terminate` when exceptions are off.
+- The containers and strings, algorithms, smart pointers, `std::function`,
+  `std::optional`, `std::variant` and `<sstream>`. `<iostream>` works and
+  writes `std::cout` to the console, and `<fstream>` works over the file calls.
+  Both pull in the locale code and add 600 to 700 KiB to the image, so a small
+  app prefers `aar_log` or `printf`.
+- Exceptions and RTTI, on by default. See the next paragraphs.
+
+Exceptions. With `AAR_CXX_EXCEPTIONS=1` (the make default) or
+`-DAAR_CXX_EXCEPTIONS=ON` (the CMake default) C++ sources compile with
+`-fexceptions`. On A32 the unwind tables are `.ARM.exidx` and `.ARM.extab`,
+which `aar-cxx.ld` places in the read-only segment between `__exidx_start` and
+`__exidx_end`. On A64 they are `.eh_frame` and `.gcc_except_table`; the
+constructor in `libaar/src/cxx.c` registers `.eh_frame` with `__register_frame`
+before any C++ constructor runs, because bare-metal libgcc has no
+`dl_iterate_phdr`. Both table forms hold PC-relative words, so the image still
+has no relocation but `R_ARM_RELATIVE` or `R_AARCH64_RELATIVE`, and `aar-check`
+passes: the rules of the specification are unchanged. An exception thrown in
+C++ code and caught in C++ code works across any number of C++ frames, and
+through the library's own frames. C code of the SDK build has no unwind tables
+(`-fno-unwind-tables`), so an exception must not cross a C function such as a
+`qsort` comparator. An exception nobody catches prints
+`terminate called after throwing an instance of 'T'` on the console and ends the
+app with status 1.
+
+`AAR_CXX_EXCEPTIONS=0` (or `-DAAR_CXX_EXCEPTIONS=OFF`) compiles C++ with
+`-fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables`. The link
+is the same, and the image is only a few KiB smaller, because `libstdc++` itself
+is built with exceptions: `new` and the library's checks still contain `throw`
+sites, and a throw from them with no table to find ends in `std::terminate`.
+RTTI stays on in both modes. `-fno-rtti` in `CXXFLAGS` turns it off.
+
+What does not work:
+
+- The freestanding flavor. See [Freestanding apps](#freestanding-apps).
+- Threads. The runtime has no thread model. `std::mutex` and
+  `std::condition_variable` are not declared, and `std::thread` has no
+  constructor that starts a thread.
+- The wall-clock and steady clocks of `<chrono>`. `system_clock::now()` and
+  `steady_clock::now()` need `_gettimeofday`, which the libc layer leaves out
+  because the table has no such call: the link fails. Use `aar_time_us()`.
+- `std::random_device` returns a fixed sequence, because there is no entropy
+  source. Seed a generator from `aar_time_us()`.
 
 ## Running on AmigaOS
 

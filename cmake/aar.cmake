@@ -14,6 +14,13 @@
 # -DAAR_FREESTANDING=ON makes every target freestanding. See the developer
 # guide under docs/.
 #
+# A source ending in .cpp, .cc or .cxx makes the target a C++ target: the
+# project must enable CXX (project(app C CXX ASM)), the link takes libstdc++
+# and libgcc_eh from the sysroot (build_pic_libstdcxx.sh) and the script
+# libaar/<profile>/aar-cxx.ld, and libaar/src/cxx.c is linked in. FREESTANDING
+# targets refuse C++ sources. -DAAR_CXX_EXCEPTIONS=OFF compiles C++ without
+# exceptions.
+#
 # SPDX-License-Identifier: MIT
 
 if(NOT AAR_SDK)
@@ -57,6 +64,31 @@ function(aar_add_executable name)
     set(freestanding FALSE)
   endif()
 
+  set(has_cxx FALSE)
+  foreach(src IN LISTS AA_SOURCES)
+    get_filename_component(ext "${src}" LAST_EXT)
+    string(TOLOWER "${ext}" ext)
+    if(ext STREQUAL ".cpp" OR ext STREQUAL ".cc" OR ext STREQUAL ".cxx")
+      set(has_cxx TRUE)
+    endif()
+  endforeach()
+  if(has_cxx)
+    get_property(enabled_languages GLOBAL PROPERTY ENABLED_LANGUAGES)
+    if(NOT "CXX" IN_LIST enabled_languages)
+      message(FATAL_ERROR
+        "aar_add_executable(${name}) has C++ sources: enable CXX, for "
+        "example project(<name> C CXX ASM)")
+    endif()
+    if(freestanding)
+      message(FATAL_ERROR
+        "aar_add_executable(${name}) has C++ sources and is freestanding: "
+        "the freestanding flavour has no C++ runtime, use the libc flavour")
+    endif()
+    set(ld_script "${AAR_SDK}/libaar/${AAR_PROFILE}/aar-cxx.ld")
+  else()
+    set(ld_script "${AAR_SDK}/libaar/${AAR_PROFILE}/aar.ld")
+  endif()
+
   if(freestanding)
     add_executable(${name}
       "${AAR_SDK}/libaar/${AAR_PROFILE}/crt0.S"
@@ -70,16 +102,29 @@ function(aar_add_executable name)
     target_compile_definitions(${name} PRIVATE AAR_FREESTANDING=1)
     target_link_libraries(${name} PRIVATE gcc)
   else()
+    set(cxx_support "")
+    if(has_cxx)
+      set(cxx_support "${AAR_SDK}/libaar/src/cxx.c")
+    endif()
     add_executable(${name}
       "${AAR_SDK}/libaar/${AAR_PROFILE}/crt0.S"
       "${AAR_SDK}/libaar/src/aar.c"
       "${AAR_SDK}/libaar/src/gl.c"
       "${AAR_SDK}/libaar/src/syscalls.c"
+      ${cxx_support}
       ${AA_SOURCES})
-    target_link_libraries(${name} PRIVATE
-      -Wl,--start-group c gcc m -Wl,--end-group)
+    if(has_cxx)
+      target_link_libraries(${name} PRIVATE
+        -Wl,--start-group stdc++ c gcc_eh gcc m -Wl,--end-group)
+    else()
+      target_link_libraries(${name} PRIVATE
+        -Wl,--start-group c gcc m -Wl,--end-group)
+    endif()
   endif()
-  target_link_options(${name} PRIVATE "-Wl,-Map=$<TARGET_FILE:${name}>.map")
+  target_link_options(${name} PRIVATE
+    "-Wl,-T,${ld_script}"
+    "-Wl,-Map=$<TARGET_FILE:${name}>.map")
+  set_target_properties(${name} PROPERTIES LINK_DEPENDS "${ld_script}")
   target_include_directories(${name} PRIVATE
     "${AAR_SDK}/include"
     "${AAR_SDK}/libaar/src")

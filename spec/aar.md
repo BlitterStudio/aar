@@ -236,7 +236,7 @@ A stop request does not prevent calls. A call made after it that needs the clien
 5. layer 1, **core**, with no libc: no `malloc`; weak `memcpy`, `memmove`, `memset`, `memcmp` for compiler-generated calls. This is the freestanding mode (build flag `AAR_FREESTANDING`), which does not declare `aar_alloc` and `aar_free`. In this layer private memory comes from `heap_range`/`heap_grow` only;
 6. layer 2, **libc glue**, for a PIC newlib build: `_sbrk` over `heap_grow`/`heap_shrink`, `_write`/`_read` for fd 0 to 2 over the console, and `_open`, `_close`, `_read`, `_write`, `_lseek`, `_fstat` and `_stat` for fd 3 and above over `aar_file_*`, so `fopen` works. `O_CREAT`, `O_TRUNC` and `O_EXCL` pass straight into `AAR_FILE_CREATE`, `_TRUNCATE` and `_EXCL`. A descriptor opened with `O_APPEND` seeks to the end before every write. `_stat` and `_fstat` set `EOVERFLOW` when a size does not fit `off_t` (A32).
 
-The private allocator `aar_alloc(bytes, align)` belongs to layer 2. The shared allocator is core.
+The private allocator `aar_alloc(bytes, align)` belongs to layer 2. The shared allocator is core. The SDK also builds a PIC C++ runtime (`libstdc++`, `libsupc++`, `libgcc_eh`) on layer 2, with a linker script (`aar-cxx.ld`) that keeps the unwind tables; the freestanding mode has no C++ runtime.
 
 ## 4. Memory model
 
