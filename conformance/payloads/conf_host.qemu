@@ -1,0 +1,1 @@
+Marker: conf_host runs under qemu user mode (make check-runtime runs every conf_*.qemu); the loader serves the locale and the clipboard from memory and the AAR_ variables of conf_host.h from its environment (tests/qemu_run.sh sets them).

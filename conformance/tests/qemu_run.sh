@@ -68,6 +68,15 @@ for area in "$@"; do
     CROSS="$CROSS" APP="conf_$area" SRCS="conformance/payloads/conf_$area.c" \
     BUILD="$WORK/build" LDLIBS="$LDLIBS_AREA" AAR_FREESTANDING="$FREESTANDING" all
   AREA_ID="C-$(echo "$area" | tr '[:lower:]' '[:upper:]')"
+  # The environment variables of conf_host.h, which the loader serves from its own
+  # environment (names with the prefix AAR_). There is no runner to set them.
+  if [ "$area" = host ]; then
+    ENTRY_ARGS=conf:fixtures=1
+    AAR_CONF_HELLO='hello world'
+    AAR_CONF_LONG=$(awk 'BEGIN { for (i = 0; i < 300; i++) printf "%c", 65 + i % 26 }')
+    export ENTRY_ARGS AAR_CONF_HELLO AAR_CONF_LONG
+  fi
   python3 "$SDK/conformance/tools/check_results.py" payload --area "$AREA_ID" \
     --profile "$PROFILE" -- "$QEMU" "$WORK/loader" "$WORK/build/conf_$area.elf"
+  unset ENTRY_ARGS AAR_CONF_HELLO AAR_CONF_LONG
 done

@@ -14,7 +14,7 @@
 #include "conf_display.h"
 #include "conf_msgio.h"
 
-AAR_NOTE(0, 0, AAR_GROUP_DISPLAY, 0)
+AAR_NOTE(0, 0, AAR_GROUP_DISPLAY, AAR_GROUP_INPUT)
 
 static int have_peer;
 
@@ -696,6 +696,594 @@ static void test_palette_refused(void)
     conf_end(&t);
 }
 
+/* ---- C-DISPLAY.21 to C-DISPLAY.29: the display calls of API 0.6 ---------------------------------------------- */
+
+/* The caps bits of the flags of API 0.6. */
+#define NEW_CAPS (AAR_DISPCAP_WINDOW | AAR_DISPCAP_RESIZE | AAR_DISPCAP_POINTER_ABS | AAR_DISPCAP_TEXT_INPUT | \
+                  AAR_DISPCAP_CLOSE_REQUEST | AAR_DISPCAP_SCALED)
+#define ALL_CAPS (AAR_DISPCAP_ASYNC | AAR_DISPCAP_LATEST | AAR_DISPCAP_CLUT8 | NEW_CAPS)
+
+/* A client that does not serve a call answers AAR_E_NOSYS (spec 8.2). The row then passes and says so. */
+static int not_served(struct conf_test *t, int rc, const char *call)
+{
+    if (rc != AAR_E_NOSYS)
+        return 0;
+    conf_buf_str(&t->note, call);
+    conf_buf_str(&t->note, ": AAR_E_NOSYS, the client does not serve it");
+    return 1;
+}
+
+static int expect_rc(struct conf_test *t, int rc, int want, const char *what)
+{
+    if (rc == want)
+        return 1;
+    if (conf_fail_first(t))
+        cmio_why_rc(t, what, rc);
+    return 0;
+}
+
+static void fill_bytes_zero(void *p, uint8_t v, uint32_t n)
+{
+    uint8_t *b = (uint8_t *)p;
+    uint32_t i;
+
+    for (i = 0; i < n; i++)
+        b[i] = v;
+}
+
+/* The flags and caps of the new requests: each alone, and all at once. */
+static const uint32_t new_flags[] = {
+    AAR_DISPLAY_WINDOW, AAR_DISPLAY_RESIZABLE, AAR_DISPLAY_POINTER_ABS, AAR_DISPLAY_TEXT_INPUT,
+    AAR_DISPLAY_CLOSE_REQUEST, AAR_DISPLAY_SCALE,
+};
+static const uint32_t new_flag_caps[] = {
+    AAR_DISPCAP_WINDOW, AAR_DISPCAP_RESIZE, AAR_DISPCAP_POINTER_ABS, AAR_DISPCAP_TEXT_INPUT,
+    AAR_DISPCAP_CLOSE_REQUEST, AAR_DISPCAP_SCALED,
+};
+#define NEW_FLAG_COUNT 6u
+#define ALL_NEW_FLAGS (AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE | AAR_DISPLAY_POINTER_ABS | \
+                       AAR_DISPLAY_TEXT_INPUT | AAR_DISPLAY_CLOSE_REQUEST | AAR_DISPLAY_SCALE)
+
+/* C-DISPLAY.28: the requests of API 0.6 are granted or dropped, never refused. */
+static void test_new_flags(void)
+{
+    struct conf_test t;
+    uint32_t i;
+
+    conf_begin(&t, "C-DISPLAY.28");
+    for (i = 0; i <= NEW_FLAG_COUNT; i++) {
+        aar_surface s;
+        uint32_t flags = i < NEW_FLAG_COUNT ? new_flags[i] : ALL_NEW_FLAGS;
+        uint32_t allowed = i < NEW_FLAG_COUNT ? new_flag_caps[i] : NEW_CAPS;
+        int rc = aar_display_open(160, 100, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC | flags, &s);
+
+        if (rc != AAR_OK) {
+            if (conf_fail_first(&t)) {
+                conf_buf_str(&t.why, "display_open with the request bits ");
+                conf_buf_hex(&t.why, flags);
+                conf_buf_str(&t.why, " returned ");
+                conf_buf_i64(&t.why, rc);
+            }
+            continue;
+        }
+        if ((s.caps & NEW_CAPS & ~allowed) != 0u && conf_fail_first(&t)) {
+            conf_buf_str(&t.why, "the request bits ");
+            conf_buf_hex(&t.why, flags);
+            conf_buf_str(&t.why, " were granted caps ");
+            conf_buf_hex(&t.why, s.caps);
+        }
+        if ((s.caps & ~(uint32_t)ALL_CAPS) != 0u && conf_fail_first(&t))
+            conf_buf_str(&t.why, "caps has an undefined bit");
+        /* RESIZABLE needs WINDOW. */
+        if ((s.caps & AAR_DISPCAP_RESIZE) != 0u && (s.caps & AAR_DISPCAP_WINDOW) == 0u &&
+            conf_fail_first(&t))
+            conf_buf_str(&t.why, "AAR_DISPCAP_RESIZE was granted without AAR_DISPCAP_WINDOW");
+        if (flags == AAR_DISPLAY_RESIZABLE && (s.caps & AAR_DISPCAP_RESIZE) != 0u && conf_fail_first(&t))
+            conf_buf_str(&t.why, "RESIZABLE without WINDOW was granted AAR_DISPCAP_RESIZE");
+        if (flags == ALL_NEW_FLAGS) {
+            conf_buf_str(&t.note, "all requests: caps ");
+            conf_buf_hex(&t.note, s.caps);
+        }
+        (void)aar_display_close(s.id);
+    }
+    conf_end(&t);
+}
+
+/* C-DISPLAY.21 */
+static void test_info(void)
+{
+    struct conf_test t;
+    aar_surface s;
+    struct {
+        aar_display_info i;
+        uint8_t tail[16];
+    } big;
+    uint8_t raw[sizeof(aar_display_info) + 8];
+    uint32_t k;
+    int rc;
+
+    conf_begin(&t, "C-DISPLAY.21");
+    if (!open_s(&t, &s, 160, 100, AAR_FMT_RGB565,
+                AAR_DISPLAY_VSYNC | AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE)) {
+        conf_end(&t);
+        return;
+    }
+    fill_bytes_zero(&big, 0xAAu, sizeof big);
+    big.i.size = (uint32_t)sizeof big;
+    rc = aar_display_get_info(s.id, &big.i);
+    if (not_served(&t, rc, "display_info")) {
+        close_s(&t, &s);
+        conf_end(&t);
+        return;
+    }
+    if (expect_rc(&t, rc, AAR_OK, "display_info of the open display")) {
+        conf_check(&t, big.i.width == s.width && big.i.height == s.height, "width and height differ from the surface");
+        conf_check(&t, (big.i.flags & ~(uint32_t)(AAR_DISPINFO_WINDOW | AAR_DISPINFO_SCALED | AAR_DISPINFO_ACTIVE)) == 0u,
+                   "flags has an undefined bit");
+        conf_check(&t, ((big.i.flags & AAR_DISPINFO_WINDOW) != 0u) == ((s.caps & AAR_DISPCAP_WINDOW) != 0u),
+                   "AAR_DISPINFO_WINDOW and AAR_DISPCAP_WINDOW disagree");
+        conf_check(&t, ((big.i.flags & AAR_DISPINFO_SCALED) != 0u) == ((s.caps & AAR_DISPCAP_SCALED) != 0u),
+                   "AAR_DISPINFO_SCALED and AAR_DISPCAP_SCALED disagree");
+        conf_check(&t, big.i.screen_width > 0u && big.i.screen_height > 0u, "the screen size is 0");
+        conf_check(&t, big.i.reserved[0] == 0u && big.i.reserved[1] == 0u && big.i.reserved[2] == 0u &&
+                           big.i.reserved[3] == 0u && big.i.reserved[4] == 0u, "reserved is not 0");
+        for (k = 0; k < sizeof big.tail; k++) {
+            if (big.tail[k] != 0u) {
+                conf_check(&t, 0, "the bytes past the structure, inside size, were not zeroed");
+                break;
+            }
+        }
+        conf_buf_u64(&t.note, big.i.width);
+        conf_buf_str(&t.note, "x");
+        conf_buf_u64(&t.note, big.i.height);
+        conf_buf_str(&t.note, " on a screen of ");
+        conf_buf_u64(&t.note, big.i.screen_width);
+        conf_buf_str(&t.note, "x");
+        conf_buf_u64(&t.note, big.i.screen_height);
+        conf_buf_str(&t.note, ", ");
+        conf_buf_u64(&t.note, big.i.refresh_mhz);
+        conf_buf_str(&t.note, " mHz");
+    }
+    fill_bytes_zero(raw, 0xAAu, sizeof raw);
+    ((aar_display_info *)(void *)raw)->size = 8u;
+    if (expect_rc(&t, aar_display_get_info(s.id, (aar_display_info *)(void *)raw), AAR_OK,
+                  "display_info with size 8")) {
+        for (k = 8; k < sizeof raw; k++) {
+            if (raw[k] != 0xAAu) {
+                conf_check(&t, 0, "display_info wrote past the size the caller set");
+                break;
+            }
+        }
+    }
+    big.i.size = (uint32_t)sizeof big.i;
+    expect_rc(&t, aar_display_get_info(s.id + 1u, &big.i), AAR_E_INVAL, "display_info of an id that is not open");
+    close_s(&t, &s);
+    big.i.size = (uint32_t)sizeof big.i;
+    expect_rc(&t, aar_display_get_info(s.id, &big.i), AAR_E_INVAL, "display_info after display_close");
+    conf_end(&t);
+}
+
+/* C-DISPLAY.22 */
+static void test_modes(void)
+{
+    struct conf_test t;
+    aar_display_mode m[32];
+    uint32_t n = 0, n0 = 0, shown, i, preferred = 0;
+    int rc;
+
+    conf_begin(&t, "C-DISPLAY.22");
+    fill_bytes_zero(m, 0xAAu, sizeof m);
+    rc = aar_display_modes(m, 32u, &n);
+    if (not_served(&t, rc, "display_modes")) {
+        conf_end(&t);
+        return;
+    }
+    if (rc != AAR_OK && rc != AAR_E_NOSPC) {
+        expect_rc(&t, rc, AAR_OK, "display_modes");
+        conf_end(&t);
+        return;
+    }
+    conf_check(&t, (rc == AAR_E_NOSPC) == (n > 32u), "NOSPC and the count of modes disagree");
+    shown = n < 32u ? n : 32u;
+    for (i = 0; i < shown; i++) {
+        if (m[i].width < 1u || m[i].height < 1u)
+            conf_check(&t, 0, "a mode has a width or height of 0");
+        if (m[i].formats == 0u || (m[i].formats & ~(uint32_t)((1u << AAR_FMT_RGB565) | (1u << AAR_FMT_BGRA8888) |
+                                                             (1u << AAR_FMT_CLUT8))) != 0u)
+            conf_check(&t, 0, "a mode has no format, or a bit that is not a format");
+        if ((m[i].flags & ~(uint32_t)AAR_MODEF_PREFERRED) != 0u || m[i].reserved != 0u)
+            conf_check(&t, 0, "a mode has an undefined flag or reserved is not 0");
+        if (m[i].flags & AAR_MODEF_PREFERRED)
+            preferred++;
+    }
+    conf_check(&t, preferred <= 1u, "more than one mode is preferred");
+    /* With no room the call counts and writes nothing. */
+    rc = aar_display_modes(m, 0u, &n0);
+    expect_rc(&t, rc, n > 0u ? AAR_E_NOSPC : AAR_OK, "display_modes with max 0");
+    conf_check(&t, n0 == n, "the count with max 0 differs from the count with room");
+    conf_buf_u64(&t.note, n);
+    conf_buf_str(&t.note, " modes");
+    conf_end(&t);
+}
+
+/* C-DISPLAY.23 */
+static void test_title(void)
+{
+    struct conf_test t;
+    aar_surface s;
+    char title[260];
+    uint32_t i;
+    int rc;
+
+    conf_begin(&t, "C-DISPLAY.23");
+    if (!open_s(&t, &s, 160, 100, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC | AAR_DISPLAY_WINDOW)) {
+        conf_end(&t);
+        return;
+    }
+    rc = aar_display_set_title(s.id, "AAR conformance");
+    if (not_served(&t, rc, "display_set_title")) {
+        close_s(&t, &s);
+        conf_end(&t);
+        return;
+    }
+    expect_rc(&t, rc, AAR_OK, "display_set_title");
+    expect_rc(&t, aar_display_set_title(s.id, "caf\xC3\xA9 \xE4\xB8\xAD"), AAR_OK, "display_set_title with UTF-8");
+    for (i = 0; i < 255u; i++)
+        title[i] = 'T';
+    title[255] = '\0';
+    expect_rc(&t, aar_display_set_title(s.id, title), AAR_OK, "display_set_title of 255 bytes");
+    title[255] = 'T';
+    title[256] = '\0';
+    expect_rc(&t, aar_display_set_title(s.id, title), AAR_E_INVAL, "display_set_title of 256 bytes");
+    close_s(&t, &s);
+    conf_buf_str(&t.note, "255 bytes are taken, 256 are AAR_E_INVAL");
+    conf_end(&t);
+}
+
+/* C-DISPLAY.24 */
+static void test_pointer(void)
+{
+    struct conf_test t;
+    aar_surface s;
+    static uint32_t px[64 * 64];
+    aar_pointer p;
+    uint32_t i;
+    int rc;
+
+    conf_begin(&t, "C-DISPLAY.24");
+    if (!open_s(&t, &s, 160, 100, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC | AAR_DISPLAY_WINDOW)) {
+        conf_end(&t);
+        return;
+    }
+    for (i = 0; i < 64u * 64u; i++)
+        px[i] = (i & 1u) ? 0xFFFF0000u : 0x00000000u;
+    rc = aar_display_pointer(s.id, AAR_POINTER_HIDDEN, 0);
+    if (not_served(&t, rc, "display_pointer")) {
+        close_s(&t, &s);
+        conf_end(&t);
+        return;
+    }
+    expect_rc(&t, rc, AAR_OK, "display_pointer HIDDEN");
+    expect_rc(&t, aar_display_pointer(s.id, AAR_POINTER_BUSY, 0), AAR_OK, "display_pointer BUSY");
+    p.width = 16;
+    p.height = 16;
+    p.hot_x = 8;
+    p.hot_y = 8;
+    p.reserved[0] = 0;
+    p.reserved[1] = 0;
+    p.argb = px;
+    expect_rc(&t, aar_display_pointer(s.id, AAR_POINTER_CUSTOM, &p), AAR_OK, "display_pointer CUSTOM 16x16");
+    p.width = AAR_POINTER_MAX_DIM;
+    p.height = AAR_POINTER_MAX_DIM;
+    p.hot_x = 63;
+    p.hot_y = 63;
+    expect_rc(&t, aar_display_pointer(s.id, AAR_POINTER_CUSTOM, &p), AAR_OK, "display_pointer CUSTOM 64x64, hot spot in the corner");
+    expect_rc(&t, aar_display_pointer(s.id, AAR_POINTER_CUSTOM, 0), AAR_E_INVAL, "display_pointer CUSTOM with no image");
+    p.width = 0;
+    p.height = 16;
+    p.hot_x = 0;
+    p.hot_y = 0;
+    expect_rc(&t, aar_display_pointer(s.id, AAR_POINTER_CUSTOM, &p), AAR_E_INVAL, "display_pointer CUSTOM of width 0");
+    p.width = 65;
+    expect_rc(&t, aar_display_pointer(s.id, AAR_POINTER_CUSTOM, &p), AAR_E_INVAL, "display_pointer CUSTOM of width 65");
+    p.width = 16;
+    p.height = 65;
+    expect_rc(&t, aar_display_pointer(s.id, AAR_POINTER_CUSTOM, &p), AAR_E_INVAL, "display_pointer CUSTOM of height 65");
+    p.height = 16;
+    p.hot_x = 16;
+    expect_rc(&t, aar_display_pointer(s.id, AAR_POINTER_CUSTOM, &p), AAR_E_INVAL, "display_pointer CUSTOM with hot_x outside the image");
+    p.hot_x = 0;
+    p.hot_y = -1;
+    expect_rc(&t, aar_display_pointer(s.id, AAR_POINTER_CUSTOM, &p), AAR_E_INVAL, "display_pointer CUSTOM with hot_y -1");
+    expect_rc(&t, aar_display_pointer(s.id, 4u, 0), AAR_E_INVAL, "display_pointer of mode 4");
+    expect_rc(&t, aar_display_pointer(s.id, 0xFFFFFFFFu, 0), AAR_E_INVAL, "display_pointer of mode 2^32-1");
+    expect_rc(&t, aar_display_pointer(s.id, AAR_POINTER_DEFAULT, 0), AAR_OK, "display_pointer DEFAULT");
+    close_s(&t, &s);
+    conf_buf_str(&t.note, "the four modes, bad images and modes are AAR_E_INVAL");
+    conf_end(&t);
+}
+
+/* C-DISPLAY.25 */
+static void test_resize(void)
+{
+    struct conf_test t;
+    aar_surface s, r;
+    aar_display_info info;
+    int rc;
+
+    conf_begin(&t, "C-DISPLAY.25");
+    /* Without the cap the call is AAR_E_NOSYS. */
+    if (open_s(&t, &s, 160, 100, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC)) {
+        rc = aar_display_resize(s.id, 80, 50, &r);
+        expect_rc(&t, rc, AAR_E_NOSYS, "display_resize without AAR_DISPCAP_RESIZE");
+        close_s(&t, &s);
+    }
+    if (!open_s(&t, &s, 160, 100, AAR_FMT_RGB565,
+                AAR_DISPLAY_VSYNC | AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE)) {
+        conf_end(&t);
+        return;
+    }
+    if ((s.caps & AAR_DISPCAP_RESIZE) == 0u) {
+        conf_buf_str(&t.note, "AAR_DISPCAP_RESIZE was not granted, so display_resize is AAR_E_NOSYS only");
+        close_s(&t, &s);
+        conf_end(&t);
+        return;
+    }
+    expect_rc(&t, aar_display_resize(s.id, 0, 100, &r), AAR_E_INVAL, "display_resize to width 0");
+    expect_rc(&t, aar_display_resize(s.id, 100, 0, &r), AAR_E_INVAL, "display_resize to height 0");
+    expect_rc(&t, aar_display_resize(s.id, 0xFFFFFFFFu, 100, &r), AAR_E_INVAL, "display_resize to width 2^32-1");
+    expect_rc(&t, aar_display_resize(s.id, 100, 0xFFFFFFFFu, &r), AAR_E_INVAL, "display_resize to height 2^32-1");
+    rc = aar_display_resize(s.id, 200, 120, &r);
+    if (expect_rc(&t, rc, AAR_OK, "display_resize to 200x120")) {
+        conf_check(&t, r.width == 200u && r.height == 120u && r.id == s.id && r.format == s.format,
+                   "the refreshed surface has another size, id or format");
+        conf_check(&t, r.back != 0 && writable(r.back, r.pitch * r.height), "the new back buffer is not writable");
+        conf_check(&t, aar_display_flip(r.id) == AAR_OK, "flip after the resize");
+        info.size = (uint32_t)sizeof info;
+        if (aar_display_get_info(r.id, &info) == AAR_OK)
+            conf_check(&t, info.width == 200u && info.height == 120u, "display_info does not report the new size");
+        s = r;
+    }
+    close_s(&t, &s);
+    conf_buf_str(&t.note, "AAR_E_NOSYS without the cap; with it a bad size is AAR_E_INVAL and 200x120 is taken");
+    conf_end(&t);
+}
+
+/* C-DISPLAY.26 */
+static void test_vblank(void)
+{
+    struct conf_test t;
+    aar_surface s;
+    uint64_t t0;
+    int rc;
+
+    conf_begin(&t, "C-DISPLAY.26");
+    rc = aar_display_wait_vblank(100000u);
+    if (rc != AAR_E_INVAL && rc != AAR_E_NOSYS && conf_fail_first(&t))
+        cmio_why_rc(&t, "display_wait_vblank with no display open (AAR_E_INVAL or AAR_E_NOSYS expected)", rc);
+    if (!open_s(&t, &s, 160, 100, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC)) {
+        conf_end(&t);
+        return;
+    }
+    rc = aar_display_wait_vblank(0u);
+    if (rc != AAR_E_INVAL && rc != AAR_E_NOSYS && conf_fail_first(&t))
+        cmio_why_rc(&t, "display_wait_vblank with a timeout of 0 (AAR_E_INVAL or AAR_E_NOSYS expected)", rc);
+    t0 = aar_time_us();
+    rc = aar_display_wait_vblank(500000u);
+    if (rc == AAR_E_NOSYS) {
+        conf_buf_str(&t.note, "AAR_E_NOSYS, the client cannot see a vertical blank");
+    } else if (expect_rc(&t, rc, AAR_OK, "display_wait_vblank with a timeout of 500 ms")) {
+        uint64_t dt = aar_time_us() - t0;
+
+        conf_check(&t, dt < 600000u, "the wait lasted longer than its timeout");
+        conf_buf_str(&t.note, "a vertical blank after ");
+        conf_buf_u64(&t.note, dt / 1000u);
+        conf_buf_str(&t.note, " ms");
+    }
+    t0 = aar_time_us();
+    rc = aar_display_wait_vblank(1u);
+    if (rc != AAR_OK && rc != AAR_E_TIMEDOUT && rc != AAR_E_NOSYS && conf_fail_first(&t))
+        cmio_why_rc(&t, "display_wait_vblank with a timeout of 1 us", rc);
+    conf_check(&t, aar_time_us() - t0 < 200000u, "a wait of 1 us lasted over 200 ms");
+    close_s(&t, &s);
+    conf_end(&t);
+}
+
+/* C-DISPLAY.29 */
+static void test_new_served(void)
+{
+    struct conf_test t;
+    aar_surface s;
+    aar_display_info info;
+    aar_display_mode m;
+    uint32_t n = 0;
+
+    conf_begin(&t, "C-DISPLAY.29");
+    if (!open_s(&t, &s, 160, 100, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC | AAR_DISPLAY_WINDOW)) {
+        conf_end(&t);
+        return;
+    }
+    info.size = (uint32_t)sizeof info;
+    conf_check(&t, aar_display_get_info(s.id, &info) != AAR_E_NOSYS, "display_info is not served");
+    conf_check(&t, aar_display_modes(&m, 1u, &n) != AAR_E_NOSYS, "display_modes is not served");
+    conf_check(&t, aar_display_set_title(s.id, "AAR") != AAR_E_NOSYS, "display_set_title is not served");
+    conf_check(&t, aar_display_pointer(s.id, AAR_POINTER_DEFAULT, 0) != AAR_E_NOSYS, "display_pointer is not served");
+    conf_check(&t, aar_display_wait_vblank(500000u) != AAR_E_NOSYS, "display_wait_vblank is not served");
+    close_s(&t, &s);
+    conf_buf_str(&t.note, "the display calls of API 0.6 that need no cap are served");
+    conf_end(&t);
+}
+
+/* C-DISPLAY.27: the time of the last present. Runtime only, so it is judged with the runner's own display. */
+static uint64_t present_at_start;
+
+static void test_last_present(void)
+{
+    struct conf_test t;
+    aar_surface s;
+    uint64_t t0, t1, p1, p2;
+    uint32_t i;
+
+    conf_begin(&t, "C-DISPLAY.27");
+    conf_check(&t, present_at_start == 0u, "display_last_present_us is not 0 before the first flip");
+    if (open_s(&t, &s, 64, 64, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC)) {
+        for (i = 0; s.back && i < s.pitch * s.height; i++)
+            ((uint8_t *)s.back)[i] = 0x55u;
+        t0 = aar_time_us();
+        if (aar_display_flip(s.id) != AAR_OK) {
+            conf_check(&t, 0, "the flip failed");
+        } else {
+            t1 = aar_time_us();
+            p1 = aar_display_last_present_us();
+            conf_check(&t, p1 >= t0 && p1 <= t1, "after a flip the time is not between the start and the end of the flip");
+            (void)aar_display_refresh(&s);
+            aar_sleep_us(5000u);
+            if (aar_display_flip(s.id) == AAR_OK) {
+                p2 = aar_display_last_present_us();
+                conf_check(&t, p2 >= p1 && p2 <= aar_time_us(), "the time of the second flip went back or is in the future");
+                conf_buf_str(&t.note, "present time ");
+                conf_buf_u64(&t.note, p1);
+                conf_buf_str(&t.note, " then ");
+                conf_buf_u64(&t.note, p2);
+            }
+        }
+        close_s(&t, &s);
+    }
+    conf_end(&t);
+}
+
+/* Variant window: the rows above, with the client's own display (a window on a public screen where the client
+ * can show one), because they ask the client. The variant std has the runner's display table, which
+ * serves none of the display calls of API 0.6. */
+static void variant_window(void)
+{
+    test_new_flags();
+    test_info();
+    test_modes();
+    test_title();
+    test_pointer();
+    test_resize();
+    test_vblank();
+    test_new_served();
+}
+
+/* Variants pointer and resize (the operator rows C-DISPLAY.30 and C-DISPLAY.31, only with INTERACTIVE). */
+static void paint(const aar_surface *s, uint32_t k)
+{
+    uint32_t x, y;
+
+    for (y = 0; y < s->height; y++) {
+        for (x = 0; x < s->width; x++) {
+            uint32_t r = (x * 255u) / (s->width ? s->width : 1u);
+            uint32_t g = (y * 255u) / (s->height ? s->height : 1u);
+
+            (void)cd_put_pixel((uint8_t *)s->back + y * s->pitch + x * 2u, s->layout, r, g, k & 255u);
+        }
+    }
+}
+
+static void variant_pointer(int argc, char **argv)
+{
+    static uint32_t px[16 * 16];
+    aar_surface s;
+    aar_pointer p;
+    uint32_t i;
+    uint32_t step;
+
+    if (!conf_arg(argc, argv, "conf:show"))
+        return;
+    if (aar_display_open(320, 240, AAR_FMT_RGB565,
+                         AAR_DISPLAY_VSYNC | AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE, &s) != AAR_OK || !s.back)
+        return;
+    (void)aar_display_set_title(s.id, "AAR conformance: title and pointer");
+    paint(&s, 128u);
+    (void)aar_display_flip(s.id);
+    for (i = 0; i < 256u; i++)
+        px[i] = ((i % 16u) < 2u || (i / 16u) < 2u || (i % 16u) > 13u || (i / 16u) > 13u) ? 0xFF000000u : 0xFFFF0000u;
+    p.width = 16;
+    p.height = 16;
+    p.hot_x = 8;
+    p.hot_y = 8;
+    p.reserved[0] = 0;
+    p.reserved[1] = 0;
+    p.argb = px;
+    for (step = 0; step < 4u && !aar_should_stop(); step++) {
+        if (step == 0u)
+            (void)aar_display_pointer(s.id, AAR_POINTER_DEFAULT, 0);
+        else if (step == 1u)
+            (void)aar_display_pointer(s.id, AAR_POINTER_HIDDEN, 0);
+        else if (step == 2u)
+            (void)aar_display_pointer(s.id, AAR_POINTER_BUSY, 0);
+        else
+            (void)aar_display_pointer(s.id, AAR_POINTER_CUSTOM, &p);
+        for (i = 0; i < 40u && !aar_should_stop(); i++)
+            aar_sleep_us(100000u);
+    }
+    (void)aar_display_pointer(s.id, AAR_POINTER_DEFAULT, 0);
+    (void)aar_display_close(s.id);
+}
+
+/* The runner counts the messages "RSZ" (one per resize the app answered) and "NOCP" (the cap was not granted). */
+static void send_tag(const char *tag, uint32_t a, uint32_t b)
+{
+    uint8_t m[AAR_MSG_BYTES];
+    uint32_t i;
+
+    for (i = 0; i < AAR_MSG_BYTES; i++)
+        m[i] = 0;
+    for (i = 0; tag[i] && i < 8u; i++)
+        m[i] = (uint8_t)tag[i];
+    cm_put32(m, 8, a);
+    cm_put32(m, 12, b);
+    (void)cmio_send(m, 500000u);
+}
+
+static void variant_resize(int argc, char **argv)
+{
+    aar_surface s;
+    uint64_t start;
+
+    if (!conf_arg(argc, argv, "conf:show"))
+        return;
+    if (aar_display_open(320, 240, AAR_FMT_RGB565,
+                         AAR_DISPLAY_VSYNC | AAR_DISPLAY_WINDOW | AAR_DISPLAY_RESIZABLE, &s) != AAR_OK || !s.back)
+        return;
+    if ((s.caps & AAR_DISPCAP_RESIZE) == 0u) {
+        send_tag("NOCP", s.caps, 0);
+        (void)aar_display_close(s.id);
+        return;
+    }
+    (void)aar_display_set_title(s.id, "AAR conformance: resize me");
+    paint(&s, 64u);
+    (void)aar_display_flip(s.id);
+    start = aar_time_us();
+    while (aar_time_us() - start < 25000000u && !aar_should_stop()) {
+        aar_event ev[4];
+        uint32_t got = 0;
+        uint32_t i;
+
+        if (aar_event_poll(ev, 4, &got) != AAR_OK)
+            break;
+        for (i = 0; i < got; i++) {
+            aar_surface r;
+
+            if (ev[i].type != AAR_EV_RESIZE || ev[i].dx < 1 || ev[i].dy < 1)
+                continue;
+            if (aar_display_resize(s.id, (uint32_t)ev[i].dx, (uint32_t)ev[i].dy, &r) != AAR_OK || !r.back) {
+                send_tag("RSZBAD", (uint32_t)ev[i].dx, (uint32_t)ev[i].dy);
+                continue;
+            }
+            s = r;
+            paint(&s, 64u + 17u * i);
+            (void)aar_display_flip(s.id);
+            send_tag("RSZ", s.width, s.height);
+        }
+        if (!got)
+            aar_sleep_us(5000u);
+    }
+    (void)aar_display_close(s.id);
+}
+
 /* Variant picture (C-DISPLAY.17, INTERACTIVE only): four colours on the screen. */
 static void variant_picture(int argc, char **argv)
 {
@@ -727,6 +1315,19 @@ int aar_main(int argc, char **argv)
     const char *variant = conf_arg(argc, argv, "conf:variant");
 
     have_peer = conf_have_peer(argc, argv);
+    present_at_start = aar_display_last_present_us();
+    if (variant && cmio_streq(variant, "window")) {
+        variant_window();
+        return conf_finish("C-DISPLAY");
+    }
+    if (variant && cmio_streq(variant, "pointer")) {
+        variant_pointer(argc, argv);
+        return conf_finish("C-DISPLAY");
+    }
+    if (variant && cmio_streq(variant, "resize")) {
+        variant_resize(argc, argv);
+        return conf_finish("C-DISPLAY");
+    }
     if (variant && cmio_streq(variant, "picture")) {
         variant_picture(argc, argv);
         return conf_finish("C-DISPLAY");
@@ -747,5 +1348,6 @@ int aar_main(int argc, char **argv)
     test_pitch();
     test_palette();
     test_palette_refused();
+    test_last_present();
     return conf_finish("C-DISPLAY");
 }

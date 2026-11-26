@@ -5,7 +5,7 @@
  * the app polls them with event_poll and compares. conf_msg.h has the message helpers.
  *
  * Variants (conf:variant=<name>): std (every row but C-INPUT.9), overfull (the runner
- * judges C-INPUT.9), show (the operator row C-INPUT.11).
+ * judges C-INPUT.9), show (the operator row C-INPUT.11), buttons (the operator row C-INPUT.17).
  *
  * SPDX-License-Identifier: MIT
  */
@@ -38,6 +38,27 @@
 #define CI_K_GOT       "CONF-INPUT-GOT"
 /* Variant show: a = events the app saw (for the operator's list). */
 #define CI_K_SHOWN     "CONF-INPUT-SHOWN"
+/* The runner posts the events of ci_new: text, wheel, close request and focus (types 9 to 12). */
+#define CI_K_NEWEV     "CONF-INPUT-NEWEV"
+/* As MOUSEFULL, with absolute mouse events: 100 key events and then CI_ABS_POSTS events of type
+ * MOUSE with AAR_MOUSE_ABSOLUTE in buttons and the position ci_abs_x(i), ci_abs_y(i), i = 1 to
+ * CI_ABS_POSTS, no retry. The answer is a result message: count = key posts refused, errors =
+ * mouse posts refused, x = i of the last mouse post that was accepted (0 when none). */
+#define CI_K_ABSFULL   "CONF-INPUT-ABSFULL"
+/* Variant buttons (the operator row C-INPUT.17): the app shows what real devices send, as show does. */
+
+#define CI_ABS_POSTS 20u
+#define CI_MOUSE_ABSOLUTE 0x8000u
+
+static inline int16_t ci_abs_x(uint32_t i)
+{
+    return (int16_t)(10u * i);
+}
+
+static inline int16_t ci_abs_y(uint32_t i)
+{
+    return (int16_t)(5u * i);
+}
 
 #define CI_OVERFULL_POSTS 300u
 
@@ -70,6 +91,16 @@ static const struct ci_ev ci_joy[] = {
     { 4u, 0u, 1, -1, 0x0001u, 6100u },
     { 4u, 0u, 0, 1, 0x0000u, 6200u },
     { 4u, 0u, 0, 0, 0x0001u, 6300u },
+};
+
+/* The events of API 0.6 (types 9 to 12): a text event with U+00E9 and a qualifier, a wheel turn
+ * (right 2, up 3), a close request, and focus gained and lost. */
+static const struct ci_ev ci_new[] = {
+    { 9u, 0x00E9u, 0, 0, 0x0001u, 7000u },
+    { 10u, 0u, 2, -3, 0x0000u, 7100u },
+    { 11u, 0u, 0, 0, 0x0000u, 7200u },
+    { 12u, 1u, 0, 0, 0x0000u, 7300u },
+    { 12u, 0u, 0, 0, 0x0000u, 7400u },
 };
 
 #define CI_COUNT(a) ((uint32_t)(sizeof(a) / sizeof((a)[0])))

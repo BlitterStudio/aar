@@ -1,7 +1,7 @@
 # AAR conformance suite
 
 This directory holds the tests that decide whether a platform implements the
-AAR standard ([specification section 11](../spec/aar.md)). Version 0.1 of the suite tests API 0.5.
+AAR standard ([specification section 11](../spec/aar.md)). Version 0.2 of the suite tests API 0.6.
 
 | Path | Content |
 |---|---|
@@ -39,9 +39,12 @@ the run goes on:
 
 - A test that shows something prints what to look for or do, and waits for Return,
   so that you are looking when it starts. It runs, and the question (`y/n`) comes
-  right after. Such tests include C-DISPLAY.17 (a picture for 5 seconds), C-INPUT.11
-  (a grey screen for 12 seconds in which to use the keyboard, mouse and joystick) and
-  C-AUDIO.12 (a tone for 2 seconds).
+  right after it. Such tests include C-DISPLAY.17 (a picture for 5 seconds), C-DISPLAY.30 (a
+  window title and four mouse pointers, 12 seconds), C-DISPLAY.31 (resizing a window by hand
+  for 25 seconds),
+  C-INPUT.11 (a grey screen for 12 seconds in which to use the keyboard, mouse and joystick),
+  C-INPUT.17 (a window for 20 seconds in which to press each mouse button, turn the wheel and
+  type) and C-AUDIO.12 (a tone for 2 seconds).
 - C-INPUT.11 also prints what the app saw. If no event is a key press, a mouse move, a
   button or a joystick movement, it says so and offers to repeat the 12 seconds once.
   A yes does not count when the app saw no such event: the test fails with "operator
@@ -98,8 +101,8 @@ the pinned cross compiler and the payloads of both profiles, each checked by
 
 ```
 aar-conf
-a32/conf_<area>.elf       (16 payloads)
-a64/conf_<area>.elf       (16 payloads)
+a32/conf_<area>.elf       (17 payloads)
+a64/conf_<area>.elf       (17 payloads)
 negative/MANIFEST
 negative/a32/*.aarimg
 negative/a64/*.aarimg
@@ -168,7 +171,7 @@ comments: the console output of the payloads and diagnostics.
 An excerpt of a report from a platform while the suite is half written (the numbers are an example):
 
 ```
-AAR-CONF-SUITE 0.1 a32
+AAR-CONF-SUITE 0.2 a32
 AAR-CONF-INFO api_major=0
 AAR-CONF-INFO groups=0x17
 ...

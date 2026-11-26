@@ -22,8 +22,8 @@ For an area `C-<AREA>` (file names use the area in lower case, `<area>`):
 Under qemu the loader enters the payload as the runtime would (`ENTRY_CONTRACT=1`, set by `tests/qemu_run.sh`): a fresh stack, every register 0 except `r0`/`x0` to `r2`/`x2`, a table with every core slot filled and a complete `aar_info`, 2 MiB of heap committed. The environment variables `ENTRY_ARGS` (more arguments, for example `conf:variant=lowmem`), `HEAP_CAP_MIB` (a cap on the heap, like `AAR_TAG_PRIVATE_MIB`) and `CPU_FEATURES` (the `cpu_features` word) change it. See the comments of `libaar/tests/loader.c`. It prints the peer messages a payload sends (`[loader] message <keyword> <words>`) and takes them, so the payload's variants can be run by hand.
 
 Everything else is shared and is not edited for a normal area: `runner/aar-conf.c`
-and `runner/aar-conf.h` (the core), `runner/r_areas.h` (the list of areas, already
-complete), `payloads/conf.h` and `payloads/conf_proto.h` (the payload protocol),
+and `runner/aar-conf.h` (the core), `runner/r_areas.h` (the list of areas: a new area adds
+its one line), `payloads/conf.h` and `payloads/conf_proto.h` (the payload protocol),
 `tools/`, `tests/`, the `Makefile`, `host-runner/CMakeLists.txt`,
 `client/tests/m68k_check.sh`, the CI workflow. None of them lists areas. The
 `Makefile` and CMake find payloads and markers by file name, the m68k build compiles

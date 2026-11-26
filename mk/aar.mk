@@ -157,7 +157,11 @@ else
 # The object directory also records the exception mode, so switching it
 # recompiles the C++ sources.
 OBJ := $(BUILD)/obj/$(APP)/libc$(if $(filter 0,$(AAR_CXX_EXCEPTIONS)),-noexc)
-AAR_LDFLAGS += -L$(AAR_SYSROOT_LIBDIR)
+# libaar's syscalls.c owns the environment (getenv, _getenv_r) and defines them
+# as __wrap_getenv and __wrap__getenv_r. The wrap sends every reference, from
+# the app, libstdc++ and newlib, to them, so newlib's getenv.o and getenv_r.o
+# are never extracted and archive order cannot pick the definition.
+AAR_LDFLAGS += -L$(AAR_SYSROOT_LIBDIR) -Wl,--wrap=getenv -Wl,--wrap=_getenv_r
 LIB_OBJS := $(OBJ)/libaar/aar.o $(OBJ)/libaar/gl.o $(OBJ)/libaar/syscalls.o
 ifneq ($(strip $(AAR_CXX_SRCS)),)
 # The C++ runtime comes before libc and libgcc, and libgcc_eh before libgcc. The

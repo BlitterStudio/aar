@@ -295,6 +295,74 @@ static void test_mouse_full(void)
     conf_end(&t);
 }
 
+/* ---- C-INPUT.16: absolute mouse events while the queue is full -------------------------------------- */
+
+/* Absolute events carry a position, so merging them keeps the latest one and never adds them (spec 8.3). The
+ * runner posts 100 key events and then 20 absolute positions with no retry; every absolute event the app gets
+ * is one of the posted positions, and the last is the last one the client accepted. */
+static void test_abs_full(void)
+{
+    struct conf_test t;
+    aar_event ev[16];
+    uint32_t key_busy = 0, mouse_busy = 0, last_ok = 0;
+    uint32_t seen = 0, bad = 0;
+    int16_t last_x = 0, last_y = 0;
+    uint32_t quiet = 0;
+    int rc;
+
+    conf_begin(&t, "C-INPUT.16");
+    cmio_kw(CI_K_ABSFULL, 0, 0, 0);
+    rc = cmio_result(10000000u, 0, &key_busy, &mouse_busy, 0, &last_ok, 0);
+    conf_check(&t, rc == 1, "no answer from the runner");
+    while (quiet < 40u) {
+        uint32_t got = 0;
+        uint32_t i;
+
+        if (aar_event_poll(ev, 16, &got) != AAR_OK)
+            break;
+        for (i = 0; i < got; i++) {
+            if (ev[i].type == AAR_EV_RESIZE)
+                saw_resize = 1;
+            if (ev[i].type != AAR_EV_MOUSE)
+                continue;
+            seen++;
+            if ((ev[i].buttons & CI_MOUSE_ABSOLUTE) == 0u || ev[i].dx % 10 != 0 || ev[i].dx < 10 ||
+                ev[i].dx > ci_abs_x(CI_ABS_POSTS) || ev[i].dy != ev[i].dx / 2)
+                bad++;
+            last_x = ev[i].dx;
+            last_y = ev[i].dy;
+        }
+        if (got) {
+            quiet = 0;
+        } else {
+            quiet++;
+            aar_sleep_us(10000u);
+        }
+    }
+    if (bad && conf_fail_first(&t)) {
+        conf_buf_u64(&t.why, bad);
+        conf_buf_str(&t.why, " of ");
+        conf_buf_u64(&t.why, seen);
+        conf_buf_str(&t.why, " absolute mouse events were not one of the posted positions (a sum, or no AAR_MOUSE_ABSOLUTE)");
+    }
+    if (last_ok != 0u && (seen == 0u || last_x != ci_abs_x(last_ok) || last_y != ci_abs_y(last_ok)) &&
+        conf_fail_first(&t)) {
+        conf_buf_str(&t.why, "the last position the app saw is (");
+        conf_buf_i64(&t.why, last_x);
+        conf_buf_str(&t.why, ", ");
+        conf_buf_i64(&t.why, last_y);
+        conf_buf_str(&t.why, "), the last accepted post was number ");
+        conf_buf_u64(&t.why, last_ok);
+    }
+    conf_buf_u64(&t.note, seen);
+    conf_buf_str(&t.note, " absolute events, last position (");
+    conf_buf_i64(&t.note, last_x);
+    conf_buf_str(&t.note, ", ");
+    conf_buf_i64(&t.note, last_y);
+    conf_buf_str(&t.note, ")");
+    conf_end(&t);
+}
+
 /* ---- C-INPUT.7 and C-INPUT.2 ------------------------------------------------------------------------ */
 
 static void test_no_resize(void)
@@ -367,7 +435,7 @@ static void variant_overfull(void)
 /* Variant show (the operator row C-INPUT.11, only with INTERACTIVE): the app opens a
  * display, which gives the client's input window, and reports every event it gets as a
  * message that the runner lists for the operator. */
-static void variant_show(int argc, char **argv)
+static void variant_show(int argc, char **argv, uint32_t flags, uint32_t ms)
 {
     aar_surface s;
     uint64_t start;
@@ -377,7 +445,7 @@ static void variant_show(int argc, char **argv)
     if (!conf_arg(argc, argv, "conf:show"))
         return;
     if (!have_input ||
-        aar_display_open(320, 200, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC, &s) != AAR_OK) {
+        aar_display_open(320, 200, AAR_FMT_RGB565, flags, &s) != AAR_OK) {
         return;
     }
     if (s.back) {
@@ -386,7 +454,7 @@ static void variant_show(int argc, char **argv)
     }
     (void)aar_display_flip(s.id);
     start = aar_time_us();
-    while (aar_time_us() - start < 12000000u && !aar_should_stop()) {
+    while (aar_time_us() - start < (uint64_t)ms * 1000u && !aar_should_stop()) {
         aar_event ev[4];
         uint32_t got = 0;
 
@@ -428,7 +496,12 @@ int aar_main(int argc, char **argv)
         return conf_finish("C-INPUT");
     }
     if (variant && cmio_streq(variant, "show")) {
-        variant_show(argc, argv);
+        variant_show(argc, argv, AAR_DISPLAY_VSYNC, 12000u);
+        return conf_finish("C-INPUT");
+    }
+    if (variant && cmio_streq(variant, "buttons")) {
+        variant_show(argc, argv, AAR_DISPLAY_VSYNC | AAR_DISPLAY_WINDOW | AAR_DISPLAY_POINTER_ABS |
+                                     AAR_DISPLAY_TEXT_INPUT, 20000u);
         return conf_finish("C-INPUT");
     }
     test_nonblocking();
@@ -436,9 +509,11 @@ int aar_main(int argc, char **argv)
         test_sequence("C-INPUT.3", CI_K_KEYS, ci_keys, CI_COUNT(ci_keys), 1, "key");
         test_sequence("C-INPUT.4", CI_K_MOUSE, ci_mouse, CI_COUNT(ci_mouse), 0, "mouse");
         test_sequence("C-INPUT.5", CI_K_JOY, ci_joy, CI_COUNT(ci_joy), 0, "joystick");
+        test_sequence("C-INPUT.15", CI_K_NEWEV, ci_new, CI_COUNT(ci_new), 1, "text, wheel, close and focus");
         test_breaks();
         test_retention();
         test_mouse_full();
+        test_abs_full();
         test_no_resize();
     }
     test_stop();

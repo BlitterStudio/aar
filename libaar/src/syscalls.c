@@ -13,13 +13,43 @@
  * and fclose work over aar_file_*. _isatty reports 0 everywhere, so stdio
  * buffers fully and exit flushes it.
  *
- * Not provided, and so a link error when used: _unlink, _link, _rename,
- * _times, _gettimeofday. The table has no such calls.
+ * Files and directories. `_unlink` is aar_file_delete and removes a file or an
+ * empty directory, which is what `remove` needs. `rename` and `_rename` are
+ * aar_file_rename with AAR_RENAME_REPLACE, so an existing target is replaced
+ * as POSIX says; AmigaDOS has no atomic replace, so the client deletes the
+ * target and then renames, and a failure in between loses it. `mkdir`,
+ * `_mkdir`, `rmdir`, `ftruncate`, `truncate`, `chmod`, `utime` and `utimes`
+ * are aar_dir_create, aar_file_delete, aar_file_truncate, aar_file_set_protect
+ * and aar_file_set_date. `chmod` maps the owner bits of the mode onto the
+ * AmigaDOS bits (see mode_to_protect) and keeps the archive, pure, script and
+ * hold bits; `_stat` maps them back. `_fstat` knows only the descriptor: it
+ * gives the size from the descriptor, a regular-file mode with the default
+ * permission bits and the date 0, whatever the path names by then.
+ *
+ * Time. `_gettimeofday` (and so `time`) is aar_time_unix_us. `_times` (and so
+ * `clock`) counts aar_time_us from the start of the program, in
+ * CLOCKS_PER_SEC ticks, all of it as user time.
+ *
+ * Environment. `getenv`, `_getenv_r`, `setenv`, `unsetenv` and `putenv` use a
+ * private table. A name is read from the host with aar_env_get the first time
+ * it is asked for and then stays as it was found; setenv, unsetenv and putenv
+ * change only this table, never the host's. A pointer that getenv returned
+ * stays valid until that name is set or unset. newlib's `environ` is not
+ * used and stays empty. This file defines `__wrap_getenv` and
+ * `__wrap__getenv_r`, not `getenv` and `_getenv_r`: libstdc++ pulls newlib's
+ * getenv.o out of libc, and a second definition would clash with it or lose to
+ * it by archive order. The link must pass -Wl,--wrap=getenv
+ * -Wl,--wrap=_getenv_r (mk/aar.mk and cmake/aar.cmake do), which sends every
+ * reference to the wrappers and keeps newlib's members out.
+ *
+ * Not provided, and so a link error when used: _link (so `link`), fchmod,
+ * futimes, symlink, readlink, fsync. The table has no such calls.
  *
  * aar_alloc and aar_free sit on newlib's malloc.
  *
  * SPDX-License-Identifier: MIT
  */
+#define _DEFAULT_SOURCE 1
 #include "aar_internal.h"
 
 #include <errno.h>
@@ -30,7 +60,12 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
+#include <sys/times.h>
+#include <time.h>
+#include <utime.h>
 #include <unistd.h>
+#include <reent.h>
 
 /* ---- Errors ------------------------------------------------------------- */
 
@@ -382,8 +417,55 @@ off_t _lseek(int fd, off_t offset, int whence)
     return (off_t)pos;
 }
 
+/* The owner bits of a POSIX mode and the AmigaDOS protection bits (spec 7.1;
+ * bits 0 to 3 mean DENY). Read, write and execute map to AAR_PROT_READ,
+ * AAR_PROT_WRITE and AAR_PROT_EXECUTE; a mode without write also sets
+ * AAR_PROT_DELETE, as AmigaDOS read-only protection does. Group and other bits
+ * of a mode, and the set-id and sticky bits, are ignored: the table has no
+ * such concept. */
+#define PROT_PERM_MASK (AAR_PROT_DELETE | AAR_PROT_EXECUTE | AAR_PROT_WRITE | \
+                        AAR_PROT_READ)
+
+static uint32_t mode_to_protect(mode_t mode)
+{
+    uint32_t p = 0;
+
+    if (!(mode & S_IRUSR))
+        p |= AAR_PROT_READ;
+    if (!(mode & S_IWUSR))
+        p |= AAR_PROT_WRITE | AAR_PROT_DELETE;
+    if (!(mode & S_IXUSR))
+        p |= AAR_PROT_EXECUTE;
+    return p;
+}
+
+/* The permission bits stat reports. The owner gets what the protection bits
+ * allow; group and other get the same read and execute, and no write. */
+static mode_t protect_to_perm(uint32_t protect)
+{
+    mode_t u = 0;
+
+    if (!(protect & AAR_PROT_READ))
+        u |= 4;
+    if (!(protect & AAR_PROT_WRITE))
+        u |= 2;
+    if (!(protect & AAR_PROT_EXECUTE))
+        u |= 1;
+    return (mode_t)((u << 6) | ((u & 5u) << 3) | (u & 5u));
+}
+
+static void fill_stat(struct stat *st, const aar_stat *as)
+{
+    st->st_mode = (as->mode == AAR_MODE_DIR ? S_IFDIR : S_IFREG) |
+                  protect_to_perm(as->protect);
+    st->st_mtime = (time_t)as->mtime;
+    st->st_blksize = 4096;
+}
+
 /* The table has no fstat: the size is found by seeking, then the position is
- * put back. */
+ * put back. The descriptor carries no other data, so the mode is always a
+ * regular file with default permission bits and the date is 0; the real
+ * permission bits and the date are those of a stat of the path. */
 int _fstat(int fd, struct stat *st)
 {
     int64_t pos = 0;
@@ -407,8 +489,8 @@ int _fstat(int fd, struct stat *st)
         return -1;
     }
     st->st_mode = S_IFREG | 0644;
-    st->st_size = (off_t)end;
     st->st_blksize = 4096;
+    st->st_size = (off_t)end;
     return 0;
 }
 
@@ -431,11 +513,457 @@ int _stat(const char *path, struct stat *st)
         return -1;
     }
     memset(st, 0, sizeof(*st));
-    st->st_mode = (as.mode == AAR_MODE_DIR ? S_IFDIR | 0755 : S_IFREG | 0644);
+    fill_stat(st, &as);
     st->st_size = (off_t)as.size;
-    st->st_mtime = (time_t)as.mtime;
-    st->st_blksize = 4096;
     return 0;
+}
+
+/* ---- Changing files and directories ------------------------------------- */
+
+/* A delete that fails on a directory that still has entries reports
+ * AAR_E_EXIST (spec 7.1); POSIX calls that ENOTEMPTY. */
+static int fail_delete(int rc)
+{
+    if (rc == AAR_E_EXIST) {
+        errno = ENOTEMPTY;
+        return -1;
+    }
+    return fail(rc);
+}
+
+int _unlink(const char *path)
+{
+    int rc;
+
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+    rc = aar_file_delete(path);
+    return rc == AAR_OK ? 0 : fail_delete(rc);
+}
+
+int rmdir(const char *path)
+{
+    aar_stat as;
+    int rc;
+
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+    /* file_delete removes a file as well, and rmdir on a file must not. */
+    rc = aar_file_stat(path, &as);
+    if (rc != AAR_OK)
+        return fail(rc);
+    if (as.mode != AAR_MODE_DIR) {
+        errno = ENOTDIR;
+        return -1;
+    }
+    rc = aar_file_delete(path);
+    return rc == AAR_OK ? 0 : fail_delete(rc);
+}
+
+/* newlib calls _rename only where it has no _link; here rename is defined
+ * directly, because its link and unlink fallback cannot replace a target. */
+int _rename(const char *from, const char *to)
+{
+    int rc;
+
+    if (!from || !to) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (strcmp(from, to) == 0) {
+        /* A rename onto itself does nothing. The client does that for any two names of one
+         * object (spec 7.1); this shortcut for equal strings saves the call and the delete. */
+        aar_stat as;
+
+        rc = aar_file_stat(from, &as);
+        return rc == AAR_OK ? 0 : fail(rc);
+    }
+    rc = aar_file_rename(from, to, AAR_RENAME_REPLACE);
+    return rc == AAR_OK ? 0 : fail_delete(rc);
+}
+
+int rename(const char *from, const char *to)
+{
+    return _rename(from, to);
+}
+
+int _mkdir(const char *path, mode_t mode)
+{
+    int rc;
+
+    (void)mode;
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+    rc = aar_dir_create(path);
+    return rc == AAR_OK ? 0 : fail(rc);
+}
+
+int mkdir(const char *path, mode_t mode)
+{
+    return _mkdir(path, mode);
+}
+
+int ftruncate(int fd, off_t length)
+{
+    int rc;
+
+    if (is_console(fd) || length < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    rc = aar_file_truncate(fd, (uint64_t)length);
+    return rc == AAR_OK ? 0 : fail(rc);
+}
+
+int truncate(const char *path, off_t length)
+{
+    int fd;
+    int rc;
+
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (length < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    fd = aar_file_open(path, AAR_FILE_WRITE);
+    if (fd < 0)
+        return fail(fd);
+    rc = aar_file_truncate(fd, (uint64_t)length);
+    if (aar_file_close(fd) != AAR_OK && rc == AAR_OK)
+        rc = AAR_E_IO;
+    return rc == AAR_OK ? 0 : fail(rc);
+}
+
+int chmod(const char *path, mode_t mode)
+{
+    aar_stat as;
+    int rc;
+
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+    /* The permission bits are replaced; the archive, pure, script and hold
+     * bits stay as they are, so the current ones are read first. */
+    rc = aar_file_stat(path, &as);
+    if (rc != AAR_OK)
+        return fail(rc);
+    rc = aar_file_set_protect(path, (as.protect & ~(uint32_t)PROT_PERM_MASK & 0xffu) |
+                                    mode_to_protect(mode));
+    return rc == AAR_OK ? 0 : fail(rc);
+}
+
+/* ---- Time --------------------------------------------------------------- */
+
+/* Unix seconds now, rounded down. */
+static int unix_now(int64_t *seconds)
+{
+    int64_t us = 0;
+    int rc = aar_time_unix_us(&us);
+
+    if (rc != AAR_OK)
+        return rc;
+    *seconds = us / 1000000 - (us % 1000000 < 0 ? 1 : 0);
+    return AAR_OK;
+}
+
+int utime(const char *path, const struct utimbuf *times)
+{
+    int64_t mtime = 0;
+    int rc = AAR_OK;
+
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (times)
+        mtime = (int64_t)times->modtime;
+    else
+        rc = unix_now(&mtime);
+    if (rc == AAR_OK)
+        rc = aar_file_set_date(path, mtime);
+    return rc == AAR_OK ? 0 : fail(rc);
+}
+
+/* Only the modification time (tv[1]) is kept: the table has no access time. */
+int utimes(const char *path, const struct timeval tv[2])
+{
+    int64_t mtime = 0;
+    int rc = AAR_OK;
+
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (tv)
+        mtime = (int64_t)tv[1].tv_sec;
+    else
+        rc = unix_now(&mtime);
+    if (rc == AAR_OK)
+        rc = aar_file_set_date(path, mtime);
+    return rc == AAR_OK ? 0 : fail(rc);
+}
+
+/* tz is not filled in: the offset the host knows is in aar_locale_info, and
+ * newlib's localtime reads TZ. */
+int _gettimeofday(struct timeval *tv, void *tz)
+{
+    int64_t us = 0;
+    int rc;
+
+    (void)tz;
+    rc = aar_time_unix_us(&us);
+    if (rc != AAR_OK)
+        return fail(rc);
+    if (tv) {
+        int64_t sec = us / 1000000;
+        int64_t frac = us % 1000000;
+
+        if (frac < 0) {
+            frac += 1000000;
+            sec--;
+        }
+        tv->tv_sec = (time_t)sec;
+        tv->tv_usec = (suseconds_t)frac;
+    }
+    return 0;
+}
+
+/* The program's start on aar_time_us. times and clock count from here. */
+static uint64_t start_us;
+
+__attribute__((constructor(101))) static void times_start(void)
+{
+    start_us = aar_time_us();
+}
+
+clock_t _times(struct tms *buf)
+{
+    uint64_t us = aar_time_us() - start_us;
+    clock_t ticks = (clock_t)(us / (1000000u / CLOCKS_PER_SEC));
+
+    if (buf) {
+        buf->tms_utime = ticks;
+        buf->tms_stime = 0;
+        buf->tms_cutime = 0;
+        buf->tms_cstime = 0;
+    }
+    return ticks;
+}
+
+/* ---- Environment -------------------------------------------------------- */
+
+struct env_var {
+    struct env_var *next;
+    char *value;            /* NULL: the name is unset */
+    char name[];
+};
+
+static struct env_var *env_vars;
+
+static struct env_var *env_find(const char *name, size_t len)
+{
+    struct env_var *v;
+
+    for (v = env_vars; v; v = v->next)
+        if (strncmp(v->name, name, len) == 0 && v->name[len] == 0)
+            return v;
+    return NULL;
+}
+
+static struct env_var *env_add(const char *name, size_t len)
+{
+    struct env_var *v = malloc(sizeof(*v) + len + 1);
+
+    if (!v)
+        return NULL;
+    v->value = NULL;
+    memcpy(v->name, name, len);
+    v->name[len] = 0;
+    v->next = env_vars;
+    env_vars = v;
+    return v;
+}
+
+/* A name aar_env_get accepts and POSIX allows in the environment. */
+static int env_name_ok(const char *name, size_t *len)
+{
+    size_t n = name ? strlen(name) : 0;
+
+    if (n == 0 || n > 255 || strchr(name, '='))
+        return 0;
+    *len = n;
+    return 1;
+}
+
+/* The value of `name` from the host, as a malloc'd string, or NULL. *known is
+ * 0 when the host did not answer (policy, no such call, a stop), and then
+ * nothing is remembered, so a later call can ask again. */
+static char *env_fetch(const char *name, int *known)
+{
+    char small[256];
+    char *buf = small;
+    uint32_t n = 0;
+    char *value = NULL;
+    int rc = aar_env_get(name, small, sizeof small, &n);
+
+    *known = 1;
+    if (rc == AAR_E_NOSPC) {
+        buf = malloc((size_t)n + 1);
+        if (!buf) {
+            *known = 0;
+            return NULL;
+        }
+        rc = aar_env_get(name, buf, n + 1, &n);
+    }
+    if (rc == AAR_OK) {
+        value = malloc((size_t)n + 1);
+        if (value) {
+            memcpy(value, buf, n);
+            value[n] = 0;
+        } else {
+            *known = 0;
+        }
+    } else if (rc != AAR_E_NOENT) {
+        *known = 0;
+    }
+    if (buf != small)
+        free(buf);
+    return value;
+}
+
+/* The entry for `name`, asking the host the first time. NULL when the table
+ * has none and the host gave no answer. */
+static struct env_var *env_lookup(const char *name, size_t len)
+{
+    struct env_var *v = env_find(name, len);
+    int known;
+    char *value;
+
+    if (v)
+        return v;
+    value = env_fetch(name, &known);
+    if (!known)
+        return NULL;
+    v = env_add(name, len);
+    if (!v) {
+        free(value);
+        return NULL;
+    }
+    v->value = value;
+    return v;
+}
+
+/* The link wraps these two (-Wl,--wrap=getenv -Wl,--wrap=_getenv_r, set by
+ * mk/aar.mk and cmake/aar.cmake): every undefined reference to getenv or
+ * _getenv_r, from the app, libstdc++ and newlib alike, resolves to the
+ * __wrap_ names below. newlib's own getenv.o and getenv_r.o, which define the
+ * same names, are then never extracted, whatever the order of libaar.a, libc
+ * and libstdc++ on the link line. */
+char *__wrap_getenv(const char *name)
+{
+    size_t len;
+    struct env_var *v;
+
+    if (!env_name_ok(name, &len))
+        return NULL;
+    v = env_lookup(name, len);
+    return v ? v->value : NULL;
+}
+
+char *__wrap__getenv_r(struct _reent *reent, const char *name)
+{
+    (void)reent;
+    return __wrap_getenv(name);
+}
+
+/* Gives `name` the value `value` (NULL unsets it). */
+static int env_store(const char *name, size_t len, const char *value)
+{
+    struct env_var *v = env_find(name, len);
+    char *copy = NULL;
+
+    if (value) {
+        size_t n = strlen(value) + 1;
+
+        copy = malloc(n);
+        if (!copy) {
+            errno = ENOMEM;
+            return -1;
+        }
+        memcpy(copy, value, n);
+    }
+    if (!v)
+        v = env_add(name, len);
+    if (!v) {
+        free(copy);
+        errno = ENOMEM;
+        return -1;
+    }
+    free(v->value);
+    v->value = copy;
+    return 0;
+}
+
+int setenv(const char *name, const char *value, int overwrite)
+{
+    size_t len;
+
+    if (!env_name_ok(name, &len) || !value) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!overwrite) {
+        struct env_var *v = env_lookup(name, len);
+
+        if (v && v->value)
+            return 0;
+    }
+    return env_store(name, len, value);
+}
+
+int unsetenv(const char *name)
+{
+    size_t len;
+
+    if (!env_name_ok(name, &len)) {
+        errno = EINVAL;
+        return -1;
+    }
+    return env_store(name, len, NULL);
+}
+
+/* The string is copied, not kept: a later change to it does not change the
+ * variable. "NAME" without '=' unsets the name, as glibc does. */
+int putenv(char *string)
+{
+    const char *eq = string ? strchr(string, '=') : NULL;
+    size_t len;
+    char name[256];
+
+    if (!string) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!eq)
+        return unsetenv(string);
+    len = (size_t)(eq - string);
+    if (len == 0 || len > 255) {
+        errno = EINVAL;
+        return -1;
+    }
+    memcpy(name, string, len);
+    name[len] = 0;
+    return setenv(name, eq + 1, 1);
 }
 
 /* ---- Private allocator (libaar layer 2) --------------------------------- */

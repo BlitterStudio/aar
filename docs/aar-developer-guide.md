@@ -547,6 +547,48 @@ program run:
   The path rules of the client apply. For a directory use `aar_file_list_open`,
   `aar_file_list_next` and `aar_file_list_close`, and for a path use
   `aar_file_stat`, which reports a 64-bit size.
+  `stat` also gives permission bits and the date: the owner's read, write and
+  execute bits are set when `AAR_PROT_READ`, `AAR_PROT_WRITE` and
+  `AAR_PROT_EXECUTE` are clear in `aar_stat.protect`, and group and other get
+  the owner's read and execute bits. A file made with default AmigaDOS bits
+  therefore shows 0755.
+  `fstat` does not have them: the descriptor carries only its size, so `fstat`
+  reports a regular file with the mode 0644 and the date 0, and this does not
+  change when the path is renamed, replaced or deleted meanwhile. Call `stat`
+  on the path for the real bits.
+- Changing files and directories uses the calls of API 0.6 and needs a client
+  that serves them (`errno` is `ENOSYS` when it does not). `unlink` and `remove`
+  delete a file or an empty directory; a directory that is not empty is
+  `ENOTEMPTY`. `rename` replaces an existing target, as POSIX says, through
+  `AAR_RENAME_REPLACE`. AmigaDOS has no atomic replace, so the client deletes
+  the target and then renames, and a failure in between loses the target; a
+  rename across volumes is `EINVAL`. `mkdir` ignores its mode, `rmdir` refuses
+  a file with `ENOTDIR`, `ftruncate` and `truncate` shorten a file or extend it
+  with zero bytes, and `utime` and `utimes` set the modification time. `chmod`
+  maps the owner's read, write and execute bits to the AmigaDOS bits, which
+  deny when set: a mode without write also denies delete, and the archive,
+  pure, script and hold bits stay as they were. Group, other, set-id and
+  sticky bits have no meaning and are ignored. Newlib's `<utime.h>` has no
+  prototype for `utime`; declare it yourself or use `utimes`. `link`, `fchmod`,
+  `futimes`, `symlink`, `readlink` and `fsync` are not provided and fail to
+  link.
+- Time: `gettimeofday` and `time` read the wall clock through
+  `aar_time_unix_us`, in UTC (set `TZ` for `localtime`). `clock` and `times`
+  count `aar_time_us` from the start of the program, all of it as user time.
+- The environment: `getenv`, `setenv`, `unsetenv` and `putenv` use a table
+  inside the app. `getenv` asks the client (`aar_env_get`, the `ENV:`
+  variables) the first time it sees a name and keeps the answer, so the
+  pointer it returns stays valid until that name is set or unset and later
+  changes on the Amiga are not seen. `setenv`, `unsetenv` and `putenv` change
+  only that table and never the Amiga's variables; `putenv` copies its string.
+  Newlib's own readers of the environment, such as `tzset`, and `libstdc++`
+  see the same table. `environ` stays empty. `libaar` defines these as
+  `__wrap_getenv` and `__wrap__getenv_r`, and the make include and
+  `aar_add_executable` link with `-Wl,--wrap=getenv -Wl,--wrap=_getenv_r`, so
+  every reference lands on `libaar` and newlib's `getenv.o` and `getenv_r.o`
+  are never taken from `libc`, whatever the order of the archives. A link
+  that does not use those two includes must pass the same two options, or
+  `getenv` comes from newlib and reads an empty `environ`.
 - `exit` flushes stdio, runs the `atexit` handlers, and ends in `aar_exit`.
 - `aar_alloc(bytes, align)` and `aar_free(p)` are `malloc` with an alignment.
   Shared memory is `aar_shared_alloc`, and the two allocators do not mix.
@@ -598,6 +640,9 @@ What works:
   writes `std::cout` to the console, and `<fstream>` works over the file calls.
   Both pull in the locale code and add 600 to 700 KiB to the image, so a small
   app prefers `aar_log` or `printf`.
+- `std::chrono::system_clock::now()` uses the platform wall clock through
+  newlib's `_gettimeofday`. For monotonic intervals and frame timing, use
+  `aar_time_us()` rather than relying on the bare-metal `steady_clock`.
 - Exceptions and RTTI, on by default. See the next paragraphs.
 
 Exceptions. With `AAR_CXX_EXCEPTIONS=1` (the make default) or
@@ -630,9 +675,6 @@ What does not work:
 - Threads. The runtime has no thread model. `std::mutex` and
   `std::condition_variable` are not declared, and `std::thread` has no
   constructor that starts a thread.
-- The wall-clock and steady clocks of `<chrono>`. `system_clock::now()` and
-  `steady_clock::now()` need `_gettimeofday`, which the libc layer leaves out
-  because the table has no such call: the link fails. Use `aar_time_us()`.
 - `std::random_device` returns a fixed sequence, because there is no entropy
   source. Seed a generator from `aar_time_us()`.
 
