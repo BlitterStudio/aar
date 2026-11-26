@@ -649,10 +649,7 @@ mutant("replace-deletes-the-source", "serve_core", SC,
 mutant("replace-does-not-delete", "file_rename_replace", SC,
        ("    return loc_named(f, to, AAR_SERVE_NAMED_DELETE, &none);", "    return AAR_OK;"))
 mutant("replace-deletes-across-volumes", "serve_core", SC,
-       ("    if (d->same_volume && d->same_volume(d->ctx, from.absolute ? 0 : from.dir,\n"
-        "                                         loc_name(&from), to.absolute ? 0 : to.dir,\n"
-        "                                         loc_name(&to)) == 0) {",
-        "    if (0) {"))
+       ("    if (replace_ok != AAR_OK)\n        return replace_ok;\n", ""))
 mutant("named-request-after-a-stop", "stop_new_files", SC,
        ("    if (open_step_allowed(d))\n        ok = d->target_named(", "    if (1)\n        ok = d->target_named("))
 mutant("rename-after-a-stop", "stop_new_files", SC,
@@ -1091,7 +1088,7 @@ mutant("text-keeps-control-characters", "serve_core", SC,
 mutant("text-ignores-the-command-qualifier", "serve_core", SC,
        ("    if (qualifiers & command_mask)\n        return 0;\n", ""))
 mutant("latin1-passes-wide-characters", "serve_core", SC,
-       ("        out[o++] = cp <= 0xFFu ? (char)cp : '?';", "        out[o++] = (char)cp;"))
+       ("        dst[o++] = cp <= 0xFFu ? (uint8_t)cp : (uint8_t)'?';", "        dst[o++] = (uint8_t)cp;"))
 mutant("resize-without-the-cap", "serve_core", SC,
        ("    if (!(d->caps & AAR_DISPCAP_RESIZE) || !d->ops.resize) {", "    if (!d->ops.resize) {"))
 mutant("resize-with-a-flip-pending", "serve_core", SC,

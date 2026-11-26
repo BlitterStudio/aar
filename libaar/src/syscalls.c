@@ -65,7 +65,6 @@
 #include <time.h>
 #include <utime.h>
 #include <unistd.h>
-#include <reent.h>
 
 /* ---- Errors ------------------------------------------------------------- */
 
@@ -879,6 +878,9 @@ char *__wrap_getenv(const char *name)
     v = env_lookup(name, len);
     return v ? v->value : NULL;
 }
+
+/* The wrapper never inspects Newlib's reentrant context. */
+struct _reent;
 
 char *__wrap__getenv_r(struct _reent *reent, const char *name)
 {

@@ -89,6 +89,7 @@ struct fake {
     int named_lost;       /* the next named call loses its packet */
     struct aar_serve_named_args last_args;
     int renames;
+    int shared_handler;  /* distinct volumes report the same DOS handler port */
     int rename_io;
     char rename_from[256];
     char rename_to[256];
@@ -716,8 +717,8 @@ static int f_target_named(void *ctx, enum aar_serve_named kind,
     }
 }
 
-static int f_same_volume(void *ctx, uintptr_t from_dir, const char *from_name,
-                         uintptr_t to_dir, const char *to_name);
+static int same_rename_device(uintptr_t from_dir, const char *from_name,
+                              uintptr_t to_dir, const char *to_name);
 
 static int f_rename(void *ctx, uintptr_t from_dir, const char *from_name,
                     uintptr_t to_dir, const char *to_name, int *transport_ok,
@@ -740,7 +741,7 @@ static int f_rename(void *ctx, uintptr_t from_dir, const char *from_name,
         *io = AAR_SERVE_IOERR_OBJECT_NOT_FOUND;
         return 0;
     }
-    if (!f_same_volume(NULL, from_dir, from_name, to_dir, to_name)) {
+    if (!same_rename_device(from_dir, from_name, to_dir, to_name)) {
         /* what the handler says of a rename it cannot do */
         *io = AAR_SERVE_IOERR_RENAME_ACROSS_DEVICES;
         return 0;
@@ -775,14 +776,20 @@ static int f_rename(void *ctx, uintptr_t from_dir, const char *from_name,
     return 1;
 }
 
-static int f_same_volume(void *ctx, uintptr_t from_dir, const char *from_name,
-                         uintptr_t to_dir, const char *to_name)
+static int same_rename_device(uintptr_t from_dir, const char *from_name,
+                              uintptr_t to_dir, const char *to_name)
 {
     int from_dev = from_dir ? fk.locks[from_dir - 1].dev : fk.nodes[dev_find(from_name)].dev;
     int to_dev = to_dir ? fk.locks[to_dir - 1].dev : fk.nodes[dev_find(to_name)].dev;
 
-    (void)ctx;
     return from_dev == to_dev;
+}
+
+static int f_same_volume(void *ctx, uintptr_t from_dir, const char *from_name,
+                         uintptr_t to_dir, const char *to_name)
+{
+    (void)ctx;
+    return fk.shared_handler || same_rename_device(from_dir, from_name, to_dir, to_name);
 }
 
 static int32_t f_check_replace(void *ctx, uintptr_t source, uintptr_t target,
@@ -3708,6 +3715,8 @@ static void test_a_rename_across_volumes_with_replace_keeps_both_files(void)
     other = fk_other;
     top = child_of(N_ROOT, "top.txt");
     assert(top >= 0 && other >= 0 && fk.nodes[other].size == 5);
+    /* Matching handler ports alone must not authorize deleting another volume's file. */
+    fk.shared_handler = 1;
     assert(do_rename("Vol:root/top.txt", "Vol2:root2/other.txt", AAR_RENAME_REPLACE) == AAR_E_INVAL);
     assert(child_of(N_ROOT, "top.txt") == top && fk.nodes[top].size == 3 &&
            memcmp(fk.nodes[top].data, "top", 3) == 0);
@@ -3715,6 +3724,7 @@ static void test_a_rename_across_volumes_with_replace_keeps_both_files(void)
            memcmp(fk.nodes[other].data, "other", 5) == 0);
     assert(fk.named_n[AAR_SERVE_NAMED_DELETE] == 0);
     assert(other_volume_file("top.txt") < 0 && child_of(N_ROOT, "other.txt") < 0);
+    fk.shared_handler = 0;
     /* without REPLACE the different volumes are still the error, and nothing moves */
     assert(do_rename("Vol:root/top.txt", "Vol2:root2/other.txt", 0) == AAR_E_INVAL);
     assert(child_of(N_ROOT, "top.txt") == top && other_volume_file("other.txt") == other);
