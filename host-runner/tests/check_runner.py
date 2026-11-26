@@ -717,9 +717,25 @@ def check_api06_files(exe):
     import stat
 
     with tempfile.TemporaryDirectory() as root:
+        # A file next to the root: every call that names it through "../" is
+        # refused, and it is as it was afterwards.
+        outside = os.path.join(os.path.dirname(root), "aar06-outside.txt")
+        with open(outside, "w", encoding="ascii") as fh:
+            fh.write("keep")
+        os.utime(outside, (1234567890, 1234567890))
+        outside_mode = stat.S_IMODE(os.stat(outside).st_mode)
         with open(os.path.join(root, "ok.txt"), "w", encoding="ascii") as fh:
             fh.write("ok\n")
-        out = api06_run(exe, ["files"], options=["--root", root])
+        try:
+            out = api06_run(exe, ["files"], options=["--root", root])
+            st = os.stat(outside)
+            if open(outside, encoding="ascii").read() != "keep" or \
+                    int(st.st_mtime) != 1234567890 or stat.S_IMODE(st.st_mode) != outside_mode:
+                raise SystemExit("a call changed the file outside the root")
+            if os.path.exists(os.path.join(os.path.dirname(root), "aar06-outside-dir")):
+                raise SystemExit("dir_create made a directory outside the root")
+        finally:
+            os.remove(outside)
         # What the calls did on the host.
         with open(os.path.join(root, "ok.txt"), "rb") as fh:
             if fh.read() != b"he\0\0\0\0":
@@ -733,9 +749,8 @@ def check_api06_files(exe):
         perm = os.path.join(root, "perm.txt")
         if os.name == "posix":
             mode = stat.S_IMODE(os.stat(perm).st_mode)
-            # WRITE | DELETE | EXECUTE were set: DENY write, execute asked for
-            # by the clear EXECUTE bit does not hold, so the owner x bit is
-            # not set; read stays allowed.
+            # WRITE, DELETE and EXECUTE were set: the owner's w and x bits
+            # are clear and r stays.
             if mode & stat.S_IWUSR or not mode & stat.S_IRUSR or mode & stat.S_IXUSR:
                 raise SystemExit(f"set_protect left mode {mode:o} on perm.txt")
             os.chmod(perm, 0o644)
@@ -748,19 +763,6 @@ def check_api06_files(exe):
             unit = sv.f_frsize or sv.f_bsize
             if block != unit or total != sv.f_blocks * unit or free > total:
                 raise SystemExit(f"volume_info {block}/{total}/{free} vs statvfs {unit}/{sv.f_blocks * unit}")
-    # An unsafe path is refused with --root, and a stop refuses a change.
-    with tempfile.TemporaryDirectory() as root:
-        outside = os.path.join(os.path.dirname(root), "aar06-outside.txt")
-        with open(outside, "w", encoding="ascii") as fh:
-            fh.write("keep")
-        try:
-            api06_run(exe, ["files"], options=["--root", root], expect=10)
-        except SystemExit:
-            pass
-        finally:
-            if open(outside, encoding="ascii").read() != "keep":
-                raise SystemExit("a call changed a file outside the root")
-            os.remove(outside)
 
 
 def check_api06_time(exe):
