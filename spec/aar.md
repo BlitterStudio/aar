@@ -66,7 +66,7 @@ It does not define a sandbox against hostile apps (the user chooses what to run)
 
 The A64 baseline assumes no optional extension: crypto and CRC32 are optional in ARMv8-A, and LSE (ARMv8.1) is absent from a Cortex-A72 although a Cortex-A76 has it. Optional instructions are discovered through `aar_info.cpu_features` (section 8.7), never by executing and trapping.
 
-A platform implements one or more profiles. It declares them in `AARInfo.profiles`. An app image belongs to exactly one profile. An app that wants to run everywhere ships one image per profile (for example `name.a32.elf` and `name.a64.elf`); `AARProbeFile` (section 9) lets a launcher pick. Fat images are not defined (section 13 asks whether they should be).
+A platform implements one or more profiles. It declares them in `AARInfo.profiles`. An app image belongs to exactly one profile. An app that wants to run everywhere ships one image per profile, named `name.a64.elf` and `name.a32.elf`; `AARProbeFile` (section 9) lets a launcher pick. Given `name.elf` or `name`, `aar-run` uses that file when the platform runs it, and otherwise the first of `name.a64.elf` and `name.a32.elf` (and, for `name.elf`, `name`) that the probe accepts and the platform runs, taking the profiles the platform declares first and A64 before A32. Fat images are not defined (section 13 asks whether they should be).
 
 ### 2.2 ELF rules (both profiles)
 
@@ -396,7 +396,7 @@ All of this is performed by the client (section 9.6): the app's calls go to the 
 ### 7.1 Files
 
 - Paths are AmigaDOS paths, at most 255 bytes plus NUL (`AAR_PATH_MAX`). An empty path, or one longer than that, is `AAR_E_INVAL` for `file_open`, `file_stat` and `file_list_open`. The limit is the app interface's: a client's filesystem may accept less (names of 30 characters on an OFS volume), and the call then fails with that filesystem's error. The client decides the root and the policy. The runtime passes a path to the client unchanged after checking its length. A client that serves apps it does not trust SHOULD apply this default, which is the one `aar-run` applies:
-  - Relative paths resolve under a root directory chosen by the client (the Shell's current directory, the icon's directory, or the root given to the serving loop, `aar_serve_config.root`).
+  - Relative paths resolve under a root directory chosen by the client (the Shell's current directory, the directory of the app image, or the root given to the serving loop, `aar_serve_config.root`).
   - A path that would leave the root through `..`, a leading `/` or a link is refused with `AAR_E_ACCES`.
   - A path with a volume or assign prefix (`:`) is refused unless the client allows it (`AAR_SERVEF_ABS_PATHS`). Allowing those does not relax the check on relative paths.
 

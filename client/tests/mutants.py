@@ -810,6 +810,21 @@ mutant("stack-ignores-the-cli-default", "run_policy", "client/run/aar_run_policy
 mutant("cli-stack-longs-wrap", "run_policy", "client/run/aar_run_policy.h",
        ("cli_default_longs > UINT32_MAX / 4u ?\n                                 UINT32_MAX : cli_default_longs * 4u;",
         "cli_default_longs * 4u;"))
+mutant("tooltype-aar-run-icon-beats-the-project", "run_policy", "client/run/aar_run_policy.h",
+       ("    if (!value && chain->tool)", "    if (chain->tool)"))
+mutant("document-root-matches-a-sibling-prefix", "run_policy", "client/run/aar_run_policy.h",
+       ("            else if (path[rn] == '/')", "            else"))
+mutant("unclosed-args-quote-accepted", "run_policy", "client/run/aar_run_policy.h",
+       ("            result = AAR_RUN_ARGS_QUOTE;", "            result = AAR_RUN_ARGS_OK;"))
+mutant("profile-files-in-the-wrong-order", "run_policy", "client/run/aar_run_policy.h",
+       ('{".a64.elf", ".a32.elf"};', '{".a32.elf", ".a64.elf"};'))
+mutant("a-drawer-can-be-the-app", "run_policy", "client/run/aar_run_policy.h",
+       ("    return !is_directory && probe_rc != AAR_E_INVAL;", "    return probe_rc != AAR_E_INVAL;"))
+mutant("default-root-keeps-the-slash", "run_policy", "client/run/aar_run_policy.h",
+       ("        cut--; /* the slash is not part of the directory's name */", "        ;"))
+mutant("drawer-icon-path-keeps-the-slash", "run_policy", "client/run/aar_run_policy.h",
+       ("    while (n > 0 && dir[n - 1] == '/')\n        n--;\n    if (n == 0 || n + 1 > cap)",
+        "    if (n == 0 || n + 1 > cap)"))
 mutant("dos-wait-in-a-step-arms-the-timer", "timer_ops", "client/serve/aar_serve_dos.c",
        ("    if (!s->closing && !s->in_step)", "    if (!s->closing)"))
 mutant("ahi-dry-not-counted", "ahi_gaps", "client/serve/aar_serve_ahi.c",
