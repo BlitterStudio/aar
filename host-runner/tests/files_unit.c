@@ -186,6 +186,53 @@ static void test_lists_have_their_own_table(void)
     host_files_shutdown();
 }
 
+#ifndef _WIN32
+/* A listing classifies its entries through the open directory, so it keeps
+ * doing so after the directory, or a parent of it, was renamed: the path it
+ * was opened with no longer names it. */
+static void test_list_survives_a_rename(void)
+{
+    aar_dirent ent;
+    int list;
+    int dirs = 0;
+    int files = 0;
+
+    host_files_init(UNIT_ROOT, 0);
+    assert(api_dir_create("top") == AAR_OK);
+    assert(api_dir_create("top/mid") == AAR_OK);
+    assert(api_dir_create("top/mid/inner") == AAR_OK);
+    put_file("top/mid/plain.txt", "x");
+
+    /* The listed directory itself is renamed. */
+    list = api_file_list_open("top/mid");
+    assert(list >= HOST_FD_BASE);
+    assert(api_file_rename("top/mid", "top/moved", 0) == AAR_OK);
+    while (api_file_list_next(list, &ent) == AAR_OK) {
+        if (strcmp(ent.name, "inner") == 0 && ent.mode == AAR_MODE_DIR)
+            dirs++;
+        if (strcmp(ent.name, "plain.txt") == 0 && ent.mode == AAR_MODE_FILE)
+            files++;
+    }
+    assert(dirs == 1 && files == 1);
+    assert(api_file_list_close(list) == AAR_OK);
+
+    /* An ancestor of the listed directory is renamed. */
+    list = api_file_list_open("top/moved");
+    assert(list >= HOST_FD_BASE);
+    assert(api_file_rename("top", "top2", 0) == AAR_OK);
+    dirs = files = 0;
+    while (api_file_list_next(list, &ent) == AAR_OK) {
+        if (strcmp(ent.name, "inner") == 0 && ent.mode == AAR_MODE_DIR)
+            dirs++;
+        if (strcmp(ent.name, "plain.txt") == 0 && ent.mode == AAR_MODE_FILE)
+            files++;
+    }
+    assert(dirs == 1 && files == 1);
+    assert(api_file_list_close(list) == AAR_OK);
+    host_files_shutdown();
+}
+#endif
+
 static void test_seek_out_pos_is_optional(void)
 {
     int fd;
@@ -531,38 +578,94 @@ static void test_protect_and_date(void)
     assert((st.protect & (AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_READ)) == 0u);
 #ifndef _WIN32
     /* READ, WRITE and EXECUTE are the owner's bits with the sense of
-     * AmigaDOS; DELETE follows WRITE; the rest is not stored. */
+     * AmigaDOS, and DELETE follows WRITE. */
     assert(api_file_set_protect("pm.txt", AAR_PROT_WRITE | AAR_PROT_DELETE) == AAR_OK);
     assert(api_file_stat("pm.txt", &st) == AAR_OK);
     assert(st.protect == (AAR_PROT_WRITE | AAR_PROT_DELETE));
     assert(api_file_delete("pm.txt") == AAR_E_ACCES); /* delete-protected */
-    assert(api_file_set_protect("pm.txt", AAR_PROT_READ | AAR_PROT_EXECUTE) == AAR_OK);
-    assert(api_file_stat("pm.txt", &st) == AAR_OK);
-    assert(st.protect == (AAR_PROT_READ | AAR_PROT_EXECUTE));
+    /* Every mask of the four lower bits that the host can store round-trips;
+     * any other is AAR_E_NOSYS and leaves the protection as it was. */
+    {
+        uint32_t stored = AAR_PROT_WRITE | AAR_PROT_DELETE;
+        uint32_t mask;
+        int storable;
+
+        for (mask = 0u; mask < 16u; mask++) {
+            storable = ((mask & AAR_PROT_WRITE) != 0u) ==
+                       ((mask & AAR_PROT_DELETE) != 0u);
+            assert(api_file_set_protect("pm.txt", mask) ==
+                   (storable ? AAR_OK : AAR_E_NOSYS));
+            assert(api_file_stat("pm.txt", &st) == AAR_OK);
+            assert(st.protect == (storable ? mask : stored));
+            stored = st.protect;
+        }
+    }
+#endif
+    /* Bits the host has nowhere to keep, and DELETE without WRITE (or the
+     * other way round): refused before anything changes. */
     assert(api_file_set_protect("pm.txt", AAR_PROT_ARCHIVE | AAR_PROT_PURE |
-                                AAR_PROT_SCRIPT | AAR_PROT_HOLD) == AAR_OK);
+                                AAR_PROT_SCRIPT | AAR_PROT_HOLD) == AAR_E_NOSYS);
+    assert(api_file_set_protect("pm.txt", AAR_PROT_SCRIPT) == AAR_E_NOSYS);
+    assert(api_file_set_protect("pm.txt", AAR_PROT_DELETE) == AAR_E_NOSYS);
+    assert(api_file_set_protect("pm.txt", AAR_PROT_WRITE) == AAR_E_NOSYS);
     assert(api_file_stat("pm.txt", &st) == AAR_OK);
+#ifndef _WIN32
+    assert(st.protect == (AAR_PROT_READ | AAR_PROT_WRITE | AAR_PROT_DELETE |
+                          AAR_PROT_EXECUTE)); /* the last mask of the loop */
+#else
     assert(st.protect == 0u);
+#endif
     assert(api_file_set_protect("pm.txt", 0x100u) == AAR_E_INVAL);
     assert(api_file_set_protect("pm.txt", 0u) == AAR_OK);
+    assert(api_file_stat("pm.txt", &st) == AAR_OK && st.protect == 0u);
     assert(api_file_set_protect("absent.txt", 0u) == AAR_E_NOENT);
+    assert(api_file_set_protect("absent.txt", AAR_PROT_SCRIPT) == AAR_E_NOENT);
     assert(api_file_set_protect("../out", 0u) == AAR_E_ACCES);
+    assert(api_file_set_protect("../out", AAR_PROT_SCRIPT) == AAR_E_ACCES);
+#ifndef _WIN32
     assert(api_dir_create("pd") == AAR_OK);
-    assert(api_file_set_protect("pd", AAR_PROT_EXECUTE) == AAR_OK);
+    /* A directory has no EXECUTE: the mask is refused, not ignored. */
+    assert(api_file_set_protect("pd", AAR_PROT_EXECUTE) == AAR_E_NOSYS);
     assert(api_file_stat("pd", &st) == AAR_OK);
-    assert(st.mode == AAR_MODE_DIR && st.protect == 0u); /* a directory has no EXECUTE */
+    assert(st.mode == AAR_MODE_DIR && st.protect == 0u);
+    assert(api_file_set_protect("pd", AAR_PROT_WRITE | AAR_PROT_DELETE) == AAR_OK);
+    assert(api_file_stat("pd", &st) == AAR_OK);
+    assert(st.protect == (AAR_PROT_WRITE | AAR_PROT_DELETE));
+    assert(api_file_set_protect("pd", AAR_PROT_WRITE | AAR_PROT_DELETE |
+                                AAR_PROT_EXECUTE) == AAR_E_NOSYS);
+    assert(api_file_stat("pd", &st) == AAR_OK);
+    assert(st.protect == (AAR_PROT_WRITE | AAR_PROT_DELETE));
+    assert(api_file_set_protect("pd", 0u) == AAR_OK);
     assert(api_file_delete("pd") == AAR_OK);
 #endif
+    /* A filesystem keeps only the times it can. An ordinary time is kept
+     * exactly; an extreme one is refused, or kept exactly where the
+     * filesystem has the range for it. */
     assert(api_file_set_date("pm.txt", 1000000000) == AAR_OK);
     assert(api_file_stat("pm.txt", &st) == AAR_OK);
     assert(st.mtime == 1000000000);
+    {
+        static const int64_t extremes[] = {253402300799ll, 1ll << 40, INT64_MAX};
+        size_t i;
+
+        for (i = 0; i < sizeof extremes / sizeof extremes[0]; i++) {
+            int rc = api_file_set_date("pm.txt", extremes[i]);
+
+            assert(rc == AAR_OK || rc == AAR_E_INVAL);
+            assert(api_file_stat("pm.txt", &st) == AAR_OK);
+            if (rc == AAR_OK)
+                assert(st.mtime == extremes[i]);
+        }
+    }
+    assert(api_file_set_date("pm.txt", 1000000000) == AAR_OK);
+    assert(api_file_stat("pm.txt", &st) == AAR_OK && st.mtime == 1000000000);
     assert(api_file_set_date("pm.txt", -1) == AAR_E_INVAL);
     assert(api_file_set_date("absent.txt", 1000000000) == AAR_E_NOENT);
     assert(api_file_set_date("../out", 1000000000) == AAR_E_ACCES);
     assert(api_file_set_date("", 1000000000) == AAR_E_INVAL);
     unit_stop = 1;
     assert(api_file_set_date("pm.txt", 1100000000) == AAR_E_ACCES);
-    assert(api_file_set_protect("pm.txt", AAR_PROT_WRITE) == AAR_E_ACCES);
+    assert(api_file_set_protect("pm.txt", AAR_PROT_WRITE | AAR_PROT_DELETE) == AAR_E_ACCES);
     unit_stop = 0;
     assert(api_file_stat("pm.txt", &st) == AAR_OK && st.mtime == 1000000000);
     assert(api_file_delete("pm.txt") == AAR_OK);
@@ -615,6 +718,9 @@ int main(void)
     test_create_keeps_file_when_slots_full();
     test_create_truncate_excl();
     test_lists_have_their_own_table();
+#ifndef _WIN32
+    test_list_survives_a_rename();
+#endif
     test_seek_out_pos_is_optional();
     test_close_reports_flush_failure();
     test_access_mode_is_kept_per_id();

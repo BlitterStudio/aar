@@ -151,7 +151,6 @@ struct host_fd {
 
 struct host_list {
     int used;
-    char path[4096];
     struct host_objid id; /* the directory this listing reads, when have_id */
     int have_id;
 #ifdef _WIN32
@@ -163,21 +162,6 @@ struct host_list {
     DIR *dir;
 #endif
 };
-
-/* The directory this listing reads. */
-static int objid_of_list(const struct host_list *l, struct host_objid *id)
-{
-#ifdef _WIN32
-    /* A FindFirstFile search handle is not a file handle. */
-    return objid_of_path(l->path, id);
-#else
-    struct stat st;
-
-    if (fstat(dirfd(l->dir), &st) != 0)
-        return -1;
-    return objid_of_stat(&st, id);
-#endif
-}
 
 static struct host_fd fds[HOST_FD_COUNT];
 static struct host_list lists[HOST_FD_COUNT];
@@ -279,7 +263,9 @@ static int path_stat(const char *path, struct stat *st)
         return -1;
     memset(st, 0, sizeof *st);
     st->st_mode = ((wide.st_mode & _S_IFDIR) ? S_IFDIR : S_IFREG) |
-                  (wide.st_mode & (_S_IREAD | _S_IWRITE | _S_IEXEC));
+                  /* No EXECUTE: the host has no execute permission, and the
+                   * CRT's guess from the file name would not round-trip. */
+                  (wide.st_mode & (_S_IREAD | _S_IWRITE));
     st->st_size = (off_t)wide.st_size;
     st->st_mtime = (time_t)wide.st_mtime;
     return 0;
@@ -684,7 +670,6 @@ static int api_file_list_open(const char *path)
     if (ix == HOST_FD_COUNT)
         return AAR_E_NOMEM;
     memset(&lists[ix], 0, sizeof lists[ix]);
-    memcpy(lists[ix].path, full, strlen(full) + 1u);
 #ifdef _WIN32
     {
         char pattern[4096];
@@ -695,13 +680,15 @@ static int api_file_list_open(const char *path)
         if (lists[ix].find == INVALID_HANDLE_VALUE)
             return AAR_E_IO;
         lists[ix].have = 1;
+        /* A FindFirstFile search handle is not a file handle. */
+        lists[ix].have_id = objid_of_path(full, &lists[ix].id) == 0;
     }
 #else
     lists[ix].dir = opendir(full);
     if (!lists[ix].dir)
         return io_err();
+    lists[ix].have_id = objid_of_fd(dirfd(lists[ix].dir), &lists[ix].id) == 0;
 #endif
-    lists[ix].have_id = objid_of_list(&lists[ix], &lists[ix].id) == 0;
     lists[ix].used = 1;
     id = HOST_FD_BASE + ix;
     return id;
@@ -752,13 +739,13 @@ static int api_file_list_next(int list, aar_dirent *out)
         memset(out, 0, sizeof *out);
         strncpy(out->name, ent->d_name, AAR_NAME_MAX);
         out->mode = AAR_MODE_FILE;
+        /* Through the open directory, not through the path it was opened
+         * with: the directory, or a parent of it, may have been renamed. */
         {
-            char child[4096];
             struct stat st;
 
-            if (compose(child, sizeof child, lists[ix].path, ent->d_name) ==
-                    AAR_OK &&
-                path_stat(child, &st) == 0 && S_ISDIR(st.st_mode))
+            if (fstatat(dirfd(lists[ix].dir), ent->d_name, &st, 0) == 0 &&
+                S_ISDIR(st.st_mode))
                 out->mode = AAR_MODE_DIR;
         }
         return AAR_OK;
@@ -906,8 +893,11 @@ static int win_err(void)
  * of AmigaDOS (a clear owner bit is a set AAR_PROT_ bit). A directory has no
  * EXECUTE: its x bit is left alone. AAR_PROT_DELETE is reported as set when
  * AAR_PROT_WRITE is, and file_delete refuses such an object. ARCHIVE, PURE,
- * SCRIPT and HOLD have no home on the host: set_protect accepts them and
- * stat reports them clear.
+ * SCRIPT and HOLD have no home on the host, and stat reports them clear: a
+ * mask that asks for one is refused by set_protect (protect_storable), so
+ * that a mask it accepts reads back as it was set. On Windows the read-only
+ * attribute is WRITE and DELETE together, and READ and EXECUTE are never
+ * reported.
  */
 static uint32_t protect_of(const struct stat *st)
 {
@@ -1074,14 +1064,14 @@ static int api_file_set_date(const char *path, int64_t mtime)
     {
         HANDLE h;
         ULARGE_INTEGER ticks;
-        FILETIME ft;
+        FILETIME ft, got;
 
         if (mtime > 910692730085ll) /* the FILETIME range */
             return AAR_E_INVAL;
         ticks.QuadPart = ((ULONGLONG)mtime + 11644473600ull) * 10000000ull;
         ft.dwLowDateTime = ticks.LowPart;
         ft.dwHighDateTime = ticks.HighPart;
-        h = CreateFileA(full, FILE_WRITE_ATTRIBUTES,
+        h = CreateFileA(full, FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES,
                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                         NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
         if (h == INVALID_HANDLE_VALUE)
@@ -1091,11 +1081,24 @@ static int api_file_set_date(const char *path, int64_t mtime)
             CloseHandle(h);
             return rc;
         }
+        /* The filesystem keeps what it can (FAT keeps two-second steps): read
+         * the time back through the same handle. */
+        memset(&got, 0, sizeof got);
+        if (!GetFileTime(h, NULL, NULL, &got)) {
+            rc = win_err();
+            CloseHandle(h);
+            return rc;
+        }
         CloseHandle(h);
+        ticks.LowPart = got.dwLowDateTime;
+        ticks.HighPart = got.dwHighDateTime;
+        if (ticks.QuadPart / 10000000ull != (ULONGLONG)mtime + 11644473600ull)
+            return AAR_E_INVAL;
     }
 #else
     {
         struct timespec ts[2];
+        struct stat st;
 
         if ((int64_t)(time_t)mtime != mtime)
             return AAR_E_INVAL;
@@ -1108,9 +1111,39 @@ static int api_file_set_date(const char *path, int64_t mtime)
                 return AAR_E_INVAL;
             return op_err();
         }
+        /* The filesystem keeps what it can (ext4 ends in 2446, FAT keeps
+         * two-second steps): the call is a success only when the file holds
+         * the time that was asked for. */
+        if (path_stat(full, &st) != 0)
+            return op_err();
+        if ((int64_t)st.st_mtime != mtime)
+            return AAR_E_INVAL;
     }
 #endif
     return AAR_OK;
+}
+
+/* Whether the host can store this mask, so that aar_file_stat reports it
+ * back as it was set. */
+static int protect_storable(int is_dir, uint32_t protect)
+{
+#ifdef _WIN32
+    (void)is_dir;
+    /* The read-only attribute is all the host has: WRITE and DELETE together. */
+    return (protect & ~(AAR_PROT_WRITE | AAR_PROT_DELETE)) == 0u &&
+           ((protect & AAR_PROT_WRITE) != 0u) == ((protect & AAR_PROT_DELETE) != 0u);
+#else
+    if (protect & (AAR_PROT_ARCHIVE | AAR_PROT_PURE | AAR_PROT_SCRIPT |
+                   AAR_PROT_HOLD))
+        return 0;
+    /* DELETE is reported as WRITE is, so the two must agree. */
+    if (((protect & AAR_PROT_WRITE) != 0u) != ((protect & AAR_PROT_DELETE) != 0u))
+        return 0;
+    /* A directory has no EXECUTE. */
+    if (is_dir && (protect & AAR_PROT_EXECUTE))
+        return 0;
+    return 1;
+#endif
 }
 
 static int api_file_set_protect(const char *path, uint32_t protect)
@@ -1120,7 +1153,6 @@ static int api_file_set_protect(const char *path, uint32_t protect)
         AAR_PROT_SCRIPT | AAR_PROT_HOLD;
     char full[4096];
     struct stat st;
-    int mode;
     int rc;
 
     if (host_stop_requested())
@@ -1132,23 +1164,32 @@ static int api_file_set_protect(const char *path, uint32_t protect)
         return rc;
     if (path_stat(full, &st) != 0)
         return op_err();
-    mode = (int)(st.st_mode & 07777);
-    mode &= ~(S_IRUSR | S_IWUSR);
-    if (!(protect & AAR_PROT_READ))
-        mode |= S_IRUSR;
-    if (!(protect & AAR_PROT_WRITE))
-        mode |= S_IWUSR;
-    if (!S_ISDIR(st.st_mode)) {
-        mode &= ~S_IXUSR;
-        if (!(protect & AAR_PROT_EXECUTE))
-            mode |= S_IXUSR;
-    }
+    /* A mask of known bits that the host cannot store is refused before
+     * anything changes: the call would say yes, and aar_file_stat would show
+     * other bits. */
+    if (!protect_storable(S_ISDIR(st.st_mode), protect))
+        return AAR_E_NOSYS;
 #ifdef _WIN32
-    if (_chmod(full, mode & (_S_IREAD | _S_IWRITE)) != 0)
+    if (_chmod(full, (protect & AAR_PROT_WRITE) ? _S_IREAD
+                                                : (_S_IREAD | _S_IWRITE)) != 0)
         return op_err();
 #else
-    if (chmod(full, (mode_t)mode) != 0)
-        return op_err();
+    {
+        int mode = (int)(st.st_mode & 07777);
+
+        mode &= ~(S_IRUSR | S_IWUSR);
+        if (!(protect & AAR_PROT_READ))
+            mode |= S_IRUSR;
+        if (!(protect & AAR_PROT_WRITE))
+            mode |= S_IWUSR;
+        if (!S_ISDIR(st.st_mode)) {
+            mode &= ~S_IXUSR;
+            if (!(protect & AAR_PROT_EXECUTE))
+                mode |= S_IXUSR;
+        }
+        if (chmod(full, (mode_t)mode) != 0)
+            return op_err();
+    }
 #endif
     return AAR_OK;
 }

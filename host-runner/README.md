@@ -433,6 +433,9 @@ The path policy of the standard applies. Relative paths stay under
 as in an AmigaDOS path. `aar_map_file` reads at most 16 MiB into a
 runtime-owned shared block, so the file counts against the shared limit.
 A larger file is `AAR_E_NOSPC` and a zero-length file is `AAR_E_NOMEM`.
+`aar_file_list_next` classifies an entry through the open directory
+(`fstatat`), so a listing keeps working after its directory, or a parent of
+it, is renamed.
 
 The calls of API 0.6 resolve their paths as `aar_file_open` does. Those that
 change something (`aar_file_delete`, `aar_file_rename`, `aar_dir_create`,
@@ -460,10 +463,13 @@ contents, because the flag deletes the target first; a target on another file
 system, or a directory moved into itself, is `AAR_E_INVAL`.
 `aar_file_set_date` sets the modification time (`utimensat`, the access time
 stays) and refuses a negative time or one that the host's `time_t` cannot hold
-with `AAR_E_INVAL`. `aar_file_truncate` flushes the stream of the id and calls
-`ftruncate` (`_chsize_s` on Windows), so it shortens or zero-extends the
-file and leaves the position alone. It also clears the stream's end-of-file
-flag, so a read after an extension returns the new bytes without a seek.
+with `AAR_E_INVAL`. It reads the time back and answers `AAR_E_INVAL` when the
+filesystem kept another value (ext4 ends in 2446, FAT keeps two-second steps);
+the file then has that other value. `aar_file_truncate` flushes the stream of
+the id and calls `ftruncate` (`_chsize_s` on Windows), so it shortens or
+zero-extends the file and leaves the position alone. It also clears the
+stream's end-of-file flag, so a read after an extension returns the new bytes
+without a seek.
 `aar_get_volume_info` is `statvfs` of the path: the fragment size as
 `block_bytes`, the blocks as `total_bytes`, the blocks available to a user as
 `free_bytes`, and `AAR_VOLF_READONLY` for a read-only mount
@@ -474,13 +480,18 @@ bits. `aar_stat.protect` and `aar_file_set_protect` map the owner's r, w and x
 bits to `AAR_PROT_READ`, `AAR_PROT_WRITE` and `AAR_PROT_EXECUTE` with the sense
 of AmigaDOS: a clear permission bit is a set protection bit. A directory has no
 `AAR_PROT_EXECUTE`, and its x bit is left alone. `AAR_PROT_DELETE` is reported
-when `AAR_PROT_WRITE` is and ignored by `aar_file_set_protect`, so a file that
-cannot be written cannot be deleted either, whatever the directory allows.
-`AAR_PROT_ARCHIVE`, `AAR_PROT_PURE`, `AAR_PROT_SCRIPT` and `AAR_PROT_HOLD` are
-accepted and read back as clear, because the host has nowhere to keep them. A
-file made by the host usually has no x bit and so reports `AAR_PROT_EXECUTE`.
-On Windows the read-only attribute is `AAR_PROT_WRITE` and `AAR_PROT_DELETE`,
-and nothing else is stored.
+when `AAR_PROT_WRITE` is, so a file that cannot be written cannot be deleted
+either, whatever the directory allows. A mask that `aar_file_set_protect`
+accepts reads back from `aar_file_stat` as it was set. A mask of known bits
+that the host cannot store is `AAR_E_NOSYS` before anything changes: one with
+`AAR_PROT_ARCHIVE`, `PURE`, `SCRIPT` or `HOLD` (the host has nowhere to keep
+them), one where `AAR_PROT_DELETE` and `AAR_PROT_WRITE` differ, and
+`AAR_PROT_EXECUTE` for a directory. A bit that no constant names is
+`AAR_E_INVAL`. A file made by the host usually has no x bit and so reports
+`AAR_PROT_EXECUTE`. On Windows the read-only attribute is `AAR_PROT_WRITE` and
+`AAR_PROT_DELETE` together, and nothing else is stored: only a mask of 0 or of
+both is accepted, and `aar_file_stat` reports neither `AAR_PROT_READ` nor
+`AAR_PROT_EXECUTE`.
 
 ### Locale, environment and clipboard
 

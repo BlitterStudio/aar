@@ -80,6 +80,10 @@ static int test_files(void)
     char buf[16];
     int fd;
     int list;
+#ifndef _WIN32
+    aar_dirent ent;
+    int saw_dir, saw_file;
+#endif
 
     CHECK_RC(aar_dir_create("sub"), AAR_OK, 10);
     CHECK_RC(aar_dir_create("sub"), AAR_E_EXIST, 11);
@@ -175,6 +179,24 @@ static int test_files(void)
     CHECK_RC(aar_file_set_date("dated.txt", -1), AAR_E_INVAL, 54);
     CHECK_RC(aar_file_set_date("absent.txt", 1000000000), AAR_E_NOENT, 55);
     CHECK_RC(aar_file_set_date("sub", 1000000000), AAR_OK, 56);
+    /* A filesystem keeps only the times it can: an extreme time is refused
+     * with AAR_E_INVAL, or kept exactly. */
+    {
+        static const int64_t extremes[] = {253402300799ll, 1ll << 40, INT64_MAX};
+        uint32_t i;
+
+        for (i = 0; i < 3u; i++) {
+            int rc = aar_file_set_date("dated.txt", extremes[i]);
+
+            if (rc == AAR_OK) {
+                CHECK_RC(aar_file_stat("dated.txt", &st), AAR_OK, 57);
+                CHECK(st.mtime == extremes[i], 57);
+            } else {
+                CHECK(rc == AAR_E_INVAL, 57);
+            }
+        }
+    }
+    CHECK_RC(aar_file_set_date("dated.txt", 1000000000), AAR_OK, 57);
 
     /* set_protect: Python reads the mode bits of perm.txt afterwards */
     CHECK_RC(write_text("perm.txt", "p"), AAR_OK, 60);
@@ -186,6 +208,14 @@ static int test_files(void)
     CHECK_RC(aar_file_delete("perm.txt"), AAR_E_ACCES, 66);
     CHECK_RC(aar_file_set_protect("perm.txt", 0x100u), AAR_E_INVAL, 67);
     CHECK_RC(aar_file_set_protect("absent.txt", 0u), AAR_E_NOENT, 68);
+    /* A mask of known bits that the host cannot store is AAR_E_NOSYS, and
+     * the protection does not change. */
+    CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_SCRIPT), AAR_E_NOSYS, 68);
+    CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_ARCHIVE), AAR_E_NOSYS, 68);
+    CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_DELETE), AAR_E_NOSYS, 68);
+    CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_WRITE), AAR_E_NOSYS, 68);
+    CHECK_RC(aar_file_stat("perm.txt", &st), AAR_OK, 68);
+    CHECK(st.protect == (AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_EXECUTE), 68);
     CHECK_RC(aar_file_set_protect("perm.txt", AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_EXECUTE), AAR_OK, 69);
 
     /* volume_info */
@@ -216,6 +246,33 @@ static int test_files(void)
     CHECK(list >= AAR_FD_BASE, 87);
     CHECK_RC(aar_file_delete("ldir"), AAR_E_BUSY, 87);
     CHECK_RC(aar_file_list_close(list), AAR_OK, 87);
+#ifndef _WIN32
+    /* A listing classifies its entries through the open directory: it keeps
+     * doing so after the directory was renamed. */
+    CHECK_RC(aar_dir_create("top"), AAR_OK, 88);
+    CHECK_RC(aar_dir_create("top/inner"), AAR_OK, 88);
+    CHECK_RC(write_text("top/plain.txt", "p"), AAR_OK, 88);
+    list = aar_file_list_open("top");
+    CHECK(list >= AAR_FD_BASE, 88);
+    CHECK_RC(aar_file_rename("top", "top2", 0), AAR_OK, 88);
+    saw_dir = saw_file = 0;
+    for (;;) {
+        int rc = aar_file_list_next(list, &ent);
+
+        if (rc == AAR_E_NOENT)
+            break;
+        CHECK_RC(rc, AAR_OK, 88);
+        if (strcmp(ent.name, "inner") == 0 && ent.mode == AAR_MODE_DIR)
+            saw_dir++;
+        if (strcmp(ent.name, "plain.txt") == 0 && ent.mode == AAR_MODE_FILE)
+            saw_file++;
+    }
+    CHECK(saw_dir == 1 && saw_file == 1, 88);
+    CHECK_RC(aar_file_list_close(list), AAR_OK, 88);
+    CHECK_RC(aar_file_delete("top2/inner"), AAR_OK, 88);
+    CHECK_RC(aar_file_delete("top2/plain.txt"), AAR_OK, 88);
+    CHECK_RC(aar_file_delete("top2"), AAR_OK, 88);
+#endif
     CHECK_RC(aar_file_delete("ldir"), AAR_OK, 87);
 
     /* the path rules and the policy of file_open, for every call */
