@@ -162,7 +162,10 @@ owns the window.
 
 `AAR_DISPLAY_WINDOW` shows the surface in a window on the default public screen.
 The surface is then a bitmap of its own in the requested format, made with
-`p96AllocBitMap` on the board and named by a token like any other surface. The
+`p96AllocBitMap` on the board and named by a token like any other surface.
+The client requests a displayable bitmap. If it cannot get a board token, it
+tries again with the public screen's bitmap as the friend. It uses the same
+placement rule for the drawing surface of a scaled screen. The
 token is the address of the bitmap, which Picasso96 may move while it is not
 locked, so `p96LockBitMap` pins it before the token exists and the lock is kept
 until the surface is replaced by a resize or the display is closed. A bitmap

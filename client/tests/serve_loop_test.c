@@ -2932,6 +2932,50 @@ static void test_a_window_that_the_public_screen_cannot_show_falls_back_to_a_scr
     finish();
 }
 
+/* Picasso96 puts a bitmap on the board (where AARSharedToken can name it) only when it is
+ * displayable or has a friend there. A surface asked for with BMF_CLEAR alone is Amiga memory: the
+ * window display then fell back to a screen, and with no input window of ours (the conformance
+ * runner's) display_pointer had no window to act on and answered AAR_E_NOSYS. */
+static void test_the_window_surface_is_asked_for_on_the_board(void)
+{
+    struct comp c;
+    uint32_t arg[6];
+
+    setup("display_window_board_bitmap");
+    cfg.flags |= AAR_SERVEF_NO_INPUT_WINDOW;
+    make_serve();
+    memset(arg, 0, sizeof(arg));
+    arg[0] = AAR_SERVE_DISPLAY_ID;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(c.result == AAR_OK && c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW));
+    CHECK(hx_cur_window && !hx_cur_window->hx_custom_screen);
+    /* the window of the display takes the pointer, with no input window */
+    arg[1] = AAR_POINTER_DEFAULT;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 60, arg, 0, 0, &c) && c.result == AAR_OK);
+    arg[1] = AAR_POINTER_BUSY;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 61, arg, 0, 0, &c) && c.result == AAR_OK && hx_ptr_kind == 1);
+    arg[1] = AAR_POINTER_HIDDEN;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 62, arg, 0, 0, &c) && c.result == AAR_OK && hx_ptr_kind == 2);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 63, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(hx_p96_bitmaps_live == 0 && hx_pointers_live == 0 && hx_pub_locks == 0);
+    /* a board that names a bitmap only through a friend: the public screen's bitmap is it */
+    hx_p96_friend_only = 1;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
+    CHECK(c.result == AAR_OK && (c.flags & AAR_DISPCAP_WINDOW));
+    CHECK(hx_p96_bitmaps_live == 1); /* the first attempt's bitmap was let go */
+    arg[1] = AAR_POINTER_BUSY;
+    CHECK(call6(AAR_OP_DISPLAY_POINTER, 64, arg, 0, 0, &c) && c.result == AAR_OK);
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 65, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(hx_p96_bitmaps_live == 0 && hx_locks_live == 0 && hx_pub_locks == 0);
+    /* a scaled screen's own surface is named the same way */
+    hx_pub_w = 240;
+    hx_pub_h = 160;
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_SCALE));
+    CHECK(c.result == AAR_OK && (c.flags & AAR_DISPCAP_SCALED));
+    CHECK(hx_pub_locks == 0);
+    finish();
+}
+
 static void test_a_scaled_window_keeps_the_aspect_and_follows_its_size(void)
 {
     struct comp c;
@@ -4099,6 +4143,7 @@ static const struct {
     T(test_the_window_keys_follow_break_mask),
     T(test_a_window_display_shows_its_surface_in_a_window_on_the_public_screen),
     T(test_a_window_that_the_public_screen_cannot_show_falls_back_to_a_screen),
+    T(test_the_window_surface_is_asked_for_on_the_board),
     T(test_a_scaled_window_keeps_the_aspect_and_follows_its_size),
     T(test_a_scaled_screen_has_a_surface_of_its_own),
     T(test_a_window_is_resized_by_the_app),

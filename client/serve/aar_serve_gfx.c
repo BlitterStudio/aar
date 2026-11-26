@@ -570,34 +570,47 @@ static struct Screen *open_p96_screen(struct aar_serve *s, ULONG mode,
  * is not locked (a screen change, memory management), and the runtime keeps
  * copying frames to the token for as long as the display is open. The RenderInfo
  * of that lock is kept for the flips, which draw from it without locking again.
+ *
+ * A bitmap in Amiga RAM has no card token. Ask Picasso96 for a displayable
+ * bitmap first, then try the public screen's bitmap as its friend.
+ *
  * False when the bitmap cannot be made, locked or named (outside what the
  * platform can see); nothing is held then. */
 static int make_surface(struct aar_serve *s, uint32_t w, uint32_t h,
-                        uint32_t format, struct pinned_surface *pin,
-                        ULONG *token, ULONG *pitch)
+                        uint32_t format, struct BitMap *friend,
+                        struct pinned_surface *pin, ULONG *token, ULONG *pitch)
 {
     ULONG rgb = format_rgb(format);
-    struct BitMap *bm;
+    int attempt;
 
     if (w == 0 || h == 0 || w > AAR_SERVE_SCREEN_MAX || h > AAR_SERVE_SCREEN_MAX ||
         !claim_check(s))
         return 0;
-    bm = X_P96_ALLOC_BITMAP(s, w, h, aar_serve_display_depth(format), BMF_CLEAR, NULL, rgb);
-    if (!bm)
-        return 0;
-    memset(&pin->ri, 0, sizeof(pin->ri));
-    pin->lock = X_P96_LOCK_BITMAP(s, bm, &pin->ri, sizeof(pin->ri));
-    if (!pin->lock) {
-        X_P96_FREE_BITMAP(s, bm);
-        return 0;
+    for (attempt = 0; attempt < 2; attempt++) {
+        struct BitMap *bm;
+
+        if (attempt == 1 && !friend)
+            break;
+        bm = X_P96_ALLOC_BITMAP(s, w, h, aar_serve_display_depth(format),
+                                BMF_CLEAR | BMF_DISPLAYABLE,
+                                attempt ? friend : NULL, rgb);
+        if (!bm)
+            continue;
+        memset(&pin->ri, 0, sizeof(pin->ri));
+        pin->lock = X_P96_LOCK_BITMAP(s, bm, &pin->ri, sizeof(pin->ri));
+        if (!pin->lock) {
+            X_P96_FREE_BITMAP(s, bm);
+            return 0;
+        }
+        if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb ||
+            !bitmap_token(s, bm, token, pitch)) {
+            unpin_bitmap(s, bm, pin->lock);
+            continue;
+        }
+        pin->bm = bm;
+        return 1;
     }
-    if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb ||
-        !bitmap_token(s, bm, token, pitch)) {
-        unpin_bitmap(s, bm, pin->lock);
-        return 0;
-    }
-    pin->bm = bm;
-    return 1;
+    return 0;
 }
 
 /* The surface made by make_surface becomes the display's; its lock goes with it. */
@@ -662,7 +675,7 @@ static int open_window_display(struct aar_serve *s, uint32_t w, uint32_t h,
         X_UNLOCK_PUB_SCREEN(NULL, pub);
         return 0;
     }
-    if (!make_surface(s, w, h, format, &pin, front, pitch)) {
+    if (!make_surface(s, w, h, format, pub->RastPort.BitMap, &pin, front, pitch)) {
         X_UNLOCK_PUB_SCREEN(NULL, pub);
         return 0;
     }
@@ -752,10 +765,10 @@ static int open_screen(struct aar_serve *s, uint32_t w, uint32_t h,
         if (wb) {
             wb_w = (uint32_t)wb->Width;
             wb_h = (uint32_t)wb->Height;
+            if (wb_w && wb_h && wb_w <= AAR_SERVE_SCREEN_MAX && wb_h <= AAR_SERVE_SCREEN_MAX)
+                made = make_surface(s, w, h, format, wb->RastPort.BitMap, &pin, &front, &pitch);
             X_UNLOCK_PUB_SCREEN(NULL, wb);
         }
-        if (wb_w && wb_h && wb_w <= AAR_SERVE_SCREEN_MAX && wb_h <= AAR_SERVE_SCREEN_MAX)
-            made = make_surface(s, w, h, format, &pin, &front, &pitch);
         if (made) {
             adopt_surface(s, &pin, w, h, format);
             screen_w = wb_w;
@@ -967,7 +980,8 @@ static void display_op_resize(void *ctx, const struct aar_serve_req *req,
         done->result = AAR_E_NOSYS;
         return;
     }
-    if (!make_surface(s, w, h, format, &pin, &token, &pitch)) {
+    if (!make_surface(s, w, h, format, s->gfx.pub ? s->gfx.pub->RastPort.BitMap : NULL,
+                      &pin, &token, &pitch)) {
         done->result = AAR_E_NOMEM;
         return;
     }

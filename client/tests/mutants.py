@@ -1161,8 +1161,12 @@ mutant("window-on-an-8-bit-public-screen", "display_window_fallback", SG,
 mutant("clut8-in-a-window", "display_window_fallback", SG,
        ("    if (format == AAR_FMT_CLUT8 || !s->gfx.p96", "    if (!s->gfx.p96"))
 mutant("surface-token-not-checked", "display_window_fallback", SG,
-       ("    if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb ||\n        !bitmap_token(s, bm, token, pitch)) {",
-        "    if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb) {\n        (void)bitmap_token(s, bm, token, pitch);"))
+       ("        if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb ||\n            !bitmap_token(s, bm, token, pitch)) {",
+        "        if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb) {\n            (void)bitmap_token(s, bm, token, pitch);"))
+mutant("surface-not-displayable", "display_window_board_bitmap", SG,
+       ("                                BMF_CLEAR | BMF_DISPLAYABLE,\n", "                                BMF_CLEAR,\n"))
+mutant("surface-without-a-friend", "display_window_board_bitmap", SG,
+       ("                                attempt ? friend : NULL, rgb);", "                                NULL, rgb);"))
 mutant("scaled-flip-draws-unscaled", "display_scale_window", SG,
        ("        if (s->gfx.scaled)\n            write_scaled(s, &ri, rp, ox + x, oy + y, w, h);", "        if (0)\n            write_scaled(s, &ri, rp, ox + x, oy + y, w, h);"))
 mutant("scaled-area-not-cleared", "display_scale_window", SG,
@@ -1188,8 +1192,8 @@ mutant("cd32-without-lowlevel-is-served", "joystick_cd32", SL,
 mutant("scaled-strips-written-in-the-wrong-format", "display_scale_bgra", SG,
        ("    out.RGBFormat = (RGBFTYPE)s->gfx.surf_rgb;", "    out.RGBFormat = RGBFB_R5G6B5;"))
 mutant("surface-unlocked-after-its-token-is-named", "display_surface_pinned", SG,
-       ("    pin->bm = bm;\n    return 1;\n",
-        "    X_P96_UNLOCK_BITMAP(s, bm, pin->lock);\n    pin->lock = 0;\n    pin->bm = bm;\n    return 1;\n"))
+       ("        pin->bm = bm;\n        return 1;\n",
+        "        X_P96_UNLOCK_BITMAP(s, bm, pin->lock);\n        pin->lock = 0;\n        pin->bm = bm;\n        return 1;\n"))
 NAMES = {m[0]: m for m in M}
 
 

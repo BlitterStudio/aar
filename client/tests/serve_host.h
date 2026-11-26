@@ -2774,23 +2774,25 @@ HX_UNUSED static void hx_free_bitmap(struct BitMap *bm)
 }
 
 HX_UNUSED static int hx_p96_outside_arena;           /* the next surfaces are outside the arena */
+/* Model a board that accepts the displayable flag, or one that needs a friend. */
+HX_UNUSED static int hx_p96_friend_only;
 /* Picasso96 bitmaps: in the arena, so that AARSharedToken names them */
 HX_UNUSED static struct BitMap *hx_p96_alloc_bitmap(ULONG w, ULONG h, ULONG depth, ULONG flags,
                                                     struct BitMap *friend, ULONG rgb)
 {
     struct BitMap *bm;
     uint32_t pitch = (w * hx_bpp((int)rgb) + 15u) & ~15u;
+    int on_board = hx_p96_friend_only ? friend != NULL : (flags & BMF_DISPLAYABLE) != 0;
 
     unsigned i;
 
     (void)depth;
-    (void)friend;
     if (hx_p96_fail_alloc_bitmap)
         return NULL;
     bm = hx_alloc(sizeof(*bm), 1);
     if (!bm)
         return NULL;
-    if (hx_p96_outside_arena) {
+    if (hx_p96_outside_arena || !on_board) {
         /* memory the platform cannot see: AARSharedToken refuses it */
         static uint8_t outside[16384];
 
@@ -3257,6 +3259,7 @@ HX_UNUSED static void hx_reset(void)
     hx_p96_relocated = 0;
     memset(hx_p96_bms, 0, sizeof(hx_p96_bms));
     hx_p96_outside_arena = 0;
+    hx_p96_friend_only = 0;
     hx_p96_bitmaps_live = hx_bitmaps_live = hx_pointers_live = hx_locks_live = 0;
     hx_pwa_calls = hx_rectfills = hx_locks_taken = 0;
     hx_pwa_last_rgb = -1;
