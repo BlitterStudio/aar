@@ -3302,43 +3302,6 @@ static void test_wheel_keys_and_text_characters(void)
     assert(aar_serve_text_chars(csi, 1, 0u, 0xC0u, out, 8u) == 0u);
 }
 
-static void test_utf8_titles_become_latin1(void)
-{
-    char out[16];
-
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"plain", 5u, out, sizeof(out)) == 5u);
-    assert(strcmp(out, "plain") == 0);
-    /* two byte sequences up to U+00FF are the same Latin-1 character */
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xC3\xA4\xC3\xB6\xC3\xBC\xC2\xA0", 8u, out,
-                                    sizeof(out)) == 4u);
-    assert(memcmp(out, "\xE4\xF6\xFC\xA0", 5) == 0);
-    /* above U+00FF, and the three and four byte forms, are '?' */
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xC4\x80\xE2\x82\xAC\xF0\x9F\x98\x80z", 10u,
-                                    out, sizeof(out)) == 4u);
-    assert(strcmp(out, "???z") == 0);
-    /* malformed: a lone continuation, a lead without its continuation, an overlong form, a
-     * surrogate, a code point past U+10FFFF, a truncated end */
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\x80" "a", 2u, out, sizeof(out)) == 2u);
-    assert(strcmp(out, "?a") == 0);
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xC3" "a", 2u, out, sizeof(out)) == 2u);
-    assert(strcmp(out, "?a") == 0);
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xC0\x80", 2u, out, sizeof(out)) == 2u);
-    assert(strcmp(out, "??") == 0);
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xE0\x80\x80", 3u, out, sizeof(out)) == 3u);
-    assert(strcmp(out, "???") == 0);
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xED\xA0\x80", 3u, out, sizeof(out)) == 3u);
-    assert(strcmp(out, "???") == 0);
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"\xF4\x90\x80\x80", 4u, out, sizeof(out)) == 4u);
-    assert(strcmp(out, "????") == 0);
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"ab\xE2\x82", 4u, out, sizeof(out)) == 4u);
-    assert(strcmp(out, "ab??") == 0);
-    /* a NUL ends it, n limits it, cap limits the output */
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"ab\0cd", 5u, out, sizeof(out)) == 2u);
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"abcdef", 3u, out, sizeof(out)) == 3u);
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"abcdef", 6u, out, 4u) == 3u);
-    assert(strcmp(out, "abc") == 0);
-    assert(aar_serve_utf8_to_latin1((const uint8_t *)"abc", 3u, out, 0u) == 0u);
-}
 
 static void test_pointer_images_are_quantised_to_the_pointer_colours(void)
 {
@@ -4375,7 +4338,6 @@ int main(void)
     test_the_fit_rectangle_and_the_pointer_position_on_the_surface();
     test_nearest_neighbour_scaling_matches_the_pixel_centre_formula();
     test_wheel_keys_and_text_characters();
-    test_utf8_titles_become_latin1();
     test_pointer_images_are_quantised_to_the_pointer_colours();
     test_refresh_rates_and_mode_records();
     test_cd32_pad_values_map_to_joy_bits();

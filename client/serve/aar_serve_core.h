@@ -1075,10 +1075,6 @@ int aar_serve_wheel_key(uint16_t raw, int16_t *dx, int16_t *dy);
  * Returns the count. */
 uint32_t aar_serve_text_chars(const uint8_t *mapped, int32_t n, uint16_t qualifiers,
                               uint16_t command_mask, uint16_t *out, uint32_t max);
-/* UTF-8 to ISO-8859-1 for a title: code points above 0xFF and malformed
- * sequences become '?'. Reads at most n bytes, stops at a NUL, writes at most
- * cap - 1 characters and a NUL. Returns the length written. */
-uint32_t aar_serve_utf8_to_latin1(const uint8_t *in, uint32_t n, char *out, uint32_t cap);
 /* The pointer colour (0 transparent, 1 to 3 the nearest of palette[0..2], each
  * 0x00RRGGBB) of one 0xAARRGGBB pixel; alpha below 0x80 is transparent. */
 uint32_t aar_serve_pointer_pixel(uint32_t argb, const uint32_t palette[3]);

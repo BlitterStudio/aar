@@ -1506,7 +1506,8 @@ uint32_t aar_serve_utf8_to_latin1(const uint8_t *src, uint32_t n, uint8_t *dst)
                     cp = (cp << 6) | (src[i + k] & 0x3Fu);
                 }
             }
-            if (ok && ((len == 3 && cp < 0x800u) || (len == 4 && cp < 0x10000u)))
+            if (ok && ((len == 3 && cp < 0x800u) || (len == 4 && cp < 0x10000u) ||
+                       (cp >= 0xD800u && cp <= 0xDFFFu) || cp > 0x10FFFFu))
                 ok = 0;
         }
         if (!ok) {
@@ -2778,7 +2779,7 @@ void aar_serve_display_title_request(struct aar_serve_display *d,
         done->result = AAR_E_NOSYS;
         return;
     }
-    (void)aar_serve_utf8_to_latin1(req->buf, n, title, sizeof(title));
+    title[aar_serve_utf8_to_latin1(req->buf, n, (uint8_t *)title)] = '\0';
     done->result = d->ops.set_title(d->ops.ctx, title);
 }
 
@@ -3019,56 +3020,6 @@ uint32_t aar_serve_text_chars(const uint8_t *mapped, int32_t n, uint16_t qualifi
     return count;
 }
 
-uint32_t aar_serve_utf8_to_latin1(const uint8_t *in, uint32_t n, char *out, uint32_t cap)
-{
-    uint32_t i = 0, o = 0;
-
-    if (cap == 0)
-        return 0;
-    while (i < n && in[i] != 0 && o + 1u < cap) {
-        uint8_t c = in[i];
-        uint32_t cp = c, need = 0, k;
-        int ok = 1;
-
-        if (c >= 0xC2u && c <= 0xDFu) {
-            need = 1;
-            cp = c & 0x1Fu;
-        } else if (c >= 0xE0u && c <= 0xEFu) {
-            need = 2;
-            cp = c & 0x0Fu;
-        } else if (c >= 0xF0u && c <= 0xF4u) {
-            need = 3;
-            cp = c & 0x07u;
-        } else if (c >= 0x80u) {
-            ok = 0;
-        }
-        if (ok && need) {
-            if (i + need >= n) {
-                ok = 0;
-            } else {
-                for (k = 1; k <= need; k++) {
-                    if ((in[i + k] & 0xC0u) != 0x80u) {
-                        ok = 0;
-                        break;
-                    }
-                    cp = (cp << 6) | (in[i + k] & 0x3Fu);
-                }
-            }
-            if (ok && ((need == 2 && cp < 0x800u) || (need == 3 && cp < 0x10000u) ||
-                       (cp >= 0xD800u && cp <= 0xDFFFu) || cp > 0x10FFFFu))
-                ok = 0;
-        }
-        if (!ok) {
-            out[o++] = '?';
-            i++;
-            continue;
-        }
-        out[o++] = cp <= 0xFFu ? (char)cp : '?';
-        i += need + 1u;
-    }
-    out[o] = '\0';
-    return o;
-}
 
 uint32_t aar_serve_pointer_pixel(uint32_t argb, const uint32_t palette[3])
 {
