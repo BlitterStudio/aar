@@ -174,6 +174,7 @@ static void finish(void)
     CHECK(hx_screens == 0 && hx_buffers_live == 0 && hx_windows == 0);
     CHECK(hx_timer_open_count == 0 && hx_ahi_open_count == 0);
     CHECK(hx_pub_locks == 0);
+    CHECK(hx_host_libs_open == 0 && hx_locale_open_now == 0 && hx_clip_handles == 0);
     CHECK(hx_live_blocks == 0);
     CHECK(hx_p96_bitmaps_live == 0 && hx_bitmaps_live == 0 && hx_pointers_live == 0 && hx_locks_live == 0);
     CHECK(hx_ll_open == 0 && hx_keymap_open == 0);
@@ -3961,6 +3962,7 @@ static void test_a_replacement_display_has_no_window_caps_and_serves_the_rest(vo
     finish();
 }
 
+#include "serve_files_cases.h"
 
 /* ---- Main ------------------------------------------------------------------------------------------------------------ */
 
@@ -3980,6 +3982,49 @@ static const struct {
     T(test_files_stay_under_the_root),
     T(test_files_absolute_paths_with_abs_through_two_directories),
     T(test_files_list_a_directory),
+    T(test_file_delete_and_its_errors),
+    T(test_file_delete_path_policy),
+    T(test_file_delete_with_a_volume_path_needs_abs),
+    T(test_a_write_protected_volume_refuses_every_change_with_acces),
+    T(test_file_rename_and_its_errors),
+    T(test_file_rename_replace_deletes_the_target_first),
+    T(test_file_rename_stays_under_the_root_and_on_one_volume),
+    T(test_dir_create_and_its_errors),
+    T(test_set_date_and_stat_are_unix_seconds_utc),
+    T(test_stat_of_a_file_uses_the_offset_too),
+    T(test_set_date_errors),
+    T(test_protection_bits_go_both_ways),
+    T(test_truncate_shortens_and_extends_with_zeros),
+    T(test_truncate_needs_an_id_opened_for_writing),
+    T(test_truncate_below_another_handles_position_is_busy),
+    T(test_a_full_volume_stops_an_extension),
+    T(test_volume_info_reports_blocks_and_protection),
+    T(test_a_stop_cancels_the_new_file_requests_and_not_the_reads),
+    T(test_the_platform_ending_the_app_cancels_the_new_file_requests),
+    T(test_time_unix_is_utc_microseconds),
+    T(test_locale_info_fills_the_record),
+    T(test_locale_info_without_locale_library_is_zeros_and_ok),
+    T(test_env_get_returns_the_stored_bytes_and_the_full_length),
+    T(test_env_get_uses_the_full_length_getvar_reports),
+    T(test_env_get_checks_the_name),
+    T(test_a_config_flag_refuses_the_environment),
+    T(test_clip_read_text_converts_ftxt_to_utf8),
+    T(test_clip_read_units_and_types),
+    T(test_a_chunked_clip_read_is_one_consistent_clip),
+    T(test_a_chunked_text_write_replaces_the_clip_at_the_last_chunk),
+    T(test_clip_write_sequence_errors_change_nothing),
+    T(test_clip_write_empty_text_clears_the_text),
+    T(test_clip_write_iff_passes_one_form_through),
+    T(test_clip_without_the_system_libraries),
+    T(test_a_config_flag_refuses_the_clipboard),
+    T(test_ctrl_c_during_a_clipboard_write_aborts_it_and_keeps_the_clip),
+    T(test_a_clipboard_device_that_ignores_the_abort_is_waited_for),
+    T(test_a_clipboard_write_waits_for_the_other_program_and_completes),
+    T(test_a_claim_revoked_during_a_clipboard_read_aborts_it),
+    T(test_a_text_clip_of_the_limit_round_trips),
+    T(test_clip_read_limits_are_on_the_text_and_on_the_form),
+    T(test_the_config_flags_of_the_host_ops_are_known),
+    T(test_the_host_libraries_are_closed_at_destroy),
     T(test_ctrl_c_during_a_dos_wait_stops_and_waits_for_the_reply),
     T(test_a_full_completion_queue_loses_no_completion),
     T(test_display_with_screen_buffers),

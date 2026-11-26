@@ -190,6 +190,10 @@ struct aar_serve_console_ops {
                                                   aar_serve_post_event */
 #define AAR_SERVEF_USE_SIGNAL      (1UL << 3)  /* arm the handle and add the library signal to
                                                   aar_serve_sigmask */
+#define AAR_SERVEF_NO_ENV          (1UL << 4)  /* refuse the app's reads of ENV: variables
+                                                  (AAR_E_ACCES) */
+#define AAR_SERVEF_NO_CLIPBOARD    (1UL << 5)  /* refuse the app's clipboard reads and writes
+                                                  (AAR_E_ACCES) */
 
 /* aar_serve_config.display_strategy: the first strategy to try; the later ones
  * are the fallbacks. */

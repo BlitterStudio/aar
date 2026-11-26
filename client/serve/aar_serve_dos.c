@@ -41,6 +41,19 @@ static BPTR open_resolved_async(struct aar_serve *s,
                                 const char *name, LONG mode, int *transport_ok);
 static int end_async(struct aar_serve *s, BPTR fh, int *transport_ok);
 static void end_or_close(struct aar_serve *s, BPTR fh);
+static int be_target_named(void *ctx, enum aar_serve_named kind,
+                           const struct aar_serve_named_args *args,
+                           int *transport_ok, int32_t *io);
+static int be_rename(void *ctx, uintptr_t from_dir, const char *from_name,
+                     uintptr_t to_dir, const char *to_name, int *transport_ok,
+                     int32_t *io);
+static int be_volume_info(void *ctx, uintptr_t lock, struct aar_serve_volume *out,
+                          int *transport_ok, int32_t *io);
+static int be_same_volume(void *ctx, uintptr_t from_dir, const char *from_name,
+                          uintptr_t to_dir, const char *to_name);
+static int32_t be_check_replace(void *ctx, uintptr_t source, uintptr_t target,
+                                const char *from_abs, const char *to_abs);
+static int be_utc_offset(void *ctx, int32_t *east_min);
 
 /* ---- The DOS backend of the file handlers --------------------------------
  *
@@ -147,6 +160,7 @@ static void info_from_fib(const struct FileInfoBlock *fib,
     memset(info, 0, sizeof(*info));
     info->is_dir = fib->fib_DirEntryType > 0;
     info->size = (uint32_t)fib->fib_Size;
+    info->protect = (uint32_t)fib->fib_Protection & 0xffu;
     info->mtime = aar_serve_amiga_unix((uint32_t)fib->fib_Date.ds_Days,
                                        (uint32_t)fib->fib_Date.ds_Minute,
                                        (uint32_t)fib->fib_Date.ds_Tick);
@@ -254,13 +268,13 @@ static void be_target_end(void *ctx)
     memset(&s->dos.target, 0, sizeof(s->dos.target));
 }
 
-static int32_t be_fh_set_size0(void *ctx, uintptr_t fh, int *transport_ok,
-                               int32_t *io)
+static int32_t be_fh_set_size(void *ctx, uintptr_t fh, uint32_t size,
+                              int *transport_ok, int32_t *io)
 {
     struct aar_serve *s = ctx;
     LONG result;
 
-    result = file_packet_async(s, (BPTR)fh, ACTION_SET_FILE_SIZE, 0,
+    result = file_packet_async(s, (BPTR)fh, ACTION_SET_FILE_SIZE, (LONG)size,
                                OFFSET_BEGINNING, 0, 0, transport_ok);
     *io = (int32_t)X_IO_ERR();
     return (int32_t)result;
@@ -399,7 +413,7 @@ static const struct aar_serve_dos_ops aar_serve_dos_backend = {
     .target_probe = be_target_probe,
     .target_open = be_target_open,
     .target_end = be_target_end,
-    .fh_set_size0 = be_fh_set_size0,
+    .fh_set_size = be_fh_set_size,
     .fh_read = be_fh_read,
     .fh_write = be_fh_write,
     .fh_seek = be_fh_seek,
@@ -408,6 +422,12 @@ static const struct aar_serve_dos_ops aar_serve_dos_backend = {
     .list_open = be_list_open,
     .list_next = be_list_next,
     .list_close = be_list_close,
+    .utc_offset = be_utc_offset,
+    .target_named = be_target_named,
+    .rename = be_rename,
+    .volume_info = be_volume_info,
+    .same_volume = be_same_volume,
+    .check_replace = be_check_replace,
 };
 
 /*
@@ -1049,4 +1069,309 @@ static void end_or_close(struct aar_serve *s, BPTR fh)
     release.fh = fh;
     ops = file_handle_release_ops(&release);
     aar_serve_dos_end_or_close(&ops);
+}
+
+/* ---- Names, dates and volumes ------------------------------------------------ */
+
+static int be_utc_offset(void *ctx, int32_t *east_min)
+{
+    struct aar_serve_locale loc;
+    int known = host_locale(ctx, &loc);
+
+    *east_min = known ? -loc.gmt_west_min : 0;
+    return known;
+}
+
+/* One packet that names an object: delete, create a directory, set the date or
+ * the protection. It runs through the target's resolver, so a name with a
+ * volume or assign goes to every GetDeviceProc candidate that does not have it. */
+struct named_path_request {
+    struct aar_serve *s;
+    LONG action;
+    LONG protect;
+    struct DateStamp *date;
+    LONG result;
+    LONG error;
+};
+
+static void send_named_path_packet(
+    void *context, const struct aar_serve_dos_path_candidate *candidate,
+    const uint8_t *name_bstr, uint32_t name_bstr_bytes,
+    uint32_t name_bstr_bptr, struct aar_serve_dos_path_reply *reply)
+{
+    struct named_path_request *request = context;
+    struct MsgPort *handler = (struct MsgPort *)candidate->handler;
+    LONG dir = (LONG)candidate->directory;
+    LONG result = 0;
+    int abandoned = 0;
+    int delivered;
+
+    (void)name_bstr;
+    (void)name_bstr_bytes;
+    if (request->action == ACTION_SET_DATE)
+        delivered = dos_packet_async(request->s, handler, ACTION_SET_DATE, 0, dir,
+                                     (LONG)name_bstr_bptr, (LONG)request->date, 0,
+                                     1, &result, NULL, &abandoned);
+    else if (request->action == ACTION_SET_PROTECT)
+        delivered = dos_packet_async(request->s, handler, ACTION_SET_PROTECT, 0, dir,
+                                     (LONG)name_bstr_bptr, request->protect, 0,
+                                     1, &result, NULL, &abandoned);
+    else
+        delivered = dos_packet_async(request->s, handler, request->action, dir,
+                                     (LONG)name_bstr_bptr, 0, 0, 0,
+                                     1, &result, NULL, &abandoned);
+    request->error = X_IO_ERR();
+    /* A directory made by a packet whose answer is thrown away is not kept
+     * locked. */
+    if (delivered && abandoned && request->action == ACTION_CREATE_DIR && result != 0)
+        release_abandoned_lock(request->s, handler, (BPTR)result);
+    reply->completed = delivered && !abandoned;
+    reply->abandoned = !reply->completed;
+    request->result = reply->completed ? result : 0;
+    reply->result = (int32_t)request->result;
+    reply->error = (int32_t)request->error;
+}
+
+static int be_target_named(void *ctx, enum aar_serve_named kind,
+                           const struct aar_serve_named_args *args,
+                           int *transport_ok, int32_t *io)
+{
+    struct aar_serve *s = ctx;
+    struct named_path_request request;
+    uint8_t *name_bstr;
+    int usable = 0;
+    int ok;
+
+    *transport_ok = 0;
+    *io = 0;
+    memset(&request, 0, sizeof(request));
+    request.s = s;
+    switch (kind) {
+    case AAR_SERVE_NAMED_DELETE: request.action = ACTION_DELETE_OBJECT; break;
+    case AAR_SERVE_NAMED_CREATE_DIR: request.action = ACTION_CREATE_DIR; break;
+    case AAR_SERVE_NAMED_SET_DATE: request.action = ACTION_SET_DATE; break;
+    case AAR_SERVE_NAMED_SET_PROTECT:
+        request.action = ACTION_SET_PROTECT;
+        request.protect = (LONG)args->protect;
+        break;
+    default:
+        *transport_ok = 1;
+        *io = ERROR_ACTION_NOT_KNOWN;
+        return 0;
+    }
+    if (!open_target_arm(&s->dos.target))
+        return 0;
+    name_bstr = bstr_storage_alloc();
+    if (kind == AAR_SERVE_NAMED_SET_DATE)
+        request.date = X_ALLOC_VEC(sizeof(*request.date), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!name_bstr || (kind == AAR_SERVE_NAMED_SET_DATE && !request.date)) {
+        if (name_bstr)
+            X_FREE_VEC(name_bstr);
+        if (request.date)
+            X_FREE_VEC(request.date);
+        *transport_ok = 1;
+        *io = ERROR_NO_FREE_STORE;
+        return 0;
+    }
+    if (request.date) {
+        request.date->ds_Days = (LONG)args->days;
+        request.date->ds_Minute = (LONG)args->minutes;
+        request.date->ds_Tick = (LONG)args->ticks;
+    }
+    (void)aar_serve_dos_dispatch_path(s->dos.target.name, name_bstr, 258u,
+                                      ERROR_OBJECT_NOT_FOUND, resolve_dos_path,
+                                      &s->dos.target.resolver, send_named_path_packet,
+                                      &request, NULL, &usable, NULL);
+    X_FREE_VEC(name_bstr);
+    if (request.date)
+        X_FREE_VEC(request.date);
+    if (!usable)
+        return 0;
+    *transport_ok = 1;
+    *io = (int32_t)request.error;
+    ok = request.result != 0;
+    if (ok && request.action == ACTION_CREATE_DIR)
+        X_UNLOCK((BPTR)request.result);
+    return ok;
+}
+
+/* One side of a rename: the handler, the directory lock the name is relative
+ * to, and the name as a BSTR in public memory. A name with a volume or assign
+ * starts at the first GetDeviceProc candidate: a rename inside the second
+ * directory of a multi-directory assign is not found. */
+struct rename_side {
+    struct MsgPort *handler;
+    BPTR lock;
+    struct DevProc *devproc;
+    uint8_t *bstr;
+};
+
+static int rename_side_start(struct rename_side *side, BPTR dir, const char *name)
+{
+    memset(side, 0, sizeof(*side));
+    if (dir) {
+        struct FileLock *file_lock = (struct FileLock *)BADDR(dir);
+
+        if (!file_lock || !file_lock->fl_Task)
+            return 0;
+        side->handler = file_lock->fl_Task;
+        side->lock = dir;
+    } else {
+        side->devproc = X_GET_DEVICE_PROC((STRPTR)name, NULL);
+        if (!side->devproc)
+            return 0;
+        side->handler = side->devproc->dvp_Port;
+        side->lock = side->devproc->dvp_Lock;
+    }
+    side->bstr = bstr_alloc(aar_serve_dos_packet_path(name));
+    return side->bstr != NULL;
+}
+
+static void rename_side_end(struct rename_side *side)
+{
+    if (side->bstr)
+        X_FREE_VEC(side->bstr);
+    if (side->devproc)
+        X_FREE_DEVICE_PROC(side->devproc);
+}
+
+static int be_rename(void *ctx, uintptr_t from_dir, const char *from_name,
+                     uintptr_t to_dir, const char *to_name, int *transport_ok,
+                     int32_t *io)
+{
+    struct aar_serve *s = ctx;
+    struct rename_side from;
+    struct rename_side to;
+    LONG result = 0;
+    int abandoned = 0;
+    int delivered = 0;
+
+    *transport_ok = 0;
+    *io = 0;
+    memset(&from, 0, sizeof(from));
+    memset(&to, 0, sizeof(to));
+    if (!rename_side_start(&from, (BPTR)from_dir, from_name) ||
+        !rename_side_start(&to, (BPTR)to_dir, to_name)) {
+        LONG err = X_IO_ERR();
+
+        rename_side_end(&from);
+        rename_side_end(&to);
+        *transport_ok = 1;
+        *io = (int32_t)(err ? err : ERROR_OBJECT_NOT_FOUND);
+        return 0;
+    }
+    if (from.handler != to.handler) {
+        rename_side_end(&from);
+        rename_side_end(&to);
+        *transport_ok = 1;
+        *io = ERROR_RENAME_ACROSS_DEVICES;
+        return 0;
+    }
+    delivered = dos_packet_async(s, from.handler, ACTION_RENAME_OBJECT,
+                                 (LONG)from.lock, (LONG)MKBADDR(from.bstr),
+                                 (LONG)to.lock, (LONG)MKBADDR(to.bstr), 0, 1,
+                                 &result, NULL, &abandoned);
+    *io = (int32_t)X_IO_ERR();
+    rename_side_end(&from);
+    rename_side_end(&to);
+    if (!delivered || abandoned)
+        return 0;
+    *transport_ok = 1;
+    return result != 0;
+}
+
+/* Reject different packet destinations early. A handler match does not
+ * prove that the existing objects are on the same volume. */
+static int be_same_volume(void *ctx, uintptr_t from_dir, const char *from_name,
+                          uintptr_t to_dir, const char *to_name)
+{
+    struct rename_side from;
+    struct rename_side to;
+    int same;
+
+    (void)ctx;
+    memset(&from, 0, sizeof(from));
+    memset(&to, 0, sizeof(to));
+    if (!rename_side_start(&from, (BPTR)from_dir, from_name)) {
+        rename_side_end(&from);
+        return -1;
+    }
+    if (!rename_side_start(&to, (BPTR)to_dir, to_name)) {
+        rename_side_end(&from);
+        rename_side_end(&to);
+        return -1;
+    }
+    same = from.handler == to.handler;
+    rename_side_end(&from);
+    rename_side_end(&to);
+    return same;
+}
+
+/* The named delete walks a multi-directory assign, but the rename only uses
+ * its first candidate. Refuse destructive replacement through such names. */
+static int32_t unambiguous_replace_name(const char *name)
+{
+    struct DevProc *dp;
+    int ambiguous;
+
+    if (!name)
+        return AAR_OK;
+    dp = X_GET_DEVICE_PROC((STRPTR)name, NULL);
+    if (!dp) {
+        int32_t err = aar_serve_errno_from_io((int32_t)X_IO_ERR());
+
+        return err == AAR_OK ? AAR_E_IO : err;
+    }
+    ambiguous = (dp->dvp_Flags & DVPF_ASSIGN) != 0;
+    X_FREE_DEVICE_PROC(dp);
+    return ambiguous ? AAR_E_INVAL : AAR_OK;
+}
+
+static int32_t be_check_replace(void *ctx, uintptr_t source, uintptr_t target,
+                                const char *from_abs, const char *to_abs)
+{
+    int32_t rc;
+
+    (void)ctx;
+    if (X_SAME_LOCK((BPTR)source, (BPTR)target) != LOCK_SAME_VOLUME)
+        return AAR_E_INVAL;
+    rc = unambiguous_replace_name(from_abs);
+    return rc == AAR_OK ? unambiguous_replace_name(to_abs) : rc;
+}
+
+static int be_volume_info(void *ctx, uintptr_t lock, struct aar_serve_volume *out,
+                          int *transport_ok, int32_t *io)
+{
+    struct aar_serve *s = ctx;
+    struct FileLock *file_lock = (struct FileLock *)BADDR((BPTR)lock);
+    struct InfoData *info;
+    LONG result = 0;
+    int abandoned = 0;
+    int delivered;
+
+    *transport_ok = 0;
+    *io = 0;
+    if (!file_lock || !file_lock->fl_Task)
+        return 0;
+    info = X_ALLOC_VEC(sizeof(*info), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!info) {
+        *transport_ok = 1;
+        *io = ERROR_NO_FREE_STORE;
+        return 0;
+    }
+    delivered = dos_packet_async(s, file_lock->fl_Task, ACTION_INFO, (LONG)lock,
+                                 (LONG)MKBADDR(info), 0, 0, 0, 1, &result, NULL,
+                                 &abandoned);
+    *io = (int32_t)X_IO_ERR();
+    if (delivered && !abandoned) {
+        *transport_ok = 1;
+        if (result != 0) {
+            out->blocks_total = (uint32_t)info->id_NumBlocks;
+            out->blocks_used = (uint32_t)info->id_NumBlocksUsed;
+            out->block_bytes = (uint32_t)info->id_BytesPerBlock;
+            out->read_only = info->id_DiskState == ID_WRITE_PROTECTED;
+        }
+    }
+    X_FREE_VEC(info);
+    return *transport_ok && result != 0;
 }
