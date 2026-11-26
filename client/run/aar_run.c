@@ -310,9 +310,9 @@ static const char *icon_tool_type(void *icon, const char *key)
 }
 #pragma GCC diagnostic pop
 
-/* The ToolTypes of the start. A Workbench start reads the icon of the project
- * first (the ELF's own icon, or a document's), then aar-run's own for the keys
- * the project does not set. A Shell start reads aar-run's icon only. */
+/* The ToolTypes of a Workbench start: the icon of the project first (the ELF's
+ * own icon, or a document's), then aar-run's own for the keys the project does
+ * not set. A Shell start has no ToolTypes. */
 static int load_tooltypes(void)
 {
     struct DiskObject *tool_icon = NULL;
@@ -322,9 +322,9 @@ static int load_tooltypes(void)
     int ok = 1;
 
     memset(&settings, 0, sizeof(settings));
-    if (!IconBase)
+    if (!IconBase || !_WBenchMsg || _WBenchMsg->sm_NumArgs < 1)
         return 1;
-    if (_WBenchMsg && _WBenchMsg->sm_NumArgs >= 1) {
+    {
         const struct WBArg *tool = &_WBenchMsg->sm_ArgList[0];
         BPTR old = CurrentDir(tool->wa_Lock);
 
@@ -338,8 +338,6 @@ static int load_tooltypes(void)
             }
         }
         CurrentDir(old);
-    } else {
-        tool_icon = GetDiskObject((STRPTR)"PROGDIR:aar-run");
     }
     chain.lookup = icon_tool_type;
     chain.project = project_icon;

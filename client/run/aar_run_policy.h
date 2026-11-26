@@ -947,9 +947,10 @@ struct aar_run_settings {
     const char *args;     /* ARGS, owned by the icon it came from; NULL: none */
 };
 
-/* Every key from the project icon, then from aar-run's icon. A bad MAXMEM,
- * HOSTMEM or WEIGHT returns 0 and names the key in *bad_key; a bad MODE or an
- * AUDIO other than AHI is ignored. */
+/* Every key from the project icon, then from aar-run's icon. A value that
+ * cannot be used (an APP or ROOT too long for the buffer, a MODE that is not a
+ * number, an AUDIO other than AHI, a MAXMEM, HOSTMEM or WEIGHT that is not a
+ * positive number) returns 0 and names the key in *bad_key. */
 static inline int aar_run_tt_settings(const struct aar_run_tt_chain *chain,
                                       struct aar_run_settings *s,
                                       const char **bad_key)
@@ -959,17 +960,33 @@ static inline int aar_run_tt_settings(const struct aar_run_tt_chain *chain,
     memset(s, 0, sizeof(*s));
     *bad_key = NULL;
     value = aar_run_tt_get(chain, "APP");
-    if (value && value[0] && strlen(value) < sizeof(s->app))
+    if (value && strlen(value) >= sizeof(s->app)) {
+        *bad_key = "APP";
+        return 0;
+    }
+    if (value)
         memcpy(s->app, value, strlen(value) + 1);
     value = aar_run_tt_get(chain, "ROOT");
-    if (value && value[0] && strlen(value) < sizeof(s->root))
+    if (value && strlen(value) >= sizeof(s->root)) {
+        *bad_key = "ROOT";
+        return 0;
+    }
+    if (value)
         memcpy(s->root, value, strlen(value) + 1);
     s->abs_paths = aar_run_flag_value(aar_run_tt_get(chain, "ABS"));
     value = aar_run_tt_get(chain, "MODE");
-    if (value && value[0] && aar_run_parse_mode(value, &s->mode))
-        s->have_mode = 1;
+    if (value && !aar_run_parse_mode(value, &s->mode)) {
+        *bad_key = "MODE";
+        return 0;
+    }
+    s->have_mode = value != NULL;
     s->joy_port0 = aar_run_flag_value(aar_run_tt_get(chain, "JOYPORT0"));
-    s->audio_ahi = aar_run_tool_is_ahi(aar_run_tt_get(chain, "AUDIO"));
+    value = aar_run_tt_get(chain, "AUDIO");
+    if (value && !aar_run_tool_is_ahi(value)) {
+        *bad_key = "AUDIO";
+        return 0;
+    }
+    s->audio_ahi = value != NULL;
     value = aar_run_tt_get(chain, "MAXMEM");
     if (value && !aar_run_parse_positive(value, &s->maxmem_mib)) {
         *bad_key = "MAXMEM";

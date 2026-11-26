@@ -1252,7 +1252,7 @@ static void test_project_tooltypes_come_before_the_tool_icon(void)
 static void test_a_project_flag_set_off_beats_the_tool_icon(void)
 {
     static const char *const project[] = {"ABS", "NO", "JOYPORT0", "0",
-                                          "AUDIO", "PAULA", "ROOT", "", NULL};
+                                          "ROOT", "", NULL};
     static const char *const tool[] = {"ABS", "", "JOYPORT0", "YES",
                                        "AUDIO", "AHI", "ROOT", "Work:g",
                                        "APP", "Work:t.elf", NULL};
@@ -1261,7 +1261,9 @@ static void test_a_project_flag_set_off_beats_the_tool_icon(void)
     const char *bad;
 
     assert(aar_run_tt_settings(&chain, &s, &bad));
-    assert(!s.abs_paths && !s.joy_port0 && !s.audio_ahi);
+    assert(!s.abs_paths && !s.joy_port0);
+    /* AUDIO has no off value: the tool's stays */
+    assert(s.audio_ahi);
     /* an empty ROOT of the project is a value: the tool's is not used */
     assert(s.root[0] == '\0');
     /* a key only the tool has */
@@ -1291,9 +1293,21 @@ static void test_a_bad_project_value_is_not_masked_by_the_tool_icon(void)
     static const char *const project_host[] = {"HOSTMEM", "12x", NULL};
     static const char *const project_weight[] = {"WEIGHT", "", NULL};
     static const char *const project_mode[] = {"MODE", "zz", NULL};
+    static const char *const project_mode_empty[] = {"MODE", "", NULL};
+    static const char *const project_audio[] = {"AUDIO", "PAULA", NULL};
+    char long_value[257]; /* 256 characters: one more than APP and ROOT take */
+    const char *project_long_app[3];
+    const char *project_long_root[3];
     struct aar_run_tt_chain chain = chain_of(project, tool);
     struct aar_run_settings s;
     const char *bad = NULL;
+
+    project_long_app[0] = "APP";
+    project_long_app[1] = long_value;
+    project_long_app[2] = NULL;
+    project_long_root[0] = "ROOT";
+    project_long_root[1] = long_value;
+    project_long_root[2] = NULL;
 
     assert(!aar_run_tt_settings(&chain, &s, &bad));
     assert(strcmp(bad, "MAXMEM") == 0);
@@ -1303,10 +1317,20 @@ static void test_a_bad_project_value_is_not_masked_by_the_tool_icon(void)
     chain = chain_of(project_weight, tool);
     assert(!aar_run_tt_settings(&chain, &s, &bad));
     assert(strcmp(bad, "WEIGHT") == 0);
-    /* a bad MODE is ignored, as it always was */
+    /* a MODE that is not a number, an AUDIO other than AHI and a name that
+     * does not fit are refused too, and so is an empty MODE */
     chain = chain_of(project_mode, tool);
-    assert(aar_run_tt_settings(&chain, &s, &bad));
-    assert(!s.have_mode && s.maxmem_mib == 64u);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "MODE") == 0);
+    chain = chain_of(project_mode_empty, tool);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "MODE") == 0);
+    chain = chain_of(project_audio, tool);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "AUDIO") == 0);
+    memset(long_value, 'a', sizeof(long_value) - 1);
+    long_value[sizeof(long_value) - 1] = '\0';
+    chain = chain_of(project_long_app, tool);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "APP") == 0);
+    chain = chain_of(project_long_root, tool);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "ROOT") == 0);
 }
 
 static void test_tooltype_value_forms(void)

@@ -8,8 +8,8 @@ one board. The ZZ9000 is the first platform behind the library, and what is
 specific to it is in [Platform notes](#platform-notes).
 
 aar-run is MIT licensed and is built from this repository (`client/run` and
-`client/serve`). Its program name, icon, `PROGDIR:aar-run` icon lookup, `CON:`
-window title, Picasso96 screen title and requester titles all say `aar-run`.
+`client/serve`). Its program name, icon, `CON:` window title, Picasso96 screen
+title and requester titles all say `aar-run`.
 
 It needs `aar.library` (`LIBS:aar.library`, installed with aar-run), AmigaOS 3
 graphics and Intuition 39 or later, `timer.device`, Picasso96 when the app asks
@@ -214,11 +214,11 @@ every claim.
 
 ## Workbench ToolTypes
 
-A Workbench start has no Shell. aar-run reads ToolTypes from two icons: the
-icon of the project first, then its own (the icon of the tool the start message
-names, `PROGDIR:aar-run` for a plain double-click). A key the project icon sets
-is not read from aar-run's icon, even when its value is empty; every other key
-comes from aar-run's icon. A Shell start reads `PROGDIR:aar-run` only.
+A Shell start takes its settings from the command line and has no ToolTypes. A
+Workbench start has no Shell. aar-run reads ToolTypes from two icons: the icon
+of the project first, then its own (the icon of the tool the start message
+names). A key the project icon sets is not read from aar-run's icon, even when
+its value is empty; every other key comes from aar-run's icon.
 
 The project is the first icon after aar-run in the start message. That is the
 icon the user double-clicked when its default tool is aar-run, or the first
@@ -267,17 +267,17 @@ document is too long.`
 A value in the project icon replaces the one in aar-run's icon. That holds for
 a flag too: `ABS=NO` in the project icon turns off an `ABS` of aar-run's icon.
 The `ARGS` of the project replace the `ARGS` of aar-run's icon and are not
-added to them. A bad `MAXMEM`, `HOSTMEM` or `WEIGHT` prints `bad <key> ToolType`
-and the usage and returns 10.
+added to them. A value that cannot be used prints `bad <key> ToolType` and the
+usage and returns 10: an `APP` or `ROOT` of 256 characters or more, a `MODE`
+that is not a number, an `AUDIO` other than `AHI`, and a `MAXMEM`, `HOSTMEM` or
+`WEIGHT` that is not a positive decimal number.
 
 In `ARGS`, a double quote starts a quoted part and the next double quote ends
 it. Spaces and tabs inside it belong to the argument. A quoted part may sit
 inside a word, `--name="a b"` is the argument `--name=a b`, and `""` is an empty
 argument. There is no escape, so an argument cannot contain a double quote, and
 single quotes and `*` are ordinary characters. A quote that is never closed
-prints `ARGS has a double quote that is never closed.` and returns 10. The
-words of `ARGS` of a Shell start's `PROGDIR:aar-run` icon come before the words
-of the command line; the Shell splits the command line itself.
+prints `ARGS has a double quote that is never closed.` and returns 10.
 
 ```text
 ARGS=-fullscreen "My Saves:slot 1"
