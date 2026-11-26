@@ -817,6 +817,13 @@ def check_api06_locale(exe):
     got = locale_fields(exe, {"LC_ALL": "pt_BR.UTF-8"})
     if (got[2], got[3]) != ("portugues", "BR"):
         raise SystemExit(f"pt_BR: {got}")
+    for name, want in [("de_AT.UTF-8", "A"), ("de_CH", "CH"), ("it_IT", "I"),
+                       ("es_ES", "E"), ("fr_FR", "F"), ("en_US.UTF-8", "USA"),
+                       ("en_GB.UTF-8", "GB"), ("de_DE@euro", "D"), ("de", ""),
+                       ("de_DEU", "")]:
+        got = locale_fields(exe, {"LC_ALL": name})
+        if got[3] != want:
+            raise SystemExit(f"country of {name}: {got[3]!r}, want {want!r}")
 
 
 def check_api06_env(exe):

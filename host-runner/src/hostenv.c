@@ -87,12 +87,17 @@ static const struct name_map languages[] = {
     {"pt", "portugues"}, {"pl", "polski"},
 };
 
-/* ISO 3166-1 alpha-2 to the country code of an Amiga locale where it differs.
- * Any other country is reported as its ISO code. */
+/* ISO 3166-1 alpha-2 to the vehicle registration code that an Amiga locale
+ * reports as its country, for the countries where the two differ. A country
+ * that is not here is reported as its ISO code, which is also its vehicle code
+ * for many (GB, CH, NL, DK, PL, BR and others). */
 static const struct name_map countries[] = {
     {"DE", "D"},   {"AT", "A"},   {"FR", "F"},   {"IT", "I"},   {"ES", "E"},
     {"US", "USA"}, {"BE", "B"},   {"SE", "S"},   {"NO", "N"},   {"FI", "FIN"},
-    {"PT", "P"},   {"CA", "CDN"}, {"AU", "AUS"}, {"IE", "IRL"},
+    {"PT", "P"},   {"CA", "CDN"}, {"AU", "AUS"}, {"IE", "IRL"}, {"LU", "L"},
+    {"HU", "H"},   {"JP", "J"},   {"RU", "RUS"}, {"GR", "GR"},  {"SI", "SLO"},
+    {"EE", "EST"}, {"IN", "IND"}, {"CN", "CHN"}, {"MX", "MEX"}, {"AR", "RA"},
+    {"KR", "ROK"},
 };
 
 static const char *lookup(const struct name_map *map, size_t n,
@@ -277,7 +282,8 @@ static int api_locale_info(aar_locale_info *out)
     amiga = lookup(languages, sizeof languages / sizeof languages[0], lang);
     if (amiga)
         memcpy(li.language, amiga, strlen(amiga) + 1u);
-    if (country[0]) {
+    /* Only a two-letter territory is a country; anything else is unknown. */
+    if (strlen(country) == 2u) {
         amiga = lookup(countries, sizeof countries / sizeof countries[0],
                        country);
         if (!amiga)

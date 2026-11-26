@@ -367,6 +367,24 @@ static void test_rename(void)
     assert(api_file_rename("../out.txt", "rb.txt", 0) == AAR_E_ACCES);
     assert(api_file_rename("", "rb.txt", 0) == AAR_E_INVAL);
     assert(api_file_rename("rb.txt", 0, 0) == AAR_E_INVAL);
+    /* The same object: success and no change, with or without the flag. */
+    assert(api_file_rename("rb.txt", "rb.txt", 0) == AAR_OK);
+    assert(api_file_rename("rb.txt", "./rb.txt", AAR_RENAME_REPLACE) == AAR_OK);
+    assert(file_size("rb.txt") == 3);
+#ifndef _WIN32
+    {
+        char from[4096];
+        char to[4096];
+
+        snprintf(from, sizeof from, "%s/rb.txt", UNIT_ROOT);
+        snprintf(to, sizeof to, "%s/rb.link", UNIT_ROOT);
+        assert(link(from, to) == 0);
+        assert(api_file_rename("rb.txt", "rb.link", 0) == AAR_OK);
+        assert(api_file_rename("rb.link", "rb.txt", AAR_RENAME_REPLACE) == AAR_OK);
+        assert(file_size("rb.txt") == 3 && file_size("rb.link") == 3);
+        assert(unlink(to) == 0);
+    }
+#endif
 #ifndef _WIN32
     assert(api_dir_create("rd1") == AAR_OK);
     assert(api_dir_create("rd2") == AAR_OK);

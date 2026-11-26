@@ -111,7 +111,12 @@ static int test_files(void)
     CHECK(size_of("ok.txt") == 6 && size_of("sub/b.txt") == -1, 45);
     CHECK_RC(aar_file_rename("ok.txt", "ok2.txt", 2u), AAR_E_INVAL, 46);
     CHECK_RC(aar_file_rename("absent.txt", "x.txt", 0), AAR_E_NOENT, 47);
-    CHECK_RC(aar_file_rename("ok.txt", "ok.txt", 0), AAR_E_EXIST, 48);
+    /* The same object, spelled alike or not: nothing happens, with or without the flag. */
+    CHECK_RC(aar_file_rename("ok.txt", "ok.txt", 0), AAR_OK, 48);
+    CHECK_RC(aar_file_rename("ok.txt", "./ok.txt", AAR_RENAME_REPLACE), AAR_OK, 48);
+    CHECK_RC(aar_file_rename("ok.txt", "sub//ok.txt", 0), AAR_OK, 48);
+    CHECK_RC(aar_file_rename("sub", "sub", AAR_RENAME_REPLACE), AAR_OK, 48);
+    CHECK(size_of("ok.txt") == 6 && size_of("sub") >= 0, 48);
 
     /* set_date: Python reads the modification time of dated.txt afterwards */
     CHECK_RC(write_text("dated.txt", "d"), AAR_OK, 50);

@@ -444,13 +444,16 @@ are not (spec 3.7 lets a call after a stop complete).
 `AAR_E_EXIST`. A file that an id of the runner holds is `AAR_E_BUSY`, as a
 locked file is on AmigaDOS (on Windows the host refuses an open file with
 `AAR_E_ACCES`). A delete-protected object is `AAR_E_ACCES`.
-`aar_file_rename` is `rename`, or `MoveFileEx` on Windows. An existing target is
-`AAR_E_EXIST` without `AAR_RENAME_REPLACE`; that is a check before the
-rename, so another process can still slip a file in. With the flag the host's
-rename semantics apply: a file replaces a file and a directory an empty
-directory. A directory against a file, or a directory that is not empty, is
-`AAR_E_EXIST`; a delete-protected target is `AAR_E_ACCES`; a target on another
-file system, or a directory moved into itself, is `AAR_E_INVAL`.
+`aar_file_rename` is `rename`, or `MoveFileEx` on Windows. Two paths that name
+the same object (the same device and inode, so a hard link counts, or the same
+file index on Windows) are `AAR_OK` and nothing changes, with or without the
+flag. An existing other target is `AAR_E_EXIST` without `AAR_RENAME_REPLACE`;
+that is a check before the rename, so another process can still slip a file
+in. With the flag the host's rename semantics apply: a file replaces a file and
+a directory an empty directory. A directory against a file, or a directory that
+is not empty, is `AAR_E_EXIST`; a delete-protected target is `AAR_E_ACCES`; a
+target on another file system, or a directory moved into itself, is
+`AAR_E_INVAL`.
 `aar_file_set_date` sets the modification time (`utimensat`, the access time
 stays) and refuses a negative time or one that the host's `time_t` cannot hold
 with `AAR_E_INVAL`. `aar_file_truncate` flushes the stream of the id and calls
@@ -482,10 +485,16 @@ else `LC_MESSAGES`, else `LANG` (on Windows the user locale when none is set),
 as an Amiga language name spelled without accents: `english`, `deutsch`,
 `francais`, `espanol`, `italiano`, `nederlands`, `svenska`, `dansk`, `norsk`,
 `suomi`, `portugues` and `polski`. Any other language, and the `C` and `POSIX`
-locales, give an empty string. The country is the region of that name as an
-Amiga country code (`D`, `A`, `F`, `I`, `E`, `USA`, `B`, `S`, `N`, `FIN`, `P`,
-`CDN`, `AUS`, `IRL`) or else as its ISO 3166 code, and empty when the name has
-none. The decimal point and group separator are those of the numeric locale
+locales, give an empty string. The country is the vehicle registration code
+(what `loc_CountryCode` holds) of the territory part of that name, when it is a
+two-letter ISO 3166 code. The runner has a table for the common countries where
+the two differ (`DE` is `D`, `AT` `A`, `FR` `F`, `IT` `I`, `ES` `E`, `US`
+`USA`, `BE` `B`, `SE` `S`, `NO` `N`, `FI` `FIN`, `PT` `P`, `CA` `CDN`, `AU`
+`AUS`, `IE` `IRL`, `LU` `L`, `HU` `H`, `JP` `J`, `RU` `RUS`, `SI` `SLO`, `EE`
+`EST`, `IN` `IND`, `CN` `CHN`, `MX` `MEX`, `AR` `RA`, `KR` `ROK`); any other
+code is passed through, which is right for `GB`, `CH`, `NL`, `DK`, `PL` and
+others, and wrong for the few that the table lacks. A name without a two-letter
+territory gives an empty country. The decimal point and group separator are those of the numeric locale
 (`LC_ALL`, `LC_NUMERIC`, `LANG`), read with `localeconv` without changing the
 locale of the process. A locale that the host does not have, and the `C`
 locale, give `.` and an empty separator, and so does a separator that is not

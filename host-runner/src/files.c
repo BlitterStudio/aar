@@ -886,6 +886,39 @@ static int api_file_delete(const char *path)
     return AAR_OK;
 }
 
+/* Whether two paths name one object: the same device and inode, or on Windows
+ * the same volume and file index. */
+static int same_object(const struct stat *sa, const struct stat *sb,
+                       const char *a, const char *b)
+{
+#ifdef _WIN32
+    BY_HANDLE_FILE_INFORMATION ia, ib;
+    HANDLE ha, hb;
+    int same = 0;
+
+    (void)sa;
+    (void)sb;
+    ha = CreateFileA(a, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                     NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    hb = CreateFileA(b, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                     NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (ha != INVALID_HANDLE_VALUE && hb != INVALID_HANDLE_VALUE &&
+        GetFileInformationByHandle(ha, &ia) && GetFileInformationByHandle(hb, &ib))
+        same = ia.dwVolumeSerialNumber == ib.dwVolumeSerialNumber &&
+               ia.nFileIndexHigh == ib.nFileIndexHigh &&
+               ia.nFileIndexLow == ib.nFileIndexLow;
+    if (ha != INVALID_HANDLE_VALUE)
+        CloseHandle(ha);
+    if (hb != INVALID_HANDLE_VALUE)
+        CloseHandle(hb);
+    return same;
+#else
+    (void)a;
+    (void)b;
+    return sa->st_dev == sb->st_dev && sa->st_ino == sb->st_ino;
+#endif
+}
+
 static int api_file_rename(const char *from, const char *to, uint32_t flags)
 {
     char a[4096];
@@ -908,6 +941,10 @@ static int api_file_rename(const char *from, const char *to, uint32_t flags)
     if (path_lstat(a, &sa) != 0)
         return op_err();
     exists = path_lstat(b, &sb) == 0;
+    /* The same object (not just the same string, and a hard link counts):
+     * nothing to do, with or without the flag. */
+    if (exists && same_object(&sa, &sb, a, b))
+        return AAR_OK;
     if (exists) {
         if (!(flags & AAR_RENAME_REPLACE))
             return AAR_E_EXIST;
