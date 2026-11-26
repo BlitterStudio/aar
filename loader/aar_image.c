@@ -783,6 +783,8 @@ static int check_note(struct image *p)
         return refuse(p, "the note api major is not this library's");
     if (w[4] > AAR_API_MINOR)
         return refuse(p, "the note needs a newer api minor");
+    if (w[4] < AAR_API_MINOR_OLDEST)
+        return refuse(p, "the note's api minor predates this library's table layout");
     if (w[5] != 0 && (w[5] < STACK_MIN || w[5] > STACK_MAX || (w[5] & 15u)))
         return refuse(p, "the note stack size is not 0 or 64 KiB to 1 MiB in steps of 16");
     /* groups_required and groups_optional are reported, not judged (spec 8.1):

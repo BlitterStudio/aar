@@ -479,25 +479,46 @@ colors are visible; the transport only promises the completion.
 |---|---|---|---|
 | `AAR_OP_NONE` | `0x00` | | Not an operation. |
 | `AAR_OP_MSG` | `0x01` | either | 32 opaque bytes at `AAR_ENTRY_MSG`. Handled by the client's get and send message calls, not by its service loop. A post keeps `AAR_MSG_RESERVE` entry free. On the CQ the client also posts only while it has a message credit, else `AAR_E_BUSY`. |
-| `AAR_OP_EVENT` | `0x02` | CQ only | Unsolicited: one event at the `AAR_ENTRY_EV_*` offsets, id 0. A full CQ drops the new event, and the client counts the drop in `AAR_CB_EVENTS_DROPPED`. The queue is shared with completions and messages, so a runtime keeps at least 64 events and never promises more. The client coalesces mouse motion (sums `dx` and `dy`, combines the buttons) before it posts. |
+| `AAR_OP_EVENT` | `0x02` | CQ only | Unsolicited: one event at the `AAR_ENTRY_EV_*` offsets, id 0. A full CQ drops the new event, and the client counts the drop in `AAR_CB_EVENTS_DROPPED`. The queue is shared with completions and messages, so a runtime keeps at least 64 events and never promises more. The client coalesces mouse motion before it posts: it sums `dx` and `dy` and combines the buttons, or for an absolute event keeps the latest position. |
 | `AAR_OP_LOG` | `0x03` | SQ only | One-way and lossy. `buf`, `buf_off` and `buf_len` name one record in a shared log buffer, at most `AAR_LOG_MAX` bytes and never wrapping. The app side may overwrite it after the client has consumed the entry. A full SQ drops the record and counts it in `AAR_CB_LOG_DROPPED`. |
 | `AAR_OP_FILE_OPEN` | `0x10` | request | Path in `buf`; args `AAR_A_FILE_OPEN_FD`, `AAR_A_FILE_OPEN_FLAGS`. The flags word is the `AAR_FILE_*` combination of `aar_file_open` (read, write, create, truncate, exclusive). The client applies create, truncate and exclusive create as part of this one request. |
 | `AAR_OP_FILE_CLOSE` | `0x11` | request | Arg `AAR_A_FILE_FD`. |
 | `AAR_OP_FILE_READ` | `0x12` | request | Args `AAR_A_FILE_FD`, `AAR_A_FILE_LEN`. The bytes go to `buf`; out `AAR_R_FILE_COUNT`. |
 | `AAR_OP_FILE_WRITE` | `0x13` | request | Args `AAR_A_FILE_FD`, `AAR_A_FILE_LEN`. The bytes come from `buf`; out `AAR_R_FILE_COUNT`. |
 | `AAR_OP_FILE_SEEK` | `0x14` | request | Args `AAR_A_FILE_FD`, `AAR_A_FILE_OFF_HI`, `AAR_A_FILE_OFF_LO`, `AAR_A_FILE_WHENCE`; out `AAR_R_FILE_POS_HI`, `AAR_R_FILE_POS_LO`. |
-| `AAR_OP_FILE_STAT` | `0x15` | request | Path in `buf`; out `AAR_R_STAT_SIZE_HI`, `AAR_R_STAT_SIZE_LO`, `AAR_R_STAT_MTIME_HI`, `AAR_R_STAT_MTIME_LO`, `AAR_R_STAT_MODE`. |
+| `AAR_OP_FILE_STAT` | `0x15` | request | Path in `buf`; out `AAR_R_STAT_SIZE_HI`, `AAR_R_STAT_SIZE_LO`, `AAR_R_STAT_MTIME_HI`, `AAR_R_STAT_MTIME_LO`, `AAR_R_STAT_MODE`, `AAR_R_STAT_PROTECT`. |
 | `AAR_OP_LIST_OPEN` | `0x16` | request | Path in `buf`; arg `AAR_A_LIST_ID`. |
 | `AAR_OP_LIST_NEXT` | `0x17` | request | Arg `AAR_A_LIST_ID`. The name goes to `buf`; out `AAR_R_LIST_MODE`. `AAR_E_NOENT` at the end. |
 | `AAR_OP_LIST_CLOSE` | `0x18` | request | Arg `AAR_A_LIST_ID`. |
+| `AAR_OP_FILE_DELETE` | `0x19` | request | Path in `buf`. |
+| `AAR_OP_FILE_RENAME` | `0x1A` | request | `buf` holds `from`, a NUL, `to` and a NUL; arg `AAR_A_FILE_RENAME_FLAGS`. |
+| `AAR_OP_DIR_CREATE` | `0x1B` | request | Path in `buf`. |
+| `AAR_OP_FILE_SET_DATE` | `0x1C` | request | Path in `buf`; args `AAR_A_FILE_DATE_HI`, `AAR_A_FILE_DATE_LO`, an int64 of Unix seconds. |
+| `AAR_OP_FILE_SET_PROTECT` | `0x1D` | request | Path in `buf`; arg `AAR_A_FILE_PROTECT`. |
+| `AAR_OP_FILE_TRUNCATE` | `0x1E` | request | Args `AAR_A_FILE_TRUNC_FD`, `AAR_A_FILE_TRUNC_SIZE_HI`, `AAR_A_FILE_TRUNC_SIZE_LO`. |
+| `AAR_OP_VOLUME_INFO` | `0x1F` | request | Path in `buf`; out `AAR_R_VOLUME_BLOCKS_TOTAL`, `AAR_R_VOLUME_BLOCKS_USED`, `AAR_R_VOLUME_BLOCK_BYTES`, `AAR_R_VOLUME_FLAGS`. |
 | `AAR_OP_CONSOLE_WRITE` | `0x20` | request | The bytes are in a console buffer named by `buf`, `buf_off`, `buf_len`; out `AAR_R_CONSOLE_COUNT` consumed. |
 | `AAR_OP_CONSOLE_READ` | `0x21` | request | `buf_len` is the room; the client fills it; out `AAR_R_CONSOLE_COUNT`, 0 at the end of input. |
 | `AAR_OP_DISPLAY_OPEN` | `0x30` | request | Args `AAR_A_DISPLAY_OPEN_W`, `_H`, `_FORMAT`, `_FLAGS`; out `AAR_R_DISPLAY_OPEN_ID`, `_PITCH`, `_LAYOUT`, `_FRONT`, `_BACK`, `_SPARE`. The reply's `flags` carry the `AAR_DISPCAP_*` caps. |
 | `AAR_OP_DISPLAY_FLIP` | `0x31` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_FLIP_FLAGS`. Replied when shown; out `AAR_R_DISPLAY_FLIP_FRONT`, `_BACK`, `_PITCH`, `_LAYOUT`, `_DROPPED`. A platform that owns the display buffers (a card-owned latest-frame mode) may complete a flip itself and never send it to the client. |
 | `AAR_OP_DISPLAY_PALETTE` | `0x32` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_PALETTE_FIRST`, `AAR_A_DISPLAY_PALETTE_COUNT`. The colors are big-endian `0x00RRGGBB` words in `buf`, which stay unchanged until the completion. The API call that submits it does not park the app, so more requests can be in flight. |
 | `AAR_OP_DISPLAY_CLOSE` | `0x33` | request | Arg `AAR_A_DISPLAY_ID`. |
+| `AAR_OP_DISPLAY_INFO` | `0x34` | request | Arg `AAR_A_DISPLAY_ID`; out `AAR_R_DISPLAY_INFO_WIDTH`, `_HEIGHT`, `_REFRESH_MHZ`, `_SCREEN_W`, `_SCREEN_H`, `_FLAGS`. |
+| `AAR_OP_DISPLAY_MODES` | `0x35` | request | `buf` is the room for records of `AAR_DISPLAY_MODE_REC_BYTES` bytes, six big-endian words in `aar_display_mode` order; out `AAR_R_DISPLAY_MODES_COUNT` written, `AAR_R_DISPLAY_MODES_TOTAL` the client has in all. |
+| `AAR_OP_DISPLAY_RESIZE` | `0x36` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_RESIZE_W`, `AAR_A_DISPLAY_RESIZE_H`. Replied as `AAR_OP_DISPLAY_OPEN` is, with the same out words and the caps in the reply's `flags`. |
+| `AAR_OP_DISPLAY_TITLE` | `0x37` | request | Arg `AAR_A_DISPLAY_ID`; the title is in `buf`, NUL-terminated, at most 255 bytes, UTF-8. |
+| `AAR_OP_DISPLAY_POINTER` | `0x38` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_POINTER_MODE`, `_W`, `_H`, `_HOT_X`, `_HOT_Y` (int32). For `AAR_POINTER_CUSTOM` the pixels are big-endian `0xAARRGGBB` words in `buf`. |
+| `AAR_OP_DISPLAY_VBLANK` | `0x39` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_VBLANK_TIMEOUT_US`. Completes at the next vertical blank, or with `AAR_E_TIMEDOUT`. |
 | `AAR_OP_AUDIO_OPEN` | `0x40` | request | Args `AAR_A_AUDIO_OPEN_RATE`, `_CHANNELS`, `_ROUTE`. The runtime allocates the audio ring first and names it in `buf` and `buf_len`; out `AAR_R_AUDIO_OPEN_RATE`, `_CHANNELS`, `_RING` (the request's `buf`, echoed), `_RING_BYTES`, `_FRAMES`. |
 | `AAR_OP_AUDIO_CLOSE` | `0x41` | request | No arguments. |
+| `AAR_OP_TIME_UNIX` | `0x50` | request | Out `AAR_R_TIME_UNIX_US_HI`, `AAR_R_TIME_UNIX_US_LO` (Unix microseconds, an int64) and `AAR_R_TIME_UNIX_FLAGS` (`AAR_LOCALEF_OFFSET_KNOWN` when the value is exact UTC). |
+| `AAR_OP_LOCALE_INFO` | `0x51` | request | `buf` is the room for a record of `AAR_LOCALE_REC_BYTES` bytes, laid out by the `AAR_LOCALE_REC_*` offsets. |
+| `AAR_OP_ENV_GET` | `0x52` | request | Name in `buf`, NUL-terminated; `buf_len` is the room for the value, which goes to `buf`; out `AAR_R_ENV_LEN`, the full length of the value. |
+| `AAR_OP_CLIP_READ` | `0x58` | request | Args `AAR_A_CLIP_UNIT`, `AAR_A_CLIP_TYPE`, `AAR_A_CLIP_OFFSET`. `buf` is the room; out `AAR_R_CLIP_READ_SIZE`, the full size of the clip, and `AAR_R_CLIP_READ_COUNT`, the bytes written. |
+| `AAR_OP_CLIP_WRITE` | `0x59` | request | Args `AAR_A_CLIP_UNIT`, `AAR_A_CLIP_TYPE`, `AAR_A_CLIP_OFFSET`, `AAR_A_CLIP_TOTAL`. The bytes are in `buf`; the entry flags carry `AAR_CLIPF_LAST` on the final chunk; out `AAR_R_CLIP_WRITE_COUNT`. |
+
+The chunking of a clip and the layout of the locale and volume replies are
+specified in section 9.6 of the specification.
 
 File and list ids are chosen by the runtime and are small integers from
 `AAR_FD_BASE`. Paths and names are NUL-terminated bytes in the payload buffer.
@@ -522,6 +543,14 @@ completion. A 64-bit value is `_HI` then `_LO`.
 | `AAR_R_STAT_SIZE_HI`, `AAR_R_STAT_SIZE_LO` | 0, 1 | stat |
 | `AAR_R_STAT_MTIME_HI`, `AAR_R_STAT_MTIME_LO` | 2, 3 | stat |
 | `AAR_R_STAT_MODE` | 4 | stat |
+| `AAR_R_STAT_PROTECT` | 5 | stat |
+| `AAR_A_FILE_RENAME_FLAGS` | 0 | rename |
+| `AAR_A_FILE_DATE_HI`, `AAR_A_FILE_DATE_LO` | 0, 1 | set date |
+| `AAR_A_FILE_PROTECT` | 0 | set protect |
+| `AAR_A_FILE_TRUNC_FD` | 0 | truncate |
+| `AAR_A_FILE_TRUNC_SIZE_HI`, `AAR_A_FILE_TRUNC_SIZE_LO` | 1, 2 | truncate |
+| `AAR_R_VOLUME_BLOCKS_TOTAL`, `AAR_R_VOLUME_BLOCKS_USED` | 0, 1 | volume info |
+| `AAR_R_VOLUME_BLOCK_BYTES`, `AAR_R_VOLUME_FLAGS` | 2, 3 | volume info; the flags are `AAR_VOLF_*` |
 | `AAR_A_LIST_ID` | 0 | list open, next, close |
 | `AAR_R_LIST_MODE` | 0 | list next |
 | `AAR_R_CONSOLE_COUNT` | 0 | console write, read |
@@ -531,24 +560,51 @@ completion. A 64-bit value is `_HI` then `_LO`.
 | `AAR_R_DISPLAY_OPEN_PITCH`, `AAR_R_DISPLAY_OPEN_LAYOUT` | 1, 2 | display open |
 | `AAR_R_DISPLAY_OPEN_FRONT`, `AAR_R_DISPLAY_OPEN_BACK` | 3, 4 | display open. Tokens of the client's bitmap memory. |
 | `AAR_R_DISPLAY_OPEN_SPARE` | 5 | display open |
-| `AAR_A_DISPLAY_ID` | 0 | flip, palette, close |
+| `AAR_A_DISPLAY_ID` | 0 | flip, palette, close, info, resize, title, pointer, vblank |
 | `AAR_A_DISPLAY_FLIP_FLAGS` | 1 | flip; `AAR_FLIPF_*` |
 | `AAR_A_DISPLAY_PALETTE_FIRST`, `AAR_A_DISPLAY_PALETTE_COUNT` | 1, 2 | palette |
 | `AAR_R_DISPLAY_FLIP_FRONT`, `AAR_R_DISPLAY_FLIP_BACK` | 0, 1 | flip |
 | `AAR_R_DISPLAY_FLIP_PITCH`, `AAR_R_DISPLAY_FLIP_LAYOUT` | 2, 3 | flip |
 | `AAR_R_DISPLAY_FLIP_DROPPED` | 4 | flip. Cumulative frames replaced in latest mode. |
+| `AAR_R_DISPLAY_INFO_WIDTH`, `AAR_R_DISPLAY_INFO_HEIGHT` | 0, 1 | display info |
+| `AAR_R_DISPLAY_INFO_REFRESH_MHZ` | 2 | display info |
+| `AAR_R_DISPLAY_INFO_SCREEN_W`, `AAR_R_DISPLAY_INFO_SCREEN_H` | 3, 4 | display info |
+| `AAR_R_DISPLAY_INFO_FLAGS` | 5 | display info; `AAR_DISPINFO_*` |
+| `AAR_R_DISPLAY_MODES_COUNT`, `AAR_R_DISPLAY_MODES_TOTAL` | 0, 1 | display modes |
+| `AAR_A_DISPLAY_RESIZE_W`, `AAR_A_DISPLAY_RESIZE_H` | 1, 2 | display resize |
+| `AAR_A_DISPLAY_POINTER_MODE` | 1 | display pointer; `AAR_POINTER_*` |
+| `AAR_A_DISPLAY_POINTER_W`, `AAR_A_DISPLAY_POINTER_H` | 2, 3 | display pointer |
+| `AAR_A_DISPLAY_POINTER_HOT_X`, `AAR_A_DISPLAY_POINTER_HOT_Y` | 4, 5 | display pointer; int32 |
+| `AAR_A_DISPLAY_VBLANK_TIMEOUT_US` | 1 | display vblank |
 | `AAR_A_AUDIO_OPEN_RATE`, `AAR_A_AUDIO_OPEN_CHANNELS` | 0, 1 | audio open |
 | `AAR_A_AUDIO_OPEN_ROUTE` | 2 | audio open; `AAR_AUDIO_ROUTE_*` |
 | `AAR_R_AUDIO_OPEN_RATE`, `AAR_R_AUDIO_OPEN_CHANNELS` | 0, 1 | audio open, the granted values |
 | `AAR_R_AUDIO_OPEN_RING` | 2 | audio open. Token of the audio ring buffer: the `buf` of the request, echoed. |
 | `AAR_R_AUDIO_OPEN_RING_BYTES` | 3 | audio open |
 | `AAR_R_AUDIO_OPEN_FRAMES` | 4 | audio open. Ring capacity, a power of two. |
+| `AAR_R_TIME_UNIX_US_HI`, `AAR_R_TIME_UNIX_US_LO` | 0, 1 | time unix |
+| `AAR_R_TIME_UNIX_FLAGS` | 2 | time unix; `AAR_LOCALEF_OFFSET_KNOWN` |
+| `AAR_R_ENV_LEN` | 0 | env get |
+| `AAR_A_CLIP_UNIT`, `AAR_A_CLIP_TYPE` | 0, 1 | clip read, write |
+| `AAR_A_CLIP_OFFSET` | 2 | clip read, write |
+| `AAR_A_CLIP_TOTAL` | 3 | clip write |
+| `AAR_R_CLIP_READ_SIZE`, `AAR_R_CLIP_READ_COUNT` | 0, 1 | clip read |
+| `AAR_R_CLIP_WRITE_COUNT` | 0 | clip write |
 
 | Symbol | Value | Meaning |
 |---|---|---|
 | `AAR_FLIPF_ASYNC` | `1 << 0` | Flip flag: the app does not wait for the completion. |
 | `AAR_AUDIO_ROUTE_PLATFORM` | 0 | The platform's own mixer or fabric. |
 | `AAR_AUDIO_ROUTE_AHI` | 1 | AHI through the client, which reads PCM with its audio read call. |
+| `AAR_CLIPF_LAST` | `1 << 0` | Entry flag of `AAR_OP_CLIP_WRITE`: the final chunk. |
+| `AAR_DISPLAY_MODE_REC_BYTES` | 24 | Size of one `AAR_OP_DISPLAY_MODES` record. |
+| `AAR_LOCALE_REC_BYTES` | 64 | Size of the `AAR_OP_LOCALE_INFO` record. |
+| `AAR_LOCALE_REC_UTC_OFFSET_MIN` | `0x00` | int32, minutes east of UTC. |
+| `AAR_LOCALE_REC_FLAGS` | `0x04` | `AAR_LOCALEF_*`. |
+| `AAR_LOCALE_REC_LANGUAGE` | `0x08` | 32 bytes. |
+| `AAR_LOCALE_REC_COUNTRY` | `0x28` | 8 bytes. |
+| `AAR_LOCALE_REC_DECIMAL_POINT` | `0x30` | 4 bytes. |
+| `AAR_LOCALE_REC_GROUP_SEPARATOR` | `0x34` | 4 bytes; the bytes from `0x38` to `0x3F` are zero. |
 
 ### The audio ring buffer
 

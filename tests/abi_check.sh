@@ -63,11 +63,11 @@ cross() {
     fi
     got=$(od -An -tx1 -v "$OUT/note.bin" | tr -d ' \n')
     # namesz 4, descsz 40, type 1, "AAR\0", then ten words: magic, note_version
-    # 1, profile, api_major 0, api_minor_required 5, stack 0x20000, min heap 8,
+    # 1, profile, api_major 0, api_minor_required 6, stack 0x20000, min heap 8,
     # groups_required DISPLAY|GL = 9, groups_optional AUDIO = 4, reserved 0.
     want=$(printf '%s' \
         "04000000" "28000000" "01000000" "41415200" \
-        "4141524e" "01000000" "$PROFILE_HEX" "00000000" "05000000" \
+        "4141524e" "01000000" "$PROFILE_HEX" "00000000" "06000000" \
         "00000200" "08000000" "09000000" "04000000" "00000000")
     if [ "$got" != "$want" ]; then
         echo "FAIL: note bytes differ"

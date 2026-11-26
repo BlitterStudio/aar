@@ -330,6 +330,94 @@ static int app_console_read(void *buf, uint32_t len, uint32_t *out_n)
     return n < 0 ? AAR_E_IO : AAR_OK;
 }
 
+/* The loader implements the API 0.6 core calls later. Until then it answers
+ * each with AAR_E_NOSYS, which a client that does not serve an op may do. The
+ * display group is not in this table, so its minor 6 slots stay NULL. */
+static int app_nosys_path(const char *path)
+{
+    (void)path;
+    return AAR_E_NOSYS;
+}
+
+static int app_file_rename(const char *from, const char *to, uint32_t flags)
+{
+    (void)from;
+    (void)to;
+    (void)flags;
+    return AAR_E_NOSYS;
+}
+
+static int app_file_set_date(const char *path, int64_t mtime)
+{
+    (void)path;
+    (void)mtime;
+    return AAR_E_NOSYS;
+}
+
+static int app_file_set_protect(const char *path, uint32_t protect)
+{
+    (void)path;
+    (void)protect;
+    return AAR_E_NOSYS;
+}
+
+static int app_file_truncate(int fd, uint64_t size)
+{
+    (void)fd;
+    (void)size;
+    return AAR_E_NOSYS;
+}
+
+static int app_volume_info(const char *path, aar_volume_info *out)
+{
+    (void)path;
+    (void)out;
+    return AAR_E_NOSYS;
+}
+
+static int app_time_unix_us(int64_t *out_us)
+{
+    (void)out_us;
+    return AAR_E_NOSYS;
+}
+
+static int app_locale_info(aar_locale_info *out)
+{
+    (void)out;
+    return AAR_E_NOSYS;
+}
+
+static int app_env_get(const char *name, char *buf, uint32_t bytes,
+                       uint32_t *out_n)
+{
+    (void)name;
+    (void)buf;
+    (void)bytes;
+    (void)out_n;
+    return AAR_E_NOSYS;
+}
+
+static int app_clip_read(uint32_t unit, uint32_t type, void *buf,
+                         uint32_t bytes, uint32_t *out_n)
+{
+    (void)unit;
+    (void)type;
+    (void)buf;
+    (void)bytes;
+    (void)out_n;
+    return AAR_E_NOSYS;
+}
+
+static int app_clip_write(uint32_t unit, uint32_t type, const void *data,
+                          uint32_t bytes)
+{
+    (void)unit;
+    (void)type;
+    (void)data;
+    (void)bytes;
+    return AAR_E_NOSYS;
+}
+
 static void build_table(aar_api *api)
 {
     memset(api, 0, sizeof *api);
@@ -349,6 +437,18 @@ static void build_table(aar_api *api)
     api->publish = app_publish;
     api->acquire = app_publish;
     api->log = app_log;
+    api->file_delete = app_nosys_path;
+    api->file_rename = app_file_rename;
+    api->dir_create = app_nosys_path;
+    api->file_set_date = app_file_set_date;
+    api->file_set_protect = app_file_set_protect;
+    api->file_truncate = app_file_truncate;
+    api->volume_info = app_volume_info;
+    api->time_unix_us = app_time_unix_us;
+    api->locale_info = app_locale_info;
+    api->env_get = app_env_get;
+    api->clip_read = app_clip_read;
+    api->clip_write = app_clip_write;
     api->file_open = app_file_open;
     api->file_close = app_file_close;
     api->file_read = app_file_read;

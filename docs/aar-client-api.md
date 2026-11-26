@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 Dimitris Panokostas <midwan@gmail.com>
 SPDX-License-Identifier: MIT
 -->
 
-# aar.library client API (0.5)
+# aar.library client API (0.6)
 
 This is the reference for programs that run AAR apps from the Amiga side: a
 launcher, a test tool, a debugger. An app (the ARM side) uses

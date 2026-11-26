@@ -43,6 +43,7 @@ extern "C" {
 /* GL ABI revisions, stored in aar_gl.version. */
 #define AAR_GL_VERSION_V0     0u /* fields through Build2DMipmaps */
 #define AAR_GL_VERSION_ARRAYS 1u /* adds the array and client-state fields */
+#define AAR_GL_VERSION_11     2u /* adds the GL 1.1 completion fields */
 
 typedef struct aar_gl {
     uint32_t size;    /* sizeof of the table the runtime built */
@@ -135,6 +136,66 @@ typedef struct aar_gl {
                              const void *indices);
     void     (*LockArrays)(uint32_t first, int32_t count);
     void     (*UnlockArrays)(void);
+    /* AAR_GL_VERSION_11 additions. A platform whose renderer lacks a feature
+     * leaves its field NULL. */
+    void     (*ClearDepth)(double depth);
+    void     (*ColorMask)(uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+    void     (*PolygonOffset)(float factor, float units);
+    void     (*StencilFunc)(uint32_t func, int32_t ref, uint32_t mask);
+    void     (*StencilOp)(uint32_t fail, uint32_t zfail, uint32_t zpass);
+    void     (*StencilMask)(uint32_t mask);
+    void     (*ClearStencil)(int32_t s);
+    void     (*MultMatrixf)(const float *m);
+    void     (*LoadMatrixd)(const double *m);
+    void     (*MultMatrixd)(const double *m);
+    void     (*GetDoublev)(uint32_t pname, double *params);
+    void     (*GetBooleanv)(uint32_t pname, uint8_t *params);
+    void     (*ActiveTextureARB)(uint32_t texture);
+    void     (*MultiTexCoord2fARB)(uint32_t target, float s, float t);
+    void     (*MultiTexCoord2fvARB)(uint32_t target, const float *v);
+    void     (*Normal3f)(float nx, float ny, float nz);
+    void     (*Normal3fv)(const float *v);
+    void     (*NormalPointer)(uint32_t type, int32_t stride, const void *pointer);
+    void     (*Lightf)(uint32_t light, uint32_t pname, float param);
+    void     (*Lightfv)(uint32_t light, uint32_t pname, const float *params);
+    void     (*LightModelf)(uint32_t pname, float param);
+    void     (*LightModelfv)(uint32_t pname, const float *params);
+    void     (*LightModeli)(uint32_t pname, int32_t param);
+    void     (*Materialf)(uint32_t face, uint32_t pname, float param);
+    void     (*Materialfv)(uint32_t face, uint32_t pname, const float *params);
+    void     (*ColorMaterial)(uint32_t face, uint32_t mode);
+    void     (*Fogf)(uint32_t pname, float param);
+    void     (*Fogfv)(uint32_t pname, const float *params);
+    void     (*Fogi)(uint32_t pname, int32_t param);
+    void     (*LineWidth)(float width);
+    void     (*PointSize)(float size);
+    void     (*Color3ub)(uint8_t r, uint8_t g, uint8_t b);
+    void     (*Vertex2i)(int32_t x, int32_t y);
+    void     (*Vertex2fv)(const float *v);
+    void     (*TexCoord2i)(int32_t s, int32_t t);
+    void     (*Rectf)(float x1, float y1, float x2, float y2);
+    void     (*GetTexLevelParameteriv)(uint32_t target, int32_t level,
+                                       uint32_t pname, int32_t *params);
+    uint8_t  (*IsTexture)(uint32_t texture);
+    void     (*CopyTexImage2D)(uint32_t target, int32_t level,
+                               uint32_t internalformat,
+                               int32_t x, int32_t y, int32_t width,
+                               int32_t height, int32_t border);
+    void     (*CopyTexSubImage2D)(uint32_t target, int32_t level,
+                                  int32_t xoffset, int32_t yoffset,
+                                  int32_t x, int32_t y,
+                                  int32_t width, int32_t height);
+    void     (*ClipPlane)(uint32_t plane, const double *equation);
+    uint32_t (*GenLists)(int32_t range);
+    void     (*NewList)(uint32_t list, uint32_t mode);
+    void     (*EndList)(void);
+    void     (*CallList)(uint32_t list);
+    void     (*CallLists)(int32_t n, uint32_t type, const void *lists);
+    void     (*DeleteLists)(uint32_t list, int32_t range);
+    void     (*ListBase)(uint32_t base);
+    void     (*TexEnvfv)(uint32_t target, uint32_t pname, const float *params);
+    void     (*PushAttrib)(uint32_t mask);
+    void     (*PopAttrib)(void);
 } aar_gl;
 
 /* True when size covers field. A NULL function pointer still means absent. */
@@ -143,7 +204,7 @@ typedef struct aar_gl {
         (uint32_t)(offsetof(aar_gl, field) + sizeof((gl)->field)))
 
 /* Number of pointer fields in the table (the layout test checks it). */
-#define AAR_GL_SLOT_COUNT 72u
+#define AAR_GL_SLOT_COUNT 123u
 
 #if defined(__cplusplus)
 static_assert(offsetof(aar_gl, Begin) == 8, "aar_gl first slot at offset 8");
@@ -245,6 +306,66 @@ void     glDrawElements(uint32_t mode, int32_t count, uint32_t type,
                         const void *indices);
 void     glLockArrays(uint32_t first, int32_t count);
 void     glUnlockArrays(void);
+/* AAR_GL_VERSION_11. Absent or NULL: a no-op, and 0 for a value. The stencil
+ * buffer is not promised: glGetIntegerv(GL_STENCIL_BITS) reports its depth, 0
+ * for none. */
+void     glClearDepth(double depth);
+void     glColorMask(uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+void     glPolygonOffset(float factor, float units);
+void     glStencilFunc(uint32_t func, int32_t ref, uint32_t mask);
+void     glStencilOp(uint32_t fail, uint32_t zfail, uint32_t zpass);
+void     glStencilMask(uint32_t mask);
+void     glClearStencil(int32_t s);
+void     glMultMatrixf(const float *m);
+void     glLoadMatrixd(const double *m);
+void     glMultMatrixd(const double *m);
+void     glGetDoublev(uint32_t pname, double *params);
+void     glGetBooleanv(uint32_t pname, uint8_t *params);
+void     glActiveTextureARB(uint32_t texture);
+void     glMultiTexCoord2fARB(uint32_t target, float s, float t);
+void     glMultiTexCoord2fvARB(uint32_t target, const float *v);
+void     glNormal3f(float nx, float ny, float nz);
+void     glNormal3fv(const float *v);
+void     glNormalPointer(uint32_t type, int32_t stride, const void *pointer);
+void     glLightf(uint32_t light, uint32_t pname, float param);
+void     glLightfv(uint32_t light, uint32_t pname, const float *params);
+void     glLightModelf(uint32_t pname, float param);
+void     glLightModelfv(uint32_t pname, const float *params);
+void     glLightModeli(uint32_t pname, int32_t param);
+void     glMaterialf(uint32_t face, uint32_t pname, float param);
+void     glMaterialfv(uint32_t face, uint32_t pname, const float *params);
+void     glColorMaterial(uint32_t face, uint32_t mode);
+void     glFogf(uint32_t pname, float param);
+void     glFogfv(uint32_t pname, const float *params);
+void     glFogi(uint32_t pname, int32_t param);
+void     glLineWidth(float width);
+void     glPointSize(float size);
+void     glColor3ub(uint8_t r, uint8_t g, uint8_t b);
+void     glVertex2i(int32_t x, int32_t y);
+void     glVertex2fv(const float *v);
+void     glTexCoord2i(int32_t s, int32_t t);
+void     glRectf(float x1, float y1, float x2, float y2);
+void     glGetTexLevelParameteriv(uint32_t target, int32_t level,
+                                  uint32_t pname, int32_t *params);
+uint8_t  glIsTexture(uint32_t texture);
+void     glCopyTexImage2D(uint32_t target, int32_t level,
+                          uint32_t internalformat, int32_t x, int32_t y,
+                          int32_t width, int32_t height, int32_t border);
+void     glCopyTexSubImage2D(uint32_t target, int32_t level,
+                             int32_t xoffset, int32_t yoffset,
+                             int32_t x, int32_t y,
+                             int32_t width, int32_t height);
+void     glClipPlane(uint32_t plane, const double *equation);
+uint32_t glGenLists(int32_t range);
+void     glNewList(uint32_t list, uint32_t mode);
+void     glEndList(void);
+void     glCallList(uint32_t list);
+void     glCallLists(int32_t n, uint32_t type, const void *lists);
+void     glDeleteLists(uint32_t list, int32_t range);
+void     glListBase(uint32_t base);
+void     glTexEnvfv(uint32_t target, uint32_t pname, const float *params);
+void     glPushAttrib(uint32_t mask);
+void     glPopAttrib(void);
 
 #ifdef __cplusplus
 }

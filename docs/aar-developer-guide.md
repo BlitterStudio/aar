@@ -295,11 +295,17 @@ exited, until it closes its handle, and drains them before it does.
 blocks. It always delivers the two lifecycle events: `AAR_EV_STOP` (a stop was
 requested) and `AAR_EV_LOW_MEMORY` (the free pool crossed below its low-water
 mark). A runtime with `AAR_GROUP_INPUT` also delivers `AAR_EV_KEY_DOWN`,
-`AAR_EV_KEY_UP`, `AAR_EV_MOUSE`, `AAR_EV_JOY` and `AAR_EV_BREAK`.
-`AAR_EV_RESIZE` is defined and never sent. `code` is the Amiga raw key without
-the up bit, or an `AAR_BREAK_*` value. `dx` and `dy` are mouse deltas, or
-joystick axes in -1, 0 and 1. `buttons` holds the key qualifiers, mouse buttons
-in bits 0 to 2 (left, right, middle), or joystick fire in bit 0. Map raw keys
+`AAR_EV_KEY_UP`, `AAR_EV_MOUSE`, `AAR_EV_JOY`, `AAR_EV_BREAK` and the display
+events of the [reference](aar-api.md): `AAR_EV_RESIZE`, `AAR_EV_TEXT`,
+`AAR_EV_WHEEL`, `AAR_EV_CLOSE_REQUEST` and `AAR_EV_ACTIVE`. Ignore an event
+type you do not know. `code` is the Amiga raw key without the up bit, an
+`AAR_BREAK_*` value, the mouse button that changed, the joystick port or a
+code point. `dx` and `dy` are mouse deltas or the pointer position, or joystick
+axes in -1, 0 and 1. `buttons` holds the key qualifiers, the `AAR_MOUSE_*`
+bits or the `AAR_JOY_*` bits. Ask for the optional behaviour (window, resize,
+absolute pointer, text input, close request, scaling) with the
+`AAR_DISPLAY_*` flags of `aar_display_open`; the granted `AAR_DISPCAP_*` caps
+say what you got. Without text input, map raw keys
 yourself. The runtime keeps at least 64 events. When the completion queue is
 full, the client drops the newest event and counts the drop. The client
 coalesces mouse motion before it posts.
@@ -333,7 +339,12 @@ id is `AAR_E_BADF`. A call waits up to 30 seconds for the client
 (`AAR_E_TIMEDOUT`), and after a timeout that id is not reused for the rest of
 the app's life. A stop ends the wait with `AAR_E_IO`. A short `aar_file_read`
 with `AAR_OK` is end of file. `aar_file_stat` gives size, a 64-bit
-modification time in Unix seconds (0 when the filesystem has none) and a mode.
+modification time in Unix seconds (0 when the filesystem has none), a mode and
+the protection bits. Delete, rename, make directories, set the date and
+protection, truncate and ask for volume space with `aar_file_delete` and its
+siblings (see the [reference](aar-api.md)). `aar_time_unix_us` gives the wall
+clock, and `aar_get_locale_info`, `aar_env_get` and `aar_clip_read` the user's
+locale, environment variables and clipboard.
 `aar_map_file` is optional: it reads a whole file into a read-only buffer that
 the runtime owns, and a platform may return `AAR_E_NOSYS`. Put data files under
 the root, and do not hard-code a volume unless the launcher allows absolute
@@ -911,8 +922,9 @@ through the table.
 
 ## Versioning
 
-The table is append-only. A new call is a new field at the end and a minor bump.
-`AAR_API_MINOR` is 5. API 0.5 is the first AAR version. Before 1.0 any
+The table is append-only from 1.0. `AAR_API_MINOR` is 6. API 0.5 is the first AAR
+version, and 0.6 added the file, time, locale, environment, clipboard and
+display calls. Before 1.0 any
 minor may break, and 1.0 is cut when a second platform passes conformance.
 
 Gate every appended slot with `AAR_API_COVERS` and a non-NULL function pointer.

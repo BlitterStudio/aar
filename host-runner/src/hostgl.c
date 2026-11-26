@@ -187,7 +187,92 @@
       (texture)) \
     V(LockArrays, glLockArraysEXT, (uint32_t first, int32_t count), \
       (first, count)) \
-    V(UnlockArrays, glUnlockArraysEXT, (void), ())
+    V(UnlockArrays, glUnlockArraysEXT, (void), ()) \
+    V(ClearDepth, glClearDepth, (double depth), (depth)) \
+    V(ColorMask, glColorMask, (uint8_t r, uint8_t g, uint8_t b, uint8_t a), \
+      (r, g, b, a)) \
+    V(PolygonOffset, glPolygonOffset, (float factor, float units), \
+      (factor, units)) \
+    V(StencilFunc, glStencilFunc, (uint32_t func, int32_t ref, uint32_t mask), \
+      (func, ref, mask)) \
+    V(StencilOp, glStencilOp, \
+      (uint32_t fail, uint32_t zfail, uint32_t zpass), (fail, zfail, zpass)) \
+    V(StencilMask, glStencilMask, (uint32_t mask), (mask)) \
+    V(ClearStencil, glClearStencil, (int32_t s), (s)) \
+    V(MultMatrixf, glMultMatrixf, (const float *m), (m)) \
+    V(LoadMatrixd, glLoadMatrixd, (const double *m), (m)) \
+    V(MultMatrixd, glMultMatrixd, (const double *m), (m)) \
+    V(GetDoublev, glGetDoublev, (uint32_t pname, double *params), \
+      (pname, params)) \
+    V(GetBooleanv, glGetBooleanv, (uint32_t pname, uint8_t *params), \
+      (pname, params)) \
+    V(ActiveTextureARB, glActiveTextureARB, (uint32_t texture), (texture)) \
+    V(MultiTexCoord2fARB, glMultiTexCoord2fARB, \
+      (uint32_t target, float s, float t), (target, s, t)) \
+    V(MultiTexCoord2fvARB, glMultiTexCoord2fvARB, \
+      (uint32_t target, const float *v), (target, v)) \
+    V(Normal3f, glNormal3f, (float nx, float ny, float nz), (nx, ny, nz)) \
+    V(Normal3fv, glNormal3fv, (const float *v), (v)) \
+    V(NormalPointer, glNormalPointer, \
+      (uint32_t type, int32_t stride, const void *pointer), \
+      (type, stride, pointer)) \
+    V(Lightf, glLightf, (uint32_t light, uint32_t pname, float param), \
+      (light, pname, param)) \
+    V(Lightfv, glLightfv, \
+      (uint32_t light, uint32_t pname, const float *params), \
+      (light, pname, params)) \
+    V(LightModelf, glLightModelf, (uint32_t pname, float param), \
+      (pname, param)) \
+    V(LightModelfv, glLightModelfv, (uint32_t pname, const float *params), \
+      (pname, params)) \
+    V(LightModeli, glLightModeli, (uint32_t pname, int32_t param), \
+      (pname, param)) \
+    V(Materialf, glMaterialf, (uint32_t face, uint32_t pname, float param), \
+      (face, pname, param)) \
+    V(Materialfv, glMaterialfv, \
+      (uint32_t face, uint32_t pname, const float *params), \
+      (face, pname, params)) \
+    V(ColorMaterial, glColorMaterial, (uint32_t face, uint32_t mode), \
+      (face, mode)) \
+    V(Fogf, glFogf, (uint32_t pname, float param), (pname, param)) \
+    V(Fogfv, glFogfv, (uint32_t pname, const float *params), (pname, params)) \
+    V(Fogi, glFogi, (uint32_t pname, int32_t param), (pname, param)) \
+    V(LineWidth, glLineWidth, (float width), (width)) \
+    V(PointSize, glPointSize, (float size), (size)) \
+    V(Color3ub, glColor3ub, (uint8_t r, uint8_t g, uint8_t b), (r, g, b)) \
+    V(Vertex2i, glVertex2i, (int32_t x, int32_t y), (x, y)) \
+    V(Vertex2fv, glVertex2fv, (const float *v), (v)) \
+    V(TexCoord2i, glTexCoord2i, (int32_t s, int32_t t), (s, t)) \
+    V(Rectf, glRectf, (float x1, float y1, float x2, float y2), \
+      (x1, y1, x2, y2)) \
+    V(GetTexLevelParameteriv, glGetTexLevelParameteriv, \
+      (uint32_t target, int32_t level, uint32_t pname, int32_t *params), \
+      (target, level, pname, params)) \
+    R(uint8_t, IsTexture, glIsTexture, (uint32_t texture), (texture)) \
+    V(CopyTexImage2D, glCopyTexImage2D, \
+      (uint32_t target, int32_t level, uint32_t internalformat, int32_t x, \
+       int32_t y, int32_t width, int32_t height, int32_t border), \
+      (target, level, internalformat, x, y, width, height, border)) \
+    V(CopyTexSubImage2D, glCopyTexSubImage2D, \
+      (uint32_t target, int32_t level, int32_t xoffset, int32_t yoffset, \
+       int32_t x, int32_t y, int32_t width, int32_t height), \
+      (target, level, xoffset, yoffset, x, y, width, height)) \
+    V(ClipPlane, glClipPlane, (uint32_t plane, const double *equation), \
+      (plane, equation)) \
+    R(uint32_t, GenLists, glGenLists, (int32_t range), (range)) \
+    V(NewList, glNewList, (uint32_t list, uint32_t mode), (list, mode)) \
+    V(EndList, glEndList, (void), ()) \
+    V(CallList, glCallList, (uint32_t list), (list)) \
+    V(CallLists, glCallLists, \
+      (int32_t n, uint32_t type, const void *lists), (n, type, lists)) \
+    V(DeleteLists, glDeleteLists, (uint32_t list, int32_t range), \
+      (list, range)) \
+    V(ListBase, glListBase, (uint32_t base), (base)) \
+    V(TexEnvfv, glTexEnvfv, \
+      (uint32_t target, uint32_t pname, const float *params), \
+      (target, pname, params)) \
+    V(PushAttrib, glPushAttrib, (uint32_t mask), (mask)) \
+    V(PopAttrib, glPopAttrib, (void), ())
 
 #define HOSTGL_ALL(V, R) HOSTGL_REQUIRED(V, R) HOSTGL_OPTIONAL(V, R)
 
@@ -253,6 +338,15 @@ static const char *resolve_all(void)
     if (!host_ClientActiveTextureARB)
         host_ClientActiveTextureARB = (void (APIENTRY *)(uint32_t))
             load_symbol("glClientActiveTexture");
+    if (!host_ActiveTextureARB)
+        host_ActiveTextureARB = (void (APIENTRY *)(uint32_t))
+            load_symbol("glActiveTexture");
+    if (!host_MultiTexCoord2fARB)
+        host_MultiTexCoord2fARB = (void (APIENTRY *)(uint32_t, float, float))
+            load_symbol("glMultiTexCoord2f");
+    if (!host_MultiTexCoord2fvARB)
+        host_MultiTexCoord2fvARB = (void (APIENTRY *)(uint32_t, const float *))
+            load_symbol("glMultiTexCoord2fv");
     HOSTGL_REQUIRED(HOSTGL_NEED_V, HOSTGL_NEED_R)
     return missing;
 }
@@ -440,7 +534,7 @@ static void fill_table(aar_gl *t)
 {
     memset(t, 0, sizeof *t);
     t->size = (uint32_t)sizeof *t;
-    t->version = AAR_GL_VERSION_ARRAYS;
+    t->version = AAR_GL_VERSION_11;
     HOSTGL_ALL(HOSTGL_FILL_V, HOSTGL_FILL_R)
     t->Perspective = wrap_Perspective;
     t->Build2DMipmaps = wrap_Build2DMipmaps;

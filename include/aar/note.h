@@ -15,7 +15,8 @@
  * groups_*        AAR_GROUP_* bits. The runtime fails the load with
  *                 AAR_E_NOGROUP when a required group is absent.
  * api_minor_required
- *                 the lowest API minor that has every call the app needs.
+ *                 the lowest API minor that has every call the app needs, from
+ *                 AAR_API_MINOR_OLDEST to AAR_API_MINOR (a static assert).
  *                 AAR_NOTE() declares AAR_API_MINOR, the minor of this header.
  *
  * The profile word comes from the compiler: AAR_PROFILE_A64 when
@@ -50,6 +51,10 @@
         __attribute__((used, noinline));                                      \
     static void AAR_NOTE_PASTE(aar_note_keep_, id)(void)                      \
     {                                                                         \
+        AAR_STATIC_ASSERT((minor) >= AAR_API_MINOR_OLDEST,                    \
+                          "api_minor_required is below AAR_API_MINOR_OLDEST");\
+        AAR_STATIC_ASSERT((minor) <= AAR_API_MINOR,                           \
+                          "api_minor_required is above AAR_API_MINOR");       \
         __asm__ __volatile__(                                                 \
             ".pushsection .note.aar, \"a\", %%note\n\t"                       \
             ".balign 4\n\t"                                                   \

@@ -592,3 +592,177 @@ int aar_audio_decode_close(uint32_t session)
         return api->audio_decode_close(session);
     return AAR_E_NOSYS;
 }
+
+int aar_file_delete(const char *path)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, file_delete) && api->file_delete)
+        return api->file_delete(path);
+    return AAR_E_NOSYS;
+}
+
+int aar_file_rename(const char *from, const char *to, uint32_t flags)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, file_rename) && api->file_rename)
+        return api->file_rename(from, to, flags);
+    return AAR_E_NOSYS;
+}
+
+int aar_dir_create(const char *path)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, dir_create) && api->dir_create)
+        return api->dir_create(path);
+    return AAR_E_NOSYS;
+}
+
+int aar_file_set_date(const char *path, int64_t mtime)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, file_set_date) && api->file_set_date)
+        return api->file_set_date(path, mtime);
+    return AAR_E_NOSYS;
+}
+
+int aar_file_set_protect(const char *path, uint32_t protect)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, file_set_protect) && api->file_set_protect)
+        return api->file_set_protect(path, protect);
+    return AAR_E_NOSYS;
+}
+
+int aar_file_truncate(int fd, uint64_t size)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, file_truncate) && api->file_truncate)
+        return api->file_truncate(fd, size);
+    return AAR_E_NOSYS;
+}
+
+int aar_get_volume_info(const char *path, aar_volume_info *out)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, volume_info) && api->volume_info)
+        return api->volume_info(path, out);
+    return AAR_E_NOSYS;
+}
+
+int aar_time_unix_us(int64_t *out_us)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, time_unix_us) && api->time_unix_us)
+        return api->time_unix_us(out_us);
+    return AAR_E_NOSYS;
+}
+
+int aar_get_locale_info(aar_locale_info *out)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, locale_info) && api->locale_info)
+        return api->locale_info(out);
+    return AAR_E_NOSYS;
+}
+
+int aar_env_get(const char *name, char *buf, uint32_t bytes, uint32_t *out_n)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, env_get) && api->env_get)
+        return api->env_get(name, buf, bytes, out_n);
+    return AAR_E_NOSYS;
+}
+
+int aar_clip_read(uint32_t unit, uint32_t type, void *buf, uint32_t bytes,
+                  uint32_t *out_n)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, clip_read) && api->clip_read)
+        return api->clip_read(unit, type, buf, bytes, out_n);
+    return AAR_E_NOSYS;
+}
+
+int aar_clip_write(uint32_t unit, uint32_t type, const void *data,
+                   uint32_t bytes)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, clip_write) && api->clip_write)
+        return api->clip_write(unit, type, data, bytes);
+    return AAR_E_NOSYS;
+}
+
+int aar_display_get_info(uint32_t id, aar_display_info *out)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, display_info) && api->display_info)
+        return api->display_info(id, out);
+    return AAR_E_NOSYS;
+}
+
+int aar_display_modes(aar_display_mode *out, uint32_t max, uint32_t *out_n)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, display_modes) && api->display_modes)
+        return api->display_modes(out, max, out_n);
+    return AAR_E_NOSYS;
+}
+
+int aar_display_resize(uint32_t id, uint32_t w, uint32_t h, aar_surface *out)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, display_resize) && api->display_resize)
+        return api->display_resize(id, w, h, out);
+    return AAR_E_NOSYS;
+}
+
+int aar_display_set_title(uint32_t id, const char *title)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, display_set_title) && api->display_set_title)
+        return api->display_set_title(id, title);
+    return AAR_E_NOSYS;
+}
+
+int aar_display_pointer(uint32_t id, uint32_t mode, const aar_pointer *image)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, display_pointer) && api->display_pointer)
+        return api->display_pointer(id, mode, image);
+    return AAR_E_NOSYS;
+}
+
+int aar_display_wait_vblank(uint32_t timeout_us)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, display_wait_vblank) && api->display_wait_vblank)
+        return api->display_wait_vblank(timeout_us);
+    return AAR_E_NOSYS;
+}
+
+uint64_t aar_display_last_present_us(void)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, display_last_present_us) &&
+        api->display_last_present_us)
+        return api->display_last_present_us();
+    return 0;
+}

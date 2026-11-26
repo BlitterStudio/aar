@@ -39,7 +39,12 @@ extern "C" {
 /* ---- Versioning (spec 3.6) ------------------------------------------------ */
 
 #define AAR_API_MAJOR 0u
-#define AAR_API_MINOR 5u
+#define AAR_API_MINOR 6u
+/* The oldest minor whose table layout this header describes. Before 1.0 a
+ * minor may move slots (0.6 did), so a runtime built from this header refuses
+ * a note with an api_minor_required below this value as well as one above
+ * AAR_API_MINOR (spec 3.6). */
+#define AAR_API_MINOR_OLDEST 6u
 #define AAR_API_VERSION ((AAR_API_MAJOR << 16) | AAR_API_MINOR)
 
 /* True when the table names a runtime of this major and at least `minor`. The
@@ -244,18 +249,46 @@ typedef struct aar_shared {
 #define AAR_EV_MOUSE      3u
 #define AAR_EV_JOY        4u
 #define AAR_EV_STOP       5u  /* lifecycle; always delivered */
-#define AAR_EV_RESIZE     6u  /* defined, never sent in v1 */
+#define AAR_EV_RESIZE     6u  /* sent only with AAR_DISPCAP_RESIZE: dx, dy = new inner size, pixels */
 #define AAR_EV_BREAK      7u
 #define AAR_EV_LOW_MEMORY 8u  /* lifecycle; always delivered; fields other than type are 0 */
+/* Minor 6. An app MUST ignore an event type it does not know. */
+#define AAR_EV_TEXT          9u  /* code: Unicode code point 1..0xFFFF; buttons: qualifiers. Only with AAR_DISPCAP_TEXT_INPUT */
+#define AAR_EV_WHEEL        10u  /* dx: horizontal steps (+ right), dy: vertical steps (+ down, towards the user); buttons: qualifiers. Sent when the client can produce it; the wheel is then not sent as raw keys */
+#define AAR_EV_CLOSE_REQUEST 11u /* the close gadget was used; only with AAR_DISPCAP_CLOSE_REQUEST, which then replaces the stop that gadget sends */
+#define AAR_EV_ACTIVE       12u  /* code 1: the display gained input focus, 0: lost it. Sent when the client can produce it */
+
+/* AAR_EV_MOUSE: code is 0 for motion only, or the button whose state changed
+ * (1 left, 2 right, 3 middle). buttons holds the state of all buttons. */
+#define AAR_MOUSE_LEFT     (1u << 0)
+#define AAR_MOUSE_RIGHT    (1u << 1)
+#define AAR_MOUSE_MIDDLE   (1u << 2)
+/* In buttons: dx and dy are the pointer position relative to the surface's
+ * top-left pixel, not deltas. Set on every AAR_EV_MOUSE of a display granted
+ * AAR_DISPCAP_POINTER_ABS; the position may be outside the surface while a
+ * button is held. */
+#define AAR_MOUSE_ABSOLUTE (1u << 15)
+
+/* AAR_EV_JOY: code is the port (0 and 1 are the Amiga game ports; 2 and up
+ * are other devices that the client numbers); dx, dy are the axes; buttons: */
+#define AAR_JOY_BUTTON1 (1u << 0) /* fire; CD32 red */
+#define AAR_JOY_BUTTON2 (1u << 1) /* second button; CD32 blue */
+#define AAR_JOY_BUTTON3 (1u << 2) /* third button; CD32 green */
+#define AAR_JOY_BUTTON4 (1u << 3) /* CD32 yellow */
+#define AAR_JOY_PLAY    (1u << 4) /* CD32 play/pause */
+#define AAR_JOY_FORWARD (1u << 5) /* CD32 right shoulder */
+#define AAR_JOY_REVERSE (1u << 6) /* CD32 left shoulder */
 
 #define AAR_BREAK_CTRL_D 4u
 #define AAR_BREAK_CTRL_E 5u
 #define AAR_BREAK_CTRL_F 6u
 
-/* 16 bytes on both profiles. code: Amiga raw key (up bit removed), or
- * AAR_BREAK_*; dx, dy: mouse deltas or joystick axes -1, 0, 1; buttons: key
- * qualifiers, mouse buttons in bits 0 to 2 (left, right, middle), or joystick
- * fire in bit 0; time_ms: a timestamp in milliseconds that the client chooses. */
+/* 16 bytes on both profiles. code: Amiga raw key (up bit removed), AAR_BREAK_*,
+ * the mouse button that changed, the joystick port, or a code point (TEXT);
+ * dx, dy: mouse deltas or position, joystick axes -1, 0, 1, wheel steps, or
+ * the new size (RESIZE); buttons: key qualifiers, AAR_MOUSE_* bits or
+ * AAR_JOY_* bits; time_ms: a timestamp in milliseconds that the client
+ * chooses. */
 typedef struct aar_event {
     uint16_t type, code;
     int16_t  dx, dy;
@@ -281,17 +314,66 @@ typedef struct aar_event {
 #define AAR_MODE_FILE 1u
 #define AAR_MODE_DIR  2u
 
+/* file_rename flags. */
+#define AAR_RENAME_REPLACE (1u << 0) /* delete an existing target first; not atomic on AmigaDOS */
+
+/* Protection bits, at the AmigaDOS FIBF_* positions. Bits 0 to 3 are set to
+ * DENY, as in AmigaDOS: a set AAR_PROT_WRITE forbids writing. */
+#define AAR_PROT_DELETE  (1u << 0)
+#define AAR_PROT_EXECUTE (1u << 1)
+#define AAR_PROT_WRITE   (1u << 2)
+#define AAR_PROT_READ    (1u << 3)
+#define AAR_PROT_ARCHIVE (1u << 4)
+#define AAR_PROT_PURE    (1u << 5)
+#define AAR_PROT_SCRIPT  (1u << 6)
+#define AAR_PROT_HOLD    (1u << 7)
+
+#define AAR_VOLF_READONLY (1u << 0) /* aar_volume_info.flags */
+
 typedef struct aar_stat {
     uint64_t size;
     int64_t  mtime;           /* Unix seconds, 0 when the filesystem has none */
     uint32_t mode;            /* AAR_MODE_* */
-    uint32_t reserved;
+    uint32_t protect;         /* AAR_PROT_* */
 } aar_stat;
 
 typedef struct aar_dirent {
     uint32_t mode;            /* AAR_MODE_* */
     char     name[256];       /* NUL-terminated, at most AAR_NAME_MAX bytes */
 } aar_dirent;
+
+/* aar_get_volume_info(): the caller sets `size`; the runtime fills at most
+ * that many bytes and zeroes the rest. */
+typedef struct aar_volume_info {
+    uint32_t size;
+    uint32_t block_bytes;
+    uint64_t total_bytes;
+    uint64_t free_bytes;
+    uint32_t flags;           /* AAR_VOLF_* */
+    uint32_t reserved[3];
+} aar_volume_info;
+
+/* ---- Host environment (spec 7.3, 7.4) ---------------------------------------------------------------- */
+
+/* aar_get_locale_info(): the caller sets `size`; the runtime fills at most
+ * that many bytes and zeroes the rest. */
+#define AAR_LOCALEF_OFFSET_KNOWN (1u << 0) /* utc_offset_min is the user's setting */
+
+typedef struct aar_locale_info {
+    uint32_t size;
+    int32_t  utc_offset_min;  /* minutes EAST of UTC (locale.library loc_GMTOffset is minutes west: negate) */
+    uint32_t flags;           /* AAR_LOCALEF_* */
+    char     language[32];    /* NUL-terminated Amiga language name without ".language", e.g. "english", "deutsch"; "" unknown */
+    char     country[8];      /* NUL-terminated vehicle code: the non-zero bytes of loc_CountryCode, most significant first, e.g. "D", "GB"; "" unknown */
+    char     decimal_point[4];   /* UTF-8, NUL-terminated */
+    char     group_separator[4]; /* UTF-8, NUL-terminated */
+    uint32_t reserved[3];
+} aar_locale_info;
+
+/* Clipboard types and units (aar_clip_read, aar_clip_write). */
+#define AAR_CLIP_TEXT  1u   /* UTF-8 text; the client converts to and from IFF FTXT */
+#define AAR_CLIP_IFF   2u   /* one IFF FORM, passed through unchanged */
+#define AAR_CLIP_UNITS 256u /* units 0..255 as clipboard.device; 0 is the primary clipboard */
 
 /* ---- Display (spec 8.2) -------------------------------------------------------------------- */
 
@@ -314,12 +396,25 @@ typedef struct aar_dirent {
  * granted caps the open fell back to plain AAR_DISPLAY_VSYNC. */
 #define AAR_DISPLAY_VSYNC  (1u << 0) /* flip waits for scanout acknowledgement */
 #define AAR_DISPLAY_LATEST (1u << 1) /* a flip replaces a pending frame instead of waiting */
+/* Flags of minor 6: requests; the granted caps say what took effect. */
+#define AAR_DISPLAY_WINDOW        (1u << 2) /* show the surface in a window on the default public screen */
+#define AAR_DISPLAY_RESIZABLE     (1u << 3) /* the window may be resized; needs WINDOW */
+#define AAR_DISPLAY_POINTER_ABS   (1u << 4) /* mouse events carry the pointer position */
+#define AAR_DISPLAY_TEXT_INPUT    (1u << 5) /* send AAR_EV_TEXT */
+#define AAR_DISPLAY_CLOSE_REQUEST (1u << 6) /* send AAR_EV_CLOSE_REQUEST for the close gadget */
+#define AAR_DISPLAY_SCALE         (1u << 7) /* the client scales the surface, keeping the aspect ratio */
 
 /* aar_surface.caps: what this display grants. 16 bits, because the transport
  * carries them in the entry flags field. */
 #define AAR_DISPCAP_ASYNC  (1u << 0) /* aar_display_flip_async works */
 #define AAR_DISPCAP_LATEST (1u << 1) /* AAR_DISPLAY_LATEST is in effect */
 #define AAR_DISPCAP_CLUT8  (1u << 2) /* CLUT8 surfaces and palettes work */
+#define AAR_DISPCAP_WINDOW        (1u << 3)  /* the surface is in a window */
+#define AAR_DISPCAP_RESIZE        (1u << 4)  /* AAR_EV_RESIZE is sent and aar_display_resize works */
+#define AAR_DISPCAP_POINTER_ABS   (1u << 5)  /* mouse events are absolute */
+#define AAR_DISPCAP_TEXT_INPUT    (1u << 6)  /* AAR_EV_TEXT is sent */
+#define AAR_DISPCAP_CLOSE_REQUEST (1u << 7)  /* AAR_EV_CLOSE_REQUEST is sent */
+#define AAR_DISPCAP_SCALED        (1u << 8)  /* the client scales the surface */
 
 /* Non-pointer fields first; front is at offset 32 on both profiles. front and
  * back are the app mapping, NULL if the app does not draw that buffer. */
@@ -334,6 +429,46 @@ typedef struct aar_surface {
     void    *front;
     void    *back;
 } aar_surface;
+
+/* aar_display_get_info(): the caller sets `size`; the runtime fills at most
+ * that many bytes and zeroes the rest. */
+#define AAR_DISPINFO_WINDOW (1u << 0) /* shown in a window on a public screen */
+#define AAR_DISPINFO_SCALED (1u << 1) /* the client scales the surface */
+#define AAR_DISPINFO_ACTIVE (1u << 2) /* the window or screen has input focus */
+
+typedef struct aar_display_info {
+    uint32_t size;
+    uint32_t width, height;   /* current surface size */
+    uint32_t refresh_mhz;     /* refresh rate of the mode shown, millihertz; 0 unknown */
+    uint32_t screen_width, screen_height; /* the Amiga screen the surface is on */
+    uint32_t flags;           /* AAR_DISPINFO_* */
+    uint32_t reserved[5];
+} aar_display_info;
+
+#define AAR_MODEF_PREFERRED (1u << 0) /* aar_display_mode.flags: the client's preferred mode (native size) */
+
+typedef struct aar_display_mode {
+    uint32_t width, height;
+    uint32_t refresh_mhz;     /* 0 unknown */
+    uint32_t formats;         /* bit (1u << AAR_FMT_*) for each format this mode can show */
+    uint32_t flags;           /* AAR_MODEF_* */
+    uint32_t reserved;
+} aar_display_mode;
+
+/* aar_display_pointer() modes. */
+#define AAR_POINTER_DEFAULT 0u
+#define AAR_POINTER_HIDDEN  1u
+#define AAR_POINTER_BUSY    2u
+#define AAR_POINTER_CUSTOM  3u /* image required */
+#define AAR_POINTER_MAX_DIM 64u
+
+/* Non-pointer fields first; argb is at offset 24 on both profiles. */
+typedef struct aar_pointer {
+    uint32_t width, height;   /* 1..AAR_POINTER_MAX_DIM each */
+    int32_t  hot_x, hot_y;    /* hot spot inside the image */
+    uint32_t reserved[2];
+    const uint32_t *argb;     /* width * height pixels, 0xAARRGGBB in host order; alpha 0 is transparent */
+} aar_pointer;
 
 /* ---- Audio (spec 8.4) ------------------------------------------------------------------------ */
 
@@ -429,7 +564,9 @@ typedef struct aar_audio_decode_result {
 /*
  * Slot order, fixed until 1.0:
  *   1. Header: size, version, groups, platform_id (16 bytes).
- *   2. Core, 30 slots, exit through msg_wait. All non-NULL in every runtime.
+ *   2. Core, 42 slots, exit through clip_write. All non-NULL in every
+ *      runtime. A call that the client serves may still return AAR_E_NOSYS
+ *      when the client does not serve it.
  *   3. Optional: ext, map_file, unmap_file.
  *   4. Groups, in this order: display, audio, gl, services. (Input has no
  *      slots.) When a group's bit is set in `groups`, all of its slots that
@@ -490,6 +627,25 @@ typedef struct aar_api {
     int      (*msg_poll)(void *msg);            /* 1, 0, or negative */
     int      (*msg_wait)(uint32_t timeout_us);
 
+    /* -- core: files, minor 6 (spec 7.1) -- */
+    int      (*file_delete)(const char *path);
+    int      (*file_rename)(const char *from, const char *to, uint32_t flags); /* AAR_RENAME_* */
+    int      (*dir_create)(const char *path);
+    int      (*file_set_date)(const char *path, int64_t mtime);   /* Unix seconds, UTC */
+    int      (*file_set_protect)(const char *path, uint32_t protect); /* AAR_PROT_* */
+    int      (*file_truncate)(int fd, uint64_t size);
+    int      (*volume_info)(const char *path, aar_volume_info *out);
+
+    /* -- core: host environment, minor 6 (spec 7.3, 7.4) -- */
+    int      (*time_unix_us)(int64_t *out_us);
+    int      (*locale_info)(aar_locale_info *out);
+    int      (*env_get)(const char *name, char *buf, uint32_t bytes,
+                        uint32_t *out_n);
+    int      (*clip_read)(uint32_t unit, uint32_t type, void *buf,
+                          uint32_t bytes, uint32_t *out_n);
+    int      (*clip_write)(uint32_t unit, uint32_t type, const void *data,
+                           uint32_t bytes);
+
     /* -- optional -- */
     const void *(*ext)(uint32_t platform_id, uint32_t ext_id);
     int      (*map_file)(const char *path, const void **data, uint64_t *bytes);
@@ -507,6 +663,16 @@ typedef struct aar_api {
                                     const uint32_t *rgb);
     int      (*display_close)(uint32_t id);
     uint32_t (*display_latest_dropped)(void);      /* only if AAR_DISPCAP_LATEST */
+    int      (*display_info)(uint32_t id, aar_display_info *out);
+    int      (*display_modes)(aar_display_mode *out, uint32_t max,
+                              uint32_t *out_n);
+    int      (*display_resize)(uint32_t id, uint32_t w, uint32_t h,
+                               aar_surface *out);   /* only with AAR_DISPCAP_RESIZE */
+    int      (*display_set_title)(uint32_t id, const char *title);
+    int      (*display_pointer)(uint32_t id, uint32_t mode,
+                                const aar_pointer *image);   /* AAR_POINTER_* */
+    int      (*display_wait_vblank)(uint32_t timeout_us);
+    uint64_t (*display_last_present_us)(void);
 
     /* -- group AAR_GROUP_AUDIO -- */
     int      (*audio_open)(uint32_t rate, uint32_t channels, aar_audio *out);
@@ -587,7 +753,7 @@ int aar_main(int argc, char **argv);
 void     aar_exit(int code);
 void     aar_yield(void);
 int      aar_should_stop(void);
-uint64_t aar_time_us(void);      /* monotonic, platform epoch, not wall-clock */
+uint64_t aar_time_us(void);      /* monotonic, platform epoch, not wall-clock; see aar_time_unix_us */
 void     aar_sleep_us(uint32_t us);
 int      aar_get_info(aar_info *out);
 
@@ -621,6 +787,27 @@ int      aar_file_stat(const char *path, aar_stat *out);
 int      aar_file_list_open(const char *path);
 int      aar_file_list_next(int list, aar_dirent *out);
 int      aar_file_list_close(int list);
+/* Minor 6. Paths follow the rules and policy of aar_file_open. */
+int      aar_file_delete(const char *path);
+int      aar_file_rename(const char *from, const char *to, uint32_t flags);
+int      aar_dir_create(const char *path);
+int      aar_file_set_date(const char *path, int64_t mtime);
+int      aar_file_set_protect(const char *path, uint32_t protect);
+int      aar_file_truncate(int fd, uint64_t size);
+int      aar_get_volume_info(const char *path, aar_volume_info *out);
+/* Microseconds since 1970-01-01 UTC. */
+int      aar_time_unix_us(int64_t *out_us);
+int      aar_get_locale_info(aar_locale_info *out);
+/* *out_n is the length of the value without the NUL; AAR_E_NOSPC with *out_n
+ * set when bytes <= *out_n. */
+int      aar_env_get(const char *name, char *buf, uint32_t bytes,
+                     uint32_t *out_n);
+/* *out_n is the full size of the clip in that type; AAR_E_NOSPC when it did
+ * not fit. */
+int      aar_clip_read(uint32_t unit, uint32_t type, void *buf, uint32_t bytes,
+                       uint32_t *out_n);
+int      aar_clip_write(uint32_t unit, uint32_t type, const void *data,
+                        uint32_t bytes);
 /* console_write writes every byte or returns an error. console_read parks
  * until the client has input and returns AAR_OK with *out_n == 0 at the end of
  * input. */
@@ -656,6 +843,18 @@ int      aar_display_set_palette(uint32_t id, uint32_t first, uint32_t count,
 int      aar_display_close(uint32_t id);
 /* Cumulative frames replaced in AAR_DISPLAY_LATEST mode; 0 when not active. */
 uint32_t aar_display_latest_dropped(void);
+/* Minor 6. */
+int      aar_display_get_info(uint32_t id, aar_display_info *out);
+int      aar_display_modes(aar_display_mode *out, uint32_t max, uint32_t *out_n);
+/* After AAR_EV_RESIZE; *out is refreshed. Only with AAR_DISPCAP_RESIZE. */
+int      aar_display_resize(uint32_t id, uint32_t w, uint32_t h, aar_surface *out);
+int      aar_display_set_title(uint32_t id, const char *title);
+int      aar_display_pointer(uint32_t id, uint32_t mode, const aar_pointer *image);
+/* AAR_OK at the next vertical blank; AAR_E_TIMEDOUT after timeout_us (not 0). */
+int      aar_display_wait_vblank(uint32_t timeout_us);
+/* The aar_time_us value at which the last flip or GL swap was shown; 0 before
+ * the first or when the call is absent. */
+uint64_t aar_display_last_present_us(void);
 
 int      aar_audio_open(uint32_t rate, uint32_t channels, aar_audio *out);
 int      aar_audio_close(void);
@@ -706,8 +905,8 @@ void     aar_free(void *p);
       AAR_ALIGNOF(type) - 1u) & ~(AAR_ALIGNOF(type) - 1u))
 
 /* Number of pointer slots in the table after the 16-byte header. */
-#define AAR_API_SLOT_COUNT 56u
-#define AAR_API_CORE_SLOT_COUNT 30u
+#define AAR_API_SLOT_COUNT 75u
+#define AAR_API_CORE_SLOT_COUNT 42u
 
 AAR_STATIC_ASSERT(sizeof(aar_info) == 88, "aar_info size");
 AAR_STATIC_ASSERT(offsetof(aar_info, shared_limit) == 48, "aar_info.shared_limit");
@@ -735,13 +934,42 @@ AAR_STATIC_ASSERT(offsetof(aar_event, time_ms) == 12, "aar_event.time_ms");
 AAR_STATIC_ASSERT(sizeof(aar_stat) == 24, "aar_stat size");
 AAR_STATIC_ASSERT(offsetof(aar_stat, mtime) == 8, "aar_stat.mtime");
 AAR_STATIC_ASSERT(offsetof(aar_stat, mode) == 16, "aar_stat.mode");
+AAR_STATIC_ASSERT(offsetof(aar_stat, protect) == 20, "aar_stat.protect");
 AAR_STATIC_ASSERT(sizeof(aar_dirent) == 260, "aar_dirent size");
 AAR_STATIC_ASSERT(offsetof(aar_dirent, name) == 4, "aar_dirent.name");
+AAR_STATIC_ASSERT(sizeof(aar_volume_info) == 40, "aar_volume_info size");
+AAR_STATIC_ASSERT(offsetof(aar_volume_info, block_bytes) == 4, "aar_volume_info.block_bytes");
+AAR_STATIC_ASSERT(offsetof(aar_volume_info, total_bytes) == 8, "aar_volume_info.total_bytes");
+AAR_STATIC_ASSERT(offsetof(aar_volume_info, free_bytes) == 16, "aar_volume_info.free_bytes");
+AAR_STATIC_ASSERT(offsetof(aar_volume_info, flags) == 24, "aar_volume_info.flags");
+AAR_STATIC_ASSERT(offsetof(aar_volume_info, reserved) == 28, "aar_volume_info.reserved");
+AAR_STATIC_ASSERT(sizeof(aar_locale_info) == 72, "aar_locale_info size");
+AAR_STATIC_ASSERT(offsetof(aar_locale_info, utc_offset_min) == 4, "aar_locale_info.utc_offset_min");
+AAR_STATIC_ASSERT(offsetof(aar_locale_info, flags) == 8, "aar_locale_info.flags");
+AAR_STATIC_ASSERT(offsetof(aar_locale_info, language) == 12, "aar_locale_info.language");
+AAR_STATIC_ASSERT(offsetof(aar_locale_info, country) == 44, "aar_locale_info.country");
+AAR_STATIC_ASSERT(offsetof(aar_locale_info, decimal_point) == 52, "aar_locale_info.decimal_point");
+AAR_STATIC_ASSERT(offsetof(aar_locale_info, group_separator) == 56, "aar_locale_info.group_separator");
+AAR_STATIC_ASSERT(offsetof(aar_locale_info, reserved) == 60, "aar_locale_info.reserved");
 
 AAR_STATIC_ASSERT(offsetof(aar_surface, caps) == 24, "aar_surface.caps");
 AAR_STATIC_ASSERT(offsetof(aar_surface, front) == 32, "aar_surface.front");
 AAR_STATIC_ASSERT(offsetof(aar_surface, back) == 32 + sizeof(void *), "aar_surface.back");
 AAR_STATIC_ASSERT(sizeof(aar_surface) == AAR_ABI_SIZE(aar_surface, 32, 2), "aar_surface size");
+
+AAR_STATIC_ASSERT(sizeof(aar_display_info) == 48, "aar_display_info size");
+AAR_STATIC_ASSERT(offsetof(aar_display_info, refresh_mhz) == 12, "aar_display_info.refresh_mhz");
+AAR_STATIC_ASSERT(offsetof(aar_display_info, screen_width) == 16, "aar_display_info.screen_width");
+AAR_STATIC_ASSERT(offsetof(aar_display_info, flags) == 24, "aar_display_info.flags");
+AAR_STATIC_ASSERT(offsetof(aar_display_info, reserved) == 28, "aar_display_info.reserved");
+AAR_STATIC_ASSERT(sizeof(aar_display_mode) == 24, "aar_display_mode size");
+AAR_STATIC_ASSERT(offsetof(aar_display_mode, refresh_mhz) == 8, "aar_display_mode.refresh_mhz");
+AAR_STATIC_ASSERT(offsetof(aar_display_mode, formats) == 12, "aar_display_mode.formats");
+AAR_STATIC_ASSERT(offsetof(aar_display_mode, flags) == 16, "aar_display_mode.flags");
+AAR_STATIC_ASSERT(offsetof(aar_pointer, hot_x) == 8, "aar_pointer.hot_x");
+AAR_STATIC_ASSERT(offsetof(aar_pointer, reserved) == 16, "aar_pointer.reserved");
+AAR_STATIC_ASSERT(offsetof(aar_pointer, argb) == 24, "aar_pointer.argb");
+AAR_STATIC_ASSERT(sizeof(aar_pointer) == AAR_ABI_SIZE(aar_pointer, 24, 1), "aar_pointer size");
 
 AAR_STATIC_ASSERT(offsetof(aar_audio, rate) == 4, "aar_audio.rate");
 AAR_STATIC_ASSERT(offsetof(aar_audio, flags) == 12, "aar_audio.flags");
@@ -763,10 +991,22 @@ AAR_STATIC_ASSERT(offsetof(aar_api, platform_id) == 12, "aar_api header is 16 by
 AAR_STATIC_ASSERT(offsetof(aar_api, exit) == 16, "aar_api first slot at offset 16");
 AAR_STATIC_ASSERT(offsetof(aar_api, ext) == 16 + AAR_API_CORE_SLOT_COUNT * sizeof(void *),
                   "aar_api core slots precede ext");
-AAR_STATIC_ASSERT(offsetof(aar_api, msg_wait) == 16 + (AAR_API_CORE_SLOT_COUNT - 1) * sizeof(void *),
-                  "aar_api core ends at msg_wait");
+AAR_STATIC_ASSERT(offsetof(aar_api, clip_write) == 16 + (AAR_API_CORE_SLOT_COUNT - 1) * sizeof(void *),
+                  "aar_api core ends at clip_write");
+AAR_STATIC_ASSERT(offsetof(aar_api, file_delete) ==
+                      offsetof(aar_api, msg_wait) + sizeof(void *),
+                  "aar_api minor 6 core slots follow msg_wait");
 AAR_STATIC_ASSERT(sizeof(aar_api) == 16 + AAR_API_SLOT_COUNT * sizeof(void *),
                   "aar_api has no padding");
+AAR_STATIC_ASSERT(offsetof(aar_api, display_info) ==
+                      offsetof(aar_api, display_latest_dropped) + sizeof(void *),
+                  "aar_api minor 6 display slots follow display_latest_dropped");
+AAR_STATIC_ASSERT(offsetof(aar_api, audio_open) ==
+                      offsetof(aar_api, display_last_present_us) + sizeof(void *),
+                  "aar_api audio group follows the display group");
+AAR_STATIC_ASSERT(offsetof(aar_api, audio_decode_close) ==
+                      16 + (AAR_API_SLOT_COUNT - 1) * sizeof(void *),
+                  "aar_api ends at audio_decode_close");
 
 #ifdef __cplusplus
 }

@@ -38,13 +38,13 @@ AAR_NOTE(0, 0, 0, 0)
 /* ---- The table as words ------------------------------------------------------------------- */
 
 /* Slot i of the table (after the 16-byte header), as a pointer-sized word. */
-#define SLOT_CORE      0u   /* exit .. msg_wait: 30 slots */
-#define SLOT_EXT       30u
-#define SLOT_DISPLAY   33u  /* display_open .. display_latest_dropped: 9 slots */
-#define SLOT_AUDIO     42u  /* audio_open, audio_close, audio_stats */
-#define SLOT_GL        45u  /* gl_bind, gl_swap, gl_unbind */
-#define SLOT_SERVICES  48u  /* sha256 .. audio_decode_close: 8 slots */
-#define SLOT_COUNT     56u
+#define SLOT_CORE      0u   /* exit .. clip_write: 42 slots */
+#define SLOT_EXT       42u
+#define SLOT_DISPLAY   45u  /* display_open .. display_last_present_us: 16 slots */
+#define SLOT_AUDIO     61u  /* audio_open, audio_close, audio_stats */
+#define SLOT_GL        64u  /* gl_bind, gl_swap, gl_unbind */
+#define SLOT_SERVICES  67u  /* sha256 .. audio_decode_close: 8 slots */
+#define SLOT_COUNT     75u
 
 static const char *const slot_names[SLOT_COUNT] = {
     "exit", "yield", "should_stop", "time_us", "sleep_us", "info",
@@ -54,10 +54,15 @@ static const char *const slot_names[SLOT_COUNT] = {
     "file_stat", "file_list_open", "file_list_next", "file_list_close",
     "console_write", "console_read",
     "event_poll", "msg_send", "msg_poll", "msg_wait",
+    "file_delete", "file_rename", "dir_create", "file_set_date",
+    "file_set_protect", "file_truncate", "volume_info",
+    "time_unix_us", "locale_info", "env_get", "clip_read", "clip_write",
     "ext", "map_file", "unmap_file",
     "display_open", "display_flip", "display_flip_async", "display_flip_idle",
     "display_refresh", "display_vsync", "display_set_palette", "display_close",
     "display_latest_dropped",
+    "display_info", "display_modes", "display_resize", "display_set_title",
+    "display_pointer", "display_wait_vblank", "display_last_present_us",
     "audio_open", "audio_close", "audio_stats",
     "gl_bind", "gl_swap", "gl_unbind",
     "sha256", "decompress", "image_open", "image_decode", "image_close",
@@ -191,8 +196,8 @@ static void test_core_slots(const aar_api *api)
     struct conf_test t;
 
     conf_begin(&t, "C-TABLE.1");
-    check_slots(&t, api, SLOT_CORE, 30u, "core");
-    conf_buf_str(&t.note, "30 core slots, table size ");
+    check_slots(&t, api, SLOT_CORE, 42u, "core");
+    conf_buf_str(&t.note, "42 core slots, table size ");
     conf_buf_u64(&t.note, api->size);
     conf_end(&t);
 }
@@ -283,7 +288,7 @@ static void test_group_slots(const aar_api *api, uint32_t declared)
 
     if (declared & AAR_GROUP_DISPLAY) {
         conf_begin(&t, "C-TABLE.4");
-        check_slots(&t, api, SLOT_DISPLAY, 9u, "display");
+        check_slots(&t, api, SLOT_DISPLAY, 16u, "display");
         conf_end(&t);
     }
     if (declared & AAR_GROUP_AUDIO) {

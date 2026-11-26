@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 Dimitris Panokostas <midwan@gmail.com>
 SPDX-License-Identifier: MIT
 -->
 
-# AAR API reference (0.5)
+# AAR API reference (0.6)
 
 The public contract of `include/aar/app.h`, `note.h`, `gl.h` and
 `ext_zz9000.h`. The transport headers for platform implementers are covered in
@@ -13,8 +13,9 @@ and run an app is in the [developer guide](aar-developer-guide.md). The Amiga
 side, `aar.library`, which a launcher uses to load, start and serve an app, is
 in [aar-client-api.md](aar-client-api.md).
 
-`AAR_API_MAJOR` is 0 and `AAR_API_MINOR` is 5. API 0.5 is the first AAR
-version, so every symbol in this file has minimum minor 5. Before 1.0 any
+`AAR_API_MAJOR` is 0 and `AAR_API_MINOR` is 6. API 0.5 is the first AAR
+version. An entry that ends with "Minimum minor: 5" has been in the API since
+0.5, and one that ends with "Minimum minor: 6" was added in 0.6. Before 1.0 any
 minor may break.
 
 ## How an app reaches the runtime
@@ -35,11 +36,13 @@ calls `aar_main`.
   direct call through the table must make the same check.
 - The table starts with four `uint32_t` words: `size`, `version`, `groups`,
   `platform_id`. The first slot is at offset 16 on both profiles. `size` is the
-  compatibility check, because the table is append-only: a slot exists when
-  `size` covers it. `version` names the runtime and is not a substitute for
-  `size`. Apps must not gate on `version` alone.
-- The 30 core slots, `exit` through `msg_wait`, are non-NULL in every
-  conforming runtime. The optional slots (`ext`, `map_file`, `unmap_file`) are
+  compatibility check: a slot exists when `size` covers it. `version` names the
+  runtime and is not a substitute for `size`. Apps must not gate on `version`
+  alone.
+- The 42 core slots, `exit` through `clip_write`, are non-NULL in every
+  conforming runtime. A call that the client serves can still return
+  `AAR_E_NOSYS` when the client does not serve that op. The optional slots
+  (`ext`, `map_file`, `unmap_file`) are
   NULL or absent where the platform does not provide them. A group is present
   when its bit is set in `aar_api.groups`. Then every call of that group that
   the table's `size` covers is non-NULL, except where a slot is marked
@@ -116,10 +119,19 @@ differs from its own.
 
 ### AAR_API_MINOR
 
-`5u`. Increments for each release that appends table slots, constants or
-groups. Constant values and structure meanings never change within a major.
+`6u`. Increments for each release that adds table slots, constants or groups.
+From 1.0 constant values and structure meanings never change within a major.
 The runtime refuses a note whose `api_minor_required` is higher than its own
-minor.
+minor, or lower than `AAR_API_MINOR_OLDEST`.
+
+### AAR_API_MINOR_OLDEST
+
+`6u`. The oldest minor whose table layout this header describes. Before 1.0 a
+minor may move slots (0.6 did), so an image built against an older minor would
+call the wrong slots. A runtime built from this header refuses a note whose
+`api_minor_required` is below this value or above `AAR_API_MINOR`, with
+`AAR_E_INVAL`, and `AAR_NOTE_EX` rejects such a value at compile time. When a
+minor moves slots again, raise both it and `AAR_API_MINOR`. Minimum minor: 6.
 
 ### AAR_API_VERSION
 
@@ -698,12 +710,14 @@ typedef struct aar_event {
 ```
 
 16 bytes on both profiles, native byte order. `type` is one of the `AAR_EV_*`
-values. `code` is the Amiga raw key with the up bit removed, or an
-`AAR_BREAK_*` value. `dx` and `dy` are mouse deltas, or joystick axes in
--1, 0 and 1. `buttons` holds key qualifiers, or mouse buttons in bits 0, 1 and
-2 (left, right, middle), or joystick fire in bit 0. `time_ms` is a timestamp in
-milliseconds that the client chooses; the library does not change it. It is 32
-bits and wraps. `reserved` is 0.
+values. `code` is the Amiga raw key with the up bit removed, an `AAR_BREAK_*`
+value, the mouse button that changed, the joystick port, or a Unicode code
+point (`AAR_EV_TEXT`). `dx` and `dy` are mouse deltas or the pointer position,
+joystick axes in -1, 0 and 1, wheel steps, or the new size of a resized
+display. `buttons` holds key qualifiers, the `AAR_MOUSE_*` bits or the
+`AAR_JOY_*` bits. `time_ms` is a timestamp in milliseconds that the client
+chooses; the library does not change it. It is 32 bits and wraps. `reserved`
+is 0. An app ignores an event type it does not know.
 
 ### aar_stat
 
@@ -712,13 +726,16 @@ typedef struct aar_stat {
     uint64_t size;
     int64_t  mtime;
     uint32_t mode;
-    uint32_t reserved;
+    uint32_t protect;
 } aar_stat;
 ```
 
 Filled by `aar_file_stat`. `mtime` is Unix seconds, or 0 when the filesystem
 has none (an Amiga `DateStamp` converted by the client). `mode` is
-`AAR_MODE_FILE` or `AAR_MODE_DIR`. 24 bytes.
+`AAR_MODE_FILE` or `AAR_MODE_DIR`. `protect` holds the Amiga protection bits as
+`FIB_Protection` reports them, at the positions of the `AAR_PROT_*` constants;
+bits 0 to 3 are set to deny, as in AmigaDOS. 24 bytes; `protect` is at offset
+20. Minimum minor: 5, and `protect` is the word that 0.5 reserved.
 
 ### aar_dirent
 
@@ -731,6 +748,50 @@ typedef struct aar_dirent {
 
 Filled by `aar_file_list_next`. `mode` is `AAR_MODE_FILE` or `AAR_MODE_DIR`.
 `name` is NUL-terminated and at most `AAR_NAME_MAX` bytes. 260 bytes.
+
+### aar_volume_info
+
+```c
+typedef struct aar_volume_info {
+    uint32_t size;
+    uint32_t block_bytes;
+    uint64_t total_bytes;
+    uint64_t free_bytes;
+    uint32_t flags;
+    uint32_t reserved[3];
+} aar_volume_info;
+```
+
+Filled by `aar_get_volume_info`. The caller sets `size`; the runtime fills at
+most `size` bytes and zeroes the rest, as for `aar_info`. `block_bytes` is the
+size of a block of the volume, `total_bytes` and `free_bytes` the capacity and
+the free space, and `flags` is `AAR_VOLF_*`. 40 bytes. Minimum minor: 6.
+
+### aar_locale_info
+
+```c
+typedef struct aar_locale_info {
+    uint32_t size;
+    int32_t  utc_offset_min;
+    uint32_t flags;
+    char     language[32];
+    char     country[8];
+    char     decimal_point[4];
+    char     group_separator[4];
+    uint32_t reserved[3];
+} aar_locale_info;
+```
+
+Filled by `aar_get_locale_info`. The caller sets `size`; the runtime fills at
+most `size` bytes and zeroes the rest. `utc_offset_min` is the offset in
+minutes east of UTC (`locale.library` keeps `loc_GMTOffset` in minutes west, so
+the client negates it). `flags` is `AAR_LOCALEF_*`. `language` is the Amiga
+language name without `.language`, for example `english` or `deutsch`, and
+`country` the vehicle registration code in `loc_CountryCode` (its non-zero
+bytes, most significant first, as text, for example `D` or `GB`); both are
+NUL-terminated and empty when unknown.
+`decimal_point` and `group_separator` are UTF-8 and NUL-terminated. 72 bytes.
+Minimum minor: 6.
 
 ### aar_surface
 
@@ -756,6 +817,60 @@ does not draw that buffer. One display is open per app. After a completed
 flip, call `aar_display_refresh` before trusting the pointers again. The
 pointers are at offset 32 on both profiles. The old physical card addresses are
 gone.
+
+### aar_display_info
+
+```c
+typedef struct aar_display_info {
+    uint32_t size;
+    uint32_t width, height;
+    uint32_t refresh_mhz;
+    uint32_t screen_width, screen_height;
+    uint32_t flags;
+    uint32_t reserved[5];
+} aar_display_info;
+```
+
+Filled by `aar_display_get_info`. The caller sets `size`; the runtime fills at
+most `size` bytes and zeroes the rest. `width` and `height` are the current
+surface size, `refresh_mhz` is the refresh rate of the mode shown in millihertz
+(0 when unknown), `screen_width` and `screen_height` are the size of the Amiga
+screen the surface is on, and `flags` is `AAR_DISPINFO_*`. 48 bytes. Minimum
+minor: 6.
+
+### aar_display_mode
+
+```c
+typedef struct aar_display_mode {
+    uint32_t width, height;
+    uint32_t refresh_mhz;
+    uint32_t formats;
+    uint32_t flags;
+    uint32_t reserved;
+} aar_display_mode;
+```
+
+One display mode that the client can show, as `aar_display_modes` returns it.
+`refresh_mhz` is 0 when unknown. `formats` has the bit `1u << AAR_FMT_*` set
+for each format the mode can show. `flags` is `AAR_MODEF_*`. 24 bytes. Minimum
+minor: 6.
+
+### aar_pointer
+
+```c
+typedef struct aar_pointer {
+    uint32_t width, height;
+    int32_t  hot_x, hot_y;
+    uint32_t reserved[2];
+    const uint32_t *argb;
+} aar_pointer;
+```
+
+A custom mouse pointer for `aar_display_pointer`. `width` and `height` are 1 to
+`AAR_POINTER_MAX_DIM` each, `hot_x` and `hot_y` the hot spot inside the image,
+`reserved` is 0. `argb` points at `width * height` pixels of `0xAARRGGBB` in
+host order; alpha 0 is transparent. The pointer is last, at offset 24 on both
+profiles. Minimum minor: 6.
 
 ### aar_audio
 
@@ -880,24 +995,31 @@ The function table, described under [How an app reaches the
 runtime](#how-an-app-reaches-the-runtime). The slot order is fixed until 1.0:
 
 1. Header: `size`, `version`, `groups`, `platform_id` (16 bytes).
-2. Core, 30 slots, `exit` through `msg_wait`: `exit`, `yield`, `should_stop`,
+2. Core, 42 slots, `exit` through `clip_write`: `exit`, `yield`, `should_stop`,
    `time_us`, `sleep_us`, `info`, `heap_range`, `heap_grow`, `heap_shrink`,
    `heap_info`, `shared_alloc`, `shared_free`, `publish`, `acquire`, `log`,
    `file_open`, `file_close`, `file_read`, `file_write`, `file_seek`,
    `file_stat`, `file_list_open`, `file_list_next`, `file_list_close`,
    `console_write`, `console_read`, `event_poll`, `msg_send`, `msg_poll`,
-   `msg_wait`.
+   `msg_wait`, `file_delete`, `file_rename`, `dir_create`, `file_set_date`,
+   `file_set_protect`, `file_truncate`, `volume_info`, `time_unix_us`,
+   `locale_info`, `env_get`, `clip_read`, `clip_write`.
 3. Optional: `ext`, `map_file`, `unmap_file`.
 4. Groups, in this order: display (`display_open`, `display_flip`,
    `display_flip_async`, `display_flip_idle`, `display_refresh`,
    `display_vsync`, `display_set_palette`, `display_close`,
-   `display_latest_dropped`), audio (`audio_open`, `audio_close`,
-   `audio_stats`), GL (`gl_bind`, `gl_swap`, `gl_unbind`), services (`sha256`,
-   `decompress`, `image_open`, `image_decode`, `image_close`,
-   `audio_decode_open`, `audio_decode`, `audio_decode_close`).
+   `display_latest_dropped`, `display_info`, `display_modes`,
+   `display_resize`, `display_set_title`, `display_pointer`,
+   `display_wait_vblank`, `display_last_present_us`), audio (`audio_open`,
+   `audio_close`, `audio_stats`), GL (`gl_bind`, `gl_swap`, `gl_unbind`),
+   services (`sha256`, `decompress`, `image_open`, `image_decode`,
+   `image_close`, `audio_decode_open`, `audio_decode`, `audio_decode_close`).
 
-The table has 56 pointer slots after the header. The table is const and apps
-must not write to it.
+The table has 75 pointer slots after the header. The table is const and apps
+must not write to it. A wrapper has the slot's name with an `aar_` prefix, except
+that a slot whose name is a type name gets a `get`: `aar_get_info`,
+`aar_get_heap_info`, `aar_audio_get_stats`, `aar_get_volume_info`,
+`aar_get_locale_info` and `aar_display_get_info`.
 
 ## Layout checks
 
@@ -919,11 +1041,11 @@ structures.
 
 ### AAR_API_SLOT_COUNT
 
-`56u`. The number of pointer slots in `aar_api` after the 16-byte header.
+`75u`. The number of pointer slots in `aar_api` after the 16-byte header.
 
 ### AAR_API_CORE_SLOT_COUNT
 
-`30u`. The number of core slots, `exit` through `msg_wait`.
+`42u`. The number of core slots, `exit` through `clip_write`.
 
 ## Build macros
 
@@ -1019,7 +1141,7 @@ uint64_t aar_time_us(void);
 ```
 
 Monotonic microseconds, non-decreasing, from an epoch the platform chooses. It
-is not wall-clock time; no wall-clock call is defined in this version. The
+is not wall-clock time; `aar_time_unix_us` is. The
 resolution is 1 ms or finer. Does not block, and counts as activity. Missing
 slot: 0. **ZZ9000:** the source is the global timer, which counts at half the
 666666687 Hz APU clock. Minimum minor: 5.
@@ -1424,7 +1546,8 @@ file_seek)`. Missing slot: `AAR_E_NOSYS`. Minimum minor: 5.
 int aar_file_stat(const char *path, aar_stat *out);
 ```
 
-Fills size, modification time and mode. NULL `out` is `AAR_E_INVAL`. Does not
+Fills size, modification time, mode and protection bits. NULL `out` is
+`AAR_E_INVAL`. Does not
 open a file id. Parks for one client reply. Gate: `AAR_API_COVERS(api,
 file_stat)`. Missing slot: `AAR_E_NOSYS`. Minimum minor: 5.
 
@@ -1459,6 +1582,97 @@ int aar_file_list_close(int list);
 Closes a directory id. Parks for one client reply. Gate:
 `AAR_API_COVERS(api, file_list_close)`. Missing slot: `AAR_E_NOSYS`. Minimum
 minor: 5.
+
+### aar_file_delete
+
+```c
+int aar_file_delete(const char *path);
+```
+
+Removes a file or an empty directory. The path rules and the policy are those
+of `aar_file_open`, and like every call that writes it is refused after a stop.
+A missing object is `AAR_E_NOENT`, a directory that is not empty `AAR_E_EXIST`,
+a delete-protected object `AAR_E_ACCES` and an object in use `AAR_E_BUSY`.
+Parks for one client reply. A client that does not serve the op answers
+`AAR_E_NOSYS`. Gate: `AAR_API_COVERS(api, file_delete)`. Missing slot:
+`AAR_E_NOSYS`. Minimum minor: 6.
+
+### aar_file_rename
+
+```c
+int aar_file_rename(const char *from, const char *to, uint32_t flags);
+```
+
+Renames or moves a file or directory within one volume; paths on different
+volumes are `AAR_E_INVAL`. `flags` is 0 or `AAR_RENAME_REPLACE`; another bit is
+`AAR_E_INVAL`. An existing `to` is `AAR_E_EXIST` unless `AAR_RENAME_REPLACE` is
+set, which deletes the target first and is not atomic on AmigaDOS. When `from`
+and `to` name the same object, the call returns `AAR_OK` and changes nothing.
+A missing `from` is `AAR_E_NOENT`. The path rules and the policy are those of
+`aar_file_open`, and the call is refused after a stop. Parks for one client
+reply. Gate: `AAR_API_COVERS(api, file_rename)`. Missing slot: `AAR_E_NOSYS`.
+Minimum minor: 6.
+
+### aar_dir_create
+
+```c
+int aar_dir_create(const char *path);
+```
+
+Creates one directory. An existing object is `AAR_E_EXIST` and a missing parent
+`AAR_E_NOENT`. The path rules and the policy are those of `aar_file_open`, and
+the call is refused after a stop. Parks for one client reply. Gate:
+`AAR_API_COVERS(api, dir_create)`. Missing slot: `AAR_E_NOSYS`. Minimum minor:
+6.
+
+### aar_file_set_date
+
+```c
+int aar_file_set_date(const char *path, int64_t mtime);
+```
+
+Sets the modification time of a file or directory. `mtime` is Unix seconds in
+UTC, as `aar_stat.mtime` reports it. A time that the filesystem cannot
+represent is `AAR_E_INVAL`. The path rules and the policy are those of
+`aar_file_open`, and the call is refused after a stop. Parks for one client
+reply. Gate: `AAR_API_COVERS(api, file_set_date)`. Missing slot: `AAR_E_NOSYS`.
+Minimum minor: 6.
+
+### aar_file_set_protect
+
+```c
+int aar_file_set_protect(const char *path, uint32_t protect);
+```
+
+Sets the protection bits of a file or directory. `protect` is a combination of
+the `AAR_PROT_*` constants, with bits 0 to 3 set to deny. A bit that no
+`AAR_PROT_*` constant names is `AAR_E_INVAL`. The path rules and the policy are
+those of `aar_file_open`, and the call is refused after a stop. Parks for one
+client reply. Gate: `AAR_API_COVERS(api, file_set_protect)`. Missing slot:
+`AAR_E_NOSYS`. Minimum minor: 6.
+
+### aar_file_truncate
+
+```c
+int aar_file_truncate(int fd, uint64_t size);
+```
+
+Sets the length of an open file to `size` bytes. A longer size extends the file
+with zero bytes and a shorter one cuts it. The id must have been opened with
+`AAR_FILE_WRITE`; any other id is `AAR_E_BADF`. The call is refused after a
+stop. Parks for one client reply. Gate: `AAR_API_COVERS(api, file_truncate)`.
+Missing slot: `AAR_E_NOSYS`. Minimum minor: 6.
+
+### aar_get_volume_info
+
+```c
+int aar_get_volume_info(const char *path, aar_volume_info *out);
+```
+
+Describes the volume that holds `path`. The caller sets `out->size`. NULL `out`
+is `AAR_E_INVAL`. The path rules and the policy are those of `aar_file_open`.
+Parks for one client reply. Gate: `AAR_API_COVERS(api, volume_info)`. Missing
+slot: `AAR_E_NOSYS`. Minimum minor: 6.
 
 ### AAR_FILE_READ
 
@@ -1500,6 +1714,52 @@ minor: 5.
 
 `2u`. `aar_stat.mode` and `aar_dirent.mode` for a directory.
 
+### AAR_RENAME_REPLACE
+
+`(1u << 0)`. `aar_file_rename` flag: delete an existing target first. Not
+atomic on AmigaDOS. Minimum minor: 6.
+
+### AAR_PROT_DELETE
+
+`(1u << 0)`. Protection bit, at the AmigaDOS `FIBF_DELETE` position. Bits 0 to 3
+are set to deny, as in AmigaDOS: a set bit forbids the action. Minimum minor: 6.
+
+### AAR_PROT_EXECUTE
+
+`(1u << 1)`. Protection bit `FIBF_EXECUTE` (deny). Minimum minor: 6.
+
+### AAR_PROT_WRITE
+
+`(1u << 2)`. Protection bit `FIBF_WRITE` (deny). Minimum minor: 6.
+
+### AAR_PROT_READ
+
+`(1u << 3)`. Protection bit `FIBF_READ` (deny). Minimum minor: 6.
+
+### AAR_PROT_ARCHIVE
+
+`(1u << 4)`. Protection bit `FIBF_ARCHIVE`: the file has been archived. Minimum
+minor: 6.
+
+### AAR_PROT_PURE
+
+`(1u << 5)`. Protection bit `FIBF_PURE`: the program can be made resident.
+Minimum minor: 6.
+
+### AAR_PROT_SCRIPT
+
+`(1u << 6)`. Protection bit `FIBF_SCRIPT`: the file is a script. Minimum minor: 6.
+
+### AAR_PROT_HOLD
+
+`(1u << 7)`. Protection bit `FIBF_HOLD`: keep a pure program resident. Minimum
+minor: 6.
+
+### AAR_VOLF_READONLY
+
+`(1u << 0)`. `aar_volume_info.flags`: the volume is write-protected. Minimum
+minor: 6.
+
 ### aar_map_file
 
 ```c
@@ -1526,6 +1786,104 @@ Releases the buffer from `aar_map_file`. NULL is ignored. The same file can be
 mapped again afterwards. Gate: `AAR_API_COVERS(api, unmap_file)`. Missing slot:
 returns. Minimum minor: 5.
 
+## Wall-clock time, locale, environment and clipboard
+
+The client serves these calls. Each parks for one client reply, a client that
+does not serve one answers `AAR_E_NOSYS`, and a client may refuse one by policy
+with `AAR_E_ACCES`. Minimum minor: 6 for everything in this section.
+
+### aar_time_unix_us
+
+```c
+int aar_time_unix_us(int64_t *out_us);
+```
+
+Stores the wall-clock time in `*out_us`, in microseconds since 1970-01-01
+00:00:00 UTC. The client serves it from `DateStamp` plus 2922 days and its UTC
+offset; `aar_get_locale_info` says whether that offset is the user's setting. A
+runtime may answer from a base it fetched once plus `aar_time_us`. The value can
+step when the user sets the clock, so measure intervals with `aar_time_us`.
+NULL `out_us` is `AAR_E_INVAL`. A stop is `AAR_E_IO`. Gate:
+`AAR_API_COVERS(api, time_unix_us)`. Missing slot: `AAR_E_NOSYS`. Minimum
+minor: 6.
+
+### aar_get_locale_info
+
+```c
+int aar_get_locale_info(aar_locale_info *out);
+```
+
+Fills `*out`. The caller sets `out->size`; the runtime fills at most that many
+bytes and zeroes the rest. NULL `out` is `AAR_E_INVAL`. Gate:
+`AAR_API_COVERS(api, locale_info)`. Missing slot: `AAR_E_NOSYS`. Minimum minor:
+6.
+
+### aar_env_get
+
+```c
+int aar_env_get(const char *name, char *buf, uint32_t bytes, uint32_t *out_n);
+```
+
+Reads the value of `ENV:<name>` (the client uses `GetVar` with
+`GVF_GLOBAL_ONLY`) as the bytes that are stored. `*out_n` is the length of the
+value without a NUL, and the value is NUL-terminated when it fits. When
+`bytes <= *out_n` the call returns `AAR_E_NOSPC` with `*out_n` set, so a call
+with `bytes` 0 finds the length. An unset variable is `AAR_E_NOENT`. A `name`
+of 0 or more than 255 bytes, or a NULL `name` or `out_n`, is `AAR_E_INVAL`.
+Gate: `AAR_API_COVERS(api, env_get)`. Missing slot: `AAR_E_NOSYS`. Minimum
+minor: 6.
+
+### aar_clip_read
+
+```c
+int aar_clip_read(uint32_t unit, uint32_t type, void *buf, uint32_t bytes,
+                  uint32_t *out_n);
+```
+
+Reads the clipboard `unit` in `type`. `*out_n` is the full size of the clip in
+that type, and the call copies `min(bytes, *out_n)` bytes. It returns
+`AAR_E_NOSPC` when they did not all fit, with `*out_n` set. An empty clipboard,
+or one with no data of that type, is `AAR_E_NOENT`. A `unit` of
+`AAR_CLIP_UNITS` or more, or an unknown `type`, is `AAR_E_INVAL`.
+`AAR_CLIP_TEXT` is UTF-8 without a NUL; the client converts it from the FTXT
+charset, ISO-8859-1 unless a `CHRS` chunk says otherwise. The runtime moves a
+large clip in several requests, and the clip it reads is one consistent clip.
+Gate: `AAR_API_COVERS(api, clip_read)`. Missing slot: `AAR_E_NOSYS`. Minimum
+minor: 6.
+
+### aar_clip_write
+
+```c
+int aar_clip_write(uint32_t unit, uint32_t type, const void *data,
+                   uint32_t bytes);
+```
+
+Replaces the clip of `unit` with `bytes` bytes of `data` in `type`. The units,
+types and `AAR_E_INVAL` cases are those of `aar_clip_read`. A text character
+that the client's charset cannot represent becomes `?`. The client replaces the
+clip only when the last chunk has arrived, so a write that fails part way
+changes nothing. Gate: `AAR_API_COVERS(api, clip_write)`. Missing slot:
+`AAR_E_NOSYS`. Minimum minor: 6.
+
+### AAR_LOCALEF_OFFSET_KNOWN
+
+`(1u << 0)`. `aar_locale_info.flags`: `utc_offset_min` is the user's setting.
+Minimum minor: 6.
+
+### AAR_CLIP_TEXT
+
+`1u`. Clipboard type: UTF-8 text. The client converts to and from IFF FTXT.
+Minimum minor: 6.
+
+### AAR_CLIP_IFF
+
+`2u`. Clipboard type: one IFF FORM, passed through unchanged. Minimum minor: 6.
+
+### AAR_CLIP_UNITS
+
+`256u`. The number of clipboard units, 0 to 255 as `clipboard.device` has them.
+Unit 0 is the primary clipboard. Minimum minor: 6.
+
 ## Events and messages
 
 ### aar_event_poll
@@ -1539,13 +1897,15 @@ queue returns `AAR_OK` and 0. It never blocks: an app that has nothing to do
 uses `aar_msg_wait`, `aar_sleep_us` or `aar_yield`, not a spin. NULL `out_n`,
 or NULL `out` with non-zero `max`, is `AAR_E_INVAL`. It always returns the
 lifecycle events `AAR_EV_STOP` and `AAR_EV_LOW_MEMORY`; with `AAR_GROUP_INPUT`
-it also returns the input events. Events are delivered in order. The runtime
+it also returns the input events. An app ignores an event type it does not
+know. Events are delivered in order. The runtime
 keeps at least 64 events in order. Once it holds that many that the app has not
 taken, it may discard each further input event except mouse motion, which it
 merges. It never discards `AAR_EV_STOP` or `AAR_EV_LOW_MEMORY`.
 When the completion queue is full the client drops the newest event and counts
 it (`AAR_CB_EVENTS_DROPPED`). Mouse motion is never lost without a count. The
-client library merges it (it sums `dx` and `dy` while the buttons are unchanged)
+client library merges it (it sums `dx` and `dy` while the buttons are
+unchanged; absolute motion keeps the latest position instead)
 or counts it, so an app that polls every frame does not lose input. Gate:
 `AAR_API_COVERS(api, event_poll)`. Missing slot: `AAR_E_NOSYS`.
 Minimum minor: 5.
@@ -1560,11 +1920,17 @@ Minimum minor: 5.
 
 ### AAR_EV_MOUSE
 
-`3u`. Mouse movement or a button change: deltas in `dx` and `dy`, buttons in bits 0 to 2 of `buttons`. Input group.
+`3u`. Mouse movement or a button change. `code` is 0 for motion only, or the
+button whose state changed: 1 left, 2 right, 3 middle. `buttons` holds the state
+of the buttons (`AAR_MOUSE_LEFT`, `AAR_MOUSE_RIGHT`, `AAR_MOUSE_MIDDLE`). `dx`
+and `dy` are deltas, or with `AAR_DISPCAP_POINTER_ABS` the pointer position:
+see `AAR_MOUSE_ABSOLUTE`. Input group.
 
 ### AAR_EV_JOY
 
-`4u`. Joystick: axes in `dx` and `dy` (-1, 0, 1), fire in bit 0 of `buttons`. Input group. **ZZ9000:** aar-run reads port 1 while its display window is active, and port 0 as well when the `JOYPORT0` tool type is set. It reads `JOYxDAT` and the CIA-A fire bits and does not drive the port pins.
+`4u`. Joystick. `code` is the port: 0 and 1 are the Amiga game ports, and 2 and up
+are other devices that the client numbers. `dx` and `dy` are the axes (-1, 0,
+1) and `buttons` holds the `AAR_JOY_*` bits. Input group. **ZZ9000:** aar-run reads port 1 while its display window is active, and port 0 as well when the `JOYPORT0` tool type is set. It reads `JOYxDAT` and the CIA-A fire bits and does not drive the port pins.
 
 ### AAR_EV_STOP
 
@@ -1572,7 +1938,9 @@ Minimum minor: 5.
 
 ### AAR_EV_RESIZE
 
-`6u`. Defined and never sent in version 0.5.
+`6u`. The inner size of the display's window changed: `dx` and `dy` are the new
+size in pixels. Sent only with `AAR_DISPCAP_RESIZE`; the app answers with
+`aar_display_resize`. Minimum minor: 5, and the client sends it from 6.
 
 ### AAR_EV_BREAK
 
@@ -1581,6 +1949,77 @@ Minimum minor: 5.
 ### AAR_EV_LOW_MEMORY
 
 `8u`. The free app-memory pool crossed below its low-water mark. One event per crossing; the next is reported only after the pool has risen above the high-water mark. Lifecycle; always delivered. Every field other than `type` is 0.
+
+### AAR_EV_TEXT
+
+`9u`. A typed character. `code` is a Unicode code point from 1 to 0xFFFF and
+`buttons` the qualifiers. Sent only with `AAR_DISPCAP_TEXT_INPUT`. Minimum minor: 6.
+
+### AAR_EV_WHEEL
+
+`10u`. Wheel movement. `dx` is horizontal steps (positive to the right), `dy`
+vertical steps (positive down, towards the user), `buttons` the qualifiers. The
+client sends it whenever it can produce it, and converts the NewMouse raw keys
+0x7A and 0x7B, 0x7C and 0x7D, or `IDCMP_EXTENDEDMOUSE`, without also sending
+them as raw keys. Minimum minor: 6.
+
+### AAR_EV_CLOSE_REQUEST
+
+`11u`. The close gadget was used. Sent only with `AAR_DISPCAP_CLOSE_REQUEST`,
+and then it replaces the stop that the gadget sends otherwise. Minimum minor: 6.
+
+### AAR_EV_ACTIVE
+
+`12u`. The display gained input focus (`code` 1) or lost it (`code` 0). The
+client sends it whenever it can produce it. Minimum minor: 6.
+
+### AAR_MOUSE_LEFT
+
+`(1u << 0)`. Left button, in `buttons` of `AAR_EV_MOUSE`. Minimum minor: 6.
+
+### AAR_MOUSE_RIGHT
+
+`(1u << 1)`. Right button. Minimum minor: 6.
+
+### AAR_MOUSE_MIDDLE
+
+`(1u << 2)`. Middle button. Minimum minor: 6.
+
+### AAR_MOUSE_ABSOLUTE
+
+`(1u << 15)`. In `buttons` of `AAR_EV_MOUSE`: `dx` and `dy` are the pointer
+position relative to the surface's top-left pixel, not deltas. With
+`AAR_DISPCAP_POINTER_ABS` every mouse event carries it, and the position can lie
+outside the surface while a button is held. Merged motion keeps the latest
+position. Minimum minor: 6.
+
+### AAR_JOY_BUTTON1
+
+`(1u << 0)`. In `buttons` of `AAR_EV_JOY`: fire, CD32 red. Minimum minor: 6.
+
+### AAR_JOY_BUTTON2
+
+`(1u << 1)`. Second button, CD32 blue. Minimum minor: 6.
+
+### AAR_JOY_BUTTON3
+
+`(1u << 2)`. Third button, CD32 green. Minimum minor: 6.
+
+### AAR_JOY_BUTTON4
+
+`(1u << 3)`. CD32 yellow. Minimum minor: 6.
+
+### AAR_JOY_PLAY
+
+`(1u << 4)`. CD32 play/pause. Minimum minor: 6.
+
+### AAR_JOY_FORWARD
+
+`(1u << 5)`. CD32 right shoulder. Minimum minor: 6.
+
+### AAR_JOY_REVERSE
+
+`(1u << 6)`. CD32 left shoulder. Minimum minor: 6.
 
 ### AAR_BREAK_CTRL_D
 
@@ -1695,13 +2134,15 @@ int aar_display_open(uint32_t w, uint32_t h, uint32_t format,
 
 Asks the client to open a screen and bind it. Width and height must be 1 to
 `AAR_DISPLAY_MAX_DIM`. `format` must be an `AAR_FMT_*` value and `flags` a
-combination of `AAR_DISPLAY_VSYNC` and `AAR_DISPLAY_LATEST`; unknown values and a
+combination of the `AAR_DISPLAY_*` flags; unknown values and a
 NULL `out` are `AAR_E_INVAL`. `AAR_FMT_CLUT8` without `AAR_DISPCAP_CLUT8` is
 `AAR_E_NOSYS`. A second open, since each app has one display, is `AAR_E_BUSY`.
 The call parks until the bind succeeds or stop (`AAR_E_IO`). On success `*out`
-holds the id, pitch, layout, caps and the mappings. `AAR_DISPLAY_LATEST` is a
-request: without `AAR_DISPCAP_LATEST` in the granted caps, the open fell back to
-plain `AAR_DISPLAY_VSYNC`. Gate: `AAR_API_COVERS(api, display_open)`. Missing
+holds the id, pitch, layout, caps and the mappings. The flags are requests, and
+the caps in `*out` say what took effect: `AAR_DISPLAY_LATEST` without
+`AAR_DISPCAP_LATEST` in the granted caps fell back to plain
+`AAR_DISPLAY_VSYNC`, and the other flags work the same way.
+Gate: `AAR_API_COVERS(api, display_open)`. Missing
 slot: `AAR_E_NOSYS`. Minimum minor: 5. **ZZ9000:** the client is aar-run or
 another client of `aar.library`; it opens a Picasso96 screen. If it cannot open the
 mode, the call returns `AAR_E_IO` and the client asks the app to stop.
@@ -1808,6 +2249,101 @@ that mode is not active or the slot is absent. Does not block. It is valid only
 if `AAR_DISPCAP_LATEST` is in effect. Gate: `AAR_API_COVERS(api,
 display_latest_dropped)`. Minimum minor: 5.
 
+### aar_display_get_info
+
+```c
+int aar_display_get_info(uint32_t id, aar_display_info *out);
+```
+
+Fills `*out` with the state of the open display: surface size, refresh rate,
+the screen it is on and the `AAR_DISPINFO_*` flags. The caller sets
+`out->size`. NULL `out`, or an id that is not the open display, is
+`AAR_E_INVAL`. Parks for one client reply. A client that does not serve the op
+answers `AAR_E_NOSYS`. Gate: `AAR_API_COVERS(api, display_info)`. Missing slot:
+`AAR_E_NOSYS`. Minimum minor: 6.
+
+### aar_display_modes
+
+```c
+int aar_display_modes(aar_display_mode *out, uint32_t max, uint32_t *out_n);
+```
+
+Lists the display modes that the client can show. It needs no open display. At
+most `max` records are written to `out`, and `*out_n` is the number of modes
+the client has in all; when there are more than `max` the call returns
+`AAR_E_NOSPC` with `*out_n` set. NULL `out_n`, or NULL `out` with non-zero
+`max`, is `AAR_E_INVAL`. Parks for one client reply. A client that does not
+serve the op answers `AAR_E_NOSYS`. Gate: `AAR_API_COVERS(api, display_modes)`.
+Missing slot: `AAR_E_NOSYS`. Minimum minor: 6.
+
+### aar_display_resize
+
+```c
+int aar_display_resize(uint32_t id, uint32_t w, uint32_t h, aar_surface *out);
+```
+
+Changes the surface size. Call it after `AAR_EV_RESIZE`, normally with the size
+in the event. The call parks while the client reallocates the bitmap and is
+answered as `aar_display_open` is; `*out` is refreshed and the app uses the new
+`front` and `back` from then on. The client keeps showing the old frame until
+the next flip. `AAR_E_NOSYS` without `AAR_DISPCAP_RESIZE`, `AAR_E_BUSY` while a
+flip is pending, and `AAR_E_INVAL` for a size outside 1 to
+`AAR_DISPLAY_MAX_DIM`, an unknown id or a NULL `out`. Gate:
+`AAR_API_COVERS(api, display_resize)`. Missing slot: `AAR_E_NOSYS`. Minimum
+minor: 6.
+
+### aar_display_set_title
+
+```c
+int aar_display_set_title(uint32_t id, const char *title);
+```
+
+Sets the title that the client shows in the title bar of the window or, without
+one, of the screen. `title` is UTF-8 and NUL-terminated, at most 255 bytes; the
+client converts it to its charset. A longer title, a NULL `title` or an unknown
+id is `AAR_E_INVAL`. Parks for one client reply. Gate:
+`AAR_API_COVERS(api, display_set_title)`. Missing slot: `AAR_E_NOSYS`. Minimum
+minor: 6.
+
+### aar_display_pointer
+
+```c
+int aar_display_pointer(uint32_t id, uint32_t mode, const aar_pointer *image);
+```
+
+Sets the mouse pointer while it is over the display. `mode` is one of the
+`AAR_POINTER_*` values. Only `AAR_POINTER_CUSTOM` uses `image`, and it requires
+one with a valid size and hot spot. Another mode, a bad image or an unknown id
+is `AAR_E_INVAL`. The runtime copies the pixels before it returns. Parks for
+one client reply. A client that does not serve the op answers `AAR_E_NOSYS`.
+Gate: `AAR_API_COVERS(api, display_pointer)`. Missing slot: `AAR_E_NOSYS`.
+Minimum minor: 6.
+
+### aar_display_wait_vblank
+
+```c
+int aar_display_wait_vblank(uint32_t timeout_us);
+```
+
+Parks until the next vertical blank of the display's screen and returns
+`AAR_OK`. After `timeout_us` microseconds it returns `AAR_E_TIMEDOUT`. A
+`timeout_us` of 0, or no open display, is `AAR_E_INVAL`. `AAR_E_NOSYS` where the
+platform and the client cannot see a vertical blank, and `AAR_E_IO` on a stop.
+The runtime may serve it itself or ask the client. `aar_display_vsync` is the
+pacing hint. Gate: `AAR_API_COVERS(api, display_wait_vblank)`. Missing slot:
+`AAR_E_NOSYS`. Minimum minor: 6.
+
+### aar_display_last_present_us
+
+```c
+uint64_t aar_display_last_present_us(void);
+```
+
+The `aar_time_us` value at which the runtime learned that the most recent flip
+or GL swap was shown. 0 before the first one, and when the slot is absent. The
+runtime answers it from its own record and sends no request. Does not block.
+Gate: `AAR_API_COVERS(api, display_last_present_us)`. Minimum minor: 6.
+
 ### Display formats
 
 `format` on a surface is the logical format the app requested. Pixel stores
@@ -1878,6 +2414,101 @@ The physical byte layout of the surface.
 ### AAR_DISPCAP_CLUT8
 
 `(1u << 2)`. `aar_surface.caps`: CLUT8 surfaces and palettes work. The caps are 16 bits, because the transport carries them in the entry flags field.
+
+### AAR_DISPLAY_WINDOW
+
+`(1u << 2)`. Open flag: show the surface in a window on the default public
+screen. The client falls back to a screen of its own when it cannot, and then
+does not set `AAR_DISPCAP_WINDOW`. Minimum minor: 6.
+
+### AAR_DISPLAY_RESIZABLE
+
+`(1u << 3)`. Open flag: the user may resize the window. Needs
+`AAR_DISPLAY_WINDOW`. Minimum minor: 6.
+
+### AAR_DISPLAY_POINTER_ABS
+
+`(1u << 4)`. Open flag: mouse events carry the pointer position. Minimum minor: 6.
+
+### AAR_DISPLAY_TEXT_INPUT
+
+`(1u << 5)`. Open flag: the client sends `AAR_EV_TEXT`. Minimum minor: 6.
+
+### AAR_DISPLAY_CLOSE_REQUEST
+
+`(1u << 6)`. Open flag: the client sends `AAR_EV_CLOSE_REQUEST` when the close
+gadget is used. Minimum minor: 6.
+
+### AAR_DISPLAY_SCALE
+
+`(1u << 7)`. Open flag: the client shows the surface scaled to its screen or
+window and keeps the aspect ratio. Minimum minor: 6.
+
+### AAR_DISPCAP_WINDOW
+
+`(1u << 3)`. `aar_surface.caps`: the surface is in a window. Minimum minor: 6.
+
+### AAR_DISPCAP_RESIZE
+
+`(1u << 4)`. `aar_surface.caps`: `AAR_EV_RESIZE` is sent and
+`aar_display_resize` works. Minimum minor: 6.
+
+### AAR_DISPCAP_POINTER_ABS
+
+`(1u << 5)`. `aar_surface.caps`: mouse events are absolute. Minimum minor: 6.
+
+### AAR_DISPCAP_TEXT_INPUT
+
+`(1u << 6)`. `aar_surface.caps`: `AAR_EV_TEXT` is sent. Minimum minor: 6.
+
+### AAR_DISPCAP_CLOSE_REQUEST
+
+`(1u << 7)`. `aar_surface.caps`: `AAR_EV_CLOSE_REQUEST` is sent. Minimum minor: 6.
+
+### AAR_DISPCAP_SCALED
+
+`(1u << 8)`. `aar_surface.caps`: the client scales the surface. Minimum minor: 6.
+
+### AAR_DISPINFO_WINDOW
+
+`(1u << 0)`. `aar_display_info.flags`: shown in a window on a public screen.
+Minimum minor: 6.
+
+### AAR_DISPINFO_SCALED
+
+`(1u << 1)`. `aar_display_info.flags`: the client scales the surface. Minimum
+minor: 6.
+
+### AAR_DISPINFO_ACTIVE
+
+`(1u << 2)`. `aar_display_info.flags`: the window or screen has input focus.
+Minimum minor: 6.
+
+### AAR_MODEF_PREFERRED
+
+`(1u << 0)`. `aar_display_mode.flags`: the client's preferred mode, its native
+size. Minimum minor: 6.
+
+### AAR_POINTER_DEFAULT
+
+`0u`. `aar_display_pointer` mode: the client's normal pointer. Minimum minor: 6.
+
+### AAR_POINTER_HIDDEN
+
+`1u`. `aar_display_pointer` mode: no pointer. Minimum minor: 6.
+
+### AAR_POINTER_BUSY
+
+`2u`. `aar_display_pointer` mode: the busy pointer. Minimum minor: 6.
+
+### AAR_POINTER_CUSTOM
+
+`3u`. `aar_display_pointer` mode: the image in the `aar_pointer` argument.
+Minimum minor: 6.
+
+### AAR_POINTER_MAX_DIM
+
+`64u`. The largest width and height of a custom pointer. Minimum minor: 6.
 
 ## Audio group
 
@@ -2241,10 +2872,9 @@ The table is an in-process structure: the app and the runtime are built from
 the same header for the same profile. It starts with two `uint32_t` words,
 `size` and `version`, so the first pointer is at offset 8 on both profiles
 with no padding. Every later field is a pointer, so the offset of field `n` is
-`8 + n * sizeof(void *)`. The table is append-only and `size` is the
-compatibility version: test every field past `Build2DMipmaps` with
-`AAR_GL_COVERS` before use. `version` is the GL ABI revision the runtime
-implements.
+`8 + n * sizeof(void *)`. `size` is the compatibility version: test every
+field past `Build2DMipmaps` with `AAR_GL_COVERS` before use. `version` is the
+GL ABI revision the runtime implements.
 
 Integer parameters are `int32_t` or `uint32_t`. `Perspective`, `Ortho`,
 `Frustum` and `DepthRange` take `double`, and `gluPerspective` takes four
@@ -2270,9 +2900,15 @@ element.
 The `gl*` and `glu*` wrappers forward to the table that `aar_gl_bind` returned.
 Do not define them in the app. A wrapper whose field is past `gl->size`, or is
 NULL, is a no-op, or returns 0. Each GL entry point below follows the GL 1.1
-meaning of the name; only what differs is noted. Minimum minor: 5 for all of
-them. The last ten, `glVertexPointer` through `glUnlockArrays`, are
-`AAR_GL_VERSION_ARRAYS` and need the `AAR_GL_COVERS` test.
+meaning of the name; only what differs is noted. Minimum minor: 5 for the
+entries up to `glUnlockArrays`, and 6 for the 51 entries after them. The ten
+from `glVertexPointer` through `glUnlockArrays` are `AAR_GL_VERSION_ARRAYS`, the
+51 after them are `AAR_GL_VERSION_11`, and both need the `AAR_GL_COVERS` test. A
+platform whose renderer lacks a feature leaves its field NULL.
+
+The stencil buffer is not promised. `glGetIntegerv(GL_STENCIL_BITS)` reports its
+depth, 0 for none, and without one the stencil calls have no effect. The group
+stays a GL 1.1 subset through the 0.x versions.
 
 ### AAR_GL_VERSION_V0
 
@@ -2282,9 +2918,14 @@ them. The last ten, `glVertexPointer` through `glUnlockArrays`, are
 
 `1u`. `aar_gl.version`: adds the array and client-state fields, `VertexPointer` through `UnlockArrays`.
 
+### AAR_GL_VERSION_11
+
+`2u`. `aar_gl.version`: adds the GL 1.1 completion fields, `ClearDepth` through
+`PopAttrib`. Minimum minor: 6.
+
 ### AAR_GL_SLOT_COUNT
 
-`72u`. The number of pointer fields in `aar_gl`. The layout test checks it.
+`123u`. The number of pointer fields in `aar_gl`. The layout test checks it.
 
 ### aar_gl
 
@@ -2292,12 +2933,12 @@ them. The last ten, `glVertexPointer` through `glUnlockArrays`, are
 typedef struct aar_gl {
     uint32_t size;
     uint32_t version;
-    /* 72 function pointers: Begin ... UnlockArrays */
+    /* 123 function pointers: Begin ... PopAttrib */
 } aar_gl;
 ```
 
 The field names are the GL names without the `gl` prefix: `Begin`, `End`,
-`Vertex2f`, and so on to `UnlockArrays`; `gluPerspective` is the field
+`Vertex2f`, and so on to `PopAttrib`; `gluPerspective` is the field
 `Perspective` and `gluBuild2DMipmaps` is `Build2DMipmaps`. The full declaration
 is in `include/aar/gl.h`.
 
@@ -2890,6 +3531,442 @@ void glUnlockArrays(void);
 ```
 
 Unlocks the arrays locked by `glLockArrays`.
+
+### glClearDepth
+
+```c
+void glClearDepth(double depth);
+```
+
+Sets the depth clear value. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glColorMask
+
+```c
+void glColorMask(uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+```
+
+Enables or disables writing of each colour channel. `AAR_GL_VERSION_11`.
+Minimum minor: 6.
+
+### glPolygonOffset
+
+```c
+void glPolygonOffset(float factor, float units);
+```
+
+Sets the depth offset of filled polygons. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glStencilFunc
+
+```c
+void glStencilFunc(uint32_t func, int32_t ref, uint32_t mask);
+```
+
+Sets the stencil test. No effect without a stencil buffer. `AAR_GL_VERSION_11`.
+Minimum minor: 6.
+
+### glStencilOp
+
+```c
+void glStencilOp(uint32_t fail, uint32_t zfail, uint32_t zpass);
+```
+
+Sets the stencil update operations. No effect without a stencil buffer.
+`AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glStencilMask
+
+```c
+void glStencilMask(uint32_t mask);
+```
+
+Sets the stencil write mask. No effect without a stencil buffer.
+`AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glClearStencil
+
+```c
+void glClearStencil(int32_t s);
+```
+
+Sets the stencil clear value. No effect without a stencil buffer.
+`AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glMultMatrixf
+
+```c
+void glMultMatrixf(const float *m);
+```
+
+Multiplies the current matrix by the 16 floats at `m`, column-major.
+`AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glLoadMatrixd
+
+```c
+void glLoadMatrixd(const double *m);
+```
+
+Loads the 16 doubles at `m`, column-major, as the current matrix.
+`AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glMultMatrixd
+
+```c
+void glMultMatrixd(const double *m);
+```
+
+Multiplies the current matrix by the 16 doubles at `m`, column-major.
+`AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glGetDoublev
+
+```c
+void glGetDoublev(uint32_t pname, double *params);
+```
+
+Reads a state value as doubles. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glGetBooleanv
+
+```c
+void glGetBooleanv(uint32_t pname, uint8_t *params);
+```
+
+Reads a state value as booleans. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glActiveTextureARB
+
+```c
+void glActiveTextureARB(uint32_t texture);
+```
+
+Selects the texture unit that the texture calls address; the client-side
+counterpart is `glClientActiveTextureARB`. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glMultiTexCoord2fARB
+
+```c
+void glMultiTexCoord2fARB(uint32_t target, float s, float t);
+```
+
+Sets the texture coordinate of one texture unit. `AAR_GL_VERSION_11`. Minimum
+minor: 6.
+
+### glMultiTexCoord2fvARB
+
+```c
+void glMultiTexCoord2fvARB(uint32_t target, const float *v);
+```
+
+The vector form of `glMultiTexCoord2fARB`. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glNormal3f
+
+```c
+void glNormal3f(float nx, float ny, float nz);
+```
+
+Sets the current normal. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glNormal3fv
+
+```c
+void glNormal3fv(const float *v);
+```
+
+The vector form of `glNormal3f`. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glNormalPointer
+
+```c
+void glNormalPointer(uint32_t type, int32_t stride, const void *pointer);
+```
+
+Sets the normal array. The runtime validates the range at draw time like the
+other array pointers. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glLightf
+
+```c
+void glLightf(uint32_t light, uint32_t pname, float param);
+```
+
+Sets a light parameter. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glLightfv
+
+```c
+void glLightfv(uint32_t light, uint32_t pname, const float *params);
+```
+
+Sets a light parameter from a vector. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glLightModelf
+
+```c
+void glLightModelf(uint32_t pname, float param);
+```
+
+Sets a lighting model parameter. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glLightModelfv
+
+```c
+void glLightModelfv(uint32_t pname, const float *params);
+```
+
+Sets a lighting model parameter from a vector. `AAR_GL_VERSION_11`. Minimum
+minor: 6.
+
+### glLightModeli
+
+```c
+void glLightModeli(uint32_t pname, int32_t param);
+```
+
+Sets an integer lighting model parameter. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glMaterialf
+
+```c
+void glMaterialf(uint32_t face, uint32_t pname, float param);
+```
+
+Sets a material parameter. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glMaterialfv
+
+```c
+void glMaterialfv(uint32_t face, uint32_t pname, const float *params);
+```
+
+Sets a material parameter from a vector. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glColorMaterial
+
+```c
+void glColorMaterial(uint32_t face, uint32_t mode);
+```
+
+Makes a material parameter follow the current colour. `AAR_GL_VERSION_11`.
+Minimum minor: 6.
+
+### glFogf
+
+```c
+void glFogf(uint32_t pname, float param);
+```
+
+Sets a fog parameter. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glFogfv
+
+```c
+void glFogfv(uint32_t pname, const float *params);
+```
+
+Sets a fog parameter from a vector. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glFogi
+
+```c
+void glFogi(uint32_t pname, int32_t param);
+```
+
+Sets an integer fog parameter. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glLineWidth
+
+```c
+void glLineWidth(float width);
+```
+
+Sets the width of lines. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glPointSize
+
+```c
+void glPointSize(float size);
+```
+
+Sets the size of points. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glColor3ub
+
+```c
+void glColor3ub(uint8_t r, uint8_t g, uint8_t b);
+```
+
+Sets the current colour from three bytes. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glVertex2i
+
+```c
+void glVertex2i(int32_t x, int32_t y);
+```
+
+Specifies a vertex from two integers. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glVertex2fv
+
+```c
+void glVertex2fv(const float *v);
+```
+
+Specifies a vertex from a two-float vector. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glTexCoord2i
+
+```c
+void glTexCoord2i(int32_t s, int32_t t);
+```
+
+Sets the texture coordinate from two integers. `AAR_GL_VERSION_11`. Minimum
+minor: 6.
+
+### glRectf
+
+```c
+void glRectf(float x1, float y1, float x2, float y2);
+```
+
+Draws a rectangle. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glGetTexLevelParameteriv
+
+```c
+void glGetTexLevelParameteriv(uint32_t target, int32_t level, uint32_t pname,
+                              int32_t *params);
+```
+
+Reads a parameter of a texture level. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glIsTexture
+
+```c
+uint8_t glIsTexture(uint32_t texture);
+```
+
+Tells whether `texture` names a texture. Returns 0 when the field is absent or
+NULL. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glCopyTexImage2D
+
+```c
+void glCopyTexImage2D(uint32_t target, int32_t level, uint32_t internalformat,
+                      int32_t x, int32_t y, int32_t width, int32_t height,
+                      int32_t border);
+```
+
+Defines a texture from the framebuffer. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glCopyTexSubImage2D
+
+```c
+void glCopyTexSubImage2D(uint32_t target, int32_t level, int32_t xoffset,
+                         int32_t yoffset, int32_t x, int32_t y, int32_t width,
+                         int32_t height);
+```
+
+Replaces part of a texture from the framebuffer. `AAR_GL_VERSION_11`. Minimum
+minor: 6.
+
+### glClipPlane
+
+```c
+void glClipPlane(uint32_t plane, const double *equation);
+```
+
+Sets a clip plane from the four doubles at `equation`. `AAR_GL_VERSION_11`.
+Minimum minor: 6.
+
+### glGenLists
+
+```c
+uint32_t glGenLists(int32_t range);
+```
+
+Reserves `range` display list names and returns the first, or 0 when the field
+is absent or NULL. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glNewList
+
+```c
+void glNewList(uint32_t list, uint32_t mode);
+```
+
+Starts recording a display list. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glEndList
+
+```c
+void glEndList(void);
+```
+
+Ends the display list being recorded. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glCallList
+
+```c
+void glCallList(uint32_t list);
+```
+
+Runs a display list. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glCallLists
+
+```c
+void glCallLists(int32_t n, uint32_t type, const void *lists);
+```
+
+Runs `n` display lists named by the array at `lists`. `AAR_GL_VERSION_11`.
+Minimum minor: 6.
+
+### glDeleteLists
+
+```c
+void glDeleteLists(uint32_t list, int32_t range);
+```
+
+Deletes `range` display lists starting at `list`. `AAR_GL_VERSION_11`. Minimum
+minor: 6.
+
+### glListBase
+
+```c
+void glListBase(uint32_t base);
+```
+
+Sets the offset that `glCallLists` adds to each name. `AAR_GL_VERSION_11`.
+Minimum minor: 6.
+
+### glTexEnvfv
+
+```c
+void glTexEnvfv(uint32_t target, uint32_t pname, const float *params);
+```
+
+Sets a texture environment parameter from a vector. `AAR_GL_VERSION_11`.
+Minimum minor: 6.
+
+### glPushAttrib
+
+```c
+void glPushAttrib(uint32_t mask);
+```
+
+Pushes the attribute groups in `mask`. `AAR_GL_VERSION_11`. Minimum minor: 6.
+
+### glPopAttrib
+
+```c
+void glPopAttrib(void);
+```
+
+Pops the attribute groups that `glPushAttrib` pushed. `AAR_GL_VERSION_11`.
+Minimum minor: 6.
 
 ## The ZZ9000 extension table
 

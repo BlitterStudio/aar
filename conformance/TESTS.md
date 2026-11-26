@@ -75,7 +75,7 @@ checks that the handle can be closed and that a new claim succeeds.
 | C-ELF.30 | 2.3 | MUST | core | any | runner | yes | note `profile` that differs from the ELF class refused with `AAR_E_PROFILE` |
 | C-ELF.31 | 2.3 | MUST | core | any | runner | yes | an image of a profile that `AARInfo.profiles` does not list is refused with `AAR_E_PROFILE` or `AAR_E_INVAL` (2.2 allows both for the class; passes with detail `all profiles supported` when the platform lists every defined profile) [spec question 61] |
 | C-ELF.32 | 2.3 | MUST | core | any | runner | yes | `api_major` other than the platform's refused with `AAR_E_INVAL` |
-| C-ELF.33 | 2.3 | MUST | core | any | runner | yes | `api_minor_required` above the platform's minor refused with `AAR_E_INVAL` |
+| C-ELF.33 | 2.3 | MUST | core | any | runner | yes | `api_minor_required` above the platform's minor, or below `AAR_API_MINOR_OLDEST`, refused with `AAR_E_INVAL` |
 | C-ELF.34 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` below 64 KiB refused |
 | C-ELF.35 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` that is not a multiple of 16 refused |
 | C-ELF.36 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` 0, 64 KiB and 1 MiB all load and run |
@@ -128,10 +128,10 @@ because the registers differ.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-TABLE.1 | 3.3 | MUST | core | any | payload | yes | the table `size` covers every core slot (`exit` to `msg_wait`) and every core slot is non-NULL |
+| C-TABLE.1 | 3.3 | MUST | core | any | payload | yes | the table `size` covers every core slot (`exit` to `clip_write`) and every core slot is non-NULL |
 | C-TABLE.2 | 3.3 | MUST | core | any | payload | yes | `version` names API major `AAR_API_MAJOR` in its high 16 bits and equals the minor `AARInfo.api_minor` in its low 16 bits (the runner passes the client value) |
 | C-TABLE.3 | 3.3 | MUST | core | any | payload | yes | the table `groups` word equals `aar_info.groups` and the runner's `AARInfo.groups`, and `aar_info.flags` equals `AARInfo.flags` (spec 3.4) |
-| C-TABLE.4 | 3.3 | MUST | display | any | payload | yes | with the display group declared the table covers the nine display slots and none is NULL |
+| C-TABLE.4 | 3.3 | MUST | display | any | payload | yes | with the display group declared the table covers the sixteen display slots and none is NULL |
 | C-TABLE.5 | 3.3 | MUST | audio | any | payload | yes | with the audio group declared the table covers `audio_open` and `audio_close` and they are non-NULL (`audio_stats` may be NULL) |
 | C-TABLE.6 | 3.3 | MUST | gl | any | payload | yes | with the GL group declared the table covers and fills `gl_bind`, `gl_swap`, `gl_unbind` |
 | C-TABLE.7 | 3.3 | MUST | services | any | payload | yes | with the services group declared the table covers and fills the eight services slots |
@@ -153,7 +153,7 @@ because the registers differ.
 | C-TABLE.23 | 8.8 | MUST | zz9000 | any | payload | yes | `aar_ext(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_MAIN)` returns a table whose `size` covers `build_id`; `gl_bind_flags` is NULL when the GL group is absent |
 | C-TABLE.24 | 3.5 | MUST | core | any | payload | yes | the error codes a call returns are the ones of section 3.5: over a battery of failing calls the payload makes (files, heap, shared buffers, groups, absent slots), no code is outside -1 to -17 |
 | C-TABLE.25 | 3.6 | MUST | core | any | none | todo | not tested here: the major and minor check on the client's view is C-CLIENT.3 |
-| C-TABLE.26 | 3.3 | MUST | core | any | none | todo | not tested: the slot order, offsets and the 56 slots are pinned by the header's `_Static_assert`s and `tests/abi_check.sh` in CI |
+| C-TABLE.26 | 3.3 | MUST | core | any | none | todo | not tested: the slot order, offsets and the 75 slots are pinned by the header's `_Static_assert`s and `tests/abi_check.sh` in CI |
 | C-TABLE.27 | 3.3 | MUST | core | any | none | todo | not tested: apps MUST NOT gate on `version`; an obligation of the app |
 | C-TABLE.28 | 3.5 | MUST | core | any | none | todo | not tested: the numeric values of the error codes are pinned by the header and `tests/abi_check.sh` |
 | C-TABLE.29 | 8.8 | SHOULD | core | any | none | todo | not tested: an app that uses an extension SHOULD say it is not portable; documentation of the app |

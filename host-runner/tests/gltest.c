@@ -130,7 +130,7 @@ static int test_absent(void)
 
 static int check_table(const aar_gl *gl)
 {
-    if (gl->size != sizeof *gl || gl->version != AAR_GL_VERSION_ARRAYS)
+    if (gl->size != sizeof *gl || gl->version != AAR_GL_VERSION_11)
         return fail(20, "table size or version");
     if (!gl->Begin || !gl->End || !gl->Vertex3fv || !gl->Color4ubv ||
         !gl->DepthRange || !gl->Ortho || !gl->Frustum || !gl->TexImage2D ||

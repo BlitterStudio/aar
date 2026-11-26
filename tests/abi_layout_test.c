@@ -25,7 +25,7 @@
 
 /* On a host build this expands to nothing. */
 AAR_NOTE(0, 0, AAR_GROUP_DISPLAY, AAR_GROUP_AUDIO)
-AAR_NOTE_EX(5, 65536, 4, 0, 0)
+AAR_NOTE_EX(6, 65536, 4, 0, 0)
 
 static unsigned long checks;
 static unsigned long failures;
@@ -62,10 +62,17 @@ static unsigned long failures;
     X(file_seek) X(file_stat) X(file_list_open) X(file_list_next)        \
     X(file_list_close) X(console_write) X(console_read)                  \
     X(event_poll) X(msg_send) X(msg_poll) X(msg_wait)                    \
+    X(file_delete) X(file_rename) X(dir_create) X(file_set_date)         \
+    X(file_set_protect) X(file_truncate) X(volume_info)                  \
+    X(time_unix_us) X(locale_info) X(env_get) X(clip_read)               \
+    X(clip_write)                                                        \
     X(ext) X(map_file) X(unmap_file)                                     \
     X(display_open) X(display_flip) X(display_flip_async)                \
     X(display_flip_idle) X(display_refresh) X(display_vsync)             \
     X(display_set_palette) X(display_close) X(display_latest_dropped)    \
+    X(display_info) X(display_modes) X(display_resize)                   \
+    X(display_set_title) X(display_pointer) X(display_wait_vblank)       \
+    X(display_last_present_us)                                           \
     X(audio_open) X(audio_close) X(audio_stats)                          \
     X(gl_bind) X(gl_swap) X(gl_unbind)                                   \
     X(sha256) X(decompress) X(image_open) X(image_decode)                \
@@ -89,7 +96,19 @@ static unsigned long failures;
     X(VertexPointer) X(TexCoordPointer) X(ColorPointer)                  \
     X(EnableClientState) X(DisableClientState)                           \
     X(ClientActiveTextureARB) X(DrawArrays) X(DrawElements)              \
-    X(LockArrays) X(UnlockArrays)
+    X(LockArrays) X(UnlockArrays)                                        \
+    X(ClearDepth) X(ColorMask) X(PolygonOffset) X(StencilFunc)           \
+    X(StencilOp) X(StencilMask) X(ClearStencil) X(MultMatrixf)           \
+    X(LoadMatrixd) X(MultMatrixd) X(GetDoublev) X(GetBooleanv)           \
+    X(ActiveTextureARB) X(MultiTexCoord2fARB) X(MultiTexCoord2fvARB)     \
+    X(Normal3f) X(Normal3fv) X(NormalPointer) X(Lightf) X(Lightfv)       \
+    X(LightModelf) X(LightModelfv) X(LightModeli) X(Materialf)           \
+    X(Materialfv) X(ColorMaterial) X(Fogf) X(Fogfv) X(Fogi)              \
+    X(LineWidth) X(PointSize) X(Color3ub) X(Vertex2i) X(Vertex2fv)       \
+    X(TexCoord2i) X(Rectf) X(GetTexLevelParameteriv) X(IsTexture)        \
+    X(CopyTexImage2D) X(CopyTexSubImage2D) X(ClipPlane) X(GenLists)      \
+    X(NewList) X(EndList) X(CallList) X(CallLists) X(DeleteLists)        \
+    X(ListBase) X(TexEnvfv) X(PushAttrib) X(PopAttrib)
 
 static void test_table(void)
 {
@@ -107,15 +126,23 @@ static void test_table(void)
     CHECK_EQ(offsetof(aar_api, groups), 8);
     CHECK_EQ(offsetof(aar_api, platform_id), 12);
     CHECK_EQ(offsetof(aar_api, exit), 16);
+    CHECK_EQ(AAR_API_CORE_SLOT_COUNT, 42);
     CHECK_EQ(offsetof(aar_api, msg_wait), 16 + 29 * P);
-    CHECK_EQ(offsetof(aar_api, ext), 16 + 30 * P);
-    CHECK_EQ(offsetof(aar_api, map_file), 16 + 31 * P);
-    CHECK_EQ(offsetof(aar_api, unmap_file), 16 + 32 * P);
-    CHECK_EQ(offsetof(aar_api, display_open), 16 + 33 * P);
-    CHECK_EQ(offsetof(aar_api, audio_open), 16 + 42 * P);
-    CHECK_EQ(offsetof(aar_api, gl_bind), 16 + 45 * P);
-    CHECK_EQ(offsetof(aar_api, sha256), 16 + 48 * P);
-    CHECK_EQ(offsetof(aar_api, audio_decode_close), 16 + 55 * P);
+    CHECK_EQ(offsetof(aar_api, file_delete), 16 + 30 * P);
+    CHECK_EQ(offsetof(aar_api, volume_info), 16 + 36 * P);
+    CHECK_EQ(offsetof(aar_api, time_unix_us), 16 + 37 * P);
+    CHECK_EQ(offsetof(aar_api, clip_write), 16 + 41 * P);
+    CHECK_EQ(offsetof(aar_api, ext), 16 + 42 * P);
+    CHECK_EQ(offsetof(aar_api, map_file), 16 + 43 * P);
+    CHECK_EQ(offsetof(aar_api, unmap_file), 16 + 44 * P);
+    CHECK_EQ(offsetof(aar_api, display_open), 16 + 45 * P);
+    CHECK_EQ(offsetof(aar_api, display_latest_dropped), 16 + 53 * P);
+    CHECK_EQ(offsetof(aar_api, display_info), 16 + 54 * P);
+    CHECK_EQ(offsetof(aar_api, display_last_present_us), 16 + 60 * P);
+    CHECK_EQ(offsetof(aar_api, audio_open), 16 + 61 * P);
+    CHECK_EQ(offsetof(aar_api, gl_bind), 16 + 64 * P);
+    CHECK_EQ(offsetof(aar_api, sha256), 16 + 67 * P);
+    CHECK_EQ(offsetof(aar_api, audio_decode_close), 16 + 74 * P);
 
     /* AAR_API_COVERS gates on size. */
     {
@@ -127,6 +154,9 @@ static void test_table(void)
         CHECK(AAR_API_COVERS(&t, msg_wait));
         CHECK(!AAR_API_COVERS((const aar_api *)0, exit));
         t.version = AAR_API_VERSION;
+        CHECK(AAR_API_AT_LEAST(&t, 6));
+        CHECK(!AAR_API_AT_LEAST(&t, 7));
+        t.version = (0u << 16) | 5u;
         CHECK(AAR_API_AT_LEAST(&t, 5));
         CHECK(!AAR_API_AT_LEAST(&t, 6));
         t.version = (1u << 16) | 9u;
@@ -151,6 +181,8 @@ static void test_gl(void)
     CHECK_EQ(offsetof(aar_gl, Build2DMipmaps), 8 + 61 * P);
     CHECK_EQ(offsetof(aar_gl, VertexPointer), 8 + 62 * P);
     CHECK_EQ(offsetof(aar_gl, UnlockArrays), 8 + 71 * P);
+    CHECK_EQ(offsetof(aar_gl, ClearDepth), 8 + 72 * P);
+    CHECK_EQ(offsetof(aar_gl, PopAttrib), 8 + 122 * P);
     {
         aar_gl g = {0};
 
@@ -162,6 +194,7 @@ static void test_gl(void)
     }
     CHECK_EQ(AAR_GL_VERSION_V0, 0);
     CHECK_EQ(AAR_GL_VERSION_ARRAYS, 1);
+    CHECK_EQ(AAR_GL_VERSION_11, 2);
 }
 
 static void test_structures(void)
@@ -209,10 +242,53 @@ static void test_structures(void)
     CHECK_EQ(offsetof(aar_stat, size), 0);
     CHECK_EQ(offsetof(aar_stat, mtime), 8);
     CHECK_EQ(offsetof(aar_stat, mode), 16);
-    CHECK_EQ(offsetof(aar_stat, reserved), 20);
+    CHECK_EQ(offsetof(aar_stat, protect), 20);
     CHECK_EQ(sizeof(aar_dirent), 260);
     CHECK_EQ(offsetof(aar_dirent, mode), 0);
     CHECK_EQ(offsetof(aar_dirent, name), 4);
+
+    CHECK_EQ(sizeof(aar_volume_info), 40);
+    CHECK_EQ(offsetof(aar_volume_info, size), 0);
+    CHECK_EQ(offsetof(aar_volume_info, block_bytes), 4);
+    CHECK_EQ(offsetof(aar_volume_info, total_bytes), 8);
+    CHECK_EQ(offsetof(aar_volume_info, free_bytes), 16);
+    CHECK_EQ(offsetof(aar_volume_info, flags), 24);
+    CHECK_EQ(offsetof(aar_volume_info, reserved), 28);
+
+    CHECK_EQ(sizeof(aar_locale_info), 72);
+    CHECK_EQ(offsetof(aar_locale_info, size), 0);
+    CHECK_EQ(offsetof(aar_locale_info, utc_offset_min), 4);
+    CHECK_EQ(offsetof(aar_locale_info, flags), 8);
+    CHECK_EQ(offsetof(aar_locale_info, language), 12);
+    CHECK_EQ(offsetof(aar_locale_info, country), 44);
+    CHECK_EQ(offsetof(aar_locale_info, decimal_point), 52);
+    CHECK_EQ(offsetof(aar_locale_info, group_separator), 56);
+    CHECK_EQ(offsetof(aar_locale_info, reserved), 60);
+
+    CHECK_EQ(sizeof(aar_display_info), 48);
+    CHECK_EQ(offsetof(aar_display_info, size), 0);
+    CHECK_EQ(offsetof(aar_display_info, width), 4);
+    CHECK_EQ(offsetof(aar_display_info, height), 8);
+    CHECK_EQ(offsetof(aar_display_info, refresh_mhz), 12);
+    CHECK_EQ(offsetof(aar_display_info, screen_width), 16);
+    CHECK_EQ(offsetof(aar_display_info, screen_height), 20);
+    CHECK_EQ(offsetof(aar_display_info, flags), 24);
+    CHECK_EQ(offsetof(aar_display_info, reserved), 28);
+
+    CHECK_EQ(sizeof(aar_display_mode), 24);
+    CHECK_EQ(offsetof(aar_display_mode, width), 0);
+    CHECK_EQ(offsetof(aar_display_mode, height), 4);
+    CHECK_EQ(offsetof(aar_display_mode, refresh_mhz), 8);
+    CHECK_EQ(offsetof(aar_display_mode, formats), 12);
+    CHECK_EQ(offsetof(aar_display_mode, flags), 16);
+    CHECK_EQ(offsetof(aar_display_mode, reserved), 20);
+
+    CHECK_EQ(offsetof(aar_pointer, width), 0);
+    CHECK_EQ(offsetof(aar_pointer, height), 4);
+    CHECK_EQ(offsetof(aar_pointer, hot_x), 8);
+    CHECK_EQ(offsetof(aar_pointer, hot_y), 12);
+    CHECK_EQ(offsetof(aar_pointer, reserved), 16);
+    CHECK_EQ(offsetof(aar_pointer, argb), 24);
 
     CHECK_EQ(offsetof(aar_surface, id), 0);
     CHECK_EQ(offsetof(aar_surface, width), 4);
@@ -284,14 +360,16 @@ static void test_structures(void)
         CHECK_EQ(sizeof(aar_surface), 48);
         CHECK_EQ(sizeof(aar_audio), 40);
         CHECK_EQ(sizeof(aar_image_params), 32);
-        CHECK_EQ(sizeof(aar_api), 16 + 56 * 8);
-        CHECK_EQ(sizeof(aar_gl), 8 + 72 * 8);
+        CHECK_EQ(sizeof(aar_pointer), 32);
+        CHECK_EQ(sizeof(aar_api), 16 + 75 * 8);
+        CHECK_EQ(sizeof(aar_gl), 8 + 123 * 8);
     } else {
         CHECK_EQ(sizeof(aar_surface), 40);
         CHECK_EQ(sizeof(aar_audio), 28);
         CHECK_EQ(sizeof(aar_image_params), 28);
-        CHECK_EQ(sizeof(aar_api), 16 + 56 * 4);
-        CHECK_EQ(sizeof(aar_gl), 8 + 72 * 4);
+        CHECK_EQ(sizeof(aar_pointer), 28);
+        CHECK_EQ(sizeof(aar_api), 16 + 75 * 4);
+        CHECK_EQ(sizeof(aar_gl), 8 + 123 * 4);
 #if defined(__arm__)
         CHECK_EQ(sizeof(aar_shared), 24);
 #else
@@ -303,8 +381,9 @@ static void test_structures(void)
 static void test_constants(void)
 {
     CHECK_EQ(AAR_API_MAJOR, 0);
-    CHECK_EQ(AAR_API_MINOR, 5);
-    CHECK_EQ(AAR_API_VERSION, 5);
+    CHECK_EQ(AAR_API_MINOR, 6);
+    CHECK_EQ(AAR_API_VERSION, 6);
+    CHECK_EQ(AAR_API_MINOR_OLDEST, 6);
     CHECK_EQ(AAR_PROFILE_A32, 1);
     CHECK_EQ(AAR_PROFILE_A64, 2);
 
@@ -376,6 +455,21 @@ static void test_constants(void)
     CHECK_EQ(AAR_EV_RESIZE, 6);
     CHECK_EQ(AAR_EV_BREAK, 7);
     CHECK_EQ(AAR_EV_LOW_MEMORY, 8);
+    CHECK_EQ(AAR_EV_TEXT, 9);
+    CHECK_EQ(AAR_EV_WHEEL, 10);
+    CHECK_EQ(AAR_EV_CLOSE_REQUEST, 11);
+    CHECK_EQ(AAR_EV_ACTIVE, 12);
+    CHECK_EQ(AAR_MOUSE_LEFT, 1);
+    CHECK_EQ(AAR_MOUSE_RIGHT, 2);
+    CHECK_EQ(AAR_MOUSE_MIDDLE, 4);
+    CHECK_EQ(AAR_MOUSE_ABSOLUTE, 0x8000);
+    CHECK_EQ(AAR_JOY_BUTTON1, 1);
+    CHECK_EQ(AAR_JOY_BUTTON2, 2);
+    CHECK_EQ(AAR_JOY_BUTTON3, 4);
+    CHECK_EQ(AAR_JOY_BUTTON4, 8);
+    CHECK_EQ(AAR_JOY_PLAY, 16);
+    CHECK_EQ(AAR_JOY_FORWARD, 32);
+    CHECK_EQ(AAR_JOY_REVERSE, 64);
     CHECK_EQ(AAR_BREAK_CTRL_D, 4);
     CHECK_EQ(AAR_BREAK_CTRL_E, 5);
     CHECK_EQ(AAR_BREAK_CTRL_F, 6);
@@ -392,8 +486,29 @@ static void test_constants(void)
     CHECK_EQ(AAR_LAYOUT_CLUT8, 7);
     CHECK_EQ(AAR_DISPLAY_VSYNC, 1);
     CHECK_EQ(AAR_DISPLAY_LATEST, 2);
+    CHECK_EQ(AAR_DISPLAY_WINDOW, 1u << 2);
+    CHECK_EQ(AAR_DISPLAY_RESIZABLE, 1u << 3);
+    CHECK_EQ(AAR_DISPLAY_POINTER_ABS, 1u << 4);
+    CHECK_EQ(AAR_DISPLAY_TEXT_INPUT, 1u << 5);
+    CHECK_EQ(AAR_DISPLAY_CLOSE_REQUEST, 1u << 6);
+    CHECK_EQ(AAR_DISPLAY_SCALE, 1u << 7);
     CHECK(AAR_DISPCAP_ASYNC <= 0xFFFFu && AAR_DISPCAP_LATEST <= 0xFFFFu &&
           AAR_DISPCAP_CLUT8 <= 0xFFFFu);
+    CHECK_EQ(AAR_DISPCAP_WINDOW, 1u << 3);
+    CHECK_EQ(AAR_DISPCAP_RESIZE, 1u << 4);
+    CHECK_EQ(AAR_DISPCAP_POINTER_ABS, 1u << 5);
+    CHECK_EQ(AAR_DISPCAP_TEXT_INPUT, 1u << 6);
+    CHECK_EQ(AAR_DISPCAP_CLOSE_REQUEST, 1u << 7);
+    CHECK_EQ(AAR_DISPCAP_SCALED, 1u << 8);
+    CHECK_EQ(AAR_DISPINFO_WINDOW, 1);
+    CHECK_EQ(AAR_DISPINFO_SCALED, 2);
+    CHECK_EQ(AAR_DISPINFO_ACTIVE, 4);
+    CHECK_EQ(AAR_MODEF_PREFERRED, 1);
+    CHECK_EQ(AAR_POINTER_DEFAULT, 0);
+    CHECK_EQ(AAR_POINTER_HIDDEN, 1);
+    CHECK_EQ(AAR_POINTER_BUSY, 2);
+    CHECK_EQ(AAR_POINTER_CUSTOM, 3);
+    CHECK_EQ(AAR_POINTER_MAX_DIM, 64);
 
     CHECK_EQ(AAR_FILE_READ, 1);
     CHECK_EQ(AAR_FILE_WRITE, 2);
@@ -403,6 +518,20 @@ static void test_constants(void)
     CHECK_EQ(AAR_SEEK_SET, 0);
     CHECK_EQ(AAR_SEEK_CUR, 1);
     CHECK_EQ(AAR_SEEK_END, 2);
+    CHECK_EQ(AAR_RENAME_REPLACE, 1);
+    CHECK_EQ(AAR_PROT_DELETE, 1);
+    CHECK_EQ(AAR_PROT_EXECUTE, 2);
+    CHECK_EQ(AAR_PROT_WRITE, 4);
+    CHECK_EQ(AAR_PROT_READ, 8);
+    CHECK_EQ(AAR_PROT_ARCHIVE, 16);
+    CHECK_EQ(AAR_PROT_PURE, 32);
+    CHECK_EQ(AAR_PROT_SCRIPT, 64);
+    CHECK_EQ(AAR_PROT_HOLD, 128);
+    CHECK_EQ(AAR_VOLF_READONLY, 1);
+    CHECK_EQ(AAR_LOCALEF_OFFSET_KNOWN, 1);
+    CHECK_EQ(AAR_CLIP_TEXT, 1);
+    CHECK_EQ(AAR_CLIP_IFF, 2);
+    CHECK_EQ(AAR_CLIP_UNITS, 256);
 
     CHECK_EQ(AAR_COMPRESS_DEFLATE_RAW, 1);
     CHECK_EQ(AAR_COMPRESS_LH7, 10);
@@ -576,6 +705,14 @@ static void test_transport_layout(void)
             AAR_OP_DISPLAY_OPEN, AAR_OP_DISPLAY_FLIP,
             AAR_OP_DISPLAY_PALETTE, AAR_OP_DISPLAY_CLOSE,
             AAR_OP_AUDIO_OPEN, AAR_OP_AUDIO_CLOSE,
+            AAR_OP_FILE_DELETE, AAR_OP_FILE_RENAME, AAR_OP_DIR_CREATE,
+            AAR_OP_FILE_SET_DATE, AAR_OP_FILE_SET_PROTECT,
+            AAR_OP_FILE_TRUNCATE, AAR_OP_VOLUME_INFO,
+            AAR_OP_DISPLAY_INFO, AAR_OP_DISPLAY_MODES,
+            AAR_OP_DISPLAY_RESIZE, AAR_OP_DISPLAY_TITLE,
+            AAR_OP_DISPLAY_POINTER, AAR_OP_DISPLAY_VBLANK,
+            AAR_OP_TIME_UNIX, AAR_OP_LOCALE_INFO, AAR_OP_ENV_GET,
+            AAR_OP_CLIP_READ, AAR_OP_CLIP_WRITE,
         };
         size_t m = sizeof(ops) / sizeof(ops[0]);
 
@@ -593,6 +730,43 @@ static void test_transport_layout(void)
     CHECK(AAR_R_DISPLAY_FLIP_DROPPED < AAR_ENTRY_OUTS);
     CHECK(AAR_R_AUDIO_OPEN_FRAMES < AAR_ENTRY_OUTS);
     CHECK(AAR_A_AUDIO_OPEN_ROUTE < AAR_ENTRY_ARGS);
+
+    /* The 0.6 op codes. */
+    CHECK_EQ(AAR_OP_FILE_DELETE, 0x19);
+    CHECK_EQ(AAR_OP_FILE_RENAME, 0x1A);
+    CHECK_EQ(AAR_OP_DIR_CREATE, 0x1B);
+    CHECK_EQ(AAR_OP_FILE_SET_DATE, 0x1C);
+    CHECK_EQ(AAR_OP_FILE_SET_PROTECT, 0x1D);
+    CHECK_EQ(AAR_OP_FILE_TRUNCATE, 0x1E);
+    CHECK_EQ(AAR_OP_VOLUME_INFO, 0x1F);
+    CHECK_EQ(AAR_OP_DISPLAY_INFO, 0x34);
+    CHECK_EQ(AAR_OP_DISPLAY_MODES, 0x35);
+    CHECK_EQ(AAR_OP_DISPLAY_RESIZE, 0x36);
+    CHECK_EQ(AAR_OP_DISPLAY_TITLE, 0x37);
+    CHECK_EQ(AAR_OP_DISPLAY_POINTER, 0x38);
+    CHECK_EQ(AAR_OP_DISPLAY_VBLANK, 0x39);
+    CHECK_EQ(AAR_OP_TIME_UNIX, 0x50);
+    CHECK_EQ(AAR_OP_LOCALE_INFO, 0x51);
+    CHECK_EQ(AAR_OP_ENV_GET, 0x52);
+    CHECK_EQ(AAR_OP_CLIP_READ, 0x58);
+    CHECK_EQ(AAR_OP_CLIP_WRITE, 0x59);
+    CHECK_EQ(AAR_R_STAT_PROTECT, 5);
+    CHECK_EQ(AAR_CLIPF_LAST, 1);
+    CHECK_EQ(AAR_DISPLAY_MODE_REC_BYTES, sizeof(aar_display_mode));
+    CHECK_EQ(AAR_LOCALE_REC_BYTES, 64);
+    CHECK_EQ(AAR_LOCALE_REC_UTC_OFFSET_MIN, 0x00);
+    CHECK_EQ(AAR_LOCALE_REC_FLAGS, 0x04);
+    CHECK_EQ(AAR_LOCALE_REC_LANGUAGE, 0x08);
+    CHECK_EQ(AAR_LOCALE_REC_COUNTRY, 0x28);
+    CHECK_EQ(AAR_LOCALE_REC_DECIMAL_POINT, 0x30);
+    CHECK_EQ(AAR_LOCALE_REC_GROUP_SEPARATOR, 0x34);
+    CHECK(AAR_R_STAT_PROTECT < AAR_ENTRY_OUTS);
+    CHECK(AAR_R_VOLUME_FLAGS < AAR_ENTRY_OUTS);
+    CHECK(AAR_R_DISPLAY_INFO_FLAGS < AAR_ENTRY_OUTS);
+    CHECK(AAR_A_DISPLAY_POINTER_HOT_Y < AAR_ENTRY_ARGS);
+    CHECK(AAR_A_CLIP_TOTAL < AAR_ENTRY_ARGS);
+    CHECK(AAR_R_CLIP_READ_COUNT < AAR_ENTRY_OUTS);
+    CHECK(AAR_R_TIME_UNIX_FLAGS < AAR_ENTRY_OUTS);
 }
 
 int main(void)
