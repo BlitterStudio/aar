@@ -25,7 +25,7 @@ import sys
 # include/aar/app.h: AAR_API_MAJOR, AAR_API_MINOR. tests/aar_check_test.py
 # compares these two numbers with the header.
 AAR_API_MAJOR = 0
-AAR_API_MINOR = 5
+AAR_API_MINOR = 6
 
 PROFILE_NUMBER = {"a32": 1, "a64": 2}  # AAR_PROFILE_A32, AAR_PROFILE_A64
 NOTE_MAGIC = 0x4E524141

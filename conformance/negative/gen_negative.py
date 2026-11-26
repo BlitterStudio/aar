@@ -74,7 +74,18 @@ _spec = importlib.util.spec_from_file_location(
 checkmod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(checkmod)
 build_image = checkmod.build
-note_bytes = checkmod.note_bytes
+
+# The corpus keeps the note minor 5 it was made with, so the images that are
+# meant to load also load on a platform below 0.6. The builder's own default is
+# AAR_API_MINOR, as AAR_NOTE() emits it.
+CORPUS_MINOR = 5
+
+
+def note_bytes(profile, **kw):
+    kw.setdefault("minor", CORPUS_MINOR)
+    return checkmod.note_bytes(profile, **kw)
+
+
 _pspec = importlib.util.spec_from_file_location(
     "probe_corpus", os.path.join(ROOT, "client", "tests", "probe_corpus.py"))
 probe_corpus = importlib.util.module_from_spec(_pspec)
@@ -105,6 +116,8 @@ REFUSE = "PROFILE|INVAL"
 def img(profile, **o):
     o.setdefault("data_align", 4096)
     o.setdefault("text", CODE[profile])
+    if "note" not in o:
+        o["note"] = note_bytes(profile)
     return build_image(profile, **o)
 
 

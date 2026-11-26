@@ -32,7 +32,7 @@ def align(value, to):
 
 
 def note_bytes(profile, *, stack=0, heap=0, req=0, opt=0, magic=0x4E524141,
-               version=1, prof=None, major=0, minor=5, reserved=0,
+               version=1, prof=None, major=0, minor=6, reserved=0,
                owner=b"AAR\x00", namesz=None, descsz=None, ntype=1,
                name_pad=b""):
     """One AAR note. Defaults are what AAR_NOTE(stack, heap, req, opt) emits."""
@@ -279,6 +279,8 @@ def elf_rules():
            build(profile, note=note_bytes(profile, req=0xF0000000)))
         ok("api minor 0 [%s]" % profile,
            build(profile, note=note_bytes(profile, minor=0)))
+        ok("api minor 5 [%s]" % profile,
+           build(profile, note=note_bytes(profile, minor=5)))
         ok("two relocations, PT_LOAD with BSS [%s]" % profile,
            build(profile, reloc_count=2))
         bad("big-endian [%s]" % profile, build(profile, ei_data=2),
@@ -398,7 +400,7 @@ def note_rules():
              "A64 note in an A32 image", "does not match", prof=3 - PROFILE_NUMBER[profile])
         case("unknown profile word", "does not match", prof=9)
         case("api major 1", "note api major 1 is not 0", major=1)
-        case("api minor 6", "above 5", minor=6)
+        case("api minor 7", "above 6", minor=7)
         case("stack 4", "note stack 4", stack=4)
         case("stack below 64 KiB", "note stack", stack=(64 << 10) - 16)
         case("stack above 1 MiB", "note stack", stack=(1 << 20) + 16)

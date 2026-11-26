@@ -602,3 +602,421 @@ void glUnlockArrays(void)
     if (AAR_GL_COVERS(gl, UnlockArrays) && gl->UnlockArrays)
         gl->UnlockArrays();
 }
+
+void glClearDepth(double depth)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, ClearDepth) && gl->ClearDepth)
+        gl->ClearDepth(depth);
+}
+
+void glColorMask(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, ColorMask) && gl->ColorMask)
+        gl->ColorMask(r, g, b, a);
+}
+
+void glPolygonOffset(float factor, float units)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, PolygonOffset) && gl->PolygonOffset)
+        gl->PolygonOffset(factor, units);
+}
+
+void glStencilFunc(uint32_t func, int32_t ref, uint32_t mask)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, StencilFunc) && gl->StencilFunc)
+        gl->StencilFunc(func, ref, mask);
+}
+
+void glStencilOp(uint32_t fail, uint32_t zfail, uint32_t zpass)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, StencilOp) && gl->StencilOp)
+        gl->StencilOp(fail, zfail, zpass);
+}
+
+void glStencilMask(uint32_t mask)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, StencilMask) && gl->StencilMask)
+        gl->StencilMask(mask);
+}
+
+void glClearStencil(int32_t s)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, ClearStencil) && gl->ClearStencil)
+        gl->ClearStencil(s);
+}
+
+void glMultMatrixf(const float *m)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, MultMatrixf) && gl->MultMatrixf)
+        gl->MultMatrixf(m);
+}
+
+void glLoadMatrixd(const double *m)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, LoadMatrixd) && gl->LoadMatrixd)
+        gl->LoadMatrixd(m);
+}
+
+void glMultMatrixd(const double *m)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, MultMatrixd) && gl->MultMatrixd)
+        gl->MultMatrixd(m);
+}
+
+void glGetDoublev(uint32_t pname, double *params)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, GetDoublev) && gl->GetDoublev)
+        gl->GetDoublev(pname, params);
+}
+
+void glGetBooleanv(uint32_t pname, uint8_t *params)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, GetBooleanv) && gl->GetBooleanv)
+        gl->GetBooleanv(pname, params);
+}
+
+void glActiveTextureARB(uint32_t texture)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, ActiveTextureARB) && gl->ActiveTextureARB)
+        gl->ActiveTextureARB(texture);
+}
+
+void glMultiTexCoord2fARB(uint32_t target, float s, float t)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, MultiTexCoord2fARB) && gl->MultiTexCoord2fARB)
+        gl->MultiTexCoord2fARB(target, s, t);
+}
+
+void glMultiTexCoord2fvARB(uint32_t target, const float *v)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, MultiTexCoord2fvARB) && gl->MultiTexCoord2fvARB)
+        gl->MultiTexCoord2fvARB(target, v);
+}
+
+void glNormal3f(float nx, float ny, float nz)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Normal3f) && gl->Normal3f)
+        gl->Normal3f(nx, ny, nz);
+}
+
+void glNormal3fv(const float *v)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Normal3fv) && gl->Normal3fv)
+        gl->Normal3fv(v);
+}
+
+void glNormalPointer(uint32_t type, int32_t stride, const void *pointer)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, NormalPointer) && gl->NormalPointer)
+        gl->NormalPointer(type, stride, pointer);
+}
+
+void glLightf(uint32_t light, uint32_t pname, float param)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Lightf) && gl->Lightf)
+        gl->Lightf(light, pname, param);
+}
+
+void glLightfv(uint32_t light, uint32_t pname, const float *params)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Lightfv) && gl->Lightfv)
+        gl->Lightfv(light, pname, params);
+}
+
+void glLightModelf(uint32_t pname, float param)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, LightModelf) && gl->LightModelf)
+        gl->LightModelf(pname, param);
+}
+
+void glLightModelfv(uint32_t pname, const float *params)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, LightModelfv) && gl->LightModelfv)
+        gl->LightModelfv(pname, params);
+}
+
+void glLightModeli(uint32_t pname, int32_t param)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, LightModeli) && gl->LightModeli)
+        gl->LightModeli(pname, param);
+}
+
+void glMaterialf(uint32_t face, uint32_t pname, float param)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Materialf) && gl->Materialf)
+        gl->Materialf(face, pname, param);
+}
+
+void glMaterialfv(uint32_t face, uint32_t pname, const float *params)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Materialfv) && gl->Materialfv)
+        gl->Materialfv(face, pname, params);
+}
+
+void glColorMaterial(uint32_t face, uint32_t mode)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, ColorMaterial) && gl->ColorMaterial)
+        gl->ColorMaterial(face, mode);
+}
+
+void glFogf(uint32_t pname, float param)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Fogf) && gl->Fogf)
+        gl->Fogf(pname, param);
+}
+
+void glFogfv(uint32_t pname, const float *params)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Fogfv) && gl->Fogfv)
+        gl->Fogfv(pname, params);
+}
+
+void glFogi(uint32_t pname, int32_t param)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Fogi) && gl->Fogi)
+        gl->Fogi(pname, param);
+}
+
+void glLineWidth(float width)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, LineWidth) && gl->LineWidth)
+        gl->LineWidth(width);
+}
+
+void glPointSize(float size)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, PointSize) && gl->PointSize)
+        gl->PointSize(size);
+}
+
+void glColor3ub(uint8_t r, uint8_t g, uint8_t b)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Color3ub) && gl->Color3ub)
+        gl->Color3ub(r, g, b);
+}
+
+void glVertex2i(int32_t x, int32_t y)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Vertex2i) && gl->Vertex2i)
+        gl->Vertex2i(x, y);
+}
+
+void glVertex2fv(const float *v)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Vertex2fv) && gl->Vertex2fv)
+        gl->Vertex2fv(v);
+}
+
+void glTexCoord2i(int32_t s, int32_t t)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, TexCoord2i) && gl->TexCoord2i)
+        gl->TexCoord2i(s, t);
+}
+
+void glRectf(float x1, float y1, float x2, float y2)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, Rectf) && gl->Rectf)
+        gl->Rectf(x1, y1, x2, y2);
+}
+
+void glGetTexLevelParameteriv(uint32_t target, int32_t level, uint32_t pname,
+                              int32_t *params)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, GetTexLevelParameteriv) &&
+        gl->GetTexLevelParameteriv)
+        gl->GetTexLevelParameteriv(target, level, pname, params);
+}
+
+uint8_t glIsTexture(uint32_t texture)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, IsTexture) && gl->IsTexture)
+        return gl->IsTexture(texture);
+    return 0;
+}
+
+void glCopyTexImage2D(uint32_t target, int32_t level, uint32_t internalformat,
+                      int32_t x, int32_t y, int32_t width, int32_t height,
+                      int32_t border)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, CopyTexImage2D) && gl->CopyTexImage2D)
+        gl->CopyTexImage2D(target, level, internalformat, x, y, width, height,
+                           border);
+}
+
+void glCopyTexSubImage2D(uint32_t target, int32_t level, int32_t xoffset,
+                         int32_t yoffset, int32_t x, int32_t y, int32_t width,
+                         int32_t height)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, CopyTexSubImage2D) && gl->CopyTexSubImage2D)
+        gl->CopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width,
+                              height);
+}
+
+void glClipPlane(uint32_t plane, const double *equation)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, ClipPlane) && gl->ClipPlane)
+        gl->ClipPlane(plane, equation);
+}
+
+uint32_t glGenLists(int32_t range)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, GenLists) && gl->GenLists)
+        return gl->GenLists(range);
+    return 0;
+}
+
+void glNewList(uint32_t list, uint32_t mode)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, NewList) && gl->NewList)
+        gl->NewList(list, mode);
+}
+
+void glEndList(void)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, EndList) && gl->EndList)
+        gl->EndList();
+}
+
+void glCallList(uint32_t list)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, CallList) && gl->CallList)
+        gl->CallList(list);
+}
+
+void glCallLists(int32_t n, uint32_t type, const void *lists)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, CallLists) && gl->CallLists)
+        gl->CallLists(n, type, lists);
+}
+
+void glDeleteLists(uint32_t list, int32_t range)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, DeleteLists) && gl->DeleteLists)
+        gl->DeleteLists(list, range);
+}
+
+void glListBase(uint32_t base)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, ListBase) && gl->ListBase)
+        gl->ListBase(base);
+}
+
+void glTexEnvfv(uint32_t target, uint32_t pname, const float *params)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, TexEnvfv) && gl->TexEnvfv)
+        gl->TexEnvfv(target, pname, params);
+}
+
+void glPushAttrib(uint32_t mask)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, PushAttrib) && gl->PushAttrib)
+        gl->PushAttrib(mask);
+}
+
+void glPopAttrib(void)
+{
+    const aar_gl *gl = aar_gl_bound();
+
+    if (AAR_GL_COVERS(gl, PopAttrib) && gl->PopAttrib)
+        gl->PopAttrib();
+}

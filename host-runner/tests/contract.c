@@ -62,12 +62,20 @@ static int test_table(int no_gl)
         !api->file_write || !api->file_seek || !api->file_stat ||
         !api->file_list_open || !api->file_list_next ||
         !api->file_list_close || !api->console_write || !api->console_read ||
-        !api->event_poll || !api->msg_send || !api->msg_poll || !api->msg_wait)
+        !api->event_poll || !api->msg_send || !api->msg_poll || !api->msg_wait ||
+        !api->file_delete || !api->file_rename || !api->dir_create ||
+        !api->file_set_date || !api->file_set_protect ||
+        !api->file_truncate || !api->volume_info || !api->time_unix_us ||
+        !api->locale_info || !api->env_get || !api->clip_read ||
+        !api->clip_write)
         return fail(113, "a core slot is NULL");
     if (!api->display_open || !api->display_flip || !api->display_flip_async ||
         !api->display_flip_idle || !api->display_refresh ||
         !api->display_vsync || !api->display_set_palette ||
-        !api->display_close || !api->display_latest_dropped)
+        !api->display_close || !api->display_latest_dropped ||
+        !api->display_info || !api->display_modes || !api->display_resize ||
+        !api->display_set_title || !api->display_pointer ||
+        !api->display_wait_vblank || !api->display_last_present_us)
         return fail(114, "a display slot is NULL");
     if (!api->audio_open || !api->audio_close || !api->audio_stats)
         return fail(115, "an audio slot is NULL");

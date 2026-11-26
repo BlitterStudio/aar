@@ -307,10 +307,18 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_OP_FILE_READ     0x12u /* arg: FD, LEN; bytes go to buf; out: COUNT */
 #define AAR_OP_FILE_WRITE    0x13u /* arg: FD, LEN; bytes come from buf; out: COUNT */
 #define AAR_OP_FILE_SEEK     0x14u /* arg: FD, OFF_HI, OFF_LO, WHENCE; out: POS_HI, POS_LO */
-#define AAR_OP_FILE_STAT     0x15u /* path in buf; out: SIZE_HI/LO, MTIME_HI/LO, MODE */
+#define AAR_OP_FILE_STAT     0x15u /* path in buf; out: SIZE_HI/LO, MTIME_HI/LO, MODE, PROTECT */
 #define AAR_OP_LIST_OPEN     0x16u /* path in buf; arg: ID */
 #define AAR_OP_LIST_NEXT     0x17u /* arg: ID; name goes to buf; out: MODE; AAR_E_NOENT at the end */
 #define AAR_OP_LIST_CLOSE    0x18u /* arg: ID */
+/* Minor 6 file operations. All park the app until the completion. */
+#define AAR_OP_FILE_DELETE   0x19u /* path in buf */
+#define AAR_OP_FILE_RENAME   0x1Au /* buf holds `from` NUL `to` NUL; arg: FLAGS (AAR_RENAME_*) */
+#define AAR_OP_DIR_CREATE    0x1Bu /* path in buf */
+#define AAR_OP_FILE_SET_DATE 0x1Cu /* path in buf; arg: MTIME_HI, MTIME_LO (int64 Unix seconds) */
+#define AAR_OP_FILE_SET_PROTECT 0x1Du /* path in buf; arg: PROTECT (AAR_PROT_*) */
+#define AAR_OP_FILE_TRUNCATE 0x1Eu /* arg: FD, SIZE_HI, SIZE_LO */
+#define AAR_OP_VOLUME_INFO   0x1Fu /* path in buf; out: BLOCKS_TOTAL, BLOCKS_USED, BLOCK_BYTES, FLAGS (AAR_VOLF_*) */
 
 /* Console. The bytes sit in a console buffer named by buf, buf_off, buf_len. */
 #define AAR_OP_CONSOLE_WRITE 0x20u /* bytes in buf; out: COUNT consumed */
@@ -321,10 +329,24 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_OP_DISPLAY_FLIP    0x31u /* arg: ID, FLAGS; replied when shown; out: FRONT, BACK, PITCH, LAYOUT, DROPPED. A platform that owns the display buffers may complete a flip itself without sending it to the client */
 #define AAR_OP_DISPLAY_PALETTE 0x32u /* arg: ID, FIRST, COUNT; colors in buf, big-endian 0x00RRGGBB words */
 #define AAR_OP_DISPLAY_CLOSE   0x33u /* arg: ID */
+/* Minor 6 display operations. All park the app until the completion. */
+#define AAR_OP_DISPLAY_INFO    0x34u /* arg: ID; out: WIDTH, HEIGHT, REFRESH_MHZ, SCREEN_W, SCREEN_H, FLAGS (AAR_DISPINFO_*) */
+#define AAR_OP_DISPLAY_MODES   0x35u /* buf is the room; records of AAR_DISPLAY_MODE_REC_BYTES in buf, six big-endian words in aar_display_mode order; out: COUNT written, TOTAL modes the client has */
+#define AAR_OP_DISPLAY_RESIZE  0x36u /* arg: ID, W, H; as DISPLAY_OPEN (out: ID .. SPARE, reply flags: AAR_DISPCAP_*) */
+#define AAR_OP_DISPLAY_TITLE   0x37u /* arg: ID; title in buf, NUL-terminated, at most 255 bytes, UTF-8 (the client converts) */
+#define AAR_OP_DISPLAY_POINTER 0x38u /* arg: ID, MODE, W, H, HOT_X, HOT_Y (int32); CUSTOM: big-endian 0xAARRGGBB words in buf */
+#define AAR_OP_DISPLAY_VBLANK  0x39u /* arg: ID, TIMEOUT_US; completes at the next vertical blank, or AAR_E_TIMEDOUT */
 
 /* Audio. */
 #define AAR_OP_AUDIO_OPEN      0x40u /* arg: RATE, CHANNELS, ROUTE; ring named in buf, buf_len (allocated by the runtime); out: RATE, CHANNELS, RING (echoes buf), RING_BYTES, FRAMES */
 #define AAR_OP_AUDIO_CLOSE     0x41u
+
+/* Host environment, minor 6. All park the app until the completion. */
+#define AAR_OP_TIME_UNIX       0x50u /* out: US_HI, US_LO (int64 Unix microseconds), FLAGS (AAR_LOCALEF_OFFSET_KNOWN when UTC is exact) */
+#define AAR_OP_LOCALE_INFO     0x51u /* buf is the room; AAR_LOCALE_REC_BYTES record in buf (AAR_LOCALE_REC_* offsets) */
+#define AAR_OP_ENV_GET         0x52u /* name in buf, NUL-terminated; buf_len is the room for the value; value bytes in buf; out: LEN (full value length) */
+#define AAR_OP_CLIP_READ       0x58u /* arg: UNIT, TYPE, OFFSET (byte offset into the clip); buf is the room; out: SIZE (full clip size), COUNT (bytes written) */
+#define AAR_OP_CLIP_WRITE      0x59u /* arg: UNIT, TYPE, OFFSET, TOTAL; bytes in buf; entry flags: AAR_CLIPF_LAST on the final chunk; out: COUNT taken */
 
 /* Argument and result word indices (into arg[] and out[]). A_ is a request
  * argument, R_ is a completion result. 64-bit values are _HI then _LO. */
@@ -343,9 +365,23 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_R_STAT_MTIME_HI    2u
 #define AAR_R_STAT_MTIME_LO    3u
 #define AAR_R_STAT_MODE        4u
+#define AAR_R_STAT_PROTECT     5u
 #define AAR_A_LIST_ID          0u /* OPEN, NEXT, CLOSE */
 #define AAR_R_LIST_MODE        0u /* NEXT */
 #define AAR_R_CONSOLE_COUNT    0u
+
+/* Minor 6 files. DELETE and DIR_CREATE take only the path in buf. */
+#define AAR_A_FILE_RENAME_FLAGS 0u /* AAR_RENAME_* */
+#define AAR_A_FILE_DATE_HI     0u /* SET_DATE: int64 Unix seconds */
+#define AAR_A_FILE_DATE_LO     1u
+#define AAR_A_FILE_PROTECT     0u /* SET_PROTECT */
+#define AAR_A_FILE_TRUNC_FD    0u /* TRUNCATE */
+#define AAR_A_FILE_TRUNC_SIZE_HI 1u
+#define AAR_A_FILE_TRUNC_SIZE_LO 2u
+#define AAR_R_VOLUME_BLOCKS_TOTAL 0u
+#define AAR_R_VOLUME_BLOCKS_USED  1u
+#define AAR_R_VOLUME_BLOCK_BYTES  2u
+#define AAR_R_VOLUME_FLAGS     3u /* AAR_VOLF_* */
 
 #define AAR_A_DISPLAY_OPEN_W      0u
 #define AAR_A_DISPLAY_OPEN_H      1u
@@ -357,7 +393,7 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_R_DISPLAY_OPEN_FRONT  3u /* tokens of the client's bitmap memory */
 #define AAR_R_DISPLAY_OPEN_BACK   4u
 #define AAR_R_DISPLAY_OPEN_SPARE  5u
-#define AAR_A_DISPLAY_ID          0u /* FLIP, PALETTE, CLOSE */
+#define AAR_A_DISPLAY_ID          0u /* FLIP, PALETTE, CLOSE; minor 6: INFO, RESIZE, TITLE, POINTER, VBLANK */
 #define AAR_A_DISPLAY_FLIP_FLAGS  1u /* AAR_FLIPF_* */
 #define AAR_A_DISPLAY_PALETTE_FIRST 1u
 #define AAR_A_DISPLAY_PALETTE_COUNT 2u
@@ -367,6 +403,28 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_R_DISPLAY_FLIP_LAYOUT  3u
 #define AAR_R_DISPLAY_FLIP_DROPPED 4u /* cumulative frames replaced in LATEST mode */
 #define AAR_FLIPF_ASYNC (1u << 0)     /* the app does not wait for the completion */
+
+/* Minor 6 display. INFO, RESIZE, TITLE, POINTER and VBLANK name the display in
+ * AAR_A_DISPLAY_ID. A RESIZE reply is a DISPLAY_OPEN reply. */
+#define AAR_R_DISPLAY_INFO_WIDTH      0u
+#define AAR_R_DISPLAY_INFO_HEIGHT     1u
+#define AAR_R_DISPLAY_INFO_REFRESH_MHZ 2u
+#define AAR_R_DISPLAY_INFO_SCREEN_W   3u
+#define AAR_R_DISPLAY_INFO_SCREEN_H   4u
+#define AAR_R_DISPLAY_INFO_FLAGS      5u /* AAR_DISPINFO_* */
+#define AAR_R_DISPLAY_MODES_COUNT     0u /* records written to buf */
+#define AAR_R_DISPLAY_MODES_TOTAL     1u /* modes the client has in all */
+#define AAR_A_DISPLAY_RESIZE_W        1u
+#define AAR_A_DISPLAY_RESIZE_H        2u
+#define AAR_A_DISPLAY_POINTER_MODE    1u /* AAR_POINTER_* */
+#define AAR_A_DISPLAY_POINTER_W       2u
+#define AAR_A_DISPLAY_POINTER_H       3u
+#define AAR_A_DISPLAY_POINTER_HOT_X   4u /* int32 */
+#define AAR_A_DISPLAY_POINTER_HOT_Y   5u /* int32 */
+#define AAR_A_DISPLAY_VBLANK_TIMEOUT_US 1u
+/* One DISPLAY_MODES record: six big-endian words in aar_display_mode order
+ * (width, height, refresh_mhz, formats, flags, reserved). */
+#define AAR_DISPLAY_MODE_REC_BYTES 24u
 
 #define AAR_A_AUDIO_OPEN_RATE     0u
 #define AAR_A_AUDIO_OPEN_CHANNELS 1u
@@ -378,6 +436,41 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_R_AUDIO_OPEN_FRAMES   4u /* ring capacity, power of two */
 #define AAR_AUDIO_ROUTE_PLATFORM 0u /* the platform's own mixer or fabric */
 #define AAR_AUDIO_ROUTE_AHI      1u /* AHI through the client; it reads PCM with AARAudioRead */
+
+/* Minor 6 host environment. */
+#define AAR_R_TIME_UNIX_US_HI  0u
+#define AAR_R_TIME_UNIX_US_LO  1u
+#define AAR_R_TIME_UNIX_FLAGS  2u /* AAR_LOCALEF_OFFSET_KNOWN when UTC is exact */
+#define AAR_R_ENV_LEN          0u /* full length of the value, without the NUL */
+#define AAR_A_CLIP_UNIT        0u /* CLIP_READ, CLIP_WRITE */
+#define AAR_A_CLIP_TYPE        1u /* AAR_CLIP_* */
+#define AAR_A_CLIP_OFFSET      2u /* byte offset into the clip */
+#define AAR_A_CLIP_TOTAL       3u /* CLIP_WRITE: total size of the clip */
+#define AAR_R_CLIP_READ_SIZE   0u /* full size of the clip in that type */
+#define AAR_R_CLIP_READ_COUNT  1u /* bytes written to buf */
+#define AAR_R_CLIP_WRITE_COUNT 0u /* bytes taken */
+#define AAR_CLIPF_LAST (1u << 0)  /* entry flags of CLIP_WRITE: the final chunk */
+
+/*
+ * Chunking: the runtime moves a clip in as many requests as its staging buffer
+ * needs, in order, with the offset increasing from 0. The client replaces the
+ * clip only when the AAR_CLIPF_LAST chunk completes; a write sequence that
+ * does not reach LAST changes nothing. A read sequence reads one consistent
+ * clip: the client may cache it from offset 0 until offset 0 is requested
+ * again.
+ *
+ * LOCALE_INFO record in buf, 64 bytes, big-endian words. language, country,
+ * decimal_point and group_separator are NUL-terminated byte strings, zero
+ * padded; bytes 0x38 to 0x3F are zero. aar_locale_info is built from it by the
+ * runtime.
+ */
+#define AAR_LOCALE_REC_BYTES           64u
+#define AAR_LOCALE_REC_UTC_OFFSET_MIN  0x00u /* int32, minutes east of UTC */
+#define AAR_LOCALE_REC_FLAGS           0x04u /* AAR_LOCALEF_* */
+#define AAR_LOCALE_REC_LANGUAGE        0x08u /* char[32] */
+#define AAR_LOCALE_REC_COUNTRY         0x28u /* char[8] */
+#define AAR_LOCALE_REC_DECIMAL_POINT   0x30u /* char[4] */
+#define AAR_LOCALE_REC_GROUP_SEPARATOR 0x34u /* char[4] */
 
 /*
  * Audio ring buffer. The runtime allocates it and names it in the AUDIO_OPEN
