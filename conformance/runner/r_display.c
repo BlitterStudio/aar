@@ -187,6 +187,7 @@ static void prep_picture(struct conf_run *run)
 static void prep_window(struct conf_run *run)
 {
     gfx_reset();
+    run->serve_flags_off = AAR_SERVEF_NO_INPUT_WINDOW;
     run->timeout_s = 120;
 }
 
@@ -225,6 +226,7 @@ static void prep_resize(struct conf_run *run)
     rsz_count = rsz_bad = rsz_nocap = rsz_w = rsz_h = 0;
     if (!conf_g.interactive)
         return;
+    run->serve_flags_off = AAR_SERVEF_NO_INPUT_WINDOW;
     run->on_message = resize_message;
     run->timeout_s = 60;
     run->extra_args[run->extra_count++] = "conf:show=1";
