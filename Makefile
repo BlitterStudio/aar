@@ -1,13 +1,13 @@
 # Builds every template through mk/aar.mk, the include a third party uses, for
 # profile A32 and, when its toolchain is installed, profile A64. Set
-# AAR_SYSROOT_A32 and AAR_SYSROOT_A64 to the outputs of build_pic_newlib.sh
-# (the SDK image sets them). The freestanding template builds with
-# AAR_FREESTANDING=1 and needs no sysroot.
+# AAR_SYSROOT_A32 and AAR_SYSROOT_A64 to the outputs of build_pic_newlib.sh and
+# build_pic_libstdcxx.sh (the SDK image sets them). The freestanding template
+# builds with AAR_FREESTANDING=1 and needs no sysroot.
 #
 #   make                build every template for every available profile
 #   make check          build, run aar-check on every ELF, run the tests
-#   make check-runtime  run libaar and the conformance payloads under qemu (needs
-#                       qemu and Linux cross gcc)
+#   make check-runtime  run libaar, the C++ template and the conformance payloads
+#                       under qemu (needs qemu and Linux cross gcc)
 #   make conf-bundle    stage the conformance bundle (payloads of both profiles
 #                       and the C-ELF corpus) in build/conf-bundle
 #   make PROFILES=a32   limit the profiles
@@ -53,6 +53,10 @@ freestanding_FREESTANDING := 1
 fpenv_SRCS := templates/fpenv.c
 ringflood_SRCS := templates/ringflood.c
 sbrk_smoke_SRCS := templates/sbrk_smoke.c
+cxx_hello_SRCS := templates/cxx_hello.cpp
+# The same source with -fno-exceptions: a check app, not a template.
+cxx_hello_noexc_SRCS := templates/cxx_hello.cpp
+cxx_hello_noexc_CXX_EXCEPTIONS := 0
 
 # The conformance payloads (conformance/): apps that judge one area of the
 # standard from the inside, built per profile as build/<profile>/conf_<area>.elf.
@@ -71,8 +75,8 @@ $(foreach a,$(CONF_AREAS),$(eval conf_$(a)_SRCS := conformance/payloads/conf_$(a
 $(foreach a,$(CONF_AREAS),$(if $(wildcard $(CONF_DIR)/conf_$(a).ldlibs),$(eval conf_$(a)_LDLIBS := $(shell cat $(CONF_DIR)/conf_$(a).ldlibs))))
 $(foreach a,$(CONF_AREAS),$(if $(wildcard $(CONF_DIR)/conf_$(a).freestanding),$(eval conf_$(a)_FREESTANDING := 1)))
 
-TEMPLATES := hello pixels fault tone echo console membench isolate spin svcbench memhog svcprobe mgl-conformance filter freestanding fpenv ringflood
-CHECK_APPS := $(TEMPLATES) sbrk_smoke $(CONF_APPS)
+TEMPLATES := hello pixels fault tone echo console membench isolate spin svcbench memhog svcprobe mgl-conformance filter freestanding fpenv ringflood cxx_hello
+CHECK_APPS := $(TEMPLATES) sbrk_smoke cxx_hello_noexc $(CONF_APPS)
 
 # One target pair per profile and app: build-<profile>-<app> and
 # check-<profile>-<app> (build, then aar-check).
@@ -83,13 +87,13 @@ build-$(1)-$(2):
 	$$(MAKE) -f $$(AAR_SDK)/mk/aar.mk \
 		AAR_SDK=$$(AAR_SDK) AAR_PROFILE=$(1) CROSS=$$(CROSS_$(1)) \
 		APP=$(2) SRCS="$$($(2)_SRCS)" BUILD=$$(AAR_SDK)/build/$(1) \
-		LDLIBS="$$($(2)_LDLIBS)" \
+		LDLIBS="$$($(2)_LDLIBS)" AAR_CXX_EXCEPTIONS=$$(or $$($(2)_CXX_EXCEPTIONS),1) \
 		AAR_FREESTANDING=$$(or $$($(2)_FREESTANDING),0) all
 check-$(1)-$(2):
 	$$(MAKE) -f $$(AAR_SDK)/mk/aar.mk \
 		AAR_SDK=$$(AAR_SDK) AAR_PROFILE=$(1) CROSS=$$(CROSS_$(1)) \
 		APP=$(2) SRCS="$$($(2)_SRCS)" BUILD=$$(AAR_SDK)/build/$(1) \
-		LDLIBS="$$($(2)_LDLIBS)" \
+		LDLIBS="$$($(2)_LDLIBS)" AAR_CXX_EXCEPTIONS=$$(or $$($(2)_CXX_EXCEPTIONS),1) \
 		AAR_FREESTANDING=$$(or $$($(2)_FREESTANDING),0) check
 endef
 $(foreach p,$(PROFILES),$(foreach a,$(CHECK_APPS),$(eval $(call APP_RULES,$(p),$(a)))))
@@ -105,12 +109,13 @@ ABI_TARGETS := $(foreach p,$(PROFILES),check-abi-$(p))
 .PHONY: all check clean check-tool check-debug-tools check-fp-codegen check-mode-switch \
 	check-freestanding-guard check-abi check-abi-host check-loader-host \
 	check-expect-note check-runtime check-conf-catalogue check-conf-payloads \
-	conf-bundle
+	conf-bundle check-cxx-ld check-cxx-guard check-cxx-build
 
 all: $(BUILD_TARGETS)
 
 check: check-tool check-debug-tools check-abi check-fp-codegen $(CHECK_TARGETS) \
-	check-expect-note check-mode-switch check-freestanding-guard check-conf-catalogue
+	check-expect-note check-mode-switch check-freestanding-guard check-cxx-ld \
+	check-cxx-guard check-cxx-build check-conf-catalogue
 
 # The checker's own tests, with synthetic images for both profiles.
 check-tool:
@@ -163,7 +168,7 @@ check-expect-note: $(EXPECT_TARGETS)
 
 define EXPECT_RULE
 .PHONY: expect-note-$(1)
-expect-note-$(1): $(foreach a,hello pixels tone mgl-conformance freestanding console membench,check-$(1)-$(a))
+expect-note-$(1): $(foreach a,hello pixels tone mgl-conformance freestanding console membench cxx_hello,check-$(1)-$(a))
 	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/hello.elf 0 0 0 0
 	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/pixels.elf 0 0 1 2
 	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/tone.elf 0 0 4 0
@@ -171,6 +176,7 @@ expect-note-$(1): $(foreach a,hello pixels tone mgl-conformance freestanding con
 	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/freestanding.elf 0 0 0 0
 	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/console.elf 0 0 0 2
 	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/membench.elf 0 0 0 1
+	$$(PYTHON) $$(AAR_SDK)/tools/aar-check --expect-note $$(AAR_SDK)/build/$(1)/cxx_hello.elf 0 0 0 0
 endef
 $(foreach p,$(PROFILES),$(eval $(call EXPECT_RULE,$(p))))
 
@@ -208,6 +214,40 @@ check-freestanding-guard-$(1):
 endef
 $(foreach p,$(PROFILES),$(eval $(call GUARD_RULE,$(p))))
 
+# aar-cxx.ld is aar.ld plus the unwind tables; the two must not drift apart.
+check-cxx-ld:
+	$(PYTHON) $(AAR_SDK)/tests/cxx_ld_test.py
+
+# C++ sources in a freestanding build must be refused with the reason, not
+# fail later in the link.
+check-cxx-guard: $(foreach p,$(PROFILES),check-cxx-guard-$(p))
+
+define CXX_GUARD_RULE
+.PHONY: check-cxx-guard-$(1)
+check-cxx-guard-$(1):
+	@log=$$(AAR_SDK)/build/$(1)/cxx-freestanding.log; mkdir -p $$(AAR_SDK)/build/$(1); \
+	if $$(MAKE) -f $$(AAR_SDK)/mk/aar.mk \
+		AAR_SDK=$$(AAR_SDK) AAR_PROFILE=$(1) CROSS=$$(CROSS_$(1)) \
+		APP=cxx-freestanding SRCS="templates/cxx_hello.cpp" \
+		BUILD=$$(AAR_SDK)/build/$(1) AAR_FREESTANDING=1 all >$$$$log 2>&1; then \
+		cat $$$$log; echo "C++ guard ($(1)): a freestanding C++ build was accepted"; exit 1; \
+	fi; \
+	grep -q "freestanding flavour has no C++ runtime" $$$$log || { cat $$$$log; echo "C++ guard ($(1)): the build failed for another reason"; exit 1; }; \
+	echo "C++ guard ($(1)): freestanding C++ build rejected"
+endef
+$(foreach p,$(PROFILES),$(eval $(call CXX_GUARD_RULE,$(p))))
+
+# Exception-mode switching relinks, main.c and main.cpp are two objects, and a
+# CMake reconfigure applies AAR_CXX_EXCEPTIONS.
+check-cxx-build: $(foreach p,$(PROFILES),check-cxx-build-$(p))
+
+define CXX_BUILD_RULE
+.PHONY: check-cxx-build-$(1)
+check-cxx-build-$(1):
+	CROSS=$$(CROSS_$(1)) sh $$(AAR_SDK)/tests/cxx_build_test.sh $$(AAR_SDK) $(1)
+endef
+$(foreach p,$(PROFILES),$(eval $(call CXX_BUILD_RULE,$(p))))
+
 # The conformance catalogue (conformance/TESTS.md) against the payload and runner
 # sources and the runner's generated header: no orphan ids either way.
 check-conf-catalogue:
@@ -239,6 +279,7 @@ define RUNTIME_RULE
 .PHONY: check-runtime-$(1)
 check-runtime-$(1):
 	CROSS=$$(CROSS_$(1)) sh $$(AAR_SDK)/libaar/tests/runtime_test.sh $$(AAR_SDK) $(1)
+	CROSS=$$(CROSS_$(1)) sh $$(AAR_SDK)/tests/cxx_runtime_test.sh $$(AAR_SDK) $(1)
 	CROSS=$$(CROSS_$(1)) sh $$(AAR_SDK)/conformance/tests/qemu_run.sh $$(AAR_SDK) $(1) $$(CONF_QEMU_AREAS)
 	sh $$(AAR_SDK)/conformance/tests/negative_run.sh $$(AAR_SDK) $(1)
 endef

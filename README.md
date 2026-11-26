@@ -34,19 +34,20 @@ pins the commit of this repository it builds against in `sdk/AAR_REF`.
 | --- | --- |
 | `include/aar/` | `app.h` (the table, types and wrappers), `note.h` (`AAR_NOTE()`), `gl.h`, `transport.h`, `ext_zz9000.h` |
 | `client/` | `aar.library`, the Amiga client library: `include/` (the public headers and the generated call headers), `fd/aar_lib.fd`, `src/` (the platform interface and the image probe), `tools/fdgen.py`, `tests/` |
-| `libaar/` | `src/` (the `aar_*` and `gl*` wrappers, the libc glue, the freestanding `mem*` routines), and per profile `a32/` and `a64/` with `crt0.S` and `aar.ld` |
+| `libaar/` | `src/` (the `aar_*` and `gl*` wrappers, the libc glue, the freestanding `mem*` routines, the C++ start-up support), and per profile `a32/` and `a64/` with `crt0.S`, `aar.ld` and `aar-cxx.ld` (the script for an app that has C++) |
 | `loader/` | Portable reference ELF validator and loader; [`aar_load.h`](loader/aar_load.h) is its interface |
 | `mk/aar.mk` | Makefile include for building one app |
 | `cmake/` | `aar.cmake` (`aar_add_executable`), `aar-toolchain-a32.cmake`, `aar-toolchain-a64.cmake`, and an example project |
 | `build_pic_newlib.sh` | Builds the position-independent newlib that apps link against (`AAR_PROFILE=a32` or `a64`) |
-| `docker/Dockerfile` | SDK image: Arm GNU Toolchain 15.3.rel2 for both profiles, PIC newlib for both, make, CMake, Python |
+| `build_pic_libstdcxx.sh` | Builds the position-independent C++ runtime (`libstdc++`, `libsupc++`, `libgcc_eh`) into the same sysroot, from the GCC source of the toolchain release |
+| `docker/Dockerfile` | SDK image: Arm GNU Toolchain 15.3.rel2 for both profiles, PIC newlib and PIC C++ runtime for both, make, CMake, Python |
 | `tools/aar-check` | Checks a finished ELF against the load contract |
 | `tools/aar-symbolize`, `tools/aar-profile` | Name the code in an `aar-run` crash report, and print a flat profile from its sample file; see the developer guide, Debugging |
 | `templates/` | Example apps; `templates/README.md` describes each one |
 | `host-runner/` | An SDL2 runner for apps on a PC; see `host-runner/README.md` |
 | `spec/` | `aar.md`, the specification of the standard |
 | `conformance/` | The conformance suite: the test catalogue (`TESTS.md`), the payload apps, the `aar-conf` runner for the Amiga, and the scripts that check them; see `conformance/README.md` |
-| `tests/` | Tests for the checker, the debug tools, the headers and the transport model, the link map check, FP code generation and mode switching. The client library's tests are in `client/tests/` |
+| `tests/` | Tests for the checker, the debug tools, the headers and the transport model, the link map check, FP code generation, mode switching, the pair of linker scripts, and the C++ template under qemu. The client library's tests are in `client/tests/` |
 | `docs/` | The API reference, the developer guide, the porting guide, the transport contract, and the script that checks the reference covers every public symbol |
 | `Makefile` | Builds every template and runs the checks (`make check`) |
 
@@ -68,9 +69,15 @@ available (`PROFILES=a32` limits the run):
 - the image checker's synthetic-image tests (`check-tool`);
 - the profile header layouts and note bytes (`check-abi`);
 - floating-point code generation (`check-fp-codegen`);
-- builds and `aar-check` for every template, `sbrk_smoke` and every conformance payload;
+- builds and `aar-check` for every template (the C++ template `cxx_hello` with
+  and without exceptions), `sbrk_smoke` and every conformance payload;
 - fixed template notes (`check-expect-note`), libc/freestanding mode switching
-  (`check-mode-switch`) and rejection of a freestanding libc link (`check-freestanding-guard`);
+  (`check-mode-switch`), rejection of a freestanding libc link
+  (`check-freestanding-guard`) and of freestanding C++ (`check-cxx-guard`), and
+  that `aar-cxx.ld` matches `aar.ld` apart from the unwind tables (`check-cxx-ld`);
+- C++ build behaviour (`check-cxx-build`): switching `AAR_CXX_EXCEPTIONS` relinks,
+  `main.c` and `main.cpp` in one app are both linked, and a CMake reconfigure
+  applies `AAR_CXX_EXCEPTIONS`;
 - the conformance catalogue, tools and bundle tests, and generated negative-image
   corpus (`check-conf-catalogue`).
 
@@ -80,7 +87,7 @@ Other root Makefile targets are separate from `check`:
 | Target | What it runs or builds | Extra requirements |
 |---|---|---|
 | `all` (default) | Templates and conformance payloads | Profile toolchains and PIC sysroots |
-| `check-runtime` | libaar tests, marked conformance payloads and the negative-image corpus under qemu | qemu-user and Linux cross GCC per profile; missing tools skip that profile |
+| `check-runtime` | libaar tests, the C++ template, marked conformance payloads and the negative-image corpus under qemu | qemu-user and Linux cross GCC per profile; missing tools skip that profile |
 | `check-abi-host` | Host header layouts and transport model, including 32-bit and C++ | GCC, G++, multilib |
 | `check-loader-host` | Reference loader placement, corpora and mutation tests, including 32-bit and sanitizers | Host GCC and Python 3; optional compiler features are probed |
 | `check-conf-payloads` | Build and check only the conformance payloads | Profile toolchains and PIC sysroots |
@@ -101,8 +108,12 @@ SRCS := hello.c
 include $(AAR_SDK)/mk/aar.mk
 ```
 
+A C++ app lists `.cpp`, `.cc` or `.cxx` files in `SRCS` the same way. Exceptions
+and RTTI work; `AAR_CXX_EXCEPTIONS=0` compiles without exceptions. See
+[C++ apps](docs/aar-developer-guide.md#c-apps).
+
 With CMake, pass a toolchain file and call `aar_add_executable` from
-`cmake/aar.cmake`; `cmake/example` shows it:
+`cmake/aar.cmake`; `cmake/example` shows it, with a C++ target:
 
 ```sh
 cmake -S cmake/example -B build/hello \
@@ -111,8 +122,10 @@ cmake --build build/hello
 ```
 
 Without Docker, install Arm GNU Toolchain 15.3.rel2, run `build_pic_newlib.sh`
-once per profile (`AAR_PROFILE=a32` and `AAR_PROFILE=a64`), and set `AAR_SDK`,
-`AAR_SYSROOT_A32` and `AAR_SYSROOT_A64`. Freestanding apps
+and then `build_pic_libstdcxx.sh` once per profile (`AAR_PROFILE=a32` and
+`AAR_PROFILE=a64`), and set `AAR_SDK`, `AAR_SYSROOT_A32` and
+`AAR_SYSROOT_A64`. The C++ runtime needs the GMP, MPFR and MPC development
+packages and flex on the build machine. Freestanding apps
 (`AAR_FREESTANDING=1`) link without newlib and need no sysroot.
 `templates/README.md` and [docs/aar-developer-guide.md](docs/aar-developer-guide.md)
 have the details.
