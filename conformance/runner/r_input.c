@@ -197,6 +197,35 @@ static void peer_got(struct conf_run *run, const AARMessage *msg)
     is.got_drops = events_dropped(run) - is.over_drop_base;
 }
 
+static void peer_newev(struct conf_run *run, const AARMessage *msg)
+{
+    (void)msg;
+    post_list(run, ci_new, CI_COUNT(ci_new));
+}
+
+/* Absolute positions with no retry while the queue is full; the answer names the last post that was accepted. */
+static void peer_absfull(struct conf_run *run, const AARMessage *msg)
+{
+    ULONG key_busy = 0, mouse_busy = 0, last_ok = 0;
+    ULONG i;
+
+    (void)msg;
+    for (i = 0; i < 100UL; i++) {
+        if (post_raw(run, AAR_EV_KEY_DOWN, (UWORD)(i + 1UL), 0, 0, 0, 0) == AAR_E_BUSY)
+            key_busy++;
+    }
+    for (i = 1; i <= CI_ABS_POSTS; i++) {
+        LONG rc = post_raw(run, AAR_EV_MOUSE, 0, ci_abs_x((uint32_t)i), ci_abs_y((uint32_t)i),
+                           (UWORD)CI_MOUSE_ABSOLUTE, 0);
+
+        if (rc == AAR_OK)
+            last_ok = i;
+        else if (rc == AAR_E_BUSY)
+            mouse_busy++;
+    }
+    send_result(run, 1, key_busy, mouse_busy, last_ok);
+}
+
 static const struct conf_peer peers[] = {
     { CI_K_STOPEV, peer_stopev },
     { CI_K_KEYS, peer_keys },
@@ -208,6 +237,8 @@ static const struct conf_peer peers[] = {
     { CI_K_DROPS, peer_drops },
     { CI_K_OVERFULL, peer_overfull },
     { CI_K_GOT, peer_got },
+    { CI_K_NEWEV, peer_newev },
+    { CI_K_ABSFULL, peer_absfull },
 };
 
 static void prep_reset(struct conf_run *run)
@@ -289,14 +320,104 @@ static int show_accept(char *why)
     return 0;
 }
 
+/* Variant buttons (C-INPUT.17): the same list as show, and a check of the rules for what real devices send:
+ * a mouse event's code is 0 to 3, a text event's code 1 to 0xFFFF, a focus event's code 0 or 1, and when a
+ * wheel event was seen, the wheel's raw keys (0x7A to 0x7D) were not also sent as keys. The person's yes needs
+ * at least one mouse button, wheel or text event as evidence. */
+static ULONG bt_buttons, bt_wheel, bt_text, bt_rawwheel, bt_bad, bt_total;
+static char bt_why[CONF_DETAIL_MAX];
+
+static void buttons_message(struct conf_run *run, const AARMessage *m)
+{
+    ULONG type = cm_get32(m->bytes, 4);
+    ULONG code = cm_get32(m->bytes, 8);
+
+    if (m->bytes[0] != 'S' || m->bytes[1] != 'H' || m->bytes[2] != 'O' || m->bytes[3] != 'W')
+        return;
+    show_message(run, m);
+    bt_total++;
+    if (type == AAR_EV_MOUSE) {
+        if (code > 3UL) {
+            bt_bad++;
+            conf_detailf(bt_why, "a mouse event with code %lu (0 to 3 expected)", (unsigned long)code);
+        } else if (code != 0UL) {
+            bt_buttons++;
+        }
+    } else if (type == AAR_EV_WHEEL) {
+        bt_wheel++;
+    } else if (type == AAR_EV_TEXT) {
+        bt_text++;
+        if (code < 1UL || code > 0xFFFFUL) {
+            bt_bad++;
+            conf_detailf(bt_why, "a text event with code %lu (1 to 65535 expected)", (unsigned long)code);
+        }
+    } else if (type == AAR_EV_ACTIVE) {
+        if (code > 1UL) {
+            bt_bad++;
+            conf_detailf(bt_why, "a focus event with code %lu (0 or 1 expected)", (unsigned long)code);
+        }
+    } else if ((type == AAR_EV_KEY_DOWN || type == AAR_EV_KEY_UP) && code >= 0x7AUL && code <= 0x7DUL) {
+        bt_rawwheel++;
+    }
+}
+
+static void prep_buttons(struct conf_run *run)
+{
+    memset(&is, 0, sizeof is);
+    show_count = 0;
+    show_total = 0;
+    show_keys = 0;
+    show_moves = 0;
+    bt_buttons = bt_wheel = bt_text = bt_rawwheel = bt_bad = bt_total = 0;
+    bt_why[0] = '\0';
+    run->serve_flags_off = AAR_SERVEF_NO_INPUT_WINDOW;
+    run->on_message = buttons_message;
+    run->extra_args[run->extra_count++] = "conf:show=1";
+    conf_emitf("# C-INPUT.17: for 20 seconds the app shows a window: press each mouse button, turn the "
+               "wheel and type some letters in it");
+}
+
+static int buttons_review(const struct conf_run *run)
+{
+    (void)run;
+    conf_emitf("# C-INPUT.17: %lu mouse button events, %lu wheel events, %lu text events, %lu raw wheel "
+               "keys, among %lu events", (unsigned long)bt_buttons, (unsigned long)bt_wheel,
+               (unsigned long)bt_text, (unsigned long)bt_rawwheel, (unsigned long)bt_total);
+    if (bt_buttons + bt_wheel + bt_text)
+        return 0;
+    conf_emitf("# C-INPUT.17: the app saw no mouse button, wheel or text event. Click the window "
+               "first, then press the buttons and type.");
+    return 1;
+}
+
+static int buttons_accept(char *why)
+{
+    if (bt_bad) {
+        conf_detailf(why, "%.150s", bt_why);
+        return 0;
+    }
+    if (bt_wheel && bt_rawwheel) {
+        conf_detailf(why, "the wheel was sent as wheel events and also as %lu raw keys",
+                     (unsigned long)bt_rawwheel);
+        return 0;
+    }
+    if (bt_buttons + bt_wheel + bt_text)
+        return 1;
+    conf_detailf(why, "operator confirmed but the app saw no mouse button, wheel or text event (%lu events)",
+                 (unsigned long)bt_total);
+    return 0;
+}
+
 static const struct conf_operator operators[] = {
     { "C-INPUT.11", "show", show_review, show_accept },
+    { "C-INPUT.17", "buttons", buttons_review, buttons_accept },
 };
 
 static const struct conf_variant variants[] = {
     /* std ends in a stop (C-INPUT.2), so it runs last. */
     { "overfull", prep_reset },
     { "show", prep_show },
+    { "buttons", prep_buttons },
     { "std", prep_reset },
 };
 

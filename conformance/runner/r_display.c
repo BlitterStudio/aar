@@ -182,13 +182,97 @@ static void prep_picture(struct conf_run *run)
                "top right, blue bottom left, white bottom right");
 }
 
+/* Variant window: the display calls of API 0.6 against the client's own display (a window on a public screen
+ * where the client can show one). The runner's table serves none of them, so the variant std cannot judge them. */
+static void prep_window(struct conf_run *run)
+{
+    gfx_reset();
+    run->timeout_s = 120;
+}
+
+static void prep_pointer(struct conf_run *run)
+{
+    gfx_reset();
+    if (!conf_g.interactive)
+        return;
+    run->extra_args[run->extra_count++] = "conf:show=1";
+    conf_emitf("# C-DISPLAY.30: for 12 seconds a window titled \"AAR conformance: title and pointer\" shows a "
+               "colour gradient. Move the mouse pointer over it: the pointer is the normal one for three "
+               "seconds, then hidden, then the busy pointer, then a red square with a black frame");
+}
+
+/* Variant resize (C-DISPLAY.31): the app answers every resize with display_resize and reports it. */
+static ULONG rsz_count, rsz_bad, rsz_nocap;
+static ULONG rsz_w, rsz_h;
+
+static void resize_message(struct conf_run *run, const AARMessage *m)
+{
+    (void)run;
+    if (memcmp(m->bytes, "RSZBAD", 6) == 0) {
+        rsz_bad++;
+    } else if (memcmp(m->bytes, "RSZ", 4) == 0) {
+        rsz_count++;
+        rsz_w = cm_get32(m->bytes, 8);
+        rsz_h = cm_get32(m->bytes, 12);
+    } else if (memcmp(m->bytes, "NOCP", 4) == 0) {
+        rsz_nocap++;
+    }
+}
+
+static void prep_resize(struct conf_run *run)
+{
+    gfx_reset();
+    rsz_count = rsz_bad = rsz_nocap = rsz_w = rsz_h = 0;
+    if (!conf_g.interactive)
+        return;
+    run->on_message = resize_message;
+    run->timeout_s = 60;
+    run->extra_args[run->extra_count++] = "conf:show=1";
+    conf_emitf("# C-DISPLAY.31: for 25 seconds a window titled \"AAR conformance: resize me\" shows a gradient. "
+               "Drag its lower right corner to resize it a few times; the gradient must fill the new size");
+}
+
+static int resize_review(const struct conf_run *run)
+{
+    (void)run;
+    conf_emitf("# C-DISPLAY.31: %lu resizes answered, %lu refused, last size %lux%lu%s", (unsigned long)rsz_count,
+               (unsigned long)rsz_bad, (unsigned long)rsz_w, (unsigned long)rsz_h,
+               rsz_nocap ? " (the display did not grant AAR_DISPCAP_RESIZE)" : "");
+    if (rsz_count || rsz_nocap)
+        return 0;
+    conf_emitf("# C-DISPLAY.31: the app saw no resize. Drag the window's corner, then answer.");
+    return 1;
+}
+
+static int resize_accept(char *why)
+{
+    if (rsz_nocap) {
+        conf_detailf(why, "the display did not grant AAR_DISPCAP_RESIZE for a window with AAR_DISPLAY_RESIZABLE");
+        return 0;
+    }
+    if (rsz_bad) {
+        conf_detailf(why, "display_resize failed for %lu resize events", (unsigned long)rsz_bad);
+        return 0;
+    }
+    if (!rsz_count) {
+        conf_detailf(why, "operator confirmed but the app saw no AAR_EV_RESIZE");
+        return 0;
+    }
+    return 1;
+}
+
 static const struct conf_operator operators[] = {
     { "C-DISPLAY.17", "picture", NULL, NULL },
+    { "C-DISPLAY.30", "pointer", NULL, NULL },
+    { "C-DISPLAY.31", "resize", resize_review, resize_accept },
 };
 
 static const struct conf_variant variants[] = {
     { "std", prep_std },
     { "picture", prep_picture },
+    { "window", prep_window },
+    { "pointer", prep_pointer },
+    { "resize", prep_resize },
 };
 
 static void on_end(const struct conf_run *run, const struct conf_outcome *out,

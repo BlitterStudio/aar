@@ -115,8 +115,9 @@ static void test_table(void)
         return;
     }
     conf_check(&t1, gl->size > 8u, "the table size is not set");
-    conf_check(&t1, gl->version == AAR_GL_VERSION_V0 || gl->version == AAR_GL_VERSION_ARRAYS,
-               "the table version is neither AAR_GL_VERSION_V0 nor AAR_GL_VERSION_ARRAYS");
+    conf_check(&t1, gl->version == AAR_GL_VERSION_V0 || gl->version == AAR_GL_VERSION_ARRAYS ||
+                              gl->version == AAR_GL_VERSION_11,
+               "the table version is not AAR_GL_VERSION_V0, _ARRAYS or _11");
     conf_buf_str(&t1.note, "size ");
     conf_buf_u64(&t1.note, gl->size);
     conf_buf_str(&t1.note, ", version ");
@@ -137,7 +138,7 @@ static void test_table(void)
         conf_buf_u64(&t2.why, slots);
         conf_buf_str(&t2.why, " slots through Build2DMipmaps are NULL");
     }
-    if (gl->version == AAR_GL_VERSION_ARRAYS) {
+    if (gl->version >= AAR_GL_VERSION_ARRAYS) {
         for (i = 0; i < sizeof array_slots / sizeof array_slots[0]; i++) {
             const void *const *p = (const void *const *)((const uint8_t *)gl + array_slots[i]);
 
@@ -609,6 +610,254 @@ static void test_isolated_draw(void)
     conf_end(&t);
 }
 
+/* ---- C-GL.12 to C-GL.15: the fields of AAR_GL_VERSION_11 ---------------------------------------------------- */
+
+#define GL_NO_ERROR 0u
+#define GL_STENCIL_BITS 0x0D57u
+#define GL_DEPTH_CLEAR_VALUE 0x0B73u
+#define GL_COLOR_WRITEMASK 0x0C23u
+#define GL_LINE_WIDTH 0x0B21u
+#define GL_POINT_SIZE 0x0B11u
+#define GL_ALWAYS 0x0207u
+#define GL_KEEP 0x1E00u
+#define GL_POINTS 0x0000u
+#define GL_FRONT 0x0404u
+#define GL_FRONT_AND_BACK 0x0408u
+#define GL_SHININESS 0x1601u
+#define GL_DIFFUSE 0x1201u
+#define GL_AMBIENT_AND_DIFFUSE 0x1602u
+#define GL_LIGHT0 0x4000u
+#define GL_SPOT_EXPONENT 0x1205u
+#define GL_POSITION 0x1203u
+#define GL_LIGHT_MODEL_AMBIENT 0x0B53u
+#define GL_LIGHT_MODEL_TWO_SIDE 0x0B52u
+#define GL_FOG_DENSITY 0x0B62u
+#define GL_FOG_COLOR 0x0B66u
+#define GL_FOG_MODE 0x0B65u
+#define GL_LINEAR 0x2601u
+#define GL_TEXTURE0_ARB 0x84C0u
+#define GL_TEXTURE_WIDTH 0x1000u
+#define GL_TEXTURE_ENV_COLOR 0x2201u
+#define GL_CLIP_PLANE0 0x3000u
+#define GL_COMPILE 0x1300u
+#define GL_UNSIGNED_INT 0x1405u
+#define GL_ENABLE_BIT 0x00002000u
+
+/* C-GL.12: the table's size and version agree about the fields of API 0.6. */
+static void test_v11_table(void)
+{
+    struct conf_test t;
+
+    conf_begin(&t, "C-GL.12");
+    if (!bind_display(&t)) {
+        conf_end(&t);
+        return;
+    }
+    conf_check(&t, gl->version <= AAR_GL_VERSION_11, "the table version is above AAR_GL_VERSION_11");
+    if (gl->version >= AAR_GL_VERSION_ARRAYS)
+        conf_check(&t, AAR_GL_COVERS(gl, UnlockArrays), "AAR_GL_VERSION_ARRAYS or later but the size does not cover UnlockArrays");
+    if (gl->version >= AAR_GL_VERSION_11) {
+        conf_check(&t, AAR_GL_COVERS(gl, PopAttrib), "AAR_GL_VERSION_11 but the size does not cover PopAttrib");
+        conf_check(&t, gl->size >= (uint32_t)sizeof(aar_gl), "AAR_GL_VERSION_11 but the size is below sizeof(aar_gl)");
+    } else {
+        conf_check(&t, !AAR_GL_COVERS(gl, ClearDepth), "a version below AAR_GL_VERSION_11 covers the fields of 11");
+    }
+    conf_buf_str(&t.note, "version ");
+    conf_buf_u64(&t.note, gl->version);
+    conf_buf_str(&t.note, ", size ");
+    conf_buf_u64(&t.note, gl->size);
+    unbind_display();
+    conf_end(&t);
+}
+
+static const float ident_f[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+static const double ident_d[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+static const float vec4[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
+static const float normals[3] = { 0.0f, 0.0f, 1.0f };
+static const double plane[4] = { 0.0, 0.0, 1.0, 1.0 };
+
+/* Records the first call that left a GL error. */
+static void gl_step(struct conf_test *t, const char *name)
+{
+    uint32_t e = glGetError();
+
+    if (e != GL_NO_ERROR && conf_fail_first(t)) {
+        conf_buf_str(&t->why, name);
+        conf_buf_str(&t->why, " with valid arguments left glGetError at ");
+        conf_buf_hex(&t->why, e);
+    }
+}
+
+/* C-GL.13: every field of AAR_GL_VERSION_11 can be called with valid arguments: a present one works and leaves
+ * no error, an absent one is a no-op. */
+static void test_v11_calls(void)
+{
+    struct conf_test t;
+    double d[4];
+    uint8_t b[4];
+    int32_t i = 0;
+    uint32_t list;
+
+    conf_begin(&t, "C-GL.13");
+    if (!bind_display(&t)) {
+        conf_end(&t);
+        return;
+    }
+    (void)glGetError();
+#define STEP(name, call) do { call; gl_step(&t, name); } while (0)
+    STEP("glClearDepth", glClearDepth(1.0));
+    STEP("glColorMask", glColorMask(1, 1, 1, 1));
+    STEP("glPolygonOffset", glPolygonOffset(0.0f, 0.0f));
+    STEP("glStencilFunc", glStencilFunc(GL_ALWAYS, 0, 0xFFFFFFFFu));
+    STEP("glStencilOp", glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP));
+    STEP("glStencilMask", glStencilMask(0xFFFFFFFFu));
+    STEP("glClearStencil", glClearStencil(0));
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    STEP("glMultMatrixf", glMultMatrixf(ident_f));
+    STEP("glLoadMatrixd", glLoadMatrixd(ident_d));
+    STEP("glMultMatrixd", glMultMatrixd(ident_d));
+    STEP("glGetDoublev", glGetDoublev(GL_DEPTH_CLEAR_VALUE, d));
+    STEP("glGetBooleanv", glGetBooleanv(GL_COLOR_WRITEMASK, b));
+    STEP("glActiveTextureARB", glActiveTextureARB(GL_TEXTURE0_ARB));
+    STEP("glMultiTexCoord2fARB", glMultiTexCoord2fARB(GL_TEXTURE0_ARB, 0.0f, 0.0f));
+    STEP("glMultiTexCoord2fvARB", glMultiTexCoord2fvARB(GL_TEXTURE0_ARB, vec4));
+    STEP("glNormal3f", glNormal3f(0.0f, 0.0f, 1.0f));
+    STEP("glNormal3fv", glNormal3fv(normals));
+    STEP("glNormalPointer", glNormalPointer(GL_FLOAT, 0, normals));
+    STEP("glLightf", glLightf(GL_LIGHT0, GL_SPOT_EXPONENT, 1.0f));
+    STEP("glLightfv", glLightfv(GL_LIGHT0, GL_POSITION, vec4));
+    STEP("glLightModelf", glLightModelf(GL_LIGHT_MODEL_TWO_SIDE, 0.0f));
+    STEP("glLightModelfv", glLightModelfv(GL_LIGHT_MODEL_AMBIENT, vec4));
+    STEP("glLightModeli", glLightModeli(GL_LIGHT_MODEL_TWO_SIDE, 0));
+    STEP("glMaterialf", glMaterialf(GL_FRONT, GL_SHININESS, 10.0f));
+    STEP("glMaterialfv", glMaterialfv(GL_FRONT, GL_DIFFUSE, vec4));
+    STEP("glColorMaterial", glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE));
+    STEP("glFogf", glFogf(GL_FOG_DENSITY, 0.5f));
+    STEP("glFogfv", glFogfv(GL_FOG_COLOR, vec4));
+    STEP("glFogi", glFogi(GL_FOG_MODE, (int32_t)GL_LINEAR));
+    STEP("glLineWidth", glLineWidth(1.0f));
+    STEP("glPointSize", glPointSize(1.0f));
+    glBegin(GL_POINTS);
+    glColor3ub(255, 0, 0);
+    glTexCoord2i(0, 0);
+    glVertex2i(1, 1);
+    glVertex2fv(vec4);
+    glEnd();
+    gl_step(&t, "glColor3ub, glTexCoord2i, glVertex2i and glVertex2fv between glBegin and glEnd");
+    STEP("glRectf", glRectf(0.0f, 0.0f, 0.5f, 0.5f));
+    STEP("glGetTexLevelParameteriv", glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &i));
+    STEP("glIsTexture", (void)glIsTexture(0));
+    STEP("glClipPlane", glClipPlane(GL_CLIP_PLANE0, plane));
+    list = glGenLists(1);
+    gl_step(&t, "glGenLists");
+    STEP("glNewList", glNewList(list, GL_COMPILE));
+    STEP("glEndList", glEndList());
+    STEP("glCallList", glCallList(list));
+    STEP("glCallLists", glCallLists(1, GL_UNSIGNED_INT, &list));
+    STEP("glListBase", glListBase(0));
+    STEP("glDeleteLists", glDeleteLists(list, 1));
+    STEP("glTexEnvfv", glTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, vec4));
+    STEP("glPushAttrib", glPushAttrib(GL_ENABLE_BIT));
+    STEP("glPopAttrib", glPopAttrib());
+#undef STEP
+    conf_buf_str(&t.note, "the entries of AAR_GL_VERSION_11 take valid arguments and leave no GL error");
+    unbind_display();
+    conf_end(&t);
+}
+
+/* C-GL.14: the stencil depth is reported, 0 for none. */
+static void test_stencil_bits(void)
+{
+    struct conf_test t;
+    int32_t bits = -1;
+
+    conf_begin(&t, "C-GL.14");
+    if (!bind_display(&t)) {
+        conf_end(&t);
+        return;
+    }
+    (void)glGetError();
+    glGetIntegerv(GL_STENCIL_BITS, &bits);
+    conf_check(&t, glGetError() == GL_NO_ERROR, "glGetIntegerv(GL_STENCIL_BITS) left a GL error");
+    conf_check(&t, bits >= 0 && bits <= 32, "GL_STENCIL_BITS is not 0 to 32");
+    /* With no stencil buffer the calls have no effect and raise no error. */
+    glStencilFunc(GL_ALWAYS, 0, 0xFFFFFFFFu);
+    glStencilMask(0xFFFFFFFFu);
+    conf_check(&t, glGetError() == GL_NO_ERROR, "the stencil calls left a GL error");
+    conf_buf_str(&t.note, "stencil bits ");
+    conf_buf_i64(&t.note, bits);
+    unbind_display();
+    conf_end(&t);
+}
+
+/* C-GL.15: state that the fields of AAR_GL_VERSION_11 can be read back through, for the fields that are present. */
+static void test_v11_state(void)
+{
+    struct conf_test t;
+    double d = -1.0;
+    uint8_t b[4] = { 9, 9, 9, 9 };
+    float f = -1.0f;
+    uint32_t tex = 0;
+    uint32_t first;
+    uint32_t checked = 0;
+
+    conf_begin(&t, "C-GL.15");
+    if (!bind_display(&t)) {
+        conf_end(&t);
+        return;
+    }
+    if (AAR_GL_COVERS(gl, GetDoublev) && gl->ClearDepth && gl->GetDoublev) {
+        glClearDepth(0.25);
+        glGetDoublev(GL_DEPTH_CLEAR_VALUE, &d);
+        conf_check(&t, d == 0.25, "GL_DEPTH_CLEAR_VALUE is not the 0.25 that glClearDepth set");
+        glClearDepth(1.0);
+        checked++;
+    }
+    if (AAR_GL_COVERS(gl, GetBooleanv) && gl->ColorMask && gl->GetBooleanv) {
+        glColorMask(1, 0, 1, 0);
+        glGetBooleanv(GL_COLOR_WRITEMASK, b);
+        conf_check(&t, b[0] == 1u && b[1] == 0u && b[2] == 1u && b[3] == 0u,
+                   "GL_COLOR_WRITEMASK is not the mask that glColorMask set");
+        glColorMask(1, 1, 1, 1);
+        checked++;
+    }
+    if (AAR_GL_COVERS(gl, LineWidth) && gl->LineWidth && gl->GetFloatv) {
+        glLineWidth(2.0f);
+        glGetFloatv(GL_LINE_WIDTH, &f);
+        conf_check(&t, f == 2.0f, "GL_LINE_WIDTH is not the 2 that glLineWidth set");
+        glLineWidth(1.0f);
+        checked++;
+    }
+    if (AAR_GL_COVERS(gl, PointSize) && gl->PointSize && gl->GetFloatv) {
+        glPointSize(3.0f);
+        glGetFloatv(GL_POINT_SIZE, &f);
+        conf_check(&t, f == 3.0f, "GL_POINT_SIZE is not the 3 that glPointSize set");
+        glPointSize(1.0f);
+        checked++;
+    }
+    if (AAR_GL_COVERS(gl, IsTexture) && gl->IsTexture) {
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        conf_check(&t, glIsTexture(tex) != 0u, "glIsTexture is false for a bound texture name");
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glDeleteTextures(1, &tex);
+        conf_check(&t, glIsTexture(tex) == 0u, "glIsTexture is true for a deleted texture name");
+        checked++;
+    }
+    if (AAR_GL_COVERS(gl, GenLists) && gl->GenLists && gl->DeleteLists) {
+        first = glGenLists(2);
+        conf_check(&t, first != 0u, "glGenLists(2) returned 0");
+        glDeleteLists(first, 2);
+        checked++;
+    }
+    conf_check(&t, glGetError() == GL_NO_ERROR, "the calls left a GL error");
+    conf_buf_u64(&t.note, checked);
+    conf_buf_str(&t.note, " state checks on the entries that are present");
+    unbind_display();
+    conf_end(&t);
+}
+
 int aar_main(int argc, char **argv)
 {
     have_peer = conf_have_peer(argc, argv);
@@ -618,5 +867,9 @@ int aar_main(int argc, char **argv)
     test_matrix();
     test_doubles();
     test_isolated_draw();
+    test_v11_table();
+    test_v11_calls();
+    test_stencil_bits();
+    test_v11_state();
     return conf_finish("C-GL");
 }

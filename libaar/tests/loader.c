@@ -309,8 +309,8 @@ static int app_file_seek(int id, int64_t off, int whence, int64_t *out_pos)
     return AAR_OK;
 }
 
-/* Protection bits that the host's mode cannot hold (archive, pure, script,
- * hold), kept per path. */
+/* Protection bits that the host's mode cannot hold (delete, archive, pure,
+ * script, hold), kept per path. */
 #define EXTRA_MAX 16
 static struct { char path[300]; uint32_t bits; } extras[EXTRA_MAX];
 
@@ -477,7 +477,7 @@ static int app_file_set_protect(const char *path, uint32_t protect)
         u |= 1;
     if (chmod(full, (u << 6) | ((u & 5u) << 3) | (u & 5u)) != 0)
         return aar_error();
-    extra_set(path, protect & 0xf0u);
+    extra_set(path, protect & (0xf0u | AAR_PROT_DELETE));
     return AAR_OK;
 }
 
@@ -585,7 +585,7 @@ static int app_env_get(const char *name, char *buf, uint32_t bytes, uint32_t *ou
     return AAR_OK;
 }
 
-/* The clipboard: a few (unit, type) slots in memory. */
+/* The clipboard: a few units in memory, each holding one clip of one type. */
 #define CLIP_SLOTS 4
 static struct { int used; uint32_t unit, type; uint8_t *data; uint32_t size; } clips[CLIP_SLOTS];
 
@@ -602,7 +602,9 @@ static int app_clip_read(uint32_t unit, uint32_t type, void *buf, uint32_t bytes
     if (!clip_args(unit, type))
         return AAR_E_INVAL;
     for (i = 0; i < CLIP_SLOTS; i++) {
-        if (clips[i].used && clips[i].unit == unit && clips[i].type == type) {
+        if (clips[i].used && clips[i].unit == unit) {
+            if (clips[i].type != type)
+                return AAR_E_NOENT;
             *out_n = clips[i].size;
             if (clips[i].size == 0)
                 return AAR_E_NOENT;
@@ -621,7 +623,7 @@ static int app_clip_write(uint32_t unit, uint32_t type, const void *data, uint32
     if (!clip_args(unit, type))
         return AAR_E_INVAL;
     for (i = 0; i < CLIP_SLOTS; i++) {
-        if (clips[i].used && clips[i].unit == unit && clips[i].type == type) {
+        if (clips[i].used && clips[i].unit == unit) {
             slot = i;
             break;
         }

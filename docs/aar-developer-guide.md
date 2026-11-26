@@ -547,6 +547,38 @@ program run:
   The path rules of the client apply. For a directory use `aar_file_list_open`,
   `aar_file_list_next` and `aar_file_list_close`, and for a path use
   `aar_file_stat`, which reports a 64-bit size.
+  `stat` and `fstat` also give permission bits: the owner's read, write and
+  execute bits are set when `AAR_PROT_READ`, `AAR_PROT_WRITE` and
+  `AAR_PROT_EXECUTE` are clear in `aar_stat.protect`, and group and other get
+  the owner's read and execute bits. A file made with default AmigaDOS bits
+  therefore shows 0755.
+- Changing files and directories uses the calls of API 0.6 and needs a client
+  that serves them (`errno` is `ENOSYS` when it does not). `unlink` and `remove`
+  delete a file or an empty directory; a directory that is not empty is
+  `ENOTEMPTY`. `rename` replaces an existing target, as POSIX says, through
+  `AAR_RENAME_REPLACE`. AmigaDOS has no atomic replace, so the client deletes
+  the target and then renames, and a failure in between loses the target; a
+  rename across volumes is `EINVAL`. `mkdir` ignores its mode, `rmdir` refuses
+  a file with `ENOTDIR`, `ftruncate` and `truncate` shorten a file or extend it
+  with zero bytes, and `utime` and `utimes` set the modification time. `chmod`
+  maps the owner's read, write and execute bits to the AmigaDOS bits, which
+  deny when set: a mode without write also denies delete, and the archive,
+  pure, script and hold bits stay as they were. Group, other, set-id and
+  sticky bits have no meaning and are ignored. Newlib's `<utime.h>` has no
+  prototype for `utime`; declare it yourself or use `utimes`. `link`, `fchmod`,
+  `futimes`, `symlink`, `readlink` and `fsync` are not provided and fail to
+  link.
+- Time: `gettimeofday` and `time` read the wall clock through
+  `aar_time_unix_us`, in UTC (set `TZ` for `localtime`). `clock` and `times`
+  count `aar_time_us` from the start of the program, all of it as user time.
+- The environment: `getenv`, `setenv`, `unsetenv` and `putenv` use a table
+  inside the app. `getenv` asks the client (`aar_env_get`, the `ENV:`
+  variables) the first time it sees a name and keeps the answer, so the
+  pointer it returns stays valid until that name is set or unset and later
+  changes on the Amiga are not seen. `setenv`, `unsetenv` and `putenv` change
+  only that table and never the Amiga's variables; `putenv` copies its string.
+  Newlib's own readers of the environment, such as `tzset`, see the same
+  table. `environ` stays empty.
 - `exit` flushes stdio, runs the `atexit` handlers, and ends in `aar_exit`.
 - `aar_alloc(bytes, align)` and `aar_free(p)` are `malloc` with an alignment.
   Shared memory is `aar_shared_alloc`, and the two allocators do not mix.

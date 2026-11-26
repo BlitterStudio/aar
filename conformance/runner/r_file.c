@@ -346,6 +346,32 @@ static LONG fx_size(const char *name)
     return size;
 }
 
+/* Date (days since 1978-01-01) and protection bits of a file in the fixture directory. Returns 0, or -1 when
+ * the file is missing. */
+static int fx_stamp(const char *name, LONG *days, LONG *prot)
+{
+    char path[256];
+    struct FileInfoBlock *fib;
+    BPTR lock;
+    int rc = -1;
+
+    if (!fx_path(path, sizeof path, name))
+        return -1;
+    lock = Lock((STRPTR)path, SHARED_LOCK);
+    if (!lock)
+        return -1;
+    fib = AllocDosObject(DOS_FIB, NULL);
+    if (fib && Examine(lock, fib)) {
+        *days = (LONG)fib->fib_Date.ds_Days;
+        *prot = (LONG)fib->fib_Protection;
+        rc = 0;
+    }
+    if (fib)
+        FreeDosObject(DOS_FIB, fib);
+    UnLock(lock);
+    return rc;
+}
+
 /* The payload runs create, truncate and write after the stop request. A stop
  * ends a parked call with AAR_E_IO whatever the client then does with the
  * request, so the payload's codes prove nothing: the files do. The payload prints
@@ -369,6 +395,25 @@ static void on_end(const struct conf_run *run, const struct conf_outcome *out,
         conf_record(id, 0, "a truncate after the stop request emptied a file");
     else if (fx_size("stopw.tmp") != 0)
         conf_record(id, 0, "a write after the stop request put bytes in a file");
+    /* The calls of API 0.6 after the stop request (the payload's second stop row): the objects they were
+     * aimed at must be as the payload left them. */
+    snprintf(id, sizeof id, "C-FILE.%d", 49);
+    if (fx_size("stopold.tmp") >= 0 || fx_size("stopnew.tmp") >= 0) {
+        LONG days = 0, prot = 0;
+
+        if (fx_size("stopdel.tmp") != 5)
+            conf_record(id, 0, "a delete after the stop request removed a file");
+        else if (fx_size("stopold.tmp") != 5 || fx_size("stopnew.tmp") >= 0)
+            conf_record(id, 0, "a rename after the stop request moved a file");
+        else if (fx_size("stopdir.tmp") >= 0)
+            conf_record(id, 0, "a dir_create after the stop request made a directory");
+        else if (fx_stamp("stopdate.tmp", &days, &prot) != 0 || days == (LONG)CONF_FILE_DATE_DAYS)
+            conf_record(id, 0, "a set_date after the stop request changed the date of a file");
+        else if (fx_stamp("stopprot.tmp", &days, &prot) != 0 || (prot & 0x0FL) != 0)
+            conf_record(id, 0, "a set_protect after the stop request changed the protection of a file");
+        else if (fx_size("stoptr.tmp") != 5)
+            conf_record(id, 0, "a truncate after the stop request changed the length of a file");
+    }
 }
 
 static const struct conf_peer peers[] = {

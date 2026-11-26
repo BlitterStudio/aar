@@ -5,8 +5,12 @@
  * (pixel memory that it names with AARSharedToken), so it reads every frame the app
  * presents. conf_msg.h has the message helpers.
  *
- * Variants (conf:variant=<name>): std (every row but the operator row), picture (the
- * operator row C-DISPLAY.17, only with INTERACTIVE and the built-in screen).
+ * Variants (conf:variant=<name>): std (the rows that the runner's display table can judge),
+ * window (the display calls of API 0.6, against the client's own display), picture, pointer and
+ * resize (the operator rows C-DISPLAY.17, C-DISPLAY.30 and C-DISPLAY.31, only with INTERACTIVE and
+ * the built-in screen). The variant resize reports each resize it answered to the runner as a
+ * message that starts with "RSZ" (a = width, b = height), "RSZBAD" for a refused resize and "NOCP"
+ * when the display did not grant AAR_DISPCAP_RESIZE.
  *
  * SPDX-License-Identifier: MIT
  */

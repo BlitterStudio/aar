@@ -191,6 +191,89 @@ static void test_sleep_ceiling(void)
     conf_end(&t);
 }
 
+/* The AmigaDOS epoch, 1978-01-01, in Unix microseconds: 2922 days after 1970-01-01. */
+#define AMIGA_EPOCH_US (2922 * 86400 * (int64_t)1000000)
+
+/* C-TIME.10: wall-clock time is not before the AmigaDOS epoch, because the client builds it from
+ * DateStamp plus 2922 days (spec 7.3). A client that does not serve the call answers AAR_E_NOSYS,
+ * which this row accepts. */
+static void test_unix_epoch(void)
+{
+    struct conf_test t;
+    int64_t us = 0;
+    int rc;
+
+    conf_begin(&t, "C-TIME.10");
+    rc = aar_time_unix_us(&us);
+    if (rc == AAR_E_NOSYS) {
+        conf_buf_str(&t.note, "AAR_E_NOSYS, the client does not serve time_unix_us");
+    } else if (rc != AAR_OK) {
+        if (conf_fail_first(&t)) {
+            conf_buf_str(&t.why, "aar_time_unix_us returned ");
+            conf_buf_i64(&t.why, rc);
+        }
+    } else {
+        if (us < AMIGA_EPOCH_US && conf_fail_first(&t)) {
+            conf_buf_str(&t.why, "the time is before 1978-01-01: ");
+            conf_buf_i64(&t.why, us);
+            conf_buf_str(&t.why, " us");
+        }
+        conf_buf_str(&t.note, "unix time ");
+        conf_buf_i64(&t.note, us / 1000000);
+        conf_buf_str(&t.note, " s");
+    }
+    conf_end(&t);
+}
+
+/* C-TIME.11: wall-clock time moves at the rate of the monotonic clock: over a 200 ms sleep the two
+ * differ by less than 150 ms (the client's DateStamp ticks are 20 ms; the clock may step, but not
+ * inside the test). */
+static void test_unix_advances(void)
+{
+    struct conf_test t;
+    int64_t u0 = 0, u1 = 0;
+    uint64_t m0, m1;
+    int64_t du, dm, diff;
+    int rc;
+
+    conf_begin(&t, "C-TIME.11");
+    m0 = aar_time_us();
+    rc = aar_time_unix_us(&u0);
+    if (rc == AAR_E_NOSYS) {
+        conf_buf_str(&t.note, "AAR_E_NOSYS, the client does not serve time_unix_us");
+        conf_end(&t);
+        return;
+    }
+    aar_sleep_us(200000u);
+    if (rc == AAR_OK)
+        rc = aar_time_unix_us(&u1);
+    m1 = aar_time_us();
+    if (rc != AAR_OK) {
+        if (conf_fail_first(&t)) {
+            conf_buf_str(&t.why, "aar_time_unix_us returned ");
+            conf_buf_i64(&t.why, rc);
+        }
+        conf_end(&t);
+        return;
+    }
+    du = u1 - u0;
+    dm = (int64_t)(m1 - m0);
+    diff = du > dm ? du - dm : dm - du;
+    if (diff >= 150000 && conf_fail_first(&t)) {
+        conf_buf_str(&t.why, "the wall clock moved ");
+        conf_buf_i64(&t.why, du);
+        conf_buf_str(&t.why, " us while the monotonic clock moved ");
+        conf_buf_i64(&t.why, dm);
+        conf_buf_str(&t.why, " us");
+    }
+    conf_buf_str(&t.note, "wall clock ");
+    conf_buf_i64(&t.note, du);
+    conf_buf_str(&t.note, " us, monotonic ");
+    conf_buf_i64(&t.note, dm);
+    conf_buf_str(&t.note, " us");
+    conf_end(&t);
+}
+
 /* C-TIME.5: a stop request ends a long sleep early (spec 3.7). The runner is the
  * peer: it stops the app when it gets the keyword message. This test and C-TIME.9 come
  * last, because the app is on its way out afterwards. */
@@ -275,6 +358,8 @@ int aar_main(int argc, char **argv)
     test_resolution();
     test_sleep_floor();
     test_sleep_ceiling();
+    test_unix_epoch();
+    test_unix_advances();
     test_sleep_stop(argc, argv);
     test_sleep_pending(argc, argv);
     return conf_finish("C-TIME");

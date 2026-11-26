@@ -1,7 +1,7 @@
 # AAR conformance catalogue
 
-Suite version: 0.1
-Specification: AAR API 0.5 (draft), section 11
+Suite version: 0.2
+Specification: AAR API 0.6 (draft), section 11
 
 One row per test id. The runner (`runner/aar-conf.c`) and the payloads
 (`payloads/`) print one `AAR-CONF <id> PASS|FAIL|SKIP <detail>` line per id; the
@@ -318,9 +318,23 @@ path) and checks the files the payload leaves behind.
 | C-FILE.32 | 7.1 | MAY | core | any | none | todo | not tested: a platform MAY return `AAR_E_NOSYS` from `aar_map_file` (accepted by C-FILE.29) |
 | C-FILE.33 | 7.1 | MUST | core | any | none | todo | not tested: AmigaDOS has no atomic exclusive create; the check-then-create in the serving loop is only exclusive among the apps one client serves; C-FILE.13 tests what the standard promises |
 | C-FILE.34 | 7.1 | MUST | zz9000 | any | none | todo | not tested: mapping `READ`, `WRITE`, `CREATE` and `TRUNCATE` onto AmigaDOS open modes is an implementation detail of the reference serving loop; its effects are C-FILE.9 to C-FILE.13 |
-| C-FILE.35 | 3.8 | MUST | core | any | none | todo | not tested: `fopen`, `O_CREAT`, `O_TRUNC`, `O_EXCL`, `O_APPEND` and `EOVERFLOW` in the libc glue belong to libaar, tested by `libaar/tests/runtime_test.sh` |
+| C-FILE.35 | 3.8 | MUST | core | any | none | todo | not tested: `fopen`, `O_CREAT`, `O_TRUNC`, `O_EXCL`, `O_APPEND`, `EOVERFLOW`, and the libc functions over the calls of API 0.6 (`unlink`, `remove`, `rename`, `mkdir`, `rmdir`, `ftruncate`, `truncate`, `chmod`, `utime`, `utimes`, `stat` and `fstat` permission bits, `getenv`, `setenv`, `time`, `gettimeofday`, `clock`) belong to libaar, tested by `libaar/tests/runtime_test.sh` |
 | C-FILE.36 | 7.1 | SHOULD | core | any | none | todo | not tested: "a short write means the client stopped early; the caller may retry" is advice to the caller; the stop case is C-FILE.6 |
 | C-FILE.37 | 7.1 | MUST | core | any | payload | yes | a write through an id opened `AAR_FILE_READ` and a read through an id opened `AAR_FILE_WRITE` are `AAR_E_BADF`, and the file's bytes are unchanged afterwards (the payload reads the file back; spec 7.1, 3.5) |
+| C-FILE.38 | 7.1 | MUST | core | any | payload | yes | `file_delete` removes a file and an empty directory (a later stat is `AAR_E_NOENT`); a missing path is `AAR_E_NOENT`; a directory that is not empty is `AAR_E_EXIST` and it and its file stay. `AAR_E_NOSYS` from a client that does not serve the call is accepted by this row and by C-FILE.39 to C-FILE.47, and C-FILE.48 judges it |
+| C-FILE.39 | 7.1 | MUST | core | any | payload | yes | a file with `AAR_PROT_DELETE` set by `file_set_protect` is refused by `file_delete` with `AAR_E_ACCES` and stays; with the bit cleared it is deleted |
+| C-FILE.40 | 7.1 | MUST | core | any | payload | yes | `file_delete` of a file that the app has open for writing is `AAR_E_BUSY` and the file stays (host build: `SKIP host:`, because a POSIX host deletes open files) |
+| C-FILE.41 | 7.1 | MUST | core | any | payload | yes | `file_rename` moves a file (the old name is `AAR_E_NOENT`, the new name has the 100 bytes) and a directory; with `AAR_RENAME_REPLACE` an existing target is replaced by the source's bytes |
+| C-FILE.42 | 7.1 | MUST | core | any | payload | yes | `file_rename` onto an existing file without `AAR_RENAME_REPLACE` is `AAR_E_EXIST` and changes neither file; a missing source is `AAR_E_NOENT` with or without the flag; a flag bit other than `AAR_RENAME_REPLACE` (bits 1 and 31) is `AAR_E_INVAL` and moves nothing |
+| C-FILE.43 | 7.1 | MUST | core | any | payload | yes | `dir_create` makes a directory (stat mode 2) in which a file can be made; an existing directory or a file with that name is `AAR_E_EXIST`; a missing parent is `AAR_E_NOENT` and is not made |
+| C-FILE.44 | 7.1 | MUST | core | any | payload | yes | `file_set_date` to 1000000000 and to 1500000000 gives that `mtime` in stat, for a file and for a directory; a date before the filesystem's epoch (0) is `AAR_OK` or `AAR_E_INVAL`; a missing path is `AAR_E_NOENT` |
+| C-FILE.45 | 7.1 | MUST | core | any | payload | yes | stat reports `protect` within bits 0 to 7; `file_set_protect` with `AAR_PROT_ARCHIVE` and `AAR_PROT_SCRIPT` is reported back, `AAR_PROT_WRITE` and `AAR_PROT_DELETE` (bits 0 to 3 deny) are reported back and cleared by 0; a bit above bit 7 is `AAR_E_INVAL`; a missing path is `AAR_E_NOENT` |
+| C-FILE.46 | 7.1 | MUST | core | any | payload | yes | `file_truncate` of an id opened for writing shortens the file, extends it with zero bytes (checked by reading it back) and truncates to 0; an id opened with `AAR_FILE_READ` only, -1 and 999 are `AAR_E_BADF` |
+| C-FILE.47 | 7.1 | MUST | core | any | payload | yes | `volume_info` of a path in the root: `block_bytes` and `total_bytes` above 0, `free_bytes` not above `total_bytes`, only `AAR_VOLF_READONLY` in `flags`, `reserved` 0, the bytes past the structure inside `size` zeroed, and with a `size` of 8 nothing past byte 8 is written; a missing path is `AAR_E_NOENT` |
+| C-FILE.48 | 7.1 | SHOULD | core | any | payload | yes | the client serves the seven file calls of API 0.6: none of `file_delete`, `file_rename`, `dir_create`, `file_set_date`, `file_set_protect`, `file_truncate` and `volume_info` answers `AAR_E_NOSYS` (spec 7.1 allows it for a client that does not serve them, so this is a SHOULD) |
+| C-FILE.49 | 7.1 | MUST | core | any | payload | yes | after the client asked the app to stop, `file_delete`, `file_rename`, `dir_create`, `file_set_date`, `file_set_protect` and `file_truncate` give negative codes and the runner finds, when the app has ended, the file still there, the old name still the only name, no new directory, the date and the protection unchanged and the length still 5 (the same judgement as C-FILE.6) |
+| C-FILE.50 | 7.1 | MUST | core | any | none | todo | not tested: a `file_rename` across volumes is `AAR_E_INVAL` and `AAR_VOLF_READONLY` marks a volume that cannot be written; both need a second or a write-protected volume, which a conformance run does not have |
+| C-FILE.51 | 7.1 | MUST | core | any | none | todo | not tested: `AAR_RENAME_REPLACE` deletes the target and then renames, which is not atomic on AmigaDOS (spec 7.1); a failure between the two steps is not something an app can provoke; a rename of a name onto itself with the flag is left out [spec question 67] |
 
 ## C-CON: console and log (section 7.2, 10.4)
 
@@ -352,9 +366,43 @@ runs on the host runner and under qemu user mode.
 | C-TIME.4 | 7.3 | SHOULD | core | any | payload | yes | an app alone: a sleep takes no more than `us` plus four sleep granules (at least 1 ms each) plus 10 ms |
 | C-TIME.5 | 3.7 | MUST | core | any | payload | yes | a stop request ends a long sleep early: the payload asks the runner (peer) to stop it, then sleeps 10 s; the sleep must end well before 9 s and `aar_should_stop` must be 1 afterwards. An app that does not leave within `stop_grace_ms` is ended by force and cannot report, so the runner fails the id with end reason `FORCED` (spec 3.7, 7.3). Host build: `SKIP host:` |
 | C-TIME.6 | 7.3 | MUST | core | any | none | todo | not tested: "from an epoch the platform chooses (not wall-clock)" cannot be told from a wall clock that happens to start at zero |
-| C-TIME.7 | 7.3 | MUST | core | any | none | todo | not tested: no wall-clock call is defined in API 0.5; an absence |
+| C-TIME.7 | 7.3 | MUST | core | any | none | todo | not tested: `aar_time_us` is not wall-clock time; the wall clock is `aar_time_unix_us`, judged by C-TIME.10 and C-TIME.11 |
 | C-TIME.8 | 5.4 | MUST | core | any | none | todo | not tested here: `time_us` and `sleep_us` as watchdog activity or declared waits are C-LIFE.15 and C-LIFE.16 |
 | C-TIME.9 | 3.7 | MUST | core | any | payload | yes | a sleep entered with a stop request already pending returns at once: right after C-TIME.5 (`aar_should_stop()` is 1) `aar_sleep_us` of 10 s returns within 1 s (spec 3.7, 7.3). Host build: `SKIP host:` |
+| C-TIME.10 | 7.3 | MUST | core | any | payload | yes | `aar_time_unix_us` returns a time that is not before 1978-01-01 (the client adds 2922 days to `DateStamp`, spec 7.3). `AAR_E_NOSYS` from a client that does not serve the call is accepted, and C-HOST.15 judges it |
+| C-TIME.11 | 7.3 | MUST | core | any | payload | yes | wall-clock time moves with the monotonic clock: across a 200 ms sleep `aar_time_unix_us` and `aar_time_us` differ in elapsed time by less than 150 ms (a `DateStamp` tick is 20 ms; a runtime may answer from a base plus elapsed time) |
+| C-TIME.12 | 7.3 | MAY | core | any | none | todo | not tested: a runtime MAY fetch the time once and answer from that base plus `aar_time_us`; the value can step when the user sets the clock |
+| C-TIME.13 | 3.8 | MUST | core | any | none | todo | not tested: `time`, `gettimeofday`, `clock` and `times` in the libc glue belong to libaar, tested by `libaar/tests/runtime_test.sh` (C-FILE.35) |
+
+## C-HOST: host environment: locale, environment variables, clipboard (section 7.4)
+
+The client serves these core calls (spec 7.4, 9.6). A client that does not serve one answers
+`AAR_E_NOSYS` and may refuse by policy with `AAR_E_ACCES`; both answers pass the rows C-HOST.1
+to C-HOST.14 with a note, and C-HOST.15 judges `AAR_E_NOSYS`. The runner prepares the
+environment variables and the clipboard unit that `payloads/conf_host.h` lists, and is the peer
+of C-HOST.3, C-HOST.7, C-HOST.9, C-HOST.13 and C-HOST.14 (host build: `SKIP host:`; the qemu run
+has the variables of C-HOST.4 to C-HOST.6 and no runner). The suite does not touch clipboard unit
+0: the scratch units are 200 to 202.
+
+| id | spec | level | group | profile | judged by | impl | check |
+|---|---|---|---|---|---|---|---|
+| C-HOST.1 | 7.4 | MUST | core | any | payload | yes | `aar_get_locale_info` fills the record: `language`, `country`, `decimal_point` and `group_separator` are NUL-terminated inside their arrays, `language` has no `.language` suffix, `flags` holds only `AAR_LOCALEF_OFFSET_KNOWN`, `utc_offset_min` is within -1440 to 1440 and `reserved` is 0 |
+| C-HOST.2 | 3.4 | MUST | core | any | payload | yes | the `size` rule for `aar_get_locale_info`: with a `size` larger than the structure the bytes past it, up to `size`, are zeroed and nothing beyond is written; with a `size` of 8 nothing past byte 8 changes (the rule of C-TABLE.11 and C-TABLE.12) |
+| C-HOST.3 | 7.4 | MUST | core | any | payload | yes | the record agrees with the client's locale (runner peer): `utc_offset_min` is `loc_GMTOffset` negated, `language` is `loc_LanguageName` without `.language`, `decimal_point` and `group_separator` are the locale's. The runner answers 2 and the row passes with a note when it cannot open `locale.library` [spec question 68] |
+| C-HOST.4 | 7.4 | MUST | core | any | payload | yes | `aar_env_get` of a global variable of 11 bytes: `AAR_OK` with `*n` 11 and the value NUL-terminated; a `bytes` of 0 and of 11 are `AAR_E_NOSPC` with `*n` 11; a `bytes` of 12 fits |
+| C-HOST.5 | 7.4 | MUST | core | any | payload | yes | a value of 300 bytes: a 64-byte buffer is `AAR_E_NOSPC` with `*n` 300, a buffer of exactly 300 is `AAR_E_NOSPC`, a buffer of 301 holds all 300 bytes, which are the stored ones |
+| C-HOST.6 | 7.4 | MUST | core | any | payload | yes | an unset name is `AAR_E_NOENT`; a name of 0 bytes and a name of 256 bytes are `AAR_E_INVAL`; a name of 255 bytes is not (it is `AAR_E_NOENT`) |
+| C-HOST.7 | 7.4 | MUST | core | any | payload | yes | a variable that is local to another process (the runner's, `GVF_LOCAL_ONLY`) is not in `ENV:` and is `AAR_E_NOENT` (the client reads global variables only, spec 7.4) |
+| C-HOST.8 | 7.4 | MUST | core | any | payload | yes | `aar_clip_write` of text to unit 200 and `aar_clip_read` give it back: `*n` is the text size, a `bytes` of 0 is `AAR_E_NOSPC` with `*n` set, a short buffer gets `min(bytes, *n)` bytes and `AAR_E_NOSPC`, and a second write replaces the first |
+| C-HOST.9 | 7.4 | MUST | core | any | payload | yes | text conversion (host build: `SKIP host:`, because the loader has no character set): a character in ISO-8859-1 (U+00E9) round-trips and one that no Amiga character set has (U+4E2D) is written as `?` |
+| C-HOST.10 | 7.4 | MUST | core | any | payload | yes | `AAR_CLIP_IFF` passes one IFF FORM through unchanged, and a read of `AAR_CLIP_TEXT` from a unit that holds a FORM that is not text is `AAR_E_NOENT` |
+| C-HOST.11 | 7.4 | MUST | core | any | payload | yes | a clip of 70000 bytes, more than one staging buffer of the runtime, is written and read back exactly, as text and as an IFF FORM |
+| C-HOST.12 | 7.4 | MUST | core | any | payload | yes | a unit of 256 or more (`AAR_CLIP_UNITS`) and a type of 0 or 3 are `AAR_E_INVAL` for `aar_clip_read` and `aar_clip_write` |
+| C-HOST.13 | 7.4 | MUST | core | any | payload | yes | what the runner put on clipboard unit 201 as an IFF FTXT in ISO-8859-1 reads as UTF-8 (runner peer) |
+| C-HOST.14 | 7.4 | MUST | core | any | payload | yes | what the app writes to unit 202 is an IFF FTXT on the clipboard, with the text converted to ISO-8859-1 and `?` for U+4E2D (runner peer reads `clipboard.device`) |
+| C-HOST.15 | 7.4 | SHOULD | core | any | payload | yes | the client serves the calls of section 7.4 and 7.3: none of `aar_get_locale_info`, `aar_env_get`, `aar_clip_read` and `aar_time_unix_us` answers `AAR_E_NOSYS` |
+| C-HOST.16 | 7.4 | MAY | core | any | none | todo | not tested: a client MAY refuse any of these calls by policy with `AAR_E_ACCES` |
+| C-HOST.17 | 7.4 | MUST | core | any | none | todo | not tested: an empty clipboard is `AAR_E_NOENT`, and unit 0 is the primary clipboard; a test would change or depend on the user's clipboard, so the suite uses units 200 to 202 and gets `AAR_E_NOENT` from a type mismatch (C-HOST.10) |
 
 ## C-LIFE: lifecycle, faults, watchdog, leases (sections 5.1 to 5.5)
 
@@ -469,6 +517,19 @@ from it; with a real screen the picture is judged by the operator.
 | C-DISPLAY.18 | 8.2 | MAY | display | any | none | todo | not tested: a platform MAY allow more than 4096 in width or height |
 | C-DISPLAY.19 | 9.6 | MUST | display | any | none | todo | not tested: a platform that owns the display buffers may complete a flip itself, so no flip entry is promised; no test may assume one (C-DISPLAY.6 to C-DISPLAY.12 allow both) |
 | C-DISPLAY.20 | 8.2 | MUST | display | any | none | todo | not tested: the app MUST write `back`, flip, then `refresh` before writing again; an obligation of the app |
+| C-DISPLAY.21 | 8.2 | MUST | display | any | payload | yes | variant window: `display_get_info` of the open display reports the surface's `width` and `height`, `flags` of only the three defined bits with `AAR_DISPINFO_WINDOW` and `AAR_DISPINFO_SCALED` agreeing with the caps, a screen size above 0 and `reserved` 0; the bytes past the structure inside `size` are zeroed and with a `size` of 8 nothing past byte 8 changes; an id that is not open, and the id after `display_close`, are `AAR_E_INVAL`. `AAR_E_NOSYS` from a client that does not serve the call is accepted by this row and by C-DISPLAY.22 to C-DISPLAY.26, and C-DISPLAY.29 judges it |
+| C-DISPLAY.22 | 8.2 | MUST | display | any | payload | yes | variant window: `display_modes` needs no open display; every record written has a width and height of at least 1, formats that are a non-empty set of `1u << AAR_FMT_*`, only `AAR_MODEF_PREFERRED` in `flags`, `reserved` 0, at most one preferred mode; `AAR_E_NOSPC` exactly when `*n` exceeds `max`; with `max` 0 the count is the same and the call is `AAR_E_NOSPC` unless there are no modes |
+| C-DISPLAY.23 | 8.2 | MUST | display | any | payload | yes | variant window: `display_set_title` takes a title of 15 bytes, UTF-8 text and a title of 255 bytes, and refuses one of 256 bytes with `AAR_E_INVAL` |
+| C-DISPLAY.24 | 8.2 | MUST | display | any | payload | yes | variant window: `display_pointer` takes `HIDDEN`, `BUSY`, `DEFAULT` with no image, and `CUSTOM` with a 16x16 and a 64x64 image; `CUSTOM` with no image, a width or height of 0 or 65, a hot spot outside the image (`hot_x` 16, `hot_y` -1) and a mode of 4 or 2^32-1 are `AAR_E_INVAL` |
+| C-DISPLAY.25 | 8.2 | MUST | display | any | payload | yes | variant window: `display_resize` on a display opened without `AAR_DISPLAY_RESIZABLE` is `AAR_E_NOSYS`; where `AAR_DISPCAP_RESIZE` is granted, a width or height of 0 or 2^32-1 is `AAR_E_INVAL`, a resize to 200x120 refreshes the surface (that size, same id and format, a writable `back`), a flip then works and `display_get_info` reports the new size |
+| C-DISPLAY.26 | 8.2 | MUST | display | any | payload | yes | variant window: `display_wait_vblank` with no display open is `AAR_E_INVAL` (or `AAR_E_NOSYS`), with a timeout of 0 the same, with 500 ms it returns `AAR_OK` within 600 ms (or `AAR_E_NOSYS`: the client cannot see a vertical blank), and with 1 us it returns `AAR_OK`, `AAR_E_TIMEDOUT` or `AAR_E_NOSYS` within 200 ms |
+| C-DISPLAY.27 | 8.2 | MUST | display | any | payload | yes | `display_last_present_us` is 0 before the first flip; after a flip of the surface (opened with `AAR_DISPLAY_VSYNC`) it is between the time before and the time after the call, and after a second flip it is not smaller and not in the future |
+| C-DISPLAY.28 | 8.2 | MUST | display | any | payload | yes | variant window: `display_open` with each request of API 0.6 alone and with all of them (`AAR_DISPLAY_WINDOW`, `_RESIZABLE`, `_POINTER_ABS`, `_TEXT_INPUT`, `_CLOSE_REQUEST`, `_SCALE`) succeeds; the caps granted are only those that ask for, `caps` has no undefined bit, `AAR_DISPCAP_RESIZE` comes only with `AAR_DISPCAP_WINDOW`, and `AAR_DISPLAY_RESIZABLE` alone does not get `AAR_DISPCAP_RESIZE` |
+| C-DISPLAY.29 | 8.2 | SHOULD | display | any | payload | yes | variant window: the client serves the display calls of API 0.6 that need no cap: none of `display_info`, `display_modes`, `display_set_title`, `display_pointer` and `display_wait_vblank` answers `AAR_E_NOSYS` (spec 8.2 allows it, so this is a SHOULD) |
+| C-DISPLAY.30 | 8.2 | SHOULD | display | any | operator | yes | the title and the pointer: a window titled "AAR conformance: title and pointer" shows a gradient for 12 seconds, and the pointer over it is the normal one, then hidden, then the busy pointer, then a red square with a black frame, three seconds each (variant pointer, the client's own display) |
+| C-DISPLAY.31 | 8.2 | SHOULD | display | any | operator | yes | resizing by hand: the window titled "AAR conformance: resize me" opens with `AAR_DISPLAY_RESIZABLE`; the operator drags its corner a few times, the app answers each `AAR_EV_RESIZE` with `display_resize` and redraws, and the gradient fills the new size. The yes needs a resize the app answered (variant resize; the display must grant `AAR_DISPCAP_RESIZE`) |
+| C-DISPLAY.32 | 8.2 | MUST | display | any | none | todo | not tested: a scaled surface keeps its aspect ratio (`AAR_DISPLAY_SCALE`) and a close request replaces the stop that the close gadget sends (`AAR_DISPLAY_CLOSE_REQUEST`); both need a person and the platform's windows, and C-DISPLAY.28 and C-INPUT.17 cover the caps and the events |
+| C-DISPLAY.33 | 8.2 | MUST | display | any | none | todo | not tested: `display_resize` is `AAR_E_BUSY` while a flip is pending; a client that completes a flip at once never shows the state, and the runner's display table is not granted `AAR_DISPCAP_RESIZE` |
 
 ## C-INPUT: events and input (sections 8.3, 9.6, 10.4)
 
@@ -488,6 +549,11 @@ from it; with a real screen the picture is judged by the operator.
 | C-INPUT.12 | 8.3 | MAY | input | any | none | todo | not tested: the client MAY coalesce mouse motion when the queue is full (C-INPUT.10 allows both) |
 | C-INPUT.13 | 8.3 | MUST | input | any | none | todo | not tested: "the runtime keeps at least 64 events" beyond the completion queue's own 64 entries is internal; the outcome is C-INPUT.8 |
 | C-INPUT.14 | 8.3 | MUST | core | any | none | todo | not tested: an idle app uses `msg_wait`, `sleep_us` or `yield` and not a spin; advice to apps |
+| C-INPUT.15 | 8.3 | MUST | input | any | payload | yes | the events of API 0.6 posted with `AARPostEvent` arrive in order and unchanged: `AAR_EV_TEXT` (type 9, code U+00E9, qualifier in `buttons`), `AAR_EV_WHEEL` (10, `dx` 2, `dy` -3), `AAR_EV_CLOSE_REQUEST` (11), `AAR_EV_ACTIVE` (12) with code 1 and with code 0, `time_ms` included |
+| C-INPUT.16 | 8.3 | MUST | input | any | payload | yes | absolute mouse events while the queue is full (runner peer): after 100 key events the runner posts 20 events with `AAR_MOUSE_ABSOLUTE` in `buttons` and positions (10 i, 5 i) with no retry; every absolute event the app gets is one of those positions with the flag still set (the merge keeps the latest position and never sums), and the last one is the last post the client accepted (spec 8.3) |
+| C-INPUT.17 | 8.3 | SHOULD | input | any | operator | yes | real devices follow the rules of spec 8.3: the app opens a window with `AAR_DISPLAY_POINTER_ABS` and `AAR_DISPLAY_TEXT_INPUT` for 20 seconds, the operator presses each mouse button, turns the wheel and types; a mouse event has code 0 to 3, a text event a code of 1 to 65535, a focus event code 0 or 1, and when wheel events arrive the wheel's raw keys 0x7A to 0x7D do not also arrive as keys. The yes needs a mouse button, wheel or text event as evidence |
+| C-INPUT.18 | 8.3 | MUST | core | any | none | todo | not tested: "an app MUST ignore an event type it does not know" is an obligation of the app; the payloads skip types they did not ask for |
+| C-INPUT.19 | 8.3 | MUST | input | any | none | todo | not tested: that `AAR_EV_TEXT`, `AAR_EV_CLOSE_REQUEST` and the absolute position are sent only with the caps that ask for them depends on the client's input source; C-INPUT.17 shows the real events and C-DISPLAY.28 the caps |
 
 ## C-AUDIO: audio group (sections 8.4, 9.6)
 
@@ -522,8 +588,8 @@ matrix cases map onto C-GL.6.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
-| C-GL.1 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_bind` of an open surface returns a table with `size` and `version` set, `version` `AAR_GL_VERSION_V0` or `AAR_GL_VERSION_ARRAYS` |
-| C-GL.2 | 8.5 | MUST | gl | any | payload | yes | every slot of the table that `size` covers up to `Build2DMipmaps` is non-NULL; with `AAR_GL_VERSION_ARRAYS` the array entries are non-NULL too; fields past `Build2DMipmaps` are used only when `AAR_GL_COVERS` says so |
+| C-GL.1 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_bind` of an open surface returns a table with `size` and `version` set, `version` `AAR_GL_VERSION_V0`, `AAR_GL_VERSION_ARRAYS` or `AAR_GL_VERSION_11` |
+| C-GL.2 | 8.5 | MUST | gl | any | payload | yes | every slot of the table that `size` covers up to `Build2DMipmaps` is non-NULL; with `AAR_GL_VERSION_ARRAYS` or later the array entries are non-NULL too; fields past `Build2DMipmaps` are used only when `AAR_GL_COVERS` says so |
 | C-GL.3 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_bind` with an id that is not an open surface returns NULL |
 | C-GL.4 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_unbind` releases the context; a new bind works |
 | C-GL.5 | 8.5 | MUST | gl | any | payload | yes | `aar_gl_swap` flushes and gives the frame to the platform to copy and flip: a cleared colour is read by the client's display table after the swap, or after up to two further swaps of the same picture (at most two swapped frames are in flight, spec 8.5; runner peer) |
@@ -533,6 +599,11 @@ matrix cases map onto C-GL.6.
 | C-GL.9 | 8.5 | MUST | gl | any | none | todo | not tested: integer parameters are `int32_t` and `uint32_t`; the matrix and header checks cover the widths |
 | C-GL.10 | 8.5 | MUST | gl | any | none | todo | not tested: debug bind flags are not part of the standard (ZZ9000 extension, 8.8); tested only through C-TABLE.23 |
 | C-GL.11 | 8.5 | MUST | gl | any | none | todo | not tested: the `gl*` wrappers forward to the table that `aar_gl_bind` returned (libaar, 3.8) |
+| C-GL.12 | 8.5 | MUST | gl | any | payload | yes | the table's `version` is at most `AAR_GL_VERSION_11`; from `AAR_GL_VERSION_ARRAYS` on `size` covers `UnlockArrays`; with `AAR_GL_VERSION_11` it covers `PopAttrib` and is at least `sizeof(aar_gl)` (123 slots), and with a lower version it does not cover `ClearDepth` |
+| C-GL.13 | 8.5 | MUST | gl | any | payload | yes | the 51 fields of `AAR_GL_VERSION_11` take valid arguments through their wrappers (`glClearDepth` to `glPopAttrib`, spec 8.5 order) and each leaves `glGetError` at `GL_NO_ERROR`; a field the renderer lacks is NULL and its wrapper is a no-op, so the row holds on a platform that has some of them; `glCopyTexImage2D` and `glCopyTexSubImage2D` are not called (they need a drawn frame) |
+| C-GL.14 | 8.5 | MUST | gl | any | payload | yes | `glGetIntegerv(GL_STENCIL_BITS)` returns 0 to 32 with no GL error, and the stencil calls with no stencil buffer (0 bits) leave no error (spec 8.5: the stencil buffer is not promised) |
+| C-GL.15 | 8.5 | MUST | gl | any | payload | yes | for the fields that are present: `glClearDepth(0.25)` reads back through `glGetDoublev(GL_DEPTH_CLEAR_VALUE)`, `glColorMask(1,0,1,0)` through `glGetBooleanv(GL_COLOR_WRITEMASK)`, `glLineWidth(2)` and `glPointSize(3)` through `glGetFloatv`, `glIsTexture` is true for a bound name and false after `glDeleteTextures`, and `glGenLists(2)` returns a non-zero first name |
+| C-GL.16 | 8.5 | MUST | gl | any | none | todo | not tested: what the lighting, fog, display-list, clip-plane, stencil and copy-texture entries draw depends on the renderer, which keeps the group a GL 1.1 subset (spec 8.5); C-GL.13 to C-GL.15 judge the calls, not the pixels |
 
 ## C-SERVICES: services group (section 8.6)
 
@@ -947,3 +1018,16 @@ developers.
     a frame that is visible after up to four further swaps of the same picture; the text
     should say whether a swap may return before its frame is presented.
     settled: spec 8.5 (a swap may return before its frame is visible; at most two swapped frames are in flight)
+67. **A rename onto the same name** (7.1). `file_rename(a, a, AAR_RENAME_REPLACE)` "deletes the target
+    first", and the target is the source. A client that does that destroys the file and then fails.
+    POSIX makes it a no-op. The libc glue (`rename`) tests for equal strings and does nothing, which
+    does not catch two spellings of one path (`a` and `A` on AmigaDOS). The text should say that a
+    source and a target that are the same object leave it unchanged. The suite does not test it.
+    open: not put to the other platform developers yet
+68. **What the locale record reports** (7.4). `country` is "the country code the client reports
+    (`loc_CountryCode` as text)", but `loc_CountryCode` is a `ULONG`; the text form is not stated, so the
+    suite does not compare it. `language` is "the Amiga language name without `.language`": the runner
+    compares it with `loc_LanguageName` of the default locale, which may be empty on a system without
+    locale preferences, and an empty name then has to match an empty answer. C-HOST.3 compares the UTC
+    offset (negated), the language, the decimal point and the group separator only.
+    open: not put to the other platform developers yet
