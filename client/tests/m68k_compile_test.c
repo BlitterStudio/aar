@@ -53,6 +53,8 @@ LONG aar_m68k_use(struct MsgPort *port, const char *path, const char *const *arg
         rc += ext->list(0, 0);
     rc += AARSetLogSink(handle, sink, dst);
     rc += AARSetLogSink(handle, 0, 0);
+    rc += AARReadStack(handle, dst, 64, &got);
+    rc += AARReadProfile(handle, dst, 8, &got, &token);
     rc += AARStop(handle);
     rc += AARClose(handle);
     return rc;

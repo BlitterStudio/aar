@@ -45,6 +45,9 @@ extern "C" {
 #endif
 #define REFPLAT_CLAIM_STRIDE (REFPLAT_PAIR_STRIDE + REFPLAT_LOAD_STRIDE + REFPLAT_BUF_STRIDE)
 #define REFPLAT_TOKEN_BASE  0x00100000u
+/* Where the profile ring of a claim sits in its service buffer area, when a test
+ * asks for a profiler (refplat.profile_max_hz). */
+#define REFPLAT_PROFILE_OFFSET 0xF000u
 #define REFPLAT_ARENA_BYTES (REFPLAT_CLAIMS * REFPLAT_CLAIM_STRIDE)
 
 /* The event block: 64 bytes, a global count and 15 group counts of 32 records each. */
@@ -101,6 +104,12 @@ struct refplat_state {
     uint32_t chunk_max;           /* the most a chunk may carry (0: REFPLAT_CHUNK_MAX); more than that overruns the staging area, so a test that raises it expects the caller to cap */
     struct aar_plat_info info;    /* the constants; a test may change them */
     uint32_t fail_map_token;      /* a map of this token answers AAR_E_NOMEM (0: none) */
+    uint32_t profile_max_hz;      /* the most the profiler grants; 0: the platform has none */
+    uint32_t profile_ring_bytes;  /* the profile ring, a power of two up to 4096 (0: 512) */
+    /* A hook run inside `cache_acquire`: a test uses it to make the app side
+     * write while the client reads (a ring overwritten under a copy). */
+    void (*on_acquire)(void *user, const volatile void *ptr, uint32_t len);
+    void *on_acquire_user;
     uint32_t stale_map_token;     /* a map of this token answers AAR_E_STALE (0: none) */
     /* Event block (spec 10.6). Off by default: the platform has no events and
      * leaves the two operations NULL in effect (events_sample answers 0). */
@@ -167,6 +176,13 @@ uint32_t refplat_app_sq_used(int slot);
  * counter of messages the app has taken from its inbox. */
 void refplat_app_set_state(int slot, uint32_t state, uint32_t end_reason);
 void refplat_app_set_consumed(int slot, uint32_t consumed);
+/* The platform's own writes of the debug words: a stack snapshot (the bytes,
+ * then the address, then the size last) and one pc sample of the profile ring
+ * (the sample, then the head). The ring exists once load_begin saw a rate. */
+void refplat_app_set_stack(int slot, uint64_t sp, const uint8_t *data, uint32_t bytes);
+void refplat_app_profile_push(int slot, uint64_t pc);
+/* The first word of the sample after the head: the platform has begun to store the next sample and has not published the head. */
+void refplat_app_profile_partial(int slot, uint32_t hi);
 
 /* Makes the card revoke a claim: every operation on it answers AAR_E_STALE
  * until it is released. The memory stays, like a quarantined shell. */

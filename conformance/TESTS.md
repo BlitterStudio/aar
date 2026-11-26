@@ -435,7 +435,7 @@ runs on the host runner and under qemu user mode.
 | C-CLIENT.31 | 9.6 | MUST | core | any | runner | yes | `aar_serve` serves every request op of the groups it serves: files, directory lists, console, log and messages here (a payload, then the file under the root and the console text); display, audio and input by C-DISPLAY, C-AUDIO and C-INPUT |
 | C-CLIENT.32 | 9.1 | MUST | core | any | none | todo | not tested: calls return `LONG` in `d0`; seen in every call the runner makes |
 | C-CLIENT.33 | 9.2 | SHOULD | core | any | none | todo | not tested: where section 9.2 and the `.fd` and `.h` files differ, the files are right; documentation rule |
-| C-CLIENT.34 | 9.7 | MUST | core | any | none | todo | not tested: structure sizes (136, 164, 32, 128, 48) are checked by the header's `_Static_assert`s and `client/tests/m68k_check.sh` |
+| C-CLIENT.34 | 9.7 | MUST | core | any | none | todo | not tested: structure sizes (160, 188, 32, 128, 48) are checked by the header's `_Static_assert`s and `client/tests/m68k_check.sh` |
 | C-CLIENT.35 | 9.1 | MUST | core | any | none | todo | not tested: `aar.library` MUST open on every platform that implements the standard; shown by every run of the suite |
 | C-CLIENT.36 | 9.4 | SHOULD | core | any | none | todo | not tested: the library SHOULD wake the owner from the doorbell, or from a timer or vertical-blank poll; the observable half is C-CLIENT.20 |
 | C-CLIENT.37 | 10.2 | MUST | core | any | none | todo | not tested: handle 0 invalid, generation 0 never issued, generation wrap at 65535 reuses (a platform need not retire the index at the wrap, spec 10.2); handle layout is transport internal |

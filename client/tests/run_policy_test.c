@@ -1200,8 +1200,537 @@ static void test_load_break_consumed_by_packet_returns_warn(void)
     assert(aar_run_load_failure_exit(0, 0) == 20);
 }
 
+/* ---- Shipping an app: ToolTypes, ARGS, documents, profile files ---------------- */
+
+/* An icon is a NULL-ended list of key, value pairs. */
+static const char *fake_tool_type(void *icon, const char *key)
+{
+    const char *const *p = (const char *const *)icon;
+
+    for (; p[0]; p += 2)
+        if (strcmp(p[0], key) == 0)
+            return p[1];
+    return NULL;
+}
+
+static struct aar_run_tt_chain chain_of(const char *const *project,
+                                        const char *const *tool)
+{
+    struct aar_run_tt_chain chain;
+
+    chain.lookup = fake_tool_type;
+    chain.project = (void *)project;
+    chain.tool = (void *)tool;
+    return chain;
+}
+
+static void test_project_tooltypes_come_before_the_tool_icon(void)
+{
+    static const char *const project[] = {"MODE", "0x5000", "ARGS", "-w 640",
+                                          "HOSTMEM", "8", NULL};
+    static const char *const tool[] = {"MODE", "$1234", "ARGS", "ignored",
+                                       "MAXMEM", "64", "APP", "Work:g.elf",
+                                       "HOSTMEM", "4", "JOYPORT0", "",
+                                       "AUDIO", "AHI", "ROOT", "Work:g",
+                                       "WEIGHT", "3", NULL};
+    struct aar_run_tt_chain chain = chain_of(project, tool);
+    struct aar_run_settings s;
+    const char *bad = "x";
+
+    assert(aar_run_tt_settings(&chain, &s, &bad));
+    assert(bad == NULL);
+    /* what the project sets wins ... */
+    assert(s.have_mode && s.mode == 0x5000u);
+    assert(s.hostmem_mib == 8u);
+    assert(s.args && strcmp(s.args, "-w 640") == 0);
+    /* ... and the tool icon fills in the rest */
+    assert(s.maxmem_mib == 64u && s.weight == 3u);
+    assert(strcmp(s.app, "Work:g.elf") == 0 && strcmp(s.root, "Work:g") == 0);
+    assert(s.joy_port0 && s.audio_ahi && !s.abs_paths);
+}
+
+static void test_a_project_flag_set_off_beats_the_tool_icon(void)
+{
+    static const char *const project[] = {"ABS", "NO", "JOYPORT0", "0",
+                                          "ROOT", "", NULL};
+    static const char *const tool[] = {"ABS", "", "JOYPORT0", "YES",
+                                       "AUDIO", "AHI", "ROOT", "Work:g",
+                                       "APP", "Work:t.elf", NULL};
+    struct aar_run_tt_chain chain = chain_of(project, tool);
+    struct aar_run_settings s;
+    const char *bad;
+
+    assert(aar_run_tt_settings(&chain, &s, &bad));
+    assert(!s.abs_paths && !s.joy_port0);
+    /* AUDIO has no off value: the tool's stays */
+    assert(s.audio_ahi);
+    /* an empty ROOT of the project is a value: the tool's is not used */
+    assert(s.root[0] == '\0');
+    /* a key only the tool has */
+    assert(strcmp(s.app, "Work:t.elf") == 0);
+}
+
+static void test_tooltypes_without_a_project_icon(void)
+{
+    static const char *const tool[] = {"ABS", "", "MAXMEM", "128", NULL};
+    struct aar_run_tt_chain chain = chain_of(NULL, tool);
+    struct aar_run_settings s;
+    const char *bad;
+
+    assert(aar_run_tt_settings(&chain, &s, &bad));
+    assert(s.abs_paths && s.maxmem_mib == 128u && !s.have_mode && !s.args);
+    /* no icon at all */
+    chain = chain_of(NULL, NULL);
+    assert(aar_run_tt_settings(&chain, &s, &bad));
+    assert(!s.abs_paths && !s.joy_port0 && !s.audio_ahi && s.maxmem_mib == 0u &&
+           s.app[0] == '\0' && s.root[0] == '\0' && !s.args);
+}
+
+static void test_a_bad_project_value_is_not_masked_by_the_tool_icon(void)
+{
+    static const char *const project[] = {"MAXMEM", "0", NULL};
+    static const char *const tool[] = {"MAXMEM", "64", NULL};
+    static const char *const project_host[] = {"HOSTMEM", "12x", NULL};
+    static const char *const project_weight[] = {"WEIGHT", "", NULL};
+    static const char *const project_mode[] = {"MODE", "zz", NULL};
+    static const char *const project_mode_empty[] = {"MODE", "", NULL};
+    static const char *const project_audio[] = {"AUDIO", "PAULA", NULL};
+    char long_value[257]; /* 256 characters: one more than APP and ROOT take */
+    const char *project_long_app[3];
+    const char *project_long_root[3];
+    struct aar_run_tt_chain chain = chain_of(project, tool);
+    struct aar_run_settings s;
+    const char *bad = NULL;
+
+    project_long_app[0] = "APP";
+    project_long_app[1] = long_value;
+    project_long_app[2] = NULL;
+    project_long_root[0] = "ROOT";
+    project_long_root[1] = long_value;
+    project_long_root[2] = NULL;
+
+    assert(!aar_run_tt_settings(&chain, &s, &bad));
+    assert(strcmp(bad, "MAXMEM") == 0);
+    chain = chain_of(project_host, tool);
+    assert(!aar_run_tt_settings(&chain, &s, &bad));
+    assert(strcmp(bad, "HOSTMEM") == 0);
+    chain = chain_of(project_weight, tool);
+    assert(!aar_run_tt_settings(&chain, &s, &bad));
+    assert(strcmp(bad, "WEIGHT") == 0);
+    /* a MODE that is not a number, an AUDIO other than AHI and a name that
+     * does not fit are refused too, and so is an empty MODE */
+    chain = chain_of(project_mode, tool);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "MODE") == 0);
+    chain = chain_of(project_mode_empty, tool);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "MODE") == 0);
+    chain = chain_of(project_audio, tool);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "AUDIO") == 0);
+    memset(long_value, 'a', sizeof(long_value) - 1);
+    long_value[sizeof(long_value) - 1] = '\0';
+    chain = chain_of(project_long_app, tool);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "APP") == 0);
+    chain = chain_of(project_long_root, tool);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "ROOT") == 0);
+}
+
+static void test_tooltype_value_forms(void)
+{
+    uint32_t mode = 0;
+
+    assert(aar_run_flag_value("") && aar_run_flag_value("1") &&
+           aar_run_flag_value("Y") && aar_run_flag_value("yes") &&
+           aar_run_flag_value("True"));
+    assert(!aar_run_flag_value(NULL) && !aar_run_flag_value("0") &&
+           !aar_run_flag_value("no") && !aar_run_flag_value("11"));
+    assert(aar_run_tool_is_ahi("AHI") && aar_run_tool_is_ahi("ahi") &&
+           !aar_run_tool_is_ahi("AH") && !aar_run_tool_is_ahi("AHIX") &&
+           !aar_run_tool_is_ahi(NULL));
+    assert(aar_run_parse_mode("$5000", &mode) && mode == 0x5000u);
+    assert(aar_run_parse_mode("0X5001", &mode) && mode == 0x5001u);
+    assert(aar_run_parse_mode("20480", &mode) && mode == 20480u);
+    assert(!aar_run_parse_mode("", &mode) && !aar_run_parse_mode("12z", &mode) &&
+           !aar_run_parse_mode(NULL, &mode));
+}
+
+/* The words of an ARGS value in a fresh list (the list of the call before is freed). */
+static int words_of(const char *text, struct aar_run_args *a)
+{
+    aar_run_args_free(a);
+    return aar_run_args_add_words(a, text);
+}
+
+static void test_args_words_and_quotes(void)
+{
+    struct aar_run_args a = {0};
+
+    /* plain words */
+    assert(words_of("  one\ttwo   three ", &a) == AAR_RUN_ARGS_OK && a.n == 3);
+    assert(strcmp(a.v[0], "one") == 0 && strcmp(a.v[1], "two") == 0 &&
+           strcmp(a.v[2], "three") == 0 && a.longest == 5u);
+    aar_run_args_free(&a);
+    /* a quoted part keeps its spaces and tabs */
+    assert(words_of("\"My Games:a b.elf\" -x \"c\td\"", &a) == AAR_RUN_ARGS_OK &&
+           a.n == 3);
+    assert(strcmp(a.v[0], "My Games:a b.elf") == 0 && strcmp(a.v[1], "-x") == 0 &&
+           strcmp(a.v[2], "c\td") == 0);
+    aar_run_args_free(&a);
+    /* a quoted part inside a word joins the pieces */
+    assert(words_of("--name=\"a b\"c d", &a) == AAR_RUN_ARGS_OK && a.n == 2);
+    assert(strcmp(a.v[0], "--name=a bc") == 0 && strcmp(a.v[1], "d") == 0);
+    aar_run_args_free(&a);
+    /* "" is an empty word; adjacent quotes make one word */
+    assert(words_of("\"\" x \"a\"\"b\"", &a) == AAR_RUN_ARGS_OK && a.n == 3);
+    assert(a.v[0][0] == '\0' && strcmp(a.v[1], "x") == 0 &&
+           strcmp(a.v[2], "ab") == 0);
+    aar_run_args_free(&a);
+    /* single quotes and the AmigaDOS star are plain characters */
+    assert(words_of("'a b' *\"x\"", &a) == AAR_RUN_ARGS_OK && a.n == 3);
+    assert(strcmp(a.v[0], "'a") == 0 && strcmp(a.v[1], "b'") == 0 &&
+           strcmp(a.v[2], "*x") == 0);
+    aar_run_args_free(&a);
+    /* nothing */
+    assert(words_of("", &a) == AAR_RUN_ARGS_OK && a.n == 0);
+    assert(words_of("   \t", &a) == AAR_RUN_ARGS_OK && a.n == 0);
+    assert(words_of(NULL, &a) == AAR_RUN_ARGS_OK && a.n == 0);
+    aar_run_args_free(&a);
+}
+
+static void test_args_with_an_unbalanced_quote_add_nothing(void)
+{
+    struct aar_run_args a = {0};
+
+    assert(words_of("\"abc", &a) == AAR_RUN_ARGS_QUOTE && a.n == 0);
+    assert(words_of("x \"a b", &a) == AAR_RUN_ARGS_QUOTE && a.n == 0);
+    assert(words_of("x y\"", &a) == AAR_RUN_ARGS_QUOTE && a.n == 0);
+    assert(words_of("\"a\" \"", &a) == AAR_RUN_ARGS_QUOTE && a.n == 0);
+    /* what was there before the bad ARGS stays */
+    assert(aar_run_args_add(&a, "first") == AAR_RUN_ARGS_OK);
+    assert(aar_run_args_add_words(&a, "ok \"bad") == AAR_RUN_ARGS_QUOTE);
+    assert(a.n == 1 && strcmp(a.v[0], "first") == 0);
+    aar_run_args_free(&a);
+}
+
+static void test_args_grow_past_their_first_block(void)
+{
+    struct aar_run_args a;
+    char text[200];
+    int i;
+
+    memset(&a, 0, sizeof(a));
+    for (i = 0; i < 40; i++)
+        assert(aar_run_args_add(&a, "x") == AAR_RUN_ARGS_OK);
+    assert(a.n == 40 && a.cap >= 40);
+    text[0] = '\0';
+    for (i = 0; i < 30; i++)
+        strcat(text, "ab ");
+    assert(aar_run_args_add_words(&a, text) == AAR_RUN_ARGS_OK && a.n == 70);
+    aar_run_args_free(&a);
+    assert(a.n == 0 && a.v == NULL);
+}
+
+static void expect_doc(const char *root, const char *path, int kind,
+                       const char *text)
+{
+    char out[256];
+
+    assert(aar_run_doc_arg(root, path, out, sizeof(out)) == kind);
+    assert(strcmp(out, text) == 0);
+}
+
+static void test_documents_are_relative_under_the_root(void)
+{
+    expect_doc("Work:Games/Q", "Work:Games/Q/maps/e1.bsp", AAR_RUN_DOC_RELATIVE,
+               "maps/e1.bsp");
+    expect_doc("Work:Games/Q", "Work:Games/Q/save", AAR_RUN_DOC_RELATIVE, "save");
+    /* a volume root: the name after the colon, no slash to skip */
+    expect_doc("Work:", "Work:docs/a.txt", AAR_RUN_DOC_RELATIVE, "docs/a.txt");
+    expect_doc("Work:", "Work:a.txt", AAR_RUN_DOC_RELATIVE, "a.txt");
+    /* a trailing slash of the root is not part of it */
+    expect_doc("Work:Games/", "Work:Games/a.txt", AAR_RUN_DOC_RELATIVE, "a.txt");
+    expect_doc("Work:Games//", "Work:Games/a.txt", AAR_RUN_DOC_RELATIVE, "a.txt");
+    /* AmigaDOS names do not depend on case; the path keeps its own */
+    expect_doc("WORK:games", "Work:Games/Maps/E1", AAR_RUN_DOC_RELATIVE, "Maps/E1");
+}
+
+static void test_documents_outside_the_root_are_absolute(void)
+{
+    /* another directory, another volume, a sibling with the root's name as a prefix */
+    expect_doc("Work:Games/Q", "Work:Docs/a.txt", AAR_RUN_DOC_ABSOLUTE,
+               "Work:Docs/a.txt");
+    expect_doc("Work:Games/Q", "Ram:a.txt", AAR_RUN_DOC_ABSOLUTE, "Ram:a.txt");
+    expect_doc("Work:Games/Q", "Work:Games/Q2/a", AAR_RUN_DOC_ABSOLUTE,
+               "Work:Games/Q2/a");
+    expect_doc("Work:Games", "Work:Gam", AAR_RUN_DOC_ABSOLUTE, "Work:Gam");
+    expect_doc("Work:Games/Q", "Work:Games", AAR_RUN_DOC_ABSOLUTE, "Work:Games");
+    /* the root itself, and the volume root as a document of a deeper root */
+    expect_doc("Work:Games", "Work:Games", AAR_RUN_DOC_ABSOLUTE, "Work:Games");
+    expect_doc("Work:", "Work:", AAR_RUN_DOC_ABSOLUTE, "Work:");
+    expect_doc("Work:Games", "Work:", AAR_RUN_DOC_ABSOLUTE, "Work:");
+    /* a path with nothing after the root's slash has no relative form */
+    expect_doc("Work:Games", "Work:Games/", AAR_RUN_DOC_ABSOLUTE, "Work:Games/");
+    /* no root known */
+    expect_doc("", "Work:a", AAR_RUN_DOC_ABSOLUTE, "Work:a");
+    expect_doc(NULL, "Work:a", AAR_RUN_DOC_ABSOLUTE, "Work:a");
+}
+
+static void test_a_document_that_does_not_fit_is_reported(void)
+{
+    char out[9];
+
+    assert(aar_run_doc_arg("Work:", "Work:abcdefgh", out, sizeof(out)) ==
+           AAR_RUN_DOC_RELATIVE);
+    assert(strcmp(out, "abcdefgh") == 0);
+    assert(aar_run_doc_arg("Work:", "Work:abcdefghi", out, sizeof(out)) ==
+           AAR_RUN_DOC_NOFIT);
+    /* the absolute form is the one that does not fit */
+    assert(aar_run_doc_arg("Work:", "Ram:abcdef", out, sizeof(out)) ==
+           AAR_RUN_DOC_NOFIT);
+}
+
+static void test_too_many_documents_hit_the_platform_limit(void)
+{
+    AARInfo info = platform_info(); /* 16 strings: argv[0] and 15 arguments */
+    struct aar_run_limits lim = aar_run_limits_from_info(&info);
+    struct aar_run_args a;
+    char text[160];
+    char rel[160];
+    int i;
+
+    memset(&a, 0, sizeof(a));
+    assert(aar_run_args_add_words(&a, "-w 640 -f") == AAR_RUN_ARGS_OK);
+    for (i = 0; i < 12; i++)
+        assert(aar_run_args_add(&a, "doc") == AAR_RUN_ARGS_OK);
+    assert(a.n == 15);
+    assert(aar_run_limits_check(&lim, (uint32_t)a.n, a.longest, 0u, 0u) ==
+           AAR_RUN_LIMIT_OK);
+    assert(aar_run_args_add(&a, "one too many") == AAR_RUN_ARGS_OK);
+    assert(aar_run_limits_check(&lim, (uint32_t)a.n, a.longest, 0u, 0u) ==
+           AAR_RUN_LIMIT_ARGS);
+    aar_run_args_free(&a);
+
+    /* the platform's argument size counts the document's path: a deep
+     * document passes relative to the root and fails in full */
+    memset(&a, 0, sizeof(a));
+    memset(text, 'd', 136);
+    memcpy(text, "Work:Games/", 11);
+    text[136] = '\0';
+    assert(aar_run_doc_arg("Work:Games", text, rel, sizeof(rel)) ==
+           AAR_RUN_DOC_RELATIVE);
+    assert(strlen(rel) == 125);
+    assert(aar_run_args_add(&a, rel) == AAR_RUN_ARGS_OK);
+    assert(aar_run_limits_check(&lim, (uint32_t)a.n, a.longest, 0u, 0u) ==
+           AAR_RUN_LIMIT_OK);
+    assert(aar_run_doc_arg("Ram:", text, rel, sizeof(rel)) ==
+           AAR_RUN_DOC_ABSOLUTE);
+    assert(aar_run_args_add(&a, rel) == AAR_RUN_ARGS_OK);
+    assert(aar_run_limits_check(&lim, (uint32_t)a.n, a.longest, 0u, 0u) ==
+           AAR_RUN_LIMIT_ARG_BYTES);
+    aar_run_args_free(&a);
+}
+
+static void expect_parent(const char *full, const char *want)
+{
+    char out[64];
+
+    memset(out, 'x', sizeof(out));
+    if (want) {
+        assert(aar_run_path_parent(full, out, sizeof(out)));
+        assert(strcmp(out, want) == 0);
+    } else {
+        assert(!aar_run_path_parent(full, out, sizeof(out)));
+    }
+}
+
+static void test_the_default_root_is_the_directory_of_the_image(void)
+{
+    char small[8];
+
+    expect_parent("Work:Games/Q/quake.elf", "Work:Games/Q");
+    expect_parent("Work:Games/quake.a64.elf", "Work:Games");
+    /* a file in the root of a volume: the volume, with its colon */
+    expect_parent("Work:quake.elf", "Work:");
+    /* a name with no directory part */
+    expect_parent("quake.elf", NULL);
+    expect_parent("Work:", NULL);
+    expect_parent("Work:Games/", NULL);
+    expect_parent("", NULL);
+    expect_parent("/quake.elf", NULL);
+    expect_parent("Work:a//quake.elf", NULL);
+    /* the result has to fit with its NUL */
+    assert(aar_run_path_parent("Work:Ga/x", small, sizeof(small)) == 1 &&
+           strcmp(small, "Work:Ga") == 0);
+    assert(aar_run_path_parent("Work:Gam/x", small, sizeof(small)) == 0);
+    assert(aar_run_path_parent("Work:Games/Q/quake.elf", small, sizeof(small)) == 0);
+}
+
+static void test_a_drawer_project_has_an_icon_by_its_path(void)
+{
+    char out[32];
+
+    /* the drawer's lock is its own, with no name: its path without a slash */
+    assert(aar_run_drawer_icon_path("Work:Games", out, sizeof(out)) &&
+           strcmp(out, "Work:Games") == 0);
+    assert(aar_run_drawer_icon_path("Work:Games/Q", out, sizeof(out)) &&
+           strcmp(out, "Work:Games/Q") == 0);
+    assert(aar_run_drawer_icon_path("Work:Games/", out, sizeof(out)) &&
+           strcmp(out, "Work:Games") == 0);
+    assert(aar_run_drawer_icon_path("Work:Games//", out, sizeof(out)) &&
+           strcmp(out, "Work:Games") == 0);
+    /* a volume keeps its colon: icon.library reads Work:disk.info */
+    assert(aar_run_drawer_icon_path("Work:", out, sizeof(out)) &&
+           strcmp(out, "Work:") == 0);
+    /* nothing to look up */
+    assert(!aar_run_drawer_icon_path("", out, sizeof(out)));
+    assert(!aar_run_drawer_icon_path("/", out, sizeof(out)));
+    /* the path has to fit with its NUL */
+    assert(aar_run_drawer_icon_path("Work:Ga", out, 8) && strcmp(out, "Work:Ga") == 0);
+    assert(!aar_run_drawer_icon_path("Work:Gam", out, 8));
+}
+
+static void test_the_first_project_is_the_app_unless_it_is_not_an_image(void)
+{
+    /* an AAR image, or a file the probe could not open or read: the app */
+    assert(aar_run_project_is_app(0, AAR_OK));
+    assert(aar_run_project_is_app(0, AAR_E_NOENT));
+    assert(aar_run_project_is_app(0, AAR_E_IO));
+    /* not an AAR image: a document */
+    assert(!aar_run_project_is_app(0, AAR_E_INVAL));
+    /* a drawer is never the app */
+    assert(!aar_run_project_is_app(1, AAR_OK));
+    assert(!aar_run_project_is_app(1, AAR_E_NOENT));
+}
+
+static void expect_candidates(const char *name, uint32_t profiles, size_t count,
+                              const char *c1, const char *c2, const char *c3)
+{
+    char list[AAR_RUN_CAND_MAX][256];
+    const char *want[3];
+    size_t i;
+
+    want[0] = c1;
+    want[1] = c2;
+    want[2] = c3;
+    assert(aar_run_image_candidates(name, profiles, &list[0][0],
+                                    sizeof(list[0])) == count);
+    assert(strcmp(list[0], name) == 0);
+    for (i = 1; i < count; i++)
+        assert(strcmp(list[i], want[i - 1]) == 0);
+}
+
+static void test_profile_files_are_tried_after_the_file_asked_for(void)
+{
+    const uint32_t both = AAR_PROFILEF_A32 | AAR_PROFILEF_A64;
+
+    /* name.elf: both profile files, then the stem */
+    expect_candidates("Game.elf", both, 4, "Game.a64.elf", "Game.a32.elf", "Game");
+    /* name: the two profile files */
+    expect_candidates("Game", both, 3, "Game.a64.elf", "Game.a32.elf", NULL);
+    /* the platform's profile first; the other after it */
+    expect_candidates("Game", AAR_PROFILEF_A32, 3, "Game.a32.elf", "Game.a64.elf",
+                      NULL);
+    expect_candidates("Game", AAR_PROFILEF_A64, 3, "Game.a64.elf", "Game.a32.elf",
+                      NULL);
+    expect_candidates("Game.elf", AAR_PROFILEF_A32, 4, "Game.a32.elf",
+                      "Game.a64.elf", "Game");
+    /* a platform that lists none: A64 then A32 */
+    expect_candidates("Game", 0u, 3, "Game.a64.elf", "Game.a32.elf", NULL);
+    /* paths, any case of the suffix, a dot in the name */
+    expect_candidates("Work:Games/Q/quake.ELF", both, 4,
+                      "Work:Games/Q/quake.a64.elf", "Work:Games/Q/quake.a32.elf",
+                      "Work:Games/Q/quake");
+    expect_candidates("v1.2/tool", both, 3, "v1.2/tool.a64.elf",
+                      "v1.2/tool.a32.elf", NULL);
+    /* a profile file asked for by name has the same two siblings */
+    expect_candidates("Game.a32.elf", both, 4, "Game.a32.a64.elf",
+                      "Game.a32.a32.elf", "Game.a32");
+}
+
+static void test_profile_candidates_for_names_without_a_file_part(void)
+{
+    char list[AAR_RUN_CAND_MAX][256];
+    char longname[300];
+
+    /* only the name itself: nothing to build a sibling from */
+    assert(aar_run_image_candidates("", AAR_PROFILEF_A64, &list[0][0],
+                                    sizeof(list[0])) == 1);
+    assert(aar_run_image_candidates("Work:", AAR_PROFILEF_A64, &list[0][0],
+                                    sizeof(list[0])) == 1);
+    assert(aar_run_image_candidates("dir/", AAR_PROFILEF_A64, &list[0][0],
+                                    sizeof(list[0])) == 1);
+    assert(aar_run_image_candidates(".elf", AAR_PROFILEF_A64, &list[0][0],
+                                    sizeof(list[0])) == 3);
+    /* a name that fills the buffer has no room for a sibling */
+    memset(longname, 'n', sizeof(longname));
+    longname[255] = '\0';
+    assert(aar_run_image_candidates(longname, AAR_PROFILEF_A64, &list[0][0],
+                                    sizeof(list[0])) == 1);
+    longname[250] = '\0'; /* 251 bytes with the NUL: no room for ".a64.elf" */
+    assert(aar_run_image_candidates(longname, AAR_PROFILEF_A64, &list[0][0],
+                                    sizeof(list[0])) == 1);
+    longname[240] = '\0'; /* 241 + 8 fits 256 */
+    assert(aar_run_image_candidates(longname, AAR_PROFILEF_A64, &list[0][0],
+                                    sizeof(list[0])) == 3);
+    /* a name that does not fit at all */
+    memset(longname, 'n', sizeof(longname));
+    longname[299] = '\0';
+    assert(aar_run_image_candidates(longname, AAR_PROFILEF_A64, &list[0][0],
+                                    sizeof(list[0])) == 0);
+}
+
+static void test_the_refusal_reported_is_the_first_image_that_exists(void)
+{
+    enum aar_run_probe_verdict v[4];
+
+    /* nothing exists: the file asked for */
+    v[0] = v[1] = v[2] = v[3] = AAR_RUN_PROBE_NOENT;
+    assert(aar_run_report_candidate(v, 4) == 0);
+    /* the asked-for file is an image of the other profile; the sibling is missing */
+    v[0] = AAR_RUN_PROBE_PROFILE;
+    assert(aar_run_report_candidate(v, 4) == 0);
+    /* the asked-for file is missing; a sibling exists and cannot run here */
+    v[0] = AAR_RUN_PROBE_NOENT;
+    v[1] = AAR_RUN_PROBE_PROFILE;
+    assert(aar_run_report_candidate(v, 4) == 1);
+    v[1] = AAR_RUN_PROBE_NOENT;
+    v[2] = AAR_RUN_PROBE_NOT_AAR;
+    assert(aar_run_report_candidate(v, 4) == 2);
+    /* the first one wins */
+    v[1] = AAR_RUN_PROBE_API;
+    assert(aar_run_report_candidate(v, 4) == 1);
+    /* a file that cannot be read is a refusal too */
+    v[0] = AAR_RUN_PROBE_IO;
+    assert(aar_run_report_candidate(v, 4) == 0);
+}
+
+static void test_the_choice_line_names_both_files(void)
+{
+    char line[160];
+
+    aar_run_choice_line(line, sizeof(line), "Game.elf", "Game.a64.elf");
+    assert(strcmp(line, "aar-run: using Game.a64.elf instead of Game.elf") == 0);
+}
+
 int main(void)
 {
+    test_project_tooltypes_come_before_the_tool_icon();
+    test_a_project_flag_set_off_beats_the_tool_icon();
+    test_tooltypes_without_a_project_icon();
+    test_a_bad_project_value_is_not_masked_by_the_tool_icon();
+    test_tooltype_value_forms();
+    test_args_words_and_quotes();
+    test_args_with_an_unbalanced_quote_add_nothing();
+    test_args_grow_past_their_first_block();
+    test_documents_are_relative_under_the_root();
+    test_documents_outside_the_root_are_absolute();
+    test_a_document_that_does_not_fit_is_reported();
+    test_too_many_documents_hit_the_platform_limit();
+    test_the_default_root_is_the_directory_of_the_image();
+    test_a_drawer_project_has_an_icon_by_its_path();
+    test_the_first_project_is_the_app_unless_it_is_not_an_image();
+    test_profile_files_are_tried_after_the_file_asked_for();
+    test_profile_candidates_for_names_without_a_file_part();
+    test_the_refusal_reported_is_the_first_image_that_exists();
+    test_the_choice_line_names_both_files();
     test_ahi_open_failure_exits_20();
     test_a_break_that_was_seen_stays_seen();
     test_the_stack_is_the_one_the_command_runs_on();

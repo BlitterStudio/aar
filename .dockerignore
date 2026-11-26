@@ -3,6 +3,7 @@
 build
 build-*
 .build-pic-newlib*
+.build-pic-libstdcxx*
 **/*.o
 **/*.elf
 **/*.a

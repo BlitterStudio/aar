@@ -8,7 +8,7 @@
 #     sh -c 'cp -r /src /w && cd /w && client/tests/m68k_check.sh'
 #
 # It compiles client/tests/m68k_compile_test.c with warnings as errors, then
-# checks the object: the 25 vector offsets of the .fd file all appear as calls
+# checks the object: the 27 vector offsets of the .fd file all appear as calls
 # through the library base, and no symbol is left undefined. It then compiles
 # the library sources (core, probe, the image rules and loader of loader/,
 # shell, reference platform), the serving loop
@@ -32,7 +32,7 @@ trap 'rm -rf "$OUT"' EXIT
 "$OBJDUMP" -d "$OUT/t.o" > "$OUT/t.dis"
 missing=0
 lvo=30
-while [ "$lvo" -le 174 ]; do
+while [ "$lvo" -le 186 ]; do
     # objdump prints the call as "jsr a6@(-30)".
     if ! grep -Eq "jsr[[:space:]]+a6@\(-$lvo\)" "$OUT/t.dis"; then
         echo "missing call through LVO -$lvo"
@@ -161,4 +161,4 @@ if [ -n "$undefined" ]; then
     echo "undefined symbols: $undefined"
     exit 1
 fi
-echo "m68k header check: 25 vectors called, 0 warnings"
+echo "m68k header check: 27 vectors called, 0 warnings"

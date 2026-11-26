@@ -18,6 +18,7 @@
 #ifndef AAR_RUN_POLICY_H
 #define AAR_RUN_POLICY_H
 
+#include <stdlib.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -854,6 +855,483 @@ static inline int aar_run_probe_may_wait(enum aar_run_probe_verdict v,
                                          const char *path)
 {
     return v == AAR_RUN_PROBE_NOENT && path && strchr(path, ':') != NULL;
+}
+
+/* ---- Shipping an app: ToolTypes, documents, profile files ------------------- */
+
+/* One ToolType lookup: the value of `key` in the icon, or NULL when the icon
+ * does not set it (or there is no icon). A key set without a value gives "". */
+typedef const char *(*aar_run_tt_fn)(void *icon, const char *key);
+
+/* The icons a Workbench start reads, the project's first. A key the project
+ * icon sets, even with an empty value, is not looked up in aar-run's icon. */
+struct aar_run_tt_chain {
+    aar_run_tt_fn lookup;
+    void *project; /* the project icon (the ELF's own or a document's), or NULL */
+    void *tool;    /* aar-run's icon, or NULL */
+};
+
+static inline const char *aar_run_tt_get(const struct aar_run_tt_chain *chain,
+                                         const char *key)
+{
+    const char *value = NULL;
+
+    if (chain->project)
+        value = chain->lookup(chain->project, key);
+    if (!value && chain->tool)
+        value = chain->lookup(chain->tool, key);
+    return value;
+}
+
+/* A flag ToolType: set when it has no value, is exactly 1 or y, or begins with
+ * ye or t (case-insensitive). */
+static inline int aar_run_tool_true(const char *value)
+{
+    if (!value || !value[0])
+        return 0;
+    if (value[0] == '1' && value[1] == 0)
+        return 1;
+    if ((value[0] == 'y' || value[0] == 'Y') &&
+        (value[1] == 0 || (value[1] == 'e' || value[1] == 'E')))
+        return 1;
+    if (value[0] == 't' || value[0] == 'T')
+        return 1;
+    return 0;
+}
+
+static inline int aar_run_flag_value(const char *value)
+{
+    return value && (value[0] == 0 || aar_run_tool_true(value));
+}
+
+/* AUDIO=AHI, in any case. */
+static inline int aar_run_tool_is_ahi(const char *value)
+{
+    return value && (value[0] == 'a' || value[0] == 'A') &&
+           (value[1] == 'h' || value[1] == 'H') &&
+           (value[2] == 'i' || value[2] == 'I') && value[3] == '\0';
+}
+
+/* MODE: decimal, $hex or 0xhex. */
+static inline int aar_run_parse_mode(const char *text, uint32_t *out)
+{
+    char *end = NULL;
+    unsigned long value;
+
+    if (!text || !text[0])
+        return 0;
+    if (text[0] == '$')
+        value = strtoul(text + 1, &end, 16);
+    else if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X'))
+        value = strtoul(text, &end, 16);
+    else
+        value = strtoul(text, &end, 10);
+    if (!end || *end)
+        return 0;
+    *out = (uint32_t)value;
+    return 1;
+}
+
+/* What the ToolTypes of a start say. */
+struct aar_run_settings {
+    char app[256];        /* APP: the ELF when no project names it */
+    char root[256];       /* ROOT, empty: the default */
+    int abs_paths;        /* ABS */
+    int joy_port0;        /* JOYPORT0 */
+    int audio_ahi;        /* AUDIO=AHI */
+    int have_mode;        /* MODE was given */
+    uint32_t mode;
+    uint32_t maxmem_mib;  /* 0: not given */
+    uint32_t hostmem_mib;
+    uint32_t weight;
+    const char *args;     /* ARGS, owned by the icon it came from; NULL: none */
+};
+
+/* Every key from the project icon, then from aar-run's icon. A value that
+ * cannot be used (an APP or ROOT too long for the buffer, a MODE that is not a
+ * number, an AUDIO other than AHI, a MAXMEM, HOSTMEM or WEIGHT that is not a
+ * positive number) returns 0 and names the key in *bad_key. */
+static inline int aar_run_tt_settings(const struct aar_run_tt_chain *chain,
+                                      struct aar_run_settings *s,
+                                      const char **bad_key)
+{
+    const char *value;
+
+    memset(s, 0, sizeof(*s));
+    *bad_key = NULL;
+    value = aar_run_tt_get(chain, "APP");
+    if (value && strlen(value) >= sizeof(s->app)) {
+        *bad_key = "APP";
+        return 0;
+    }
+    if (value)
+        memcpy(s->app, value, strlen(value) + 1);
+    value = aar_run_tt_get(chain, "ROOT");
+    if (value && strlen(value) >= sizeof(s->root)) {
+        *bad_key = "ROOT";
+        return 0;
+    }
+    if (value)
+        memcpy(s->root, value, strlen(value) + 1);
+    s->abs_paths = aar_run_flag_value(aar_run_tt_get(chain, "ABS"));
+    value = aar_run_tt_get(chain, "MODE");
+    if (value && !aar_run_parse_mode(value, &s->mode)) {
+        *bad_key = "MODE";
+        return 0;
+    }
+    s->have_mode = value != NULL;
+    s->joy_port0 = aar_run_flag_value(aar_run_tt_get(chain, "JOYPORT0"));
+    value = aar_run_tt_get(chain, "AUDIO");
+    if (value && !aar_run_tool_is_ahi(value)) {
+        *bad_key = "AUDIO";
+        return 0;
+    }
+    s->audio_ahi = value != NULL;
+    value = aar_run_tt_get(chain, "MAXMEM");
+    if (value && !aar_run_parse_positive(value, &s->maxmem_mib)) {
+        *bad_key = "MAXMEM";
+        return 0;
+    }
+    value = aar_run_tt_get(chain, "HOSTMEM");
+    if (value && !aar_run_parse_positive(value, &s->hostmem_mib)) {
+        *bad_key = "HOSTMEM";
+        return 0;
+    }
+    value = aar_run_tt_get(chain, "WEIGHT");
+    if (value && !aar_run_parse_positive(value, &s->weight)) {
+        *bad_key = "WEIGHT";
+        return 0;
+    }
+    value = aar_run_tt_get(chain, "ARGS");
+    if (value && value[0])
+        s->args = value;
+    return 1;
+}
+
+/* The arguments for the app, after argv[0]. How many and how long the platform
+ * takes is checked once AARQuery has said (aar_run_limits_check), not while
+ * they are collected. */
+struct aar_run_args {
+    char **v;
+    int n;
+    int cap;
+    uint32_t longest; /* the longest argument in bytes, without its NUL */
+};
+
+enum {
+    AAR_RUN_ARGS_OK = 0,
+    AAR_RUN_ARGS_NOMEM,
+    AAR_RUN_ARGS_QUOTE /* a double quote that is never closed */
+};
+
+static inline int aar_run_args_add(struct aar_run_args *a, const char *text)
+{
+    size_t n;
+    char *copy;
+
+    if (!text)
+        return AAR_RUN_ARGS_OK;
+    n = strlen(text);
+    if (a->n == a->cap) {
+        int cap = a->cap ? a->cap * 2 : 16;
+        char **grown = (char **)realloc(a->v, (size_t)cap * sizeof(char *));
+
+        if (!grown)
+            return AAR_RUN_ARGS_NOMEM;
+        a->v = grown;
+        a->cap = cap;
+    }
+    copy = (char *)malloc(n + 1);
+    if (!copy)
+        return AAR_RUN_ARGS_NOMEM;
+    memcpy(copy, text, n + 1);
+    a->v[a->n++] = copy;
+    if (n > a->longest)
+        a->longest = (uint32_t)n;
+    return AAR_RUN_ARGS_OK;
+}
+
+static inline void aar_run_args_free(struct aar_run_args *a)
+{
+    while (a->n > 0)
+        free(a->v[--a->n]);
+    free(a->v);
+    memset(a, 0, sizeof(*a));
+}
+
+/* The next word of an ARGS value. Words are separated by spaces and tabs. A
+ * double quote starts a quoted part in which spaces and tabs belong to the
+ * word; it ends at the next double quote, and a quoted part may sit inside a
+ * word. "" is an empty word. There is no escape: a word cannot contain a
+ * double quote. *pp moves past the word. Returns 1 for a word, 0 at the end
+ * of the text and -1 for a quote that is never closed. `out` has room for
+ * strlen(*pp) + 1 bytes. */
+static inline int aar_run_args_next(const char **pp, char *out)
+{
+    const char *p = *pp;
+    size_t n = 0;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (!*p) {
+        *pp = p;
+        return 0;
+    }
+    while (*p && *p != ' ' && *p != '\t') {
+        if (*p == '"') {
+            p++;
+            while (*p && *p != '"')
+                out[n++] = *p++;
+            if (!*p) {
+                *pp = p;
+                return -1;
+            }
+            p++;
+        } else {
+            out[n++] = *p++;
+        }
+    }
+    out[n] = '\0';
+    *pp = p;
+    return 1;
+}
+
+/* Adds the words of an ARGS value. On an error nothing of it stays added. */
+static inline int aar_run_args_add_words(struct aar_run_args *a, const char *text)
+{
+    const int before = a->n;
+    const char *p = text;
+    char *buf;
+    int result = AAR_RUN_ARGS_OK;
+
+    if (!text || !text[0])
+        return AAR_RUN_ARGS_OK;
+    buf = (char *)malloc(strlen(text) + 1);
+    if (!buf)
+        return AAR_RUN_ARGS_NOMEM;
+    for (;;) {
+        int r = aar_run_args_next(&p, buf);
+
+        if (r < 0) {
+            result = AAR_RUN_ARGS_QUOTE;
+            break;
+        }
+        if (r == 0)
+            break;
+        result = aar_run_args_add(a, buf);
+        if (result != AAR_RUN_ARGS_OK)
+            break;
+    }
+    free(buf);
+    if (result != AAR_RUN_ARGS_OK) {
+        while (a->n > before)
+            free(a->v[--a->n]);
+    }
+    return result;
+}
+
+/* A document is passed as a path: relative to ROOT when it lies under it,
+ * else the full path (the app needs ABS to open that). `root` and `path` are
+ * full names as NameFromLock gives them (volume, colon, directories); names
+ * compare without regard to case. The root itself has no relative form and is
+ * passed in full, as is a path of another volume. A trailing slash of the root
+ * is not part of it. */
+enum {
+    AAR_RUN_DOC_NOFIT = 0, /* the text does not fit in `out` */
+    AAR_RUN_DOC_ABSOLUTE,
+    AAR_RUN_DOC_RELATIVE
+};
+
+static inline int aar_run_ascii_lower(int c)
+{
+    return (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
+}
+
+static inline int aar_run_doc_arg(const char *root, const char *path, char *out,
+                                  size_t cap)
+{
+    const char *text = path;
+    size_t rn = root ? strlen(root) : 0;
+    size_t pn = strlen(path);
+    int kind = AAR_RUN_DOC_ABSOLUTE;
+
+    while (rn > 0 && root[rn - 1] == '/')
+        rn--;
+    if (rn > 0 && pn > rn) {
+        size_t i = 0;
+        const char *rest = NULL;
+
+        while (i < rn && aar_run_ascii_lower((unsigned char)root[i]) ==
+                             aar_run_ascii_lower((unsigned char)path[i]))
+            i++;
+        if (i == rn) {
+            if (root[rn - 1] == ':')
+                rest = path + rn;
+            else if (path[rn] == '/')
+                rest = path + rn + 1;
+        }
+        if (rest && *rest) {
+            text = rest;
+            kind = AAR_RUN_DOC_RELATIVE;
+        }
+    }
+    if (strlen(text) + 1 > cap)
+        return AAR_RUN_DOC_NOFIT;
+    memcpy(out, text, strlen(text) + 1);
+    return kind;
+}
+
+/* The default ROOT of a Workbench start is the directory that holds the image
+ * aar-run runs. This is the path of that directory, from the full name of the
+ * image as NameFromLock gives it: everything before the last slash, or the
+ * volume (with its colon) for a file in the volume's root. 0 when the name has
+ * no directory part (no colon and no slash, nothing after the colon, a slash
+ * with nothing before it) or `out` is too small. */
+static inline int aar_run_path_parent(const char *full, char *out, size_t cap)
+{
+    size_t n = strlen(full);
+    size_t cut = n;
+
+    while (cut > 0 && full[cut - 1] != '/' && full[cut - 1] != ':')
+        cut--;
+    if (cut == 0 || cut == n)
+        return 0;
+    if (full[cut - 1] == '/')
+        cut--; /* the slash is not part of the directory's name */
+    if (cut == 0 || full[cut - 1] == '/' || cut + 1 > cap)
+        return 0;
+    memcpy(out, full, cut);
+    out[cut] = '\0';
+    return 1;
+}
+
+/* A project WBArg with an empty name is a drawer, given as its own lock. Its
+ * icon is the .info beside it, which icon.library finds from the drawer's path
+ * without a trailing slash (`Work:Games` reads `Work:Games.info`); a volume,
+ * `Work:`, reads `Work:disk.info`. `dir` is the path NameFromLock gives. 0 when
+ * there is no path or `out` is too small. */
+static inline int aar_run_drawer_icon_path(const char *dir, char *out, size_t cap)
+{
+    size_t n = strlen(dir);
+
+    while (n > 0 && dir[n - 1] == '/')
+        n--;
+    if (n == 0 || n + 1 > cap)
+        return 0;
+    memcpy(out, dir, n);
+    out[n] = '\0';
+    return 1;
+}
+
+/* The first project of a Workbench start is the app when it is a file whose
+ * probe did not say "not an AAR image". A drawer is never the app; a file the
+ * probe could not open or read is the app too, so that the launch names the
+ * cause. Anything else is the first document. */
+static inline int aar_run_project_is_app(int is_directory, int probe_rc)
+{
+    return !is_directory && probe_rc != AAR_E_INVAL;
+}
+
+/* Profile files of one app: the file asked for first, then the images a
+ * shipped app has for each profile. For `name.elf` and for `name` the
+ * candidates are `name.a64.elf`, `name.a32.elf` (the profiles the platform's
+ * mask lists first, A64 before A32; the others after them), and for `name.elf`
+ * also `name`. AARInfo.profiles is a mask, so it carries no order of its own. */
+#define AAR_RUN_CAND_MAX 4u
+
+static inline int aar_run_ends_with_elf(const char *name, size_t n)
+{
+    return n > 4 && name[n - 4] == '.' &&
+           aar_run_ascii_lower((unsigned char)name[n - 3]) == 'e' &&
+           aar_run_ascii_lower((unsigned char)name[n - 2]) == 'l' &&
+           aar_run_ascii_lower((unsigned char)name[n - 1]) == 'f';
+}
+
+static inline int aar_run_cand_known(const char *list, size_t cap, size_t count,
+                                     const char *text)
+{
+    size_t i;
+
+    for (i = 0; i < count; i++) {
+        const char *a = list + i * cap;
+        size_t j = 0;
+
+        while (a[j] && text[j] &&
+               aar_run_ascii_lower((unsigned char)a[j]) ==
+                   aar_run_ascii_lower((unsigned char)text[j]))
+            j++;
+        if (!a[j] && !text[j])
+            return 1;
+    }
+    return 0;
+}
+
+/* Fills `out` (AAR_RUN_CAND_MAX strings of `cap` bytes) and returns how many.
+ * Entry 0 is `name`; a candidate that does not fit in `cap` is left out. */
+static inline size_t aar_run_image_candidates(const char *name, uint32_t profiles,
+                                              char *out, size_t cap)
+{
+    static const char *const suffix[2] = {".a64.elf", ".a32.elf"};
+    static const uint32_t bit[2] = {AAR_PROFILEF_A64, AAR_PROFILEF_A32};
+    size_t n = strlen(name);
+    size_t stem = aar_run_ends_with_elf(name, n) ? n - 4 : n;
+    size_t count = 0;
+    int pass, k;
+
+    if (n + 1 > cap)
+        return 0;
+    memcpy(out, name, n + 1);
+    count = 1;
+    if (stem == 0 || name[stem - 1] == ':' || name[stem - 1] == '/')
+        return count;
+    for (pass = 0; pass < 2; pass++) {
+        for (k = 0; k < 2; k++) {
+            int wanted = (profiles & bit[k]) != 0;
+            char text[512];
+            size_t m = strlen(suffix[k]);
+
+            if ((pass == 0) != wanted || stem + m + 1 > cap || stem + m + 1 > sizeof(text))
+                continue;
+            memcpy(text, name, stem);
+            memcpy(text + stem, suffix[k], m + 1);
+            if (!aar_run_cand_known(out, cap, count, text)) {
+                memcpy(out + count * cap, text, stem + m + 1);
+                count++;
+            }
+        }
+    }
+    if (stem != n) {
+        char text[512];
+
+        if (stem + 1 <= cap && stem + 1 <= sizeof(text)) {
+            memcpy(text, name, stem);
+            text[stem] = '\0';
+            if (!aar_run_cand_known(out, cap, count, text)) {
+                memcpy(out + count * cap, text, stem + 1);
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+/* Which refusal the launch reports when no candidate runs: the first image
+ * that exists but cannot run here, else the file asked for. */
+static inline size_t aar_run_report_candidate(const enum aar_run_probe_verdict *v,
+                                              size_t count)
+{
+    size_t i;
+
+    for (i = 0; i < count; i++)
+        if (v[i] != AAR_RUN_PROBE_OK && v[i] != AAR_RUN_PROBE_NOENT)
+            return i;
+    return 0;
+}
+
+static inline void aar_run_choice_line(char *buf, size_t size,
+                                       const char *requested, const char *chosen)
+{
+    snprintf(buf, size, "aar-run: using %s instead of %s", chosen, requested);
 }
 
 /* ---- STATUS and RELEASE through AARExt -------------------------------------- */

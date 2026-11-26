@@ -401,6 +401,8 @@ static void test_owner_stale(void)
         CHECK(v_audio_read(h, buf, 1, &got) == expect);
         CHECK(v_shared_token(h, buf, 4, &got) == expect);
         CHECK(v_set_log_sink(h, NULL, 0) == expect);
+        CHECK(v_read_stack(h, buf, 4, &got) == expect);
+        CHECK(v_read_profile(h, buf, 1, &got, &got) == expect);
         CHECK(v_message_signal(h) == (pass == 0 ? T(0)->sig_alloc : 0));
     }
     CHECK(v_status(b, &st) == AAR_OK);
@@ -1096,6 +1098,8 @@ static void test_revoked_codes(void)
     CHECK(v_audio_read(h, NULL, 1, NULL) == AAR_E_STALE); /* not AAR_E_INVAL */
     CHECK(v_shared_token(h, NULL, 0, NULL) == AAR_E_STALE);
     CHECK(v_set_log_sink(h, NULL, 0) == AAR_E_STALE);
+    CHECK(v_read_stack(h, NULL, 1, NULL) == AAR_E_STALE);
+    CHECK(v_read_profile(h, NULL, 1, NULL, NULL) == AAR_E_STALE);
     CHECK(v_probe_file("no-such", &image) == AAR_E_NOENT); /* no handle: unchanged */
     CHECK(v_probe_memory(bytes, 8, &image) == AAR_E_INVAL);
     CHECK(ext->stats(h, &(AARZZ9000Stats){ .size = sizeof(AARZZ9000Stats) }) == AAR_E_STALE);

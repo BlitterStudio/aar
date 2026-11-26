@@ -2092,6 +2092,10 @@ static void test_workbench_project_uses_dostrue_from_name_from_lock(void)
     if (path[0])
         CHECK(aar_serve_locate(S, 0, path, full, sizeof(full)) == AAR_OK);
     CHECK(!aar_run_project_path(&project, path, 1) && path[0] == 0);
+    /* a drawer (an empty name) is the directory itself, without a slash */
+    project.wa_Name = (STRPTR)"";
+    CHECK(aar_run_project_path(&project, path, sizeof(path)));
+    CHECK(strcmp(path, "RAM:data") == 0);
     finish();
 }
 

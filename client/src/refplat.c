@@ -220,6 +220,22 @@ static int op_release(struct aar_plat *p, struct aar_plat_claim *c)
     return AAR_OK;
 }
 
+/* The profiler: reads the rate the client asked for (limits line) and, when the
+ * platform has one, names the ring and the granted rate. The granted rate is
+ * written last. */
+static void refplat_profile_grant(struct refplat_claim *rc)
+{
+    uint32_t asked = aar_get_be32(rc->cb + AAR_CB_PROFILE_HZ);
+    uint32_t bytes = refplat.profile_ring_bytes ? refplat.profile_ring_bytes : 512u;
+
+    if (asked == 0u || refplat.profile_max_hz == 0u)
+        return;
+    aar_put_be32(rc->cb + AAR_CB_PROFILE_TOKEN, rc->buf_token + REFPLAT_PROFILE_OFFSET);
+    aar_put_be32(rc->cb + AAR_CB_PROFILE_BYTES, bytes);
+    aar_put_be32(rc->cb + AAR_CB_PROFILE_GRANTED_HZ,
+                 asked < refplat.profile_max_hz ? asked : refplat.profile_max_hz);
+}
+
 static int op_load_begin(struct aar_plat *p, struct aar_plat_claim *c,
                          const struct aar_plat_load_opts *opts,
                          volatile uint8_t **staging, uint32_t *chunk_max,
@@ -237,6 +253,7 @@ static int op_load_begin(struct aar_plat *p, struct aar_plat_claim *c,
     }
     rc = &refplat.claims[slot];
     rc->opts = *opts;
+    refplat_profile_grant(rc);
     rc->image_len = rc->image_sum = rc->image_first = rc->chunks = 0u;
     put_state(rc, AAR_STATE_LOADING, AAR_END_NONE);
     *staging = rc->load;
@@ -445,6 +462,8 @@ static void op_cache_acquire(struct aar_plat *p, const volatile void *ptr, uint3
     refplat.acquires++;
     refplat.last_cache_ptr = ptr;
     refplat.last_cache_len = len;
+    if (refplat.on_acquire)
+        refplat.on_acquire(refplat.on_acquire_user, ptr, len);
 }
 
 /* ---- The extension table ------------------------------------------------------------ */
@@ -693,6 +712,43 @@ void refplat_app_set_state(int slot, uint32_t state, uint32_t end_reason)
 void refplat_app_set_consumed(int slot, uint32_t consumed)
 {
     aar_put_be32(refplat.claims[slot].cb + AAR_CB_MSG_CONSUMED, consumed);
+}
+
+void refplat_app_set_stack(int slot, uint64_t sp, const uint8_t *data, uint32_t bytes)
+{
+    volatile uint8_t *cb = refplat.claims[slot].cb;
+    uint32_t i;
+
+    for (i = 0u; i < bytes; i++)
+        cb[AAR_CB_STACK_DATA + i] = data[i];
+    aar_put_be32(cb + AAR_CB_STACK_SP_HI, (uint32_t)(sp >> 32));
+    aar_put_be32(cb + AAR_CB_STACK_SP_LO, (uint32_t)sp);
+    aar_put_be32(cb + AAR_CB_STACK_BYTES, bytes);
+}
+
+static volatile uint8_t *profile_slot(int slot)
+{
+    volatile uint8_t *cb = refplat.claims[slot].cb;
+    uint32_t bytes = aar_get_be32(cb + AAR_CB_PROFILE_BYTES);
+    volatile uint8_t *ring = refplat_ptr(aar_get_be32(cb + AAR_CB_PROFILE_TOKEN));
+    uint32_t head = aar_get_be32(cb + AAR_CB_PROFILE_HEAD);
+
+    return ring + (head & (bytes / AAR_PROFILE_SAMPLE_BYTES - 1u)) * AAR_PROFILE_SAMPLE_BYTES;
+}
+
+void refplat_app_profile_push(int slot, uint64_t pc)
+{
+    volatile uint8_t *cb = refplat.claims[slot].cb;
+    volatile uint8_t *at = profile_slot(slot);
+
+    aar_put_be32(at, (uint32_t)(pc >> 32));
+    aar_put_be32(at + 4u, (uint32_t)pc);
+    aar_put_be32(cb + AAR_CB_PROFILE_HEAD, aar_get_be32(cb + AAR_CB_PROFILE_HEAD) + 1u);
+}
+
+void refplat_app_profile_partial(int slot, uint32_t hi)
+{
+    aar_put_be32(profile_slot(slot), hi);
 }
 
 void refplat_revoke(int slot)

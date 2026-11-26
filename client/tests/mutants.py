@@ -99,6 +99,33 @@ mutant("arg-length-unchecked", "load_start", CORE,
        ("if (pi->max_arg_bytes != 0u && n + 1u > pi->max_arg_bytes)", "if (0)"))
 mutant("limits-not-written", "tags", CORE,
        ("    aar_put_be32(h->cb + AAR_CB_WEIGHT, h->weight);\n", ""))
+mutant("profile-hz-not-written", "tags", CORE,
+       ("    aar_put_be32(h->cb + AAR_CB_PROFILE_HZ, h->profile_hz);\n", ""))
+mutant("profile-hz-unchecked", "tags", CORE,
+       ("    case 7u:\n        if (data > AAR_PROFILE_HZ_MAX)\n            return AAR_E_INVAL;\n",
+        "    case 7u:\n"))
+# ---- core: stack snapshot and profile samples -------------------------------------------------
+mutant("stack-size-unchecked", "stack", CORE,
+       ("        } else if (have > AAR_CB_STACK_MAX) {\n            rc = AAR_E_IO;\n",
+        "        } else if (0) {\n            rc = AAR_E_IO;\n"))
+mutant("profile-loss-not-counted", "profile_lost", CORE,
+       ("gone = behind - usable;", "gone = 0u;"))
+mutant("profile-start-not-moved-on-loss", "profile_lost", CORE,
+       ("        start = head - usable;\n        behind = usable;", "        behind = usable;"))
+mutant("profile-torn-copy-kept", "profile_torn", CORE,
+       ("    if (over > usable) {", "    if (0) {"))
+mutant("profile-no-cache-acquire", "profile_torn", CORE,
+       ("    if (!(mapf & (AAR_MAPF_UNCACHED | AAR_MAPF_COHERENT)) && o->cache_acquire)",
+        "    if (0 && !(mapf & (AAR_MAPF_UNCACHED | AAR_MAPF_COHERENT)) && o->cache_acquire)"))
+mutant("profile-head-going-back-ignored", "profile_corrupt", CORE,
+       ("    if (behind > 0x80000000u)\n        return AAR_E_IO; /* the counter went back */\n", ""))
+mutant("profile-newest-slot-trusted", "profile_partial", CORE,
+       ("    usable = count - 1u;", "    usable = count;"))
+mutant("profile-wrap-unhandled", "profile_wrap", CORE,
+       ("    behind = head - start; /* modulo 2^32 */", "    behind = head < start ? 0u : head - start;"))
+mutant("profile-ring-size-unchecked", "profile_corrupt", CORE,
+       ("    if (bytes < AAR_PROFILE_RING_MIN_BYTES || (bytes & (bytes - 1u)) != 0u)\n        return AAR_E_IO;\n",
+        ""))
 # ---- core: status, messages, events -------------------------------------------------------
 mutant("status-ignores-size", "status", CORE,
        ("    memcpy(st, &local, n);\n    st->size = size;", "    memcpy(st, &local, sizeof(local));\n    st->size = size;"))
@@ -810,6 +837,21 @@ mutant("stack-ignores-the-cli-default", "run_policy", "client/run/aar_run_policy
 mutant("cli-stack-longs-wrap", "run_policy", "client/run/aar_run_policy.h",
        ("cli_default_longs > UINT32_MAX / 4u ?\n                                 UINT32_MAX : cli_default_longs * 4u;",
         "cli_default_longs * 4u;"))
+mutant("tooltype-aar-run-icon-beats-the-project", "run_policy", "client/run/aar_run_policy.h",
+       ("    if (!value && chain->tool)", "    if (chain->tool)"))
+mutant("document-root-matches-a-sibling-prefix", "run_policy", "client/run/aar_run_policy.h",
+       ("            else if (path[rn] == '/')", "            else"))
+mutant("unclosed-args-quote-accepted", "run_policy", "client/run/aar_run_policy.h",
+       ("            result = AAR_RUN_ARGS_QUOTE;", "            result = AAR_RUN_ARGS_OK;"))
+mutant("profile-files-in-the-wrong-order", "run_policy", "client/run/aar_run_policy.h",
+       ('{".a64.elf", ".a32.elf"};', '{".a32.elf", ".a64.elf"};'))
+mutant("a-drawer-can-be-the-app", "run_policy", "client/run/aar_run_policy.h",
+       ("    return !is_directory && probe_rc != AAR_E_INVAL;", "    return probe_rc != AAR_E_INVAL;"))
+mutant("default-root-keeps-the-slash", "run_policy", "client/run/aar_run_policy.h",
+       ("        cut--; /* the slash is not part of the directory's name */", "        ;"))
+mutant("drawer-icon-path-keeps-the-slash", "run_policy", "client/run/aar_run_policy.h",
+       ("    while (n > 0 && dir[n - 1] == '/')\n        n--;\n    if (n == 0 || n + 1 > cap)",
+        "    if (n == 0 || n + 1 > cap)"))
 mutant("dos-wait-in-a-step-arms-the-timer", "timer_ops", "client/serve/aar_serve_dos.c",
        ("    if (!s->closing && !s->in_step)", "    if (!s->closing)"))
 mutant("ahi-dry-not-counted", "ahi_gaps", "client/serve/aar_serve_ahi.c",

@@ -66,7 +66,7 @@ It does not define a sandbox against hostile apps (the user chooses what to run)
 
 The A64 baseline assumes no optional extension: crypto and CRC32 are optional in ARMv8-A, and LSE (ARMv8.1) is absent from a Cortex-A72 although a Cortex-A76 has it. Optional instructions are discovered through `aar_info.cpu_features` (section 8.7), never by executing and trapping.
 
-A platform implements one or more profiles. It declares them in `AARInfo.profiles`. An app image belongs to exactly one profile. An app that wants to run everywhere ships one image per profile (for example `name.a32.elf` and `name.a64.elf`); `AARProbeFile` (section 9) lets a launcher pick. Fat images are not defined (section 13 asks whether they should be).
+A platform implements one or more profiles. It declares them in `AARInfo.profiles`. An app image belongs to exactly one profile. An app that wants to run everywhere ships one image per profile, named `name.a64.elf` and `name.a32.elf`; `AARProbeFile` (section 9) lets a launcher pick. Given `name.elf` or `name`, `aar-run` uses that file when the platform runs it, and otherwise the first of `name.a64.elf` and `name.a32.elf` (and, for `name.elf`, `name`) that the probe accepts and the platform runs, taking the profiles the platform declares first and A64 before A32. Fat images are not defined (section 13 asks whether they should be).
 
 ### 2.2 ELF rules (both profiles)
 
@@ -238,7 +238,7 @@ A stop request does not prevent calls. A call made after it that needs the clien
 5. layer 1, **core**, with no libc: no `malloc`; weak `memcpy`, `memmove`, `memset`, `memcmp` for compiler-generated calls. This is the freestanding mode (build flag `AAR_FREESTANDING`), which does not declare `aar_alloc` and `aar_free`. In this layer private memory comes from `heap_range`/`heap_grow` only;
 6. layer 2, **libc glue**, for a PIC newlib build: `_sbrk` over `heap_grow`/`heap_shrink`, `_write`/`_read` for fd 0 to 2 over the console, and `_open`, `_close`, `_read`, `_write`, `_lseek`, `_fstat` and `_stat` for fd 3 and above over `aar_file_*`, so `fopen` works. `O_CREAT`, `O_TRUNC` and `O_EXCL` pass straight into `AAR_FILE_CREATE`, `_TRUNCATE` and `_EXCL`. A descriptor opened with `O_APPEND` seeks to the end before every write. `_stat` and `_fstat` set `EOVERFLOW` when a size does not fit `off_t` (A32).
 
-The private allocator `aar_alloc(bytes, align)` belongs to layer 2. The shared allocator is core.
+The private allocator `aar_alloc(bytes, align)` belongs to layer 2. The shared allocator is core. The SDK also builds a PIC C++ runtime (`libstdc++`, `libsupc++`, `libgcc_eh`) on layer 2, with a linker script (`aar-cxx.ld`) that keeps the unwind tables; the freestanding mode has no C++ runtime.
 
 ## 4. Memory model
 
@@ -347,12 +347,18 @@ After a fault a platform MAY report `FAULTED` until `AARClose` or return to `IDL
 
   Addresses are app virtual addresses. A client that wants a symbolised trace subtracts the load base, which `AARStatus` also reports (`load_base`).
 
+- A fault (`AAR_END_USER_FAULT`) and a watchdog stall (`AAR_END_STALL`, 5.4) both fill the fault record. For a stall `fault_pc`, `fault_sp` and `fault_lr` are where the app was when the watchdog ended it, `fault_class` is `AAR_FAULT_NONE`, and `fault_syndrome`, `fault_pstate` and `fault_addr` are 0.
+
+- Both ends also take a stack snapshot, if the platform can read the app's stack: up to `AAR_CB_STACK_MAX` (512) bytes from the app's `sp` upward, copied as they lie in app memory (little-endian app words, never swapped), with the app address of the first byte. Bytes the app cannot read are not copied. `AARReadStack` (9.2) returns the snapshot and `AARStatusInfo.stack_sp` and `stack_bytes` describe it; `stack_bytes` is 0 when there is none. A client may print the snapshot, or give it to a tool that lists the words that point into the app's code, which is a guess at a backtrace: the platform does not unwind the stack.
+
 - `AAR_FAULT_ALIGN` is a fault the CPU raises because an access is not aligned. On A32 it is a data abort with fault status 00001 in the short-descriptor FSR, or 100001 when the host reports the abort in the long-descriptor or ESR form. On A64 it is a data abort with `DFSC` 100001 or a PC or SP alignment exception (`EC` 0x22, 0x26). An exclusive or atomic access that is not aligned to its size always raises it, so a runtime MUST classify that fault as `ALIGN`. Whether a plain load or store to normal memory that is not aligned faults is the platform's choice, and an app MUST NOT depend on either result. (The A64 encodings and the AArch32-on-AArch64 case are from the Arm architecture manual and have not been run on a platform; section 13 asks the platforms to confirm them.)
 - End reasons (`AARStatusInfo.end_reason`): `NONE` 0, `EXIT` 1, `FORCED` 2, `USER_FAULT` 3, `STALL` 4, `STUCK_CALL` 5, `LEASE` 6, `PLATFORM_RESET` 7, `RUNTIME_RESTART` 8, `QUARANTINED` 9.
 
 ### 5.4 Watchdog
 
 An app MUST make a table call at least every 5 seconds while it computes. The runtime MUST tolerate at least 10 seconds between calls (`stall_limit_ms`) and MAY stop an app that goes longer, with `AAR_END_STALL`. A runtime MAY end an app whose single call stays inside the runtime's own code, not parked in a declared wait, for longer than a stuck-call limit. The limit is at least 10 s and the end reason is `AAR_END_STUCK_CALL`. An app cannot cause this (every long call is a declared wait), so the suite does not test it. A call that is parked inside a declared wait does not count toward either limit. `yield`, `should_stop`, `time_us`, `msg_wait` and every file or console call count as activity.
+
+When the runtime ends an app with `AAR_END_STALL` it fills the fault record and the stack snapshot (5.3), so that the client can say where a hang was.
 
 Note: the ZZ9000 values (30 s stall, 10 s stuck) satisfy this. The 5 ms scheduler quantum, the 5% service floor and the "API body is unpreemptible" rule are platform behaviour; apps cannot depend on them, and `sleep_granule_us` tells them the timing granularity.
 
@@ -398,7 +404,7 @@ All of this is performed by the client (section 9.6): the app's calls go to the 
 ### 7.1 Files
 
 - Paths are AmigaDOS paths, at most 255 bytes plus NUL (`AAR_PATH_MAX`). An empty path, or one longer than that, is `AAR_E_INVAL` for `file_open`, `file_stat` and `file_list_open`. The limit is the app interface's: a client's filesystem may accept less (names of 30 characters on an OFS volume), and the call then fails with that filesystem's error. The client decides the root and the policy. The runtime passes a path to the client unchanged after checking its length. A client that serves apps it does not trust SHOULD apply this default, which is the one `aar-run` applies:
-  - Relative paths resolve under a root directory chosen by the client (the Shell's current directory, the icon's directory, or the root given to the serving loop, `aar_serve_config.root`).
+  - Relative paths resolve under a root directory chosen by the client (the Shell's current directory, the directory of the app image, or the root given to the serving loop, `aar_serve_config.root`).
   - A path that would leave the root through `..`, a leading `/` or a link is refused with `AAR_E_ACCES`.
   - A path with a volume or assign prefix (`:`) is refused unless the client allows it (`AAR_SERVEF_ABS_PATHS`). Allowing those does not relax the check on relative paths.
 
@@ -562,7 +568,7 @@ The ZZ9000 table is `aar_ext_zz9000` in [`aar/ext_zz9000.h`](../include/aar/ext_
 
 ### 9.2 Calls
 
-The contract is in the aar repository: [`client/fd/aar_lib.fd`](../client/fd/aar_lib.fd) (25 vectors from -30), [`client/include/libraries/aar.h`](../client/include/libraries/aar.h) (structures with 68k offsets, tags, `AAR_NOTIFY_*`), [`client/include/libraries/aar_zz9000.h`](../client/include/libraries/aar_zz9000.h) (the ZZ9000 extension) and [`docs/aar-client-api.md`](../docs/aar-client-api.md) (every call for client authors). Where this section and those files differ, please report it as an issue. The vectors:
+The contract is in the aar repository: [`client/fd/aar_lib.fd`](../client/fd/aar_lib.fd) (27 vectors from -30), [`client/include/libraries/aar.h`](../client/include/libraries/aar.h) (structures with 68k offsets, tags, `AAR_NOTIFY_*`), [`client/include/libraries/aar_zz9000.h`](../client/include/libraries/aar_zz9000.h) (the ZZ9000 extension) and [`docs/aar-client-api.md`](../docs/aar-client-api.md) (every call for client authors). Where this section and those files differ, please report it as an issue. The vectors:
 
 ```
 AARQuery(info)(a0)
@@ -590,6 +596,8 @@ AARAudioRead(handle,dst,frames,got)(a0/a1/d0/a2)
 AARSharedToken(handle,ptr,bytes,token)(a0/a1/d0/a2)
 AARExt(platform_id,ext_id)(d0/d1)
 AARSetLogSink(handle,sink,user)(a0/a1/a2)
+AARReadStack(handle,buf,bytes,got)(a0/a1/d0/a2)
+AARReadProfile(handle,buf,max_samples,got,lost)(a0/a1/d0/a2/a3)
 ```
 
 | Call | Behaviour |
@@ -598,11 +606,11 @@ AARSetLogSink(handle,sink,user)(a0/a1/a2)
 | `AAROpen(AARHandle **, struct MsgPort *notify_port, ULONG *reason)` | Claims an app instance for the calling task (admission, 5.6). `notify_port` may be NULL. `reason` may be NULL; on `AAR_E_NORESOURCE` it receives an `AAR_REASON_*` code. The task's first open allocates one signal bit, which all of that task's handles share (a bit per handle would stop a task at about 12 handles). |
 | `AARClose(handle)` | Stops the app if it is running and releases the claim. Only the owner may close. |
 | `AARProbeFile/Memory(src, AARImageInfo *)` | Reads the note without loading and reports profile, `api_major`, `api_minor_required`, groups, stack, min heap, `note_version` and the image length. Lets a launcher choose between `.a32` and `.a64` images and fail early. No handle. It applies the image rules of 2.2 and 2.3 as the loader does: an image that breaks one is refused, and an image the loader would accept is accepted, with or without section headers. It does not judge the image against the platform: profile, groups, heap and stack are reported, not checked. It returns `AAR_E_NOENT` when the file cannot be opened, `AAR_E_IO` when it cannot be read, and `AAR_E_INVAL` for anything that is not a valid AAR image: not an ELF, a broken rule of 2.2, no note, more than one note, a note with a wrong magic or version, a note whose profile word differs from the ELF class. It never returns `AAR_E_PROFILE`: the profile is reported and the launcher chooses. On failure the structure is left unchanged. |
-| `AARSetTagList(handle, tags)` | Sets options before the load: `AAR_TAG_PRIVATE_MIB` (cap on private memory, 0 for the pool), `AAR_TAG_SHARED_MIB` (shared limit, 0 for the default), `AAR_TAG_WEIGHT` (CPU share weight, 0 for the default 1; `AAR_E_NOSYS` where the platform has no weighting), `AAR_TAG_AUDIO_ROUTE`, `AAR_TAG_LEASE_EXTENDED` (on by default), `AAR_TAG_CLIENT_CAPS`. Returns `AAR_E_BUSY` once a load has begun, `AAR_E_INVAL` for an out-of-range value (limits above 4095 MiB), `AAR_E_NOSYS` for an option the platform cannot support (a missing `PLATFORM` audio route shows at `aar_audio_open`, not here). Launcher policy (root directory, absolute paths, console redirection, screen mode) is configuration of the serving loop (`aar_serve`, 9.6) and not a library option. |
+| `AARSetTagList(handle, tags)` | Sets options before the load: `AAR_TAG_PRIVATE_MIB` (cap on private memory, 0 for the pool), `AAR_TAG_SHARED_MIB` (shared limit, 0 for the default), `AAR_TAG_WEIGHT` (CPU share weight, 0 for the default 1; `AAR_E_NOSYS` where the platform has no weighting), `AAR_TAG_AUDIO_ROUTE`, `AAR_TAG_LEASE_EXTENDED` (on by default), `AAR_TAG_CLIENT_CAPS`, `AAR_TAG_PROFILE_HZ` (samples per second of the app's pc, 0 for none, at most `AAR_PROFILE_HZ_MAX` (10000); a platform without a profiler accepts it and grants 0, and a platform may grant a lower rate, which `AARStatusInfo.profile_hz` reports). Returns `AAR_E_BUSY` once a load has begun, `AAR_E_INVAL` for an out-of-range value (limits above 4095 MiB), `AAR_E_NOSYS` for an option the platform cannot support (a missing `PLATFORM` audio route shows at `aar_audio_open`, not here). Launcher policy (root directory, absolute paths, console redirection, screen mode) is configuration of the serving loop (`aar_serve`, 9.6) and not a library option. |
 | `AARLoadFile(handle, path)`, `AARLoadMemory(handle, data, length)` | Loads the image. Maximum size reported by `AARQuery` (at least 16 MiB). Waits are progress-aware: a load that keeps making progress is not timed out; one that stalls is, after about 5 s. The result codes are those of 5.2. |
 | `AARStart(handle, argv, argc)` | Starts with up to `max_args` strings (`argv[0]` included) of up to `max_arg_bytes`. The first is the program name. |
 | `AARStop(handle)` | Requests a stop of the generation this handle loaded. |
-| `AARStatus(handle, AARStatusInfo *)` | Snapshot: state, generation, end reason, exit code, fault data, load base, profile. |
+| `AARStatus(handle, AARStatusInfo *)` | Snapshot: state, generation, end reason, exit code, fault data, load base, profile, the stack snapshot (`stack_sp`, `stack_bytes`) and the profiler's counters (`profile_hz`, `profile_samples`, `profile_dropped`). |
 | `AARSendMessage`, `AARGetMessage` | 32 bytes. `AAR_E_BUSY` when the queue toward the app is full or no message from the app is queued. |
 | `AARMessageSignal(handle)` | Returns the signal mask (`ULONG`) of the handle's owner task, shared by all of that task's handles; 0 if the handle is invalid. Set when an app of that task sends a message, exits, faults, or queues a service request; after the signal the client checks each of its handles. |
 | `AARSharedMap`, `Unmap`, `Publish`, `Acquire` | 9.5. |
@@ -610,6 +618,8 @@ AARSetLogSink(handle,sink,user)(a0/a1/a2)
 | `AARSharedToken(handle, ptr, bytes, &token)` | The token of a range of client memory inside the platform's shared aperture, the reverse of `AARSharedMap`. The client uses it to name its own memory to the app in a reply: the surfaces of a `DISPLAY_OPEN` reply (8.2, 9.6). For the base of a range that `AARSharedMap` mapped, the token equals `map.haddr`. `AAR_E_INVAL` for NULL, zero bytes or an address outside the aperture; `AAR_E_NOSYS` where the platform cannot name host memory to the app. |
 | `AARExt(platform_id, ext_id)` | Returns a platform extension table (size-first, append-only) or NULL. No handle. The ZZ9000 table: claim list, administrative release, stats, lease pause (`aar_zz9000.h`). |
 | `AARSetLogSink(handle, sink, user)` | Installs the function that receives the app's log records (`AAR_OP_LOG`), one call per record, in the owner task, from inside `AARServiceNext` or `AARGetMessage`. A new handle has none, and a record that arrives while there is none is dropped. It needs no platform support and works the same on every platform. |
+| `AARReadStack(handle, buf, bytes, &got)` | Copies the stack snapshot of a fault or stall end (5.3), at most `bytes` bytes, and sets `got`. With `bytes` 0 it only sets `got` to the size of the snapshot. `AAR_E_NOENT` when there is none. |
+| `AARReadProfile(handle, buf, max_samples, &got, &lost)` | Copies the pc samples that the platform has written since the previous call, at most `max_samples`, as big-endian 64-bit app addresses, oldest first. `lost` is how many were overwritten in the platform's ring before the call took them. With `max_samples` 0 it only sets `got` to the number waiting. `AAR_E_NOSYS` when the platform granted no profile. |
 
 ### 9.3 Handle ownership
 
@@ -618,7 +628,7 @@ A handle belongs to the task that called `AAROpen`. Only that task can use or cl
 ### 9.4 Notification
 
 - Every owner task has one signal bit, allocated at its first `AAROpen` and freed when the task closes its last `aar.library` base (`CloseLibrary`), not at its last `AARClose`. The mask `AARMessageSignal` returns is valid until then. It is set when one of the task's apps has sent a message, ended (exit or fault), or queued a service request, and the handles of a task share it. A client with several handles checks them all after the signal, or gives each handle its own notify port, whose `AAREvent` names the handle.
-- If a `notify_port` was given, the library posts one `AAREvent` (164 bytes, never replied; its `handle` field names the handle) there at a time. It is posted only after the previous one has been taken off the port. Events coalesce: the type is `AAR_NOTIFY_MESSAGE` if a message is waiting, else `AAR_NOTIFY_COMPLETE` or `AAR_NOTIFY_FAULT` when the app has ended, else `AAR_NOTIFY_REQUEST`.
+- If a `notify_port` was given, the library posts one `AAREvent` (188 bytes, never replied; its `handle` field names the handle) there at a time. It is posted only after the previous one has been taken off the port. Events coalesce: the type is `AAR_NOTIFY_MESSAGE` if a message is waiting, else `AAR_NOTIFY_COMPLETE` or `AAR_NOTIFY_FAULT` when the app has ended, else `AAR_NOTIFY_REQUEST`.
 - Order of use: take the event off the port, then drain messages with `AARGetMessage` until `AAR_E_BUSY`. Before `AARClose`, drain the port and then the message ring.
 - The library SHOULD wake the owner from the platform's doorbell where there is one, and from a timer or vertical-blank poll of the queue indices where there is not (10.6). The ZZ9000 library polls at the vertical blank and visits only handles with work. That is client-side work, or an armed owner whose group the platform's event counts (10.6) say has changed.
 
@@ -691,7 +701,7 @@ A clip moves in chunks: the runtime sends as many `CLIP_READ` or `CLIP_WRITE` re
 
 ### 9.7 Status structure
 
-`AARStatusInfo` is 136 bytes and `AAREvent` 164 bytes (`struct Message`, `type` `AAR_NOTIFY_*`, `handle`, then an `AARStatusInfo`); `AARMessage` is 32 opaque bytes; `AARInfo` is 128 bytes and `AARImageInfo` 48. The layouts, with their 68k offsets, are in [`client/include/libraries/aar.h`](../client/include/libraries/aar.h), checked by the aar CI on 64-bit and 32-bit hosts and in the m68k toolchain.
+`AARStatusInfo` is 160 bytes and `AAREvent` 188 bytes (`struct Message`, `type` `AAR_NOTIFY_*`, `handle`, then an `AARStatusInfo`); `AARMessage` is 32 opaque bytes; `AARInfo` is 128 bytes and `AARImageInfo` 48. The layouts, with their 68k offsets, are in [`client/include/libraries/aar.h`](../client/include/libraries/aar.h), checked by the aar CI on 64-bit and 32-bit hosts and in the m68k toolchain.
 
 ## 10. The transport contract and implementing the standard on a platform
 
@@ -720,11 +730,16 @@ The control block is 4 KiB (`AAR_CB_BYTES`), zero-filled at admission, with layo
 | 0x080 requests | stop request, client present | client |
 | 0x0C0 lease and client accounting | lease counter (its own line), events dropped, CQ full | client |
 | 0x100 fault record | class, syndrome, pstate, pc, sp, lr, addr, load base (64-bit values) | platform |
-| 0x140 limits | private cap (MiB), shared limit (MiB), weight; 0 selects the default; set before the load begins | client writes, platform reads at load begin |
+| 0x140 limits | private cap (MiB), shared limit (MiB), weight, profile rate (Hz); 0 selects the default (for the profile rate, off); set before the load begins | client writes, platform reads at load begin |
 | 0x180 accounting | shared bytes used, private bytes committed (64-bit), SQ full count, log records dropped | platform |
 | 0x1C0 to 0x33F queues | per queue a descriptor line (platform, at admission), a tail line (the producer) and a head line (the consumer); SQ at 0x1C0, 0x200, 0x240, CQ at 0x280, 0x2C0, 0x300 | as stated |
+| 0x340 stack snapshot | app address of the first byte (64-bit), size in bytes (written last, 0: none); the bytes themselves at 0x400, at most 512 | platform, with the fault record |
+| 0x380 profile | granted rate (written last, 0: no profile), token and size of the sample ring, ticks dropped | platform, at load begin |
+| 0x3C0 profile head | count of samples written, one word, modulo 2^32 | platform |
 
 There is one shared-limit word: `AAR_CB_SHARED_MIB` limits all shared (host-visible) memory, including the runtime's own service buffers, and there is no separate host-visible limit word. The four queue counters have fixed writers: events dropped and CQ full are written by the client (its own tally of what it could not post, not of what the runtime later discards), SQ full and log dropped by the platform.
+
+The stack snapshot (`AAR_CB_STACK_*`) is written for `AAR_END_USER_FAULT` and `AAR_END_STALL` before the state and the end reason change; the fault record is written for both too (5.3). The profile words (`AAR_CB_PROFILE_*`) describe a ring of big-endian 64-bit app pcs in a shared buffer that the platform allocates when the load begins, if the client asked for a rate in `AAR_CB_PROFILE_HZ` and the platform has a profiler. Sample number `n` is at byte `(n mod count) * 8` of the buffer, `count` being the ring size in bytes over 8, a power of two. The head is one 32-bit word, the number of samples written modulo 2^32, stored after the sample with a release barrier; a reader works in modular arithmetic and treats a head more than 2^31 ahead of what it has taken as corrupt. The platform may already be writing the slot of the next sample, which holds the oldest one, so a reader trusts only the `count - 1` newest samples (those with index at least the head, read after the copy, minus `count - 1`); older ones it had not taken, or took while the head moved past them, are lost, and it counts them itself. The word at 0x380 is written last, so a reader that reads a rate other than 0 may use the token and the size. A platform without a profiler leaves them 0. [`docs/transport.md`](../docs/transport.md) lists every word.
 
 ### 10.4 Queue pair
 

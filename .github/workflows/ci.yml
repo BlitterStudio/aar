@@ -30,10 +30,12 @@ jobs:
       - name: actionlint (workflow files)
         run: docker run --rm -v "$PWD":/repo:ro -w /repo rhysd/actionlint:latest -color
 
-  # Builds the SDK image (Arm GNU Toolchain 15.3.rel2 and a PIC newlib for both
-  # profiles, pinned by version and sha256 in docker/Dockerfile) and runs
-  # everything that needs it inside the image: make check for A32 and A64, the
-  # CMake examples, and the qemu runtime test.
+  # Builds the SDK image (Arm GNU Toolchain 15.3.rel2, a PIC newlib and a PIC
+  # C++ runtime for both profiles, pinned by version and sha256 in
+  # docker/Dockerfile) and runs everything that needs it inside the image: make
+  # check for A32 and A64 (it builds the C++ template with and without
+  # exceptions), the CMake examples, and the qemu runtime test (it runs the C++
+  # template).
   sdk-image:
     name: SDK image, make check, CMake examples, runtime test
     runs-on: ubuntu-latest
@@ -44,7 +46,7 @@ jobs:
         run: docker build -f docker/Dockerfile -t aar-sdk:ci .
       - name: make check (both profiles)
         run: docker run --rm aar-sdk:ci make check
-      - name: CMake examples (A32 and A64, with newlib)
+      - name: CMake examples (A32 and A64, with newlib and the C++ runtime)
         run: |
           docker run --rm aar-sdk:ci bash -c '
             set -euo pipefail
@@ -52,6 +54,17 @@ jobs:
               cmake -S "$AAR_SDK/cmake/example" -B "/tmp/example-$profile" \
                 -DCMAKE_TOOLCHAIN_FILE="$AAR_SDK/cmake/aar-toolchain-$profile.cmake"
               cmake --build "/tmp/example-$profile"
+            done
+          '
+      - name: CMake examples (A32 and A64, C++ without exceptions)
+        run: |
+          docker run --rm aar-sdk:ci bash -c '
+            set -euo pipefail
+            for profile in a32 a64; do
+              cmake -S "$AAR_SDK/cmake/example" -B "/tmp/noexc-$profile" \
+                -DCMAKE_TOOLCHAIN_FILE="$AAR_SDK/cmake/aar-toolchain-$profile.cmake" \
+                -DAAR_CXX_EXCEPTIONS=OFF
+              cmake --build "/tmp/noexc-$profile"
             done
           '
       - name: CMake examples (A32 and A64, freestanding, without the PIC sysroot)

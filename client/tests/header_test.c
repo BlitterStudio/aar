@@ -80,7 +80,7 @@ static unsigned long failures;
 #define OFF_IMG_RESERVED 40
 #define SIZE_IMG 48
 
-/* AARStatusInfo, 136 bytes. */
+/* AARStatusInfo, 160 bytes. */
 #define OFF_ST_SIZE 0
 #define OFF_ST_STATE 4
 #define OFF_ST_GENERATION 8
@@ -107,15 +107,20 @@ static unsigned long failures;
 #define OFF_ST_LOG_DROPPED 124
 #define OFF_ST_EVENTS_DROPPED 128
 #define OFF_ST_CQ_FULL 132
-#define SIZE_ST 136
+#define OFF_ST_STACK_SP 136
+#define OFF_ST_STACK_BYTES 144
+#define OFF_ST_PROFILE_HZ 148
+#define OFF_ST_PROFILE_SAMPLES 152
+#define OFF_ST_PROFILE_DROPPED 156
+#define SIZE_ST 160
 
-/* AAREvent, 164 bytes. struct Message is 20 bytes: a Node of 14 (succ 0,
+/* AAREvent, 188 bytes. struct Message is 20 bytes: a Node of 14 (succ 0,
  * pred 4, type 8, pri 9, name 10), the reply port at 14 and the length at 18. */
 #define OFF_EV_MESSAGE 0
 #define OFF_EV_TYPE 20
 #define OFF_EV_HANDLE 24
 #define OFF_EV_STATUS 28
-#define SIZE_EV 164
+#define SIZE_EV 188
 #define SIZE_MESSAGE 20
 #define OFF_MSG_NODE 0
 #define SIZE_NODE 14
@@ -289,6 +294,11 @@ static void test_layouts(void)
         F(AARStatusInfo, log_dropped, OFF_ST_LOG_DROPPED),
         F(AARStatusInfo, events_dropped, OFF_ST_EVENTS_DROPPED),
         F(AARStatusInfo, cq_full, OFF_ST_CQ_FULL),
+        F(AARStatusInfo, stack_sp, OFF_ST_STACK_SP),
+        F(AARStatusInfo, stack_bytes, OFF_ST_STACK_BYTES),
+        F(AARStatusInfo, profile_hz, OFF_ST_PROFILE_HZ),
+        F(AARStatusInfo, profile_samples, OFF_ST_PROFILE_SAMPLES),
+        F(AARStatusInfo, profile_dropped, OFF_ST_PROFILE_DROPPED),
     };
     static const struct field ev[] = {
         F(AAREvent, message, OFF_EV_MESSAGE),
@@ -368,6 +378,7 @@ static void test_constants(void)
     CHECK_EQ(strcmp(AAR_LIB_NAME, "aar.library"), 0);
     CHECK_EQ(AAR_LIB_VERSION, AAR_API_MAJOR);
     CHECK_EQ(AAR_LIB_VERSION, 0);
+    CHECK_EQ(AAR_LIB_REVISION_READ, 2);
     CHECK_EQ(AAR_PROFILEF_A32, 1);
     CHECK_EQ(AAR_PROFILEF_A64, 2);
     CHECK_EQ(AAR_NOTIFY_MESSAGE, 1);
@@ -388,6 +399,8 @@ static void test_constants(void)
     CHECK_EQ(AAR_TAG_LEASE_EXTENDED, 0x80415204UL);
     CHECK_EQ(AAR_TAG_AUDIO_ROUTE, 0x80415205UL);
     CHECK_EQ(AAR_TAG_CLIENT_CAPS, 0x80415206UL);
+    CHECK_EQ(AAR_TAG_PROFILE_HZ, 0x80415207UL);
+    CHECK_EQ(AAR_PROFILE_HZ_MAX, 10000UL);
     CHECK_EQ(AAR_TAG_PLATFORM_BASE(AAR_PLATFORM_ZZ9000), 0x80415300UL);
     /* The names the header reuses from the app side exist with the spec values. */
     CHECK_EQ(AAR_OK, 0);
@@ -435,6 +448,8 @@ _Static_assert(IS_TYPE(AARAudioRead, LONG (*)(AARHandle *, void *, ULONG, ULONG 
 _Static_assert(IS_TYPE(AARSharedToken, LONG (*)(AARHandle *, const void *, ULONG, ULONG *)), "AARSharedToken");
 _Static_assert(IS_TYPE(AARExt, APTR (*)(ULONG, ULONG)), "AARExt");
 _Static_assert(IS_TYPE(AARSetLogSink, LONG (*)(AARHandle *, AARLogSink, APTR)), "AARSetLogSink");
+_Static_assert(IS_TYPE(AARReadStack, LONG (*)(AARHandle *, void *, ULONG, ULONG *)), "AARReadStack");
+_Static_assert(IS_TYPE(AARReadProfile, LONG (*)(AARHandle *, void *, ULONG, ULONG *, ULONG *)), "AARReadProfile");
 
 /* The sink is a plain C function of three arguments: the type a function that
  * has them is accepted as, and no other. */

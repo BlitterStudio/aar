@@ -10,9 +10,11 @@ both variants behind `__aarch64__`.
 
 Apps link against the PIC newlib from `build_pic_newlib.sh`, except freestanding
 apps (see "Freestanding" below). Stock newlib is not PIC and fails
-`aar-check`. Set `AAR_SDK` to the root of this repository (`/opt/aar-sdk` in the
-image) and `AAR_SYSROOT_A32` and `AAR_SYSROOT_A64` to the sysroots that
-`build_pic_newlib.sh` built (the image sets all three).
+`aar-check`, and neither is the toolchain's `libstdc++`: C++ apps link the PIC
+C++ runtime that `build_pic_libstdcxx.sh` installs into the same sysroot. Set
+`AAR_SDK` to the root of this repository (`/opt/aar-sdk` in the image) and
+`AAR_SYSROOT_A32` and `AAR_SYSROOT_A64` to the sysroots that those scripts built
+(the image sets all three).
 
 ## Make
 
@@ -27,9 +29,10 @@ include $(AAR_SDK)/mk/aar.mk
 ```
 
 `make` writes `build/<profile>/hello.elf` and its `.map`. `make check` runs
-`aar-check` on it. `make clean` removes the build. Optional `CFLAGS` and
-`LDLIBS` are appended to the SDK flags. This repository builds every template
-for every available profile through that include:
+`aar-check` on it. `make clean` removes the build. Optional `CFLAGS`,
+`CXXFLAGS` and `LDLIBS` are appended to the SDK flags. A `.cpp`, `.cc` or `.cxx`
+file in `SRCS` makes it a C++ app (see "C++" below). This repository builds
+every template for every available profile through that include:
 
 ```text
 make check
@@ -47,6 +50,7 @@ runs and the checks that need separate targets. These templates have fixed notes
 | `mgl-conformance` | 0 | 0 | display, GL | none |
 | `console` | 0 | 0 | none | input |
 | `membench` | 0 | 0 | none | display |
+| `cxx_hello` | 0 | 0 | none | none |
 
 `AAR_FREESTANDING=1` links without newlib; see "Freestanding" below and
 [the developer guide](../docs/aar-developer-guide.md#freestanding-apps).
@@ -62,14 +66,17 @@ cmake --build build/cmake-a32
 `aar_add_executable(name [FREESTANDING] SOURCES ...)` in `cmake/aar.cmake`
 links the same way and runs `aar-check` after the link. One build directory is
 one profile: use `aar-toolchain-a64.cmake` in a second directory for A64.
-`cmake/example` builds `hello` and `freestanding`.
+`cmake/example` builds `hello`, `freestanding` and `cxx_hello`. A C++ target
+needs `CXX` in `project()` (the example has `project(aar_hello C CXX ASM)`), and
+`-DAAR_CXX_EXCEPTIONS=OFF` compiles C++ without exceptions.
 
 ## Docker
 
 `docker/Dockerfile` is Debian slim plus Arm GNU Toolchain 15.3.rel2 for both
-profiles (pinned URL and sha256), a PIC newlib for each, Python, make and
-CMake. The image sets `AAR_SDK`, `AAR_SYSROOT_A32`, `AAR_SYSROOT_A64` and
-`PATH`.
+profiles (pinned URL and sha256), a PIC newlib and a PIC C++ runtime for each
+(the C++ runtime is built from the toolchain release's source snapshot, pinned
+by sha256), Python, make and CMake. The image sets `AAR_SDK`, `AAR_SYSROOT_A32`,
+`AAR_SYSROOT_A64` and `PATH`.
 
 ```text
 docker build -f docker/Dockerfile -t aar-sdk .
@@ -81,8 +88,10 @@ docker run --rm -v "$PWD:/src:ro" aar-sdk sh -c \
 dispatch.
 
 Without Docker, install Arm GNU Toolchain 15.3.rel2, run `build_pic_newlib.sh`
-once per profile, and export the three variables above. The Make and CMake
-entry points are the same.
+and `build_pic_libstdcxx.sh` once per profile, and export the three variables
+above. `build_pic_libstdcxx.sh` needs a host C++ compiler, GMP, MPFR and MPC
+development packages, flex, and about 4 GiB of disk. The Make and CMake entry
+points are the same.
 
 ## Check
 
@@ -103,7 +112,20 @@ fails if any archive other than `libaar.a` and `libgcc.a` was linked.
 supplies weak `memcpy`, `memmove`, `memset` and `memcmp`. The developer guide
 has the full list of differences. `make check` builds `freestanding.c` this
 way, checks its link map, and links a fixture (`tests/freestanding_leak.c` with
-`-lc`) that must be rejected.
+`-lc`) that must be rejected. The flavour has no C++ runtime: a C++ source in
+a freestanding build is refused with an error.
+
+## C++
+
+`cxx_hello.cpp` is the C++ template. `make check` builds it for both profiles,
+with exceptions and (as `cxx_hello_noexc`) with `AAR_CXX_EXCEPTIONS=0`, runs
+`aar-check` on both, and `make check-runtime` runs both under qemu. C++ builds
+use `g++` with the profile's flags, `-std=c++17` and exceptions on, link
+`libstdc++` and `libgcc_eh` from the sysroot, and use `libaar/<profile>/aar-cxx.ld`
+(which keeps the unwind tables) in place of `aar.ld`. The
+[developer guide](../docs/aar-developer-guide.md#c-apps) lists what works and
+what does not: exceptions and RTTI work, threads and the `<chrono>` clocks do
+not.
 
 ## Host runner
 
@@ -171,6 +193,12 @@ instruction set.
   `aar_gl_bind`; see `mgl-conformance-README.md`.
 - `sbrk_smoke.c`: a link fixture, not a template. It pulls newlib `malloc` so
   the relocation check sees more than the `hello` pointer.
+- `cxx_hello.cpp`: the C++ template. A global object with a constructor and a
+  destructor, a priority-101 constructor that throws and catches, `std::vector`
+  and `std::string`, a function-level static, `new` and `delete`, a virtual
+  call, RTTI, and three throw and catch cases. It writes
+  each step with `aar_log`, logs `cxx_hello PASS` and exits 0 when every check
+  held, and logs the exception mode it was built with.
 
 ## ZZ9000 notes
 

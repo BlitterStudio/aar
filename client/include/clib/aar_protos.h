@@ -45,6 +45,8 @@ LONG AARAudioRead(AARHandle *handle, void *dst, ULONG frames, ULONG *got);
 LONG AARSharedToken(AARHandle *handle, const void *ptr, ULONG bytes, ULONG *token);
 APTR AARExt(ULONG platform_id, ULONG ext_id);
 LONG AARSetLogSink(AARHandle *handle, AARLogSink sink, APTR user);
+LONG AARReadStack(AARHandle *handle, void *buf, ULONG bytes, ULONG *got);
+LONG AARReadProfile(AARHandle *handle, void *buf, ULONG max_samples, ULONG *got, ULONG *lost);
 
 #ifdef __cplusplus
 }
