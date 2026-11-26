@@ -247,6 +247,12 @@ static void prep_reset(struct conf_run *run)
     memset(&is, 0, sizeof is);
 }
 
+static void prep_std(struct conf_run *run)
+{
+    prep_reset(run);
+    run->serve_flags_off = AAR_SERVEF_NO_INPUT_WINDOW;
+}
+
 /* Variant show: the events the app saw, kept for the operator, and whether any of
  * them is evidence that a person used the input: a key, or a mouse or joystick event
  * with motion or buttons. Events of the activation kind (type and code, no motion, no
@@ -418,7 +424,7 @@ static const struct conf_variant variants[] = {
     { "overfull", prep_reset },
     { "show", prep_show },
     { "buttons", prep_buttons },
-    { "std", prep_reset },
+    { "std", prep_std },
 };
 
 /* C-INPUT.9: with the queue overfull the new events are dropped, never the old ones. */

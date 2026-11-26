@@ -366,9 +366,12 @@ static void test_layouts(void)
     CHECK_EQ(offsetof(struct Node, ln_Name), 10);
     /* The ZZ9000 extension table: two words, then the function pointers. */
     CHECK_EQ(offsetof(aar_client_ext_zz9000, list), 8);
-    /* It ends at lease_pause: the log sink is AARSetLogSink, not a field. */
+    /* The members that follow lease_pause are appended in this order; the log
+     * sink is AARSetLogSink, not a field. */
     CHECK_EQ(offsetof(aar_client_ext_zz9000, lease_pause), 8 + 3 * sizeof(void *));
-    CHECK_EQ(sizeof(aar_client_ext_zz9000), 8 + 4 * sizeof(void *));
+    CHECK_EQ(offsetof(aar_client_ext_zz9000, surface_alloc), 8 + 4 * sizeof(void *));
+    CHECK_EQ(offsetof(aar_client_ext_zz9000, surface_free), 8 + 5 * sizeof(void *));
+    CHECK_EQ(sizeof(aar_client_ext_zz9000), 8 + 6 * sizeof(void *));
 }
 
 /* ---- Constants ------------------------------------------------------------- */

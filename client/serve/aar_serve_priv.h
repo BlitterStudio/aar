@@ -25,6 +25,7 @@
 
 #include <libraries/aar.h>
 #include <libraries/aar_serve.h>
+#include <libraries/aar_zz9000.h>
 
 #include "aar_serve_core.h"
 
@@ -149,6 +150,14 @@
 #define X_AAR_POST_EVENT(...) AARPostEvent(__VA_ARGS__)
 #define X_AAR_AUDIO_READ(...) AARAudioRead(__VA_ARGS__)
 #define X_AAR_SHARED_TOKEN(...) AARSharedToken(__VA_ARGS__)
+/* The ZZ9000 extension table of the library, or NULL on another platform
+ * (callers test AAR_CLIENT_EXT_ZZ9000_COVERS), and its surface calls. The
+ * memory comes back as a plain pointer. */
+#define X_AAR_EXT() \
+    ((const aar_client_ext_zz9000 *)AARExt(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_CLIENT))
+#define X_AAR_SURFACE_ALLOC(ext, bytes, handle, mem) \
+    ((ext)->surface_alloc((bytes), (handle), (APTR *)(mem)))
+#define X_AAR_SURFACE_FREE(ext, handle) ((ext)->surface_free(handle))
 #define X_AAR_MESSAGE_SIGNAL(...) AARMessageSignal(__VA_ARGS__)
 #define X_AAR_SET_LOG_SINK(...) AARSetLogSink(__VA_ARGS__)
 #define X_AAR_QUERY(...) AARQuery(__VA_ARGS__)
@@ -183,14 +192,6 @@
 #define X_GET_DISPLAY_INFO(buf, size, tag, id) \
     GetDisplayInfoData(NULL, (UBYTE *)(buf), size, tag, id)
 #define X_INTUITION_VERSION() ((ULONG)IntuitionBase->LibNode.lib_Version)
-#define X_P96_ALLOC_BITMAP(s, w, h, depth, flags, friend, rgb) \
-    ({ struct Library *P96Base = (s)->gfx.p96; p96AllocBitMap(w, h, depth, flags, friend, rgb); })
-#define X_P96_FREE_BITMAP(s, bm) \
-    ({ struct Library *P96Base = (s)->gfx.p96; p96FreeBitMap(bm); })
-#define X_P96_LOCK_BITMAP(s, bm, ri, size) \
-    ({ struct Library *P96Base = (s)->gfx.p96; p96LockBitMap(bm, (UBYTE *)(ri), size); })
-#define X_P96_UNLOCK_BITMAP(s, bm, lock) \
-    ({ struct Library *P96Base = (s)->gfx.p96; p96UnlockBitMap(bm, lock); })
 #define X_P96_WRITE_PIXEL_ARRAY(s, ri, sx, sy, rp, dx, dy, w, h) \
     ({ struct Library *P96Base = (s)->gfx.p96; p96WritePixelArray(ri, sx, sy, rp, dx, dy, w, h); })
 #define X_P96_RECT_FILL(s, rp, x0, y0, x1, y1, argb) \
@@ -332,9 +333,10 @@ struct aar_serve {
          * (a bitmap on the board) that each flip shows. */
         struct Window *win;             /* the display window of a window display */
         struct Screen *pub;             /* the locked public screen it is on */
-        struct BitMap *surface;         /* the surface bitmap: the front token */
-        struct RenderInfo surf_ri;      /* its RenderInfo, from the lock it is held under */
-        LONG surf_lock;                 /* that p96LockBitMap lock: kept until the surface goes */
+        void *surf_mem;                 /* its pixels: a stable allocation, never moved or locked */
+        ULONG surf_handle;              /* the platform's handle of it (0: Amiga memory from X_ALLOC_MEM) */
+        ULONG surf_bytes;               /* its size */
+        struct RenderInfo surf_ri;      /* what p96WritePixelArray reads: surf_mem, its pitch and format */
         ULONG surf_rgb;                 /* its RGBFB_* */
         uint32_t surf_w, surf_h, surf_bpp;
         int scaled;                     /* flips show the surface scaled */

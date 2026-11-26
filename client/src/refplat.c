@@ -15,6 +15,9 @@
 struct refplat_state refplat;
 
 static uint8_t arena[REFPLAT_ARENA_BYTES] __attribute__((aligned(8)));
+/* Tokens in the reference surface heap are page-aligned. The C array only
+ * needs native word alignment; the Amiga hunk format cannot align to 4 KiB. */
+static uint8_t surface_heap[REFPLAT_SURFACE_BYTES] __attribute__((aligned(8)));
 
 static const struct aar_plat_info info_default = {
     sizeof(struct aar_plat_info),
@@ -349,6 +352,15 @@ static int op_map(struct aar_plat *p, uint32_t token, uint32_t bytes,
         return AAR_E_NOMEM;
     if (token == refplat.stale_map_token && token != 0u)
         return AAR_E_STALE;
+    if (token >= REFPLAT_SURFACE_TOKEN_BASE) {
+        if (token - REFPLAT_SURFACE_TOKEN_BASE > REFPLAT_SURFACE_BYTES || bytes == 0u ||
+            bytes > REFPLAT_SURFACE_BYTES - (token - REFPLAT_SURFACE_TOKEN_BASE))
+            return AAR_E_INVAL;
+        trace(REFPLAT_T_MAP, 0u);
+        *ptr = surface_heap + (token - REFPLAT_SURFACE_TOKEN_BASE);
+        *mapf = refplat.map_mapf;
+        return AAR_OK;
+    }
     if (token < REFPLAT_TOKEN_BASE || bytes == 0u ||
         token - REFPLAT_TOKEN_BASE > REFPLAT_ARENA_BYTES ||
         bytes > REFPLAT_ARENA_BYTES - (token - REFPLAT_TOKEN_BASE))
@@ -366,6 +378,13 @@ static int op_token(struct aar_plat *p, const volatile void *ptr, uint32_t bytes
     uintptr_t off;
 
     (void)p;
+    if (b >= surface_heap && b < surface_heap + REFPLAT_SURFACE_BYTES) {
+        off = (uintptr_t)(b - surface_heap);
+        if (bytes > REFPLAT_SURFACE_BYTES - off)
+            return AAR_E_INVAL;
+        *token = REFPLAT_SURFACE_TOKEN_BASE + (uint32_t)off;
+        return AAR_OK;
+    }
     if (b < arena || b >= arena + REFPLAT_ARENA_BYTES)
         return AAR_E_INVAL;
     off = (uintptr_t)(b - arena);
@@ -501,13 +520,87 @@ static LONG ext_release_handle(ULONG handle)
     return AAR_OK;
 }
 
+/* A stable block of the surface heap, as the card's allocator gives it: first
+ * fit among the live blocks, padded to 4 KiB, zeroed, the address kept until
+ * surface_free. */
+static LONG ext_surface_alloc(ULONG bytes, ULONG *handle, APTR *ptr)
+{
+    uint32_t off = 0u, i, slot = REFPLAT_SURFACES, clash;
+
+    if (handle)
+        *handle = 0;
+    if (ptr)
+        *ptr = (APTR)0;
+    if (bytes == 0u || !handle || !ptr)
+        return AAR_E_INVAL;
+    if (refplat.surface_alloc_rc != AAR_OK)
+        return refplat.surface_alloc_rc;
+    if (bytes > REFPLAT_SURFACE_BYTES)
+        return AAR_E_NOMEM;
+    bytes = (bytes + 4095u) & ~4095u;
+    for (i = 0u; i < REFPLAT_SURFACES; i++)
+        if (refplat.surfaces[i].handle == 0u) {
+            slot = i;
+            break;
+        }
+    if (slot == REFPLAT_SURFACES)
+        return AAR_E_NOMEM;
+    do {
+        clash = 0u;
+        if (bytes > REFPLAT_SURFACE_BYTES - off)
+            return AAR_E_NOMEM;
+        for (i = 0u; i < REFPLAT_SURFACES; i++) {
+            const struct refplat_surface *b = &refplat.surfaces[i];
+
+            if (b->handle != 0u && off < b->off + b->bytes && b->off < off + bytes) {
+                off = b->off + b->bytes;
+                clash = 1u;
+                break;
+            }
+        }
+    } while (clash);
+    refplat.surface_serial++;
+    refplat.surfaces[slot].handle = refplat.surface_serial;
+    refplat.surfaces[slot].off = off;
+    refplat.surfaces[slot].bytes = bytes;
+    memset(surface_heap + off, 0, bytes);
+    refplat.surface_allocs++;
+    refplat.surface_live++;
+    *handle = refplat.surface_serial;
+    *ptr = (APTR)(uintptr_t)(surface_heap + off);
+    return AAR_OK;
+}
+
+/* The block goes: its memory is trashed (0xEE), so that a user of the old
+ * address is seen. */
+static LONG ext_surface_free(ULONG handle)
+{
+    uint32_t i;
+
+    for (i = 0u; handle != 0u && i < REFPLAT_SURFACES; i++) {
+        struct refplat_surface *b = &refplat.surfaces[i];
+
+        if (b->handle == handle) {
+            memset(surface_heap + b->off, 0xEE, b->bytes);
+            memset(b, 0, sizeof(*b));
+            refplat.surface_frees++;
+            refplat.surface_live--;
+            return AAR_OK;
+        }
+    }
+    refplat.surface_stale_frees++;
+    return AAR_E_STALE;
+}
+
 static const aar_client_ext_zz9000 ext_table = {
     sizeof(aar_client_ext_zz9000),
     0u,
     ext_list,
     ext_release_handle,
     aar_core_ext_stats,
-    aar_core_ext_lease_pause
+    aar_core_ext_lease_pause,
+    ext_surface_alloc,
+    ext_surface_free
 };
 
 static const void *op_ext(struct aar_plat *p, uint32_t ext_id)
@@ -551,6 +644,7 @@ void refplat_reset(void)
 {
     memset(&refplat, 0, sizeof(refplat));
     memset(arena, 0, sizeof(arena));
+    memset(surface_heap, 0, sizeof(surface_heap));
     refplat.plat.version = AAR_PLAT_VERSION;
     refplat.info = info_default;
     refplat.plat.info = &refplat.info;
@@ -587,6 +681,8 @@ uint32_t refplat_buf_token(int slot, uint32_t off)
 
 volatile uint8_t *refplat_ptr(uint32_t token)
 {
+    if (token >= REFPLAT_SURFACE_TOKEN_BASE)
+        return surface_heap + (token - REFPLAT_SURFACE_TOKEN_BASE);
     return arena + (token - REFPLAT_TOKEN_BASE);
 }
 

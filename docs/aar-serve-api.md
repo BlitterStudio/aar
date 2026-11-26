@@ -161,33 +161,44 @@ display table is granted none of the caps below, because the table, not the loop
 owns the window.
 
 `AAR_DISPLAY_WINDOW` shows the surface in a window on the default public screen.
-The surface is then a bitmap of its own in the requested format, made with
-`p96AllocBitMap` on the board and named by a token like any other surface.
-The client requests a displayable bitmap. If it cannot get a board token, it
-tries again with the public screen's bitmap as the friend. It uses the same
-placement rule for the drawing surface of a scaled screen. The
-token is the address of the bitmap, which Picasso96 may move while it is not
-locked, so `p96LockBitMap` pins it before the token exists and the lock is kept
-until the surface is replaced by a resize or the display is closed. A bitmap
-that cannot be locked is not used (the display opens without the window).
-There is one buffer, and each flip draws it into the window with
-`p96WritePixelArray` from the RenderInfo of that lock, without locking again,
-at the top left of the inner area and clipped to it. The window has a drag bar,
-a depth gadget and a close gadget, the title of `screen_title`, and the inner
-size of the surface. The cap `AAR_DISPCAP_WINDOW` is granted when the public
-screen is a Picasso96 screen of at least 16 bits per pixel and the bitmap could
-be made and named. Otherwise the display opens as it does without the flag, on a
-screen of its own, and none of the caps that need a window are granted. A CLUT8
-surface always takes a screen of its own, because its palette would change the
-public screen's.
+The surface is then a stable allocation of its own in the requested format, with
+a pitch of the row padded to 16 bytes, named by a token like any other surface.
+No Picasso96 bitmap is made or locked for it, so it does not depend on the
+public screen's pixel format or on the board. On the ZZ9000 the allocation
+comes from the library's `surface_alloc` call (see the ZZ9000 extension of the
+client API): host-visible, zeroed, at an address that does not change until
+`surface_free`, which is called when the surface is replaced by a resize or the
+display is closed, also when the claim was revoked meanwhile. When the library
+has no such call (another platform, or an older library whose table ends before
+it), the client allocates public memory and uses it only if `AARSharedToken`
+names it; otherwise the surface cannot be made and the display falls back to a
+screen of its own. The app maps the token and writes into it; the client never
+locks or copies it. There is one buffer, and each flip draws it into the window
+with `p96WritePixelArray` from a `RenderInfo` of that memory (the app's format
+and pitch), at the top left of the inner area and clipped to it. The window has
+a drag bar, a depth gadget and a close gadget, the title of `screen_title`, and
+the inner size of the surface. The cap `AAR_DISPCAP_WINDOW` is granted when the
+public screen is a Picasso96 screen of at least 16 bits per pixel and the
+surface could be made and named. Otherwise the display opens as it does without
+the flag, on a screen of its own, and none of the caps that need a window are
+granted. A CLUT8 surface always takes a screen of its own, because its palette
+would change the public screen's. A scaled display on a screen has a surface of
+its own in the same way.
+
+With the ZZ9000 allocation, the reply of `DISPLAY_OPEN` of a window or scaled
+display also names the scanout of the screen the display is shown on (the public
+screen's bitmap for a window, the display's own screen for a scaled display), read
+with `P96BMA_MEMORY` and `AARSharedToken` and never locked. It is in the spare
+word with the reply flag `AAR_DISP_REPLY_SCANOUT`; it is no buffer of the app, the
+display records no spare, and a resize does not repeat it.
 
 `AAR_DISPLAY_RESIZABLE` needs `AAR_DISPLAY_WINDOW`: the window gets a size gadget
 in its border and the input window's `IDCMP_NEWSIZE` becomes `AAR_EV_RESIZE` with
 the new inner size. It is granted as `AAR_DISPCAP_RESIZE` only with an input
-window. `DISPLAY_RESIZE` then makes a new surface bitmap of the size the app
-asked for, locks it, frees the old one after it (releasing its lock once), and
-answers as `DISPLAY_OPEN` does; a bitmap that cannot be made or locked leaves the
-display as it was and answers `AAR_E_NOMEM`. It
+window. `DISPLAY_RESIZE` then allocates a new surface of the size the app
+asked for, frees the old one after it, and answers as `DISPLAY_OPEN` does
+(without a scanout token); a surface that cannot be allocated or named, or a claim
+that was lost, leaves the display as it was and answers `AAR_E_NOMEM`. It
 answers `AAR_E_BUSY` while a flip is pending (a window display has none, a
 replacement table may).
 

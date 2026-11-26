@@ -447,9 +447,12 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_R_DISPLAY_OPEN_ID     0u
 #define AAR_R_DISPLAY_OPEN_PITCH  1u
 #define AAR_R_DISPLAY_OPEN_LAYOUT 2u
-#define AAR_R_DISPLAY_OPEN_FRONT  3u /* tokens of the client's bitmap memory */
+#define AAR_R_DISPLAY_OPEN_FRONT  3u /* tokens of the client's surface memory */
 #define AAR_R_DISPLAY_OPEN_BACK   4u
 #define AAR_R_DISPLAY_OPEN_SPARE  5u
+/* With WINDOW or SCALED on DISPLAY_OPEN only, SPARE instead names the
+ * owning output's scanout for vertical blank tracking. Never an app buffer. */
+#define AAR_DISP_REPLY_SCANOUT (1u << 15)
 #define AAR_A_DISPLAY_ID          0u /* FLIP, PALETTE, CLOSE; minor 6: INFO, RESIZE, TITLE, POINTER, VBLANK */
 #define AAR_A_DISPLAY_FLIP_FLAGS  1u /* AAR_FLIPF_* */
 #define AAR_A_DISPLAY_PALETTE_FIRST 1u

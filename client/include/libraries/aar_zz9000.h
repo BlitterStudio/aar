@@ -10,9 +10,10 @@
  *
  * The base library stays platform neutral. What a launcher needs of the card
  * beyond it lives here: the list of all claims and the administrative release
- * of any of them (aar-run STATUS and RELEASE), the library's counters and a test
- * hook for the lease. The log sink is not here: AARSetLogSink is a call of the
- * base library on every platform.
+ * of any of them (aar-run STATUS and RELEASE), the library's counters, a test
+ * hook for the lease and the stable host-visible surfaces aar_serve draws
+ * window and scaled displays from. The log sink is not here: AARSetLogSink is
+ * a call of the base library on every platform.
  *
  * The table is size-first and append-only, like every structure of the library.
  * Test a field with AAR_CLIENT_EXT_ZZ9000_COVERS before you call it. The
@@ -112,6 +113,17 @@ typedef struct aar_client_ext_zz9000 {
      * A test hook for the lease; 0 resumes. AAR_E_NOSYS in a build without
      * the hook. */
     LONG (*lease_pause)(AARHandle *handle, ULONG ms);
+    /* A host-visible allocation of at least `bytes` bytes (padded to 4 KiB)
+     * that the card never moves until surface_free: *ptr is its immutable
+     * address (name it for the app with AARSharedToken), *handle a nonzero
+     * word for surface_free. The memory is zeroed. AAR_OK, or a negative
+     * AAR_E_* with any provided outputs set to zero. It belongs to the card,
+     * not the claim: free it after the runtime is done with the surface,
+     * including after a claim is revoked. */
+    LONG (*surface_alloc)(ULONG bytes, ULONG *handle, APTR *ptr);
+    /* Releases one allocation by its handle. AAR_OK, or AAR_E_STALE for a
+     * handle that is not live. */
+    LONG (*surface_free)(ULONG handle);
 } aar_client_ext_zz9000;
 
 #define AAR_CLIENT_EXT_ZZ9000_COVERS(ext, field) \
