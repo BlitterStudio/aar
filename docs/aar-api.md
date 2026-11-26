@@ -778,8 +778,9 @@ most `size` bytes and zeroes the rest. `utc_offset_min` is the offset in
 minutes east of UTC (`locale.library` keeps `loc_GMTOffset` in minutes west, so
 the client negates it). `flags` is `AAR_LOCALEF_*`. `language` is the Amiga
 language name without `.language`, for example `english` or `deutsch`, and
-`country` the country code the client reports (`loc_CountryCode` as text, for
-example `D` or `GB`); both are NUL-terminated and empty when unknown.
+`country` the vehicle registration code in `loc_CountryCode` (its non-zero
+bytes, most significant first, as text, for example `D` or `GB`); both are
+NUL-terminated and empty when unknown.
 `decimal_point` and `group_separator` are UTF-8 and NUL-terminated. 72 bytes.
 Minimum minor: 6.
 
@@ -1596,8 +1597,9 @@ int aar_file_rename(const char *from, const char *to, uint32_t flags);
 Renames or moves a file or directory within one volume; paths on different
 volumes are `AAR_E_INVAL`. `flags` is 0 or `AAR_RENAME_REPLACE`; another bit is
 `AAR_E_INVAL`. An existing `to` is `AAR_E_EXIST` unless `AAR_RENAME_REPLACE` is
-set, which deletes the target first and is not atomic on AmigaDOS. A missing
-`from` is `AAR_E_NOENT`. The path rules and the policy are those of
+set, which deletes the target first and is not atomic on AmigaDOS. When `from`
+and `to` name the same object, the call returns `AAR_OK` and changes nothing.
+A missing `from` is `AAR_E_NOENT`. The path rules and the policy are those of
 `aar_file_open`, and the call is refused after a stop. Parks for one client
 reply. Gate: `AAR_API_COVERS(api, file_rename)`. Missing slot: `AAR_E_NOSYS`.
 Minimum minor: 6.

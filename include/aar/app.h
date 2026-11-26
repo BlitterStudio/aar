@@ -359,7 +359,7 @@ typedef struct aar_locale_info {
     int32_t  utc_offset_min;  /* minutes EAST of UTC (locale.library loc_GMTOffset is minutes west: negate) */
     uint32_t flags;           /* AAR_LOCALEF_* */
     char     language[32];    /* NUL-terminated Amiga language name without ".language", e.g. "english", "deutsch"; "" unknown */
-    char     country[8];      /* NUL-terminated country code the client reports (loc_CountryCode as text, e.g. "D", "GB"); "" unknown */
+    char     country[8];      /* NUL-terminated vehicle code: the non-zero bytes of loc_CountryCode, most significant first, e.g. "D", "GB"; "" unknown */
     char     decimal_point[4];   /* UTF-8, NUL-terminated */
     char     group_separator[4]; /* UTF-8, NUL-terminated */
     uint32_t reserved[3];
