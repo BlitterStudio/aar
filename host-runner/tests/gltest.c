@@ -5,12 +5,19 @@
  * group is absent in the default mode (the driver offers no GL).
  *
  * argv[1]: "gl" (default), "front" (gl, and also read the surface after a
- * swap, which needs --dump-front), or "absent".
+ * swap, which needs --dump-front), "pump" (a loop that only swaps, polls
+ * events and checks should_stop must see a key and a quit that SDL queued), or
+ * "absent".
  *
  * SPDX-License-Identifier: MIT
  */
 #include "aar/app.h"
 #include "aar/note.h"
+
+#ifndef SDL_MAIN_HANDLED
+#define SDL_MAIN_HANDLED
+#endif
+#include <SDL.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -348,10 +355,59 @@ static int test_gl(int front)
     return 0;
 }
 
+/* A render loop with no yield and no sleep: aar_gl_swap parks like a flip, so
+ * it has to service the host's events. */
+static int test_pump(void)
+{
+    aar_surface surface;
+    SDL_Event ev;
+    aar_event got;
+    uint32_t n = 0;
+    int i, seen = 0;
+
+    if (!(aar_api_ptr->groups & AAR_GROUP_GL) || !aar_api_ptr->gl_bind)
+        return 77;
+    if (aar_display_open(WIDTH, HEIGHT, AAR_FMT_RGB565, 0u, &surface) != AAR_OK)
+        return fail(90, "display_open");
+    if (!aar_gl_bind(surface.id))
+        return fail(91, "aar_gl_bind");
+
+    memset(&ev, 0, sizeof ev);
+    ev.type = SDL_KEYDOWN;
+    ev.key.state = SDL_PRESSED;
+    ev.key.keysym.scancode = SDL_SCANCODE_A;
+    if (SDL_PushEvent(&ev) != 1)
+        return fail(92, "SDL_PushEvent of a key");
+    for (i = 0; i < 50 && !seen; i++) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        aar_gl_swap();
+        if (aar_event_poll(&got, 1u, &n) == AAR_OK && n == 1u &&
+            got.type == AAR_EV_KEY_DOWN)
+            seen = 1;
+    }
+    if (!seen)
+        return fail(93, "a key did not arrive through swap and event_poll");
+
+    memset(&ev, 0, sizeof ev);
+    ev.type = SDL_QUIT;
+    if (SDL_PushEvent(&ev) != 1)
+        return fail(94, "SDL_PushEvent of a quit");
+    for (i = 0; i < 50 && !aar_should_stop(); i++) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        aar_gl_swap();
+    }
+    if (!aar_should_stop())
+        return fail(95, "a quit did not reach should_stop through swap");
+    aar_gl_unbind();
+    return 0;
+}
+
 int aar_main(int argc, char **argv)
 {
     int mode_absent = argc > 1 && strcmp(argv[1], "absent") == 0;
     int front = argc > 1 && strcmp(argv[1], "front") == 0;
 
+    if (argc > 1 && strcmp(argv[1], "pump") == 0)
+        return test_pump();
     return mode_absent ? test_absent() : test_gl(front);
 }

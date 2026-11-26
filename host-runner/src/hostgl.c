@@ -606,14 +606,20 @@ static void store_frame(void)
     host_display_gl_store(gl.readback, (uint32_t)gl.w, (uint32_t)gl.h);
 }
 
+/* A swap parks like a flip, so it also runs the host pump: an app whose loop
+ * only swaps, polls events and checks should_stop still gets input and a
+ * close request. After a stop the frame is not presented, as with a flip. */
 static void api_gl_swap(void)
 {
     if (!gl.bound)
         return;
-    if (host_options()->dump_front)
-        store_frame();
-    SDL_GL_SwapWindow(gl.win);
-    host_display_gl_swapped();
+    if (!host_stop_requested()) {
+        if (host_options()->dump_front)
+            store_frame();
+        SDL_GL_SwapWindow(gl.win);
+        host_display_gl_swapped();
+    }
+    host_pump();
 }
 
 static void api_gl_unbind(void)

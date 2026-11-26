@@ -236,6 +236,9 @@ flicker.
 `aar_gl_swap` calls `SDL_GL_SwapWindow` and counts one presented frame, as a
 flip does (`--frames`). The host presents at once, so no swapped frame is in
 flight. The swap waits for the display refresh in a window and not headless.
+It then runs the host pump, so window input and a close request reach an app
+whose loop only swaps, polls events and checks `aar_should_stop`. After a stop
+the swap presents nothing.
 GL draws into the window, and the surface's own buffers are left as the app set
 them. With `--dump-front` a swap first reads the back buffer into the front
 buffer of the surface, in the layout of the surface (RGB565 or BGRA8888; CLUT8

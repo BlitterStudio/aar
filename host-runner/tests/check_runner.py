@@ -385,6 +385,15 @@ def check_gl(exe):
     expect_ok(proc)
 
 
+def check_glpump(exe):
+    # A loop of aar_gl_swap, aar_event_poll and aar_should_stop, with no yield
+    # or sleep, must still see input and a close request.
+    proc = run(exe, ["--headless", "--", "pump"])
+    if proc.returncode == 77:
+        gl_missing(proc, "glpump")
+    expect_ok(proc)
+
+
 def check_glwindow(exe):
     # A window, scaled, the way a developer runs it: a real display, or Xvfb.
     merged = os.environ.copy()
@@ -686,6 +695,7 @@ CHECKS = {
     "nogl": check_nogl,
     "glabsent": check_glabsent,
     "gl": check_gl,
+    "glpump": check_glpump,
     "glwindow": check_glwindow,
     "glconf": check_glconf,
     "constop": check_constop,
