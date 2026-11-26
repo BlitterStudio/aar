@@ -499,7 +499,7 @@ colors are visible; the transport only promises the completion.
 | `AAR_OP_VOLUME_INFO` | `0x1F` | request | Path in `buf`; out `AAR_R_VOLUME_BLOCKS_TOTAL`, `AAR_R_VOLUME_BLOCKS_USED`, `AAR_R_VOLUME_BLOCK_BYTES`, `AAR_R_VOLUME_FLAGS`. |
 | `AAR_OP_CONSOLE_WRITE` | `0x20` | request | The bytes are in a console buffer named by `buf`, `buf_off`, `buf_len`; out `AAR_R_CONSOLE_COUNT` consumed. |
 | `AAR_OP_CONSOLE_READ` | `0x21` | request | `buf_len` is the room; the client fills it; out `AAR_R_CONSOLE_COUNT`, 0 at the end of input. |
-| `AAR_OP_DISPLAY_OPEN` | `0x30` | request | Args `AAR_A_DISPLAY_OPEN_W`, `_H`, `_FORMAT`, `_FLAGS`; out `AAR_R_DISPLAY_OPEN_ID`, `_PITCH`, `_LAYOUT`, `_FRONT`, `_BACK`, `_SPARE`. The reply's `flags` carry the `AAR_DISPCAP_*` caps. |
+| `AAR_OP_DISPLAY_OPEN` | `0x30` | request | Args `AAR_A_DISPLAY_OPEN_W`, `_H`, `_FORMAT`, `_FLAGS`; out `AAR_R_DISPLAY_OPEN_ID`, `_PITCH`, `_LAYOUT`, `_FRONT`, `_BACK`, `_SPARE`. The reply's `flags` carry the `AAR_DISPCAP_*` caps and may carry `AAR_DISP_REPLY_SCANOUT`. |
 | `AAR_OP_DISPLAY_FLIP` | `0x31` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_FLIP_FLAGS`. Replied when shown; out `AAR_R_DISPLAY_FLIP_FRONT`, `_BACK`, `_PITCH`, `_LAYOUT`, `_DROPPED`. A platform that owns the display buffers (a card-owned latest-frame mode) may complete a flip itself and never send it to the client. |
 | `AAR_OP_DISPLAY_PALETTE` | `0x32` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_PALETTE_FIRST`, `AAR_A_DISPLAY_PALETTE_COUNT`. The colors are big-endian `0x00RRGGBB` words in `buf`, which stay unchanged until the completion. The API call that submits it does not park the app, so more requests can be in flight. |
 | `AAR_OP_DISPLAY_CLOSE` | `0x33` | request | Arg `AAR_A_DISPLAY_ID`. |
@@ -558,8 +558,9 @@ completion. A 64-bit value is `_HI` then `_LO`.
 | `AAR_A_DISPLAY_OPEN_FORMAT`, `AAR_A_DISPLAY_OPEN_FLAGS` | 2, 3 | display open |
 | `AAR_R_DISPLAY_OPEN_ID` | 0 | display open |
 | `AAR_R_DISPLAY_OPEN_PITCH`, `AAR_R_DISPLAY_OPEN_LAYOUT` | 1, 2 | display open |
-| `AAR_R_DISPLAY_OPEN_FRONT`, `AAR_R_DISPLAY_OPEN_BACK` | 3, 4 | display open. Tokens of the client's bitmap memory. |
-| `AAR_R_DISPLAY_OPEN_SPARE` | 5 | display open |
+| `AAR_R_DISPLAY_OPEN_FRONT`, `AAR_R_DISPLAY_OPEN_BACK` | 3, 4 | display open. Tokens of the client's surface memory. |
+| `AAR_R_DISPLAY_OPEN_SPARE` | 5 | A third app buffer unless `AAR_DISP_REPLY_SCANOUT` is set. |
+| `AAR_DISP_REPLY_SCANOUT` | `1u << 15` | `DISPLAY_OPEN` reply flag for a window or scaled display only. `_SPARE` names the owning screen's scanout for vblank tracking, with no app mapping. The source stays in effect across surface resizes. |
 | `AAR_A_DISPLAY_ID` | 0 | flip, palette, close, info, resize, title, pointer, vblank |
 | `AAR_A_DISPLAY_FLIP_FLAGS` | 1 | flip; `AAR_FLIPF_*` |
 | `AAR_A_DISPLAY_PALETTE_FIRST`, `AAR_A_DISPLAY_PALETTE_COUNT` | 1, 2 | palette |
