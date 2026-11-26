@@ -63,10 +63,18 @@ run() { # label expected-text env... -- app
 }
 
 APP="$WORK/build/runtime_test.elf"
-run "libc flavour" "runtime_test PASS" "$QEMU" "$WORK/loader" "$APP"
+# The libc test reads the host environment and the clock through the loader:
+# UNIX_US_BASE fixes the wall clock, AAR_TEST_VAR and AAR_TEST_LONG are what
+# getenv finds (AAR_TEST_LONG is 299 'y' and a 'z').
+LONG=$(printf '%0299d' 0 | tr 0 y)z
+TENV="UNIX_US_BASE=1700000000123456 AAR_TEST_VAR=hello AAR_TEST_LONG=$LONG"
+# shellcheck disable=SC2086
+run "libc flavour" "runtime_test PASS" $TENV "$QEMU" "$WORK/loader" "$APP"
+# shellcheck disable=SC2086
 run "libc flavour, heap committed at start, table ends before ext" \
-  "runtime_test PASS" HEAP_INIT_MIB=2 CORE_ONLY=1 "$QEMU" "$WORK/loader" "$APP"
+  "runtime_test PASS" $TENV HEAP_INIT_MIB=2 CORE_ONLY=1 "$QEMU" "$WORK/loader" "$APP"
 # With a coherent runtime publish and acquire never reach the table.
-run "libc flavour, coherent runtime" "publish=0" COHERENT=1 "$QEMU" "$WORK/loader" "$APP"
+# shellcheck disable=SC2086
+run "libc flavour, coherent runtime" "publish=0" $TENV COHERENT=1 "$QEMU" "$WORK/loader" "$APP"
 run "freestanding flavour" "freestanding_test PASS" "$QEMU" "$WORK/loader" \
   "$WORK/build/freestanding_test.elf"

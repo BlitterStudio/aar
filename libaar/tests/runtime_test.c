@@ -8,12 +8,17 @@
  *
  * SPDX-License-Identifier: MIT
  */
+#define _DEFAULT_SOURCE 1
 #include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/times.h>
+#include <time.h>
+#include <utime.h>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -25,6 +30,9 @@ AAR_NOTE(0, 0, 0, 0)
 
 /* newlib declares sbrk only outside strict C11. */
 extern void *sbrk(ptrdiff_t increment);
+
+/* newlib's <utime.h> has the structure and no prototype. */
+extern int utime(const char *path, const struct utimbuf *times);
 
 #define CHECK(cond)                                                          \
     do {                                                                     \
@@ -297,12 +305,273 @@ static int test_wrappers(void)
     return 0;
 }
 
+static int write_text(const char *path, const char *text)
+{
+    FILE *f = fopen(path, "w");
+
+    CHECK(f && fputs(text, f) >= 0 && fclose(f) == 0);
+    return 0;
+}
+
+static int exists(const char *path)
+{
+    struct stat st;
+
+    return stat(path, &st) == 0;
+}
+
+/* unlink, remove, mkdir, rmdir, rename. */
+static int test_names(void)
+{
+    char buf[16];
+
+    CHECK(write_text("u.txt", "x") == 0);
+    CHECK(unlink("u.txt") == 0 && !exists("u.txt"));
+    errno = 0;
+    CHECK(unlink("u.txt") == -1 && errno == ENOENT);
+    CHECK(write_text("u.txt", "x") == 0);
+    CHECK(remove("u.txt") == 0 && !exists("u.txt"));
+
+    CHECK(mkdir("d1", 0755) == 0 && exists("d1"));
+    errno = 0;
+    CHECK(mkdir("d1", 0755) == -1 && errno == EEXIST);
+    errno = 0;
+    CHECK(mkdir("nope/sub", 0755) == -1 && errno == ENOENT);
+    CHECK(write_text("d1/in.txt", "x") == 0);
+    errno = 0;
+    CHECK(rmdir("d1") == -1 && errno == ENOTEMPTY);
+    errno = 0;
+    CHECK(rmdir("d1/in.txt") == -1 && errno == ENOTDIR && exists("d1/in.txt"));
+    CHECK(unlink("d1/in.txt") == 0);
+    CHECK(rmdir("d1") == 0 && !exists("d1"));
+    errno = 0;
+    CHECK(rmdir("d1") == -1 && errno == ENOENT);
+    CHECK(mkdir("d2", 0755) == 0 && remove("d2") == 0 && !exists("d2"));
+
+    /* rename replaces an existing target, as POSIX says. */
+    CHECK(write_text("a.txt", "A") == 0 && write_text("b.txt", "B") == 0);
+    CHECK(rename("a.txt", "b.txt") == 0);
+    CHECK(!exists("a.txt") && slurp("b.txt", buf, sizeof buf) == 1 && buf[0] == 'A');
+    CHECK(rename("b.txt", "c.txt") == 0 && !exists("b.txt") && exists("c.txt"));
+    errno = 0;
+    CHECK(rename("a.txt", "c.txt") == -1 && errno == ENOENT);
+    CHECK(slurp("c.txt", buf, sizeof buf) == 1 && buf[0] == 'A');
+    /* A rename onto itself changes nothing. */
+    CHECK(rename("c.txt", "c.txt") == 0 && slurp("c.txt", buf, sizeof buf) == 1);
+    errno = 0;
+    CHECK(rename("a.txt", "a.txt") == -1 && errno == ENOENT);
+    CHECK(mkdir("d3", 0755) == 0 && rename("d3", "d4") == 0 && exists("d4"));
+    CHECK(rmdir("d4") == 0 && unlink("c.txt") == 0);
+    return 0;
+}
+
+static int test_truncate(void)
+{
+    char buf[32];
+    struct stat st;
+    int fd;
+
+    fd = open("tr.txt", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0 && write(fd, "hello world", 11) == 11);
+    CHECK(ftruncate(fd, 5) == 0 && fstat(fd, &st) == 0 && st.st_size == 5);
+    CHECK(lseek(fd, 0, SEEK_CUR) == 11);
+    CHECK(ftruncate(fd, 8) == 0 && fstat(fd, &st) == 0 && st.st_size == 8);
+    CHECK(close(fd) == 0);
+    CHECK(slurp("tr.txt", buf, sizeof buf) == 8 && memcmp(buf, "hello\0\0\0", 8) == 0);
+
+    CHECK(truncate("tr.txt", 2) == 0 && stat("tr.txt", &st) == 0 && st.st_size == 2);
+    CHECK(truncate("tr.txt", 0) == 0 && stat("tr.txt", &st) == 0 && st.st_size == 0);
+    errno = 0;
+    CHECK(truncate("tr-missing.txt", 0) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(truncate("tr.txt", -1) == -1 && errno == EINVAL);
+
+    /* An id opened for reading only cannot be truncated; the console is not
+     * a file. */
+    fd = open("tr.txt", O_RDONLY);
+    CHECK(fd >= 0);
+    errno = 0;
+    CHECK(ftruncate(fd, 0) == -1 && errno == EBADF);
+    CHECK(close(fd) == 0);
+    errno = 0;
+    CHECK(ftruncate(1, 0) == -1 && errno == EINVAL);
+    CHECK(unlink("tr.txt") == 0);
+    return 0;
+}
+
+static mode_t perm_of(const char *path)
+{
+    struct stat st;
+
+    return stat(path, &st) == 0 ? (st.st_mode & 0777) : (mode_t)~0u;
+}
+
+/* chmod, the permission bits of stat and fstat, and the protection bits that
+ * chmod leaves alone. */
+static int test_modes(void)
+{
+    struct stat st;
+    aar_stat as;
+    int fd;
+
+    CHECK(write_text("m.txt", "m") == 0);
+    CHECK(chmod("m.txt", 0755) == 0 && perm_of("m.txt") == 0755);
+    CHECK(chmod("m.txt", 0644) == 0 && perm_of("m.txt") == 0644);
+    CHECK(chmod("m.txt", 0444) == 0 && perm_of("m.txt") == 0444);
+    fd = open("m.txt", O_RDONLY);
+    CHECK(fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode));
+    CHECK((st.st_mode & 0777) == 0444 && st.st_size == 1);
+    CHECK(close(fd) == 0);
+    /* The client refuses to delete what is write protected. */
+    errno = 0;
+    CHECK(unlink("m.txt") == -1 && errno == EACCES && exists("m.txt"));
+    CHECK(aar_file_stat("m.txt", &as) == AAR_OK);
+    CHECK((as.protect & (AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_EXECUTE)) ==
+          (AAR_PROT_WRITE | AAR_PROT_DELETE | AAR_PROT_EXECUTE));
+    CHECK(!(as.protect & AAR_PROT_READ));
+
+    CHECK(chmod("m.txt", 0644) == 0);
+    CHECK(aar_file_set_protect("m.txt", AAR_PROT_ARCHIVE | AAR_PROT_SCRIPT) == AAR_OK);
+    CHECK(perm_of("m.txt") == 0755);
+    CHECK(chmod("m.txt", 0600) == 0);
+    CHECK(aar_file_stat("m.txt", &as) == AAR_OK);
+    CHECK(as.protect == (AAR_PROT_ARCHIVE | AAR_PROT_SCRIPT | AAR_PROT_EXECUTE));
+    CHECK(perm_of("m.txt") == 0644);
+    errno = 0;
+    CHECK(chmod("m-missing.txt", 0644) == -1 && errno == ENOENT);
+
+    CHECK(mkdir("md", 0755) == 0 && stat("md", &st) == 0 && S_ISDIR(st.st_mode));
+    CHECK(rmdir("md") == 0 && unlink("m.txt") == 0);
+    return 0;
+}
+
+static int test_utime(void)
+{
+    struct utimbuf ub;
+    struct timeval tv[2];
+    struct stat st;
+    time_t now;
+
+    CHECK(write_text("ut.txt", "t") == 0);
+    ub.actime = 1000000000;
+    ub.modtime = 1500000000;
+    CHECK(utime("ut.txt", &ub) == 0 && stat("ut.txt", &st) == 0);
+    CHECK(st.st_mtime == 1500000000);
+    tv[0].tv_sec = 1;
+    tv[0].tv_usec = 0;
+    tv[1].tv_sec = 1600000000;
+    tv[1].tv_usec = 500000;
+    CHECK(utimes("ut.txt", tv) == 0 && stat("ut.txt", &st) == 0);
+    CHECK(st.st_mtime == 1600000000);
+    /* A NULL time is now. */
+    CHECK(utime("ut.txt", NULL) == 0 && stat("ut.txt", &st) == 0);
+    now = time(NULL);
+    CHECK(st.st_mtime >= now - 5 && st.st_mtime <= now + 5);
+    CHECK(utimes("ut.txt", NULL) == 0 && stat("ut.txt", &st) == 0);
+    CHECK(st.st_mtime >= now - 5 && st.st_mtime <= now + 5);
+    errno = 0;
+    CHECK(utime("ut-missing.txt", &ub) == -1 && errno == ENOENT);
+    CHECK(unlink("ut.txt") == 0);
+    return 0;
+}
+
+/* runtime_test.sh starts the loader with UNIX_US_BASE=1700000000123456. */
+static int test_clock(void)
+{
+    struct timeval a, b;
+    struct tms t;
+    clock_t c0, c1;
+    time_t now, again;
+
+    CHECK(gettimeofday(&a, NULL) == 0);
+    CHECK(a.tv_sec >= 1700000000 && a.tv_sec < 1700000000 + 120);
+    CHECK(a.tv_usec >= 0 && a.tv_usec < 1000000);
+    CHECK(gettimeofday(&b, NULL) == 0);
+    CHECK(b.tv_sec > a.tv_sec || (b.tv_sec == a.tv_sec && b.tv_usec >= a.tv_usec));
+    now = time(&again);
+    CHECK(now == again && now >= a.tv_sec && now <= a.tv_sec + 5);
+
+    c0 = clock();
+    CHECK(c0 != (clock_t)-1);
+    aar_sleep_us(30000);
+    c1 = clock();
+    CHECK(c1 - c0 >= (clock_t)(25 * CLOCKS_PER_SEC / 1000));
+    CHECK(c1 - c0 < (clock_t)(5 * CLOCKS_PER_SEC));
+    CHECK(times(&t) != (clock_t)-1 && t.tms_utime >= c1 && t.tms_stime == 0);
+    return 0;
+}
+
+static unsigned host_env_calls(void)
+{
+    char buf[16];
+    uint32_t n = 0;
+
+    /* The loader's counter, read around newlib's cache. */
+    if (aar_env_get("AAR_ENV_CALLS", buf, sizeof buf, &n) != AAR_OK)
+        return ~0u;
+    return (unsigned)atoi(buf);
+}
+
+/* runtime_test.sh starts the loader with AAR_TEST_VAR=hello and an
+ * AAR_TEST_LONG of 300 characters. */
+static int test_env(void)
+{
+    const char *v, *again;
+    unsigned calls;
+    struct tm local, utc;
+    time_t t = 1700000000;
+
+    calls = host_env_calls();
+    CHECK(calls != ~0u);
+    v = getenv("AAR_TEST_VAR");
+    CHECK(v && strcmp(v, "hello") == 0);
+    again = getenv("AAR_TEST_VAR");
+    CHECK(again == v);
+    CHECK(host_env_calls() == calls + 1);
+
+    v = getenv("AAR_TEST_LONG");
+    CHECK(v && strlen(v) == 300 && v[299] == 'z');
+    CHECK(getenv("AAR_TEST_MISSING") == NULL);
+    calls = host_env_calls();
+    CHECK(getenv("AAR_TEST_MISSING") == NULL);
+    CHECK(host_env_calls() == calls);
+    CHECK(getenv("") == NULL && getenv("A=B") == NULL);
+
+    /* The program's changes stay in the program. */
+    CHECK(setenv("AAR_TEST_VAR", "kept", 0) == 0);
+    CHECK(strcmp(getenv("AAR_TEST_VAR"), "hello") == 0);
+    CHECK(setenv("AAR_TEST_VAR", "changed", 1) == 0);
+    CHECK(strcmp(getenv("AAR_TEST_VAR"), "changed") == 0);
+    CHECK(unsetenv("AAR_TEST_VAR") == 0 && getenv("AAR_TEST_VAR") == NULL);
+    CHECK(setenv("AAR_TEST_VAR", "again", 0) == 0);
+    CHECK(strcmp(getenv("AAR_TEST_VAR"), "again") == 0);
+    CHECK(putenv("AAR_TEST_PUT=1") == 0 && strcmp(getenv("AAR_TEST_PUT"), "1") == 0);
+    CHECK(putenv("AAR_TEST_PUT") == 0 && getenv("AAR_TEST_PUT") == NULL);
+    errno = 0;
+    CHECK(setenv("", "x", 1) == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(setenv("A=B", "x", 1) == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(unsetenv("A=B") == -1 && errno == EINVAL);
+
+    /* newlib's own readers (here tzset) see the same table. */
+    CHECK(setenv("TZ", "XYZ-1", 1) == 0);
+    tzset();
+    local = *localtime(&t);
+    utc = *gmtime(&t);
+    CHECK(local.tm_hour == (utc.tm_hour + 1) % 24);
+    CHECK(unsetenv("TZ") == 0);
+    return 0;
+}
+
 int aar_main(int argc, char **argv)
 {
     CHECK(argc == 2 && strcmp(argv[0], "app") == 0 && strcmp(argv[1], "one") == 0);
     CHECK(aar_api_ptr != NULL);
     if (test_init_arrays() || test_heap() || test_files() ||
-        test_open_flags() || test_big_size() || test_wrappers())
+        test_open_flags() || test_big_size() || test_wrappers() ||
+        test_names() || test_truncate() || test_modes() || test_utime() ||
+        test_clock() || test_env())
         return 1;
     printf("printf %d %s %5.2f\n", 42, "ok", 3.14159);
     puts("runtime_test PASS");

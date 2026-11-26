@@ -20,6 +20,15 @@
  *   NO_RELOC=1       apply no relocation (a test of the conformance corpus: an
  *                    image whose code checks its relocated pointer then fails;
  *                    the loader's plan loses its relocation tables)
+ *   UNIX_US_BASE=<n> time_unix_us answers n microseconds since 1970 plus the
+ *                    time elapsed since its first call (default: the host's
+ *                    clock)
+ *
+ * env_get serves host variables whose names start with AAR_, and
+ * AAR_ENV_CALLS answers with the number of other env_get calls so far. The
+ * clipboard is kept in memory. The protection bits of a file are the host's
+ * owner bits (read, write, execute; write also stands for delete); the
+ * archive, pure, script and hold bits are kept in a small table.
  *
  * Two paths have a meaning of their own: huge.bin opens as a file of 3 GiB
  * (no data, seeks tracked), and stat-calls.magic stats as a file whose size is
@@ -38,6 +47,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -57,6 +67,8 @@ static int files[MAX_FILES];
 static int huge[MAX_FILES];
 static int64_t huge_pos[MAX_FILES];
 static unsigned stat_calls;
+static uint8_t file_write[MAX_FILES];
+static unsigned env_calls;
 
 static void app_exit(int code)
 {
@@ -152,9 +164,19 @@ static void app_log(const char *msg, uint32_t len)
 static int aar_error(void)
 {
     switch (errno) {
-    case ENOENT: return AAR_E_NOENT;
-    case EEXIST: return AAR_E_EXIST;
-    default:     return AAR_E_IO;
+    case ENOENT:    return AAR_E_NOENT;
+    case EEXIST:
+    case ENOTEMPTY: return AAR_E_EXIST;
+    case EACCES:
+    case EPERM:
+    case EROFS:     return AAR_E_ACCES;
+    case EBUSY:     return AAR_E_BUSY;
+    case EINVAL:
+    case EXDEV:
+    case EISDIR:
+    case ENOTDIR:   return AAR_E_INVAL;
+    case ENOSPC:    return AAR_E_NOSPC;
+    default:        return AAR_E_IO;
     }
 }
 
@@ -211,6 +233,7 @@ static int app_file_open(const char *path, uint32_t flags)
     for (i = 0; i < MAX_FILES; i++) {
         if (!files[i]) {
             files[i] = fd;
+            file_write[i] = (flags & AAR_FILE_WRITE) != 0;
             huge[i] = is_huge;
             huge_pos[i] = 0;
             return i + AAR_FD_BASE;
@@ -286,6 +309,52 @@ static int app_file_seek(int id, int64_t off, int whence, int64_t *out_pos)
     return AAR_OK;
 }
 
+/* Protection bits that the host's mode cannot hold (archive, pure, script,
+ * hold), kept per path. */
+#define EXTRA_MAX 16
+static struct { char path[300]; uint32_t bits; } extras[EXTRA_MAX];
+
+static uint32_t extra_get(const char *path)
+{
+    int i;
+
+    for (i = 0; i < EXTRA_MAX; i++)
+        if (extras[i].bits && strcmp(extras[i].path, path) == 0)
+            return extras[i].bits;
+    return 0;
+}
+
+static void extra_set(const char *path, uint32_t bits)
+{
+    int i, free_slot = -1;
+
+    for (i = 0; i < EXTRA_MAX; i++) {
+        if (extras[i].bits && strcmp(extras[i].path, path) == 0) {
+            extras[i].bits = bits;
+            return;
+        }
+        if (!extras[i].bits && free_slot < 0)
+            free_slot = i;
+    }
+    if (bits && free_slot >= 0) {
+        snprintf(extras[free_slot].path, sizeof extras[free_slot].path, "%s", path);
+        extras[free_slot].bits = bits;
+    }
+}
+
+static uint32_t stat_protect(const char *path, const struct stat *st)
+{
+    uint32_t p = extra_get(path);
+
+    if (!(st->st_mode & S_IRUSR))
+        p |= AAR_PROT_READ;
+    if (!(st->st_mode & S_IWUSR))
+        p |= AAR_PROT_WRITE | AAR_PROT_DELETE;
+    if (!(st->st_mode & S_IXUSR))
+        p |= AAR_PROT_EXECUTE;
+    return p;
+}
+
 static int app_file_stat(const char *path, aar_stat *out)
 {
     char full[300];
@@ -311,6 +380,266 @@ static int app_file_stat(const char *path, aar_stat *out)
     out->size = (uint64_t)st.st_size;
     out->mtime = st.st_mtime;
     out->mode = S_ISDIR(st.st_mode) ? AAR_MODE_DIR : AAR_MODE_FILE;
+    out->protect = stat_protect(path, &st);
+    return AAR_OK;
+}
+
+static int bad_path(const char *path)
+{
+    return path[0] == 0 || strlen(path) > 255;
+}
+
+static int app_file_delete(const char *path)
+{
+    char full[300];
+    struct stat st;
+    int rc;
+
+    if (bad_path(path))
+        return AAR_E_INVAL;
+    host_path(full, sizeof full, path);
+    if (stat(full, &st) != 0)
+        return aar_error();
+    if (stat_protect(path, &st) & AAR_PROT_DELETE)
+        return AAR_E_ACCES;
+    rc = S_ISDIR(st.st_mode) ? rmdir(full) : unlink(full);
+    if (rc != 0)
+        return aar_error();
+    extra_set(path, 0);
+    return AAR_OK;
+}
+
+static int app_file_rename(const char *from, const char *to, uint32_t flags)
+{
+    char a[300], b[300];
+    struct stat st;
+
+    if (bad_path(from) || bad_path(to) || (flags & ~(uint32_t)AAR_RENAME_REPLACE))
+        return AAR_E_INVAL;
+    host_path(a, sizeof a, from);
+    host_path(b, sizeof b, to);
+    if (stat(a, &st) != 0)
+        return aar_error();
+    if (!(flags & AAR_RENAME_REPLACE) && stat(b, &st) == 0)
+        return AAR_E_EXIST;
+    if (rename(a, b) != 0)
+        return aar_error();
+    extra_set(to, extra_get(from));
+    extra_set(from, 0);
+    return AAR_OK;
+}
+
+static int app_dir_create(const char *path)
+{
+    char full[300];
+
+    if (bad_path(path))
+        return AAR_E_INVAL;
+    host_path(full, sizeof full, path);
+    if (mkdir(full, 0755) != 0)
+        return aar_error();
+    return AAR_OK;
+}
+
+static int app_file_set_date(const char *path, int64_t mtime)
+{
+    char full[300];
+    struct timespec ts[2];
+
+    if (bad_path(path))
+        return AAR_E_INVAL;
+    host_path(full, sizeof full, path);
+    ts[0].tv_sec = 0;
+    ts[0].tv_nsec = UTIME_OMIT;
+    ts[1].tv_sec = (time_t)mtime;
+    ts[1].tv_nsec = 0;
+    if (utimensat(AT_FDCWD, full, ts, 0) != 0)
+        return aar_error();
+    return AAR_OK;
+}
+
+static int app_file_set_protect(const char *path, uint32_t protect)
+{
+    char full[300];
+    struct stat st;
+    mode_t u = 0;
+
+    if (bad_path(path) || (protect & ~0xffu))
+        return AAR_E_INVAL;
+    host_path(full, sizeof full, path);
+    if (stat(full, &st) != 0)
+        return aar_error();
+    if (!(protect & AAR_PROT_READ))
+        u |= 4;
+    if (!(protect & AAR_PROT_WRITE))
+        u |= 2;
+    if (!(protect & AAR_PROT_EXECUTE))
+        u |= 1;
+    if (chmod(full, (u << 6) | ((u & 5u) << 3) | (u & 5u)) != 0)
+        return aar_error();
+    extra_set(path, protect & 0xf0u);
+    return AAR_OK;
+}
+
+static int app_file_truncate(int id, uint64_t size)
+{
+    int fd = host_fd(id);
+
+    if (fd <= 0)
+        return AAR_E_BADF;
+    if (!file_write[id - AAR_FD_BASE])
+        return AAR_E_BADF;
+    if (huge[id - AAR_FD_BASE])
+        return AAR_OK;
+    if (ftruncate(fd, (off_t)size) != 0)
+        return aar_error();
+    return AAR_OK;
+}
+
+static int app_volume_info(const char *path, aar_volume_info *out)
+{
+    char full[300];
+    struct statvfs sv;
+    aar_volume_info v;
+    uint32_t size = out->size;
+
+    if (bad_path(path))
+        return AAR_E_INVAL;
+    host_path(full, sizeof full, path);
+    if (statvfs(full, &sv) != 0)
+        return aar_error();
+    memset(&v, 0, sizeof v);
+    v.size = size;
+    v.block_bytes = (uint32_t)sv.f_frsize;
+    v.total_bytes = (uint64_t)sv.f_blocks * sv.f_frsize;
+    v.free_bytes = (uint64_t)sv.f_bavail * sv.f_frsize;
+    v.flags = (sv.f_flag & ST_RDONLY) ? AAR_VOLF_READONLY : 0u;
+    memcpy(out, &v, size < sizeof v ? size : sizeof v);
+    if (size > sizeof v)
+        memset((uint8_t *)out + sizeof v, 0, size - sizeof v);
+    return AAR_OK;
+}
+
+static int app_time_unix_us(int64_t *out_us)
+{
+    static int64_t base_us, first_us;
+    const char *fixed = getenv("UNIX_US_BASE");
+
+    if (fixed) {
+        int64_t now = (int64_t)app_time_us();
+
+        if (!first_us) {
+            first_us = now;
+            base_us = strtoll(fixed, NULL, 0);
+        }
+        *out_us = base_us + (now - first_us);
+    } else {
+        struct timespec ts;
+
+        clock_gettime(CLOCK_REALTIME, &ts);
+        *out_us = (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+    }
+    return AAR_OK;
+}
+
+static int app_locale_info(aar_locale_info *out)
+{
+    aar_locale_info l;
+    uint32_t size = out->size;
+
+    memset(&l, 0, sizeof l);
+    l.size = size;
+    l.utc_offset_min = 60;
+    l.flags = AAR_LOCALEF_OFFSET_KNOWN;
+    strcpy(l.language, "english");
+    strcpy(l.country, "GB");
+    strcpy(l.decimal_point, ".");
+    strcpy(l.group_separator, ",");
+    memcpy(out, &l, size < sizeof l ? size : sizeof l);
+    if (size > sizeof l)
+        memset((uint8_t *)out + sizeof l, 0, size - sizeof l);
+    return AAR_OK;
+}
+
+static int app_env_get(const char *name, char *buf, uint32_t bytes, uint32_t *out_n)
+{
+    size_t len = strlen(name);
+    const char *value;
+    char count[16];
+
+    if (len == 0 || len > 255)
+        return AAR_E_INVAL;
+    if (strcmp(name, "AAR_ENV_CALLS") == 0) {
+        snprintf(count, sizeof count, "%u", env_calls);
+        value = count;
+    } else {
+        env_calls++;
+        value = strncmp(name, "AAR_", 4) == 0 ? getenv(name) : NULL;
+    }
+    if (!value)
+        return AAR_E_NOENT;
+    *out_n = (uint32_t)strlen(value);
+    if (bytes <= *out_n)
+        return AAR_E_NOSPC;
+    memcpy(buf, value, *out_n + 1u);
+    return AAR_OK;
+}
+
+/* The clipboard: a few (unit, type) slots in memory. */
+#define CLIP_SLOTS 4
+static struct { int used; uint32_t unit, type; uint8_t *data; uint32_t size; } clips[CLIP_SLOTS];
+
+static int clip_args(uint32_t unit, uint32_t type)
+{
+    return unit < AAR_CLIP_UNITS && (type == AAR_CLIP_TEXT || type == AAR_CLIP_IFF);
+}
+
+static int app_clip_read(uint32_t unit, uint32_t type, void *buf, uint32_t bytes,
+                         uint32_t *out_n)
+{
+    int i;
+
+    if (!clip_args(unit, type))
+        return AAR_E_INVAL;
+    for (i = 0; i < CLIP_SLOTS; i++) {
+        if (clips[i].used && clips[i].unit == unit && clips[i].type == type) {
+            *out_n = clips[i].size;
+            if (clips[i].size == 0)
+                return AAR_E_NOENT;
+            memcpy(buf, clips[i].data, bytes < clips[i].size ? bytes : clips[i].size);
+            return bytes < clips[i].size ? AAR_E_NOSPC : AAR_OK;
+        }
+    }
+    return AAR_E_NOENT;
+}
+
+static int app_clip_write(uint32_t unit, uint32_t type, const void *data, uint32_t bytes)
+{
+    int i, slot = -1;
+    uint8_t *copy;
+
+    if (!clip_args(unit, type))
+        return AAR_E_INVAL;
+    for (i = 0; i < CLIP_SLOTS; i++) {
+        if (clips[i].used && clips[i].unit == unit && clips[i].type == type) {
+            slot = i;
+            break;
+        }
+        if (!clips[i].used && slot < 0)
+            slot = i;
+    }
+    if (slot < 0)
+        return AAR_E_NOMEM;
+    copy = malloc(bytes ? bytes : 1u);
+    if (!copy)
+        return AAR_E_NOMEM;
+    memcpy(copy, data, bytes);
+    free(clips[slot].data);
+    clips[slot].used = 1;
+    clips[slot].unit = unit;
+    clips[slot].type = type;
+    clips[slot].data = copy;
+    clips[slot].size = bytes;
     return AAR_OK;
 }
 
@@ -455,6 +784,18 @@ static void build_table(aar_api *api)
     api->file_write = app_file_write;
     api->file_seek = app_file_seek;
     api->file_stat = app_file_stat;
+    api->file_delete = app_file_delete;
+    api->file_rename = app_file_rename;
+    api->dir_create = app_dir_create;
+    api->file_set_date = app_file_set_date;
+    api->file_set_protect = app_file_set_protect;
+    api->file_truncate = app_file_truncate;
+    api->volume_info = app_volume_info;
+    api->time_unix_us = app_time_unix_us;
+    api->locale_info = app_locale_info;
+    api->env_get = app_env_get;
+    api->clip_read = app_clip_read;
+    api->clip_write = app_clip_write;
     api->console_write = app_console_write;
     api->console_read = app_console_read;
 }
