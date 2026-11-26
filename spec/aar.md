@@ -108,7 +108,7 @@ An ELF note with owner name `AAR` (namesz 4 including the NUL), `n_type` 1. Name
 | 1 | `note_version` | 1 |
 | 2 | `profile` | `AAR_PROFILE_*` |
 | 3 | `api_major` | major the app was built against |
-| 4 | `api_minor_required` | lowest minor that has every call the app needs |
+| 4 | `api_minor_required` | lowest minor that has every call the app needs; at least `AAR_API_MINOR_OLDEST` (3.6) |
 | 5 | `stack_bytes` | 0 for the default (1 MiB). Otherwise 64 KiB up to the platform maximum (at least 1 MiB), multiple of 16 |
 | 6 | `min_heap_mib` | private heap committed at load, MiB |
 | 7 | `groups_required` | `AAR_GROUP_*` bits. The runtime MUST refuse the load with `AAR_E_NOGROUP` if it lacks one |
@@ -117,7 +117,7 @@ An ELF note with owner name `AAR` (namesz 4 including the NUL), `n_type` 1. Name
 
 The heap is always dynamic. The note holds a minimum and does not fix a region.
 
-The runtime MUST also refuse a note whose `api_major` differs from its own or whose `api_minor_required` is higher than its own minor, with `AAR_E_INVAL`. A note whose profile word differs from the ELF class is refused with `AAR_E_PROFILE`. The macros in [`aar/note.h`](../include/aar/note.h) emit the note from C, so third-party builds need no assembler file. `AAR_NOTE(stack_bytes, min_heap_mib, groups_required, groups_optional)` declares the minor of the header, and `AAR_NOTE_EX` takes an explicit `api_minor_required`. The note layout has its own version (`AAR_NOTE_VERSION`), which is not the API minor.
+The runtime MUST also refuse a note whose `api_major` differs from its own, or whose `api_minor_required` is higher than its own minor or lower than `AAR_API_MINOR_OLDEST`, the oldest minor whose table layout its header describes, with `AAR_E_INVAL`. A note whose profile word differs from the ELF class is refused with `AAR_E_PROFILE`. The macros in [`aar/note.h`](../include/aar/note.h) emit the note from C, so third-party builds need no assembler file. `AAR_NOTE(stack_bytes, min_heap_mib, groups_required, groups_optional)` declares the minor of the header, and `AAR_NOTE_EX` takes an explicit `api_minor_required`. The note layout has its own version (`AAR_NOTE_VERSION`), which is not the API minor.
 
 ### 2.4 Check tool
 
@@ -218,6 +218,7 @@ Per-call meaning is stated in the call reference ([`docs/aar-api.md`](../docs/aa
 - `AAR_API_MAJOR` changes only for a break. `AAR_API_MINOR` increments for each release that adds table slots, constants or groups. From 1.0 constant values and structure meanings never change within a major.
 - The call reference states, for each call and constant, the minor that introduced it ("Minimum minor"); API 0.5 is the first AAR version, so a symbol of 0.5 has minimum minor 5, and a symbol that API 0.6 adds has minimum minor 6. A header also provides `AAR_API_AT_LEAST(api, minor)` for convenience; the preferred gate is still `AAR_API_COVERS`.
 - Pre-1.0: numbers are `0.x` and any minor may break. 1.0 is cut when a second platform passes conformance.
+- Before 1.0 a minor may move slots, as 0.6 did, so a runtime built from one header cannot load an image whose note declares an older minor: its wrappers would call the wrong slots. `AAR_API_MINOR_OLDEST` in `aar/app.h` is the oldest minor whose table layout that header describes. A runtime MUST refuse a note whose `api_minor_required` is below it or above `AAR_API_MINOR`, with `AAR_E_INVAL` (2.3), and `AAR_NOTE_EX` rejects such a value at compile time. For the header of 0.6 both values are 6.
 - The client library has its own library version and revision (Exec). `AARQuery` returns the API major and minor the platform runtime implements; the library revision is not the API minor. The note layout (`AAR_NOTE_VERSION`) and the control block layout (`AAR_CB_LAYOUT_VERSION`) are versioned separately and are not the API minor either.
 
 ### 3.7 Concurrency and signals
@@ -893,5 +894,7 @@ These are changes that would alter a header. They are not part of API 0.6 and ar
 ## Changes
 
 **API 0.6** (header and specification; the implementations follow): adds 19 slots to `aar_api` (`AAR_API_SLOT_COUNT` 75). Twelve are core slots after `msg_wait` (`AAR_API_CORE_SLOT_COUNT` 42): `file_delete`, `file_rename`, `dir_create`, `file_set_date`, `file_set_protect`, `file_truncate`, `volume_info`, `time_unix_us`, `locale_info`, `env_get`, `clip_read` and `clip_write`. Seven are display slots after `display_latest_dropped`: `display_info`, `display_modes`, `display_resize`, `display_set_title`, `display_pointer`, `display_wait_vblank` and `display_last_present_us`. The display group gains six flags and caps (window, resize, absolute pointer, text input, close request, scaled surface) and the events `TEXT`, `WHEEL`, `CLOSE_REQUEST` and `ACTIVE`; `AAR_EV_RESIZE` is now sent; the `MOUSE` and `JOY` fields are specified, with `AAR_MOUSE_ABSOLUTE`. `aar_stat.reserved` becomes `protect`. `aar_gl` grows to 123 slots (`AAR_GL_VERSION_11`). The transport gains the ops 0x19 to 0x1F, 0x34 to 0x39, 0x50 to 0x52, 0x58 and 0x59, and `FILE_STAT` returns the protection bits in out5. The host runner implementation, the serving loop, the libc glue and the conformance rows for the new calls are not part of this change.
+
+A note is loaded only when its `api_minor_required` lies between `AAR_API_MINOR_OLDEST` and `AAR_API_MINOR`, both 6 in this version (2.3, 3.6).
 
 **Review draft 1** (API 0.5): the first public draft. It specifies the app side (profiles, image rules, table, groups), the Amiga client library and the transport contract, and it settles the 66 questions that writing the conformance suite raised (11.3). Open questions for the other platforms are in section 13, and the changes planned for a later minor are in the appendix.

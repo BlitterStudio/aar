@@ -122,7 +122,16 @@ differs from its own.
 `6u`. Increments for each release that adds table slots, constants or groups.
 From 1.0 constant values and structure meanings never change within a major.
 The runtime refuses a note whose `api_minor_required` is higher than its own
-minor.
+minor, or lower than `AAR_API_MINOR_OLDEST`.
+
+### AAR_API_MINOR_OLDEST
+
+`6u`. The oldest minor whose table layout this header describes. Before 1.0 a
+minor may move slots (0.6 did), so an image built against an older minor would
+call the wrong slots. A runtime built from this header refuses a note whose
+`api_minor_required` is below this value or above `AAR_API_MINOR`, with
+`AAR_E_INVAL`, and `AAR_NOTE_EX` rejects such a value at compile time. When a
+minor moves slots again, raise both it and `AAR_API_MINOR`. Minimum minor: 6.
 
 ### AAR_API_VERSION
 
