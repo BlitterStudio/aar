@@ -2,12 +2,12 @@
 # Runs the C++ template on a real instruction stream: builds
 # templates/cxx_hello.cpp for a profile with exceptions (the default) and with
 # AAR_CXX_EXCEPTIONS=0, builds the test loader of libaar for Linux user mode and
-# runs both images under qemu. The template checks its own results (global
+# runs both template builds under qemu. The template checks its own results (global
 # constructor, containers, new and delete, virtual calls, RTTI, and throw and
 # catch when the build has exceptions) and logs "cxx_hello PASS"; its global
 # destructor runs from exit() and logs after that. libaar/tests/cxx_env_test.cpp
-# then reads the host environment with std::getenv and _getenv_r from a C++
-# image, where libstdc++ also references getenv: it fails if the link took
+# then reads the host environment with std::getenv and _getenv_r in both modes.
+# libstdc++ also references getenv, so these checks fail if the link took
 # newlib's getenv instead of libaar's.
 #
 #   tests/cxx_runtime_test.sh <SDK directory> <a32|a64>
