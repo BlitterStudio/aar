@@ -512,8 +512,8 @@ static void test_transport_layout(void)
     }
     CHECK_EQ(AAR_CB_MAGIC_VALUE, 0x41415243u);
 
-    /* Every word that changes hands owns its 64-byte line: no other listed
-     * word sits in the same line unless it has the same writer. */
+    /* Each queue index starts its own 64-byte line, and no other listed word
+     * sits in that line. */
     {
         static const unsigned index_lines[] = {
             AAR_CB_SQ_TAIL, AAR_CB_SQ_HEAD, AAR_CB_CQ_TAIL, AAR_CB_CQ_HEAD,

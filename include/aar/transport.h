@@ -111,8 +111,8 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 
 /*
  * Offsets are bytes from the start of the control block. Every word has one
- * writer. A word that changes hands (a queue index, the lease counter) sits at
- * the start of its own 64-byte line. 64-bit values are _HI then _LO.
+ * writer. Each queue index and the lease counter sits at the start of its own
+ * 64-byte line. 64-bit values are _HI then _LO.
  * Unlisted space is reserved and zero. The block is zero-filled at admission.
  */
 #define AAR_CB_BYTES          0x1000u
