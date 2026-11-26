@@ -75,15 +75,18 @@ checkmod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(checkmod)
 build_image = checkmod.build
 
-# The corpus keeps the note minor 5 it was made with, so the images that are
-# meant to load also load on a platform below 0.6. The builder's own default is
-# AAR_API_MINOR, as AAR_NOTE() emits it.
-CORPUS_MINOR = 5
+note_bytes = checkmod.note_bytes
 
 
-def note_bytes(profile, **kw):
-    kw.setdefault("minor", CORPUS_MINOR)
-    return checkmod.note_bytes(profile, **kw)
+def header_value(name):
+    with open(os.path.join(ROOT, "include", "aar", "app.h")) as fh:
+        return int(re.search(r"#define %s (\d+)u" % name, fh.read()).group(1))
+
+
+# The accepted images carry the minor of the header, as AAR_NOTE() emits it. A
+# minor below the floor or above the header is a refused image (C-ELF.33).
+AAR_API_MINOR = header_value("AAR_API_MINOR")
+AAR_API_MINOR_OLDEST = header_value("AAR_API_MINOR_OLDEST")
 
 
 _pspec = importlib.util.spec_from_file_location(
@@ -116,8 +119,6 @@ REFUSE = "PROFILE|INVAL"
 def img(profile, **o):
     o.setdefault("data_align", 4096)
     o.setdefault("text", CODE[profile])
-    if "note" not in o:
-        o["note"] = note_bytes(profile)
     return build_image(profile, **o)
 
 
@@ -288,6 +289,12 @@ def corpus(p):
     add("api-major-65535", img(p, note=note(major=65535)), ["C-ELF.32"], "INVAL",
         "refuse")
     add("api-minor-9999", img(p, note=note(minor=9999)), ["C-ELF.33"], "INVAL",
+        "refuse")
+    add("api-minor-above", img(p, note=note(minor=AAR_API_MINOR + 1)),
+        ["C-ELF.33"], "INVAL", "refuse")
+    add("api-minor-below", img(p, note=note(minor=AAR_API_MINOR_OLDEST - 1)),
+        ["C-ELF.33"], "INVAL", "refuse")
+    add("api-minor-0", img(p, note=note(minor=0)), ["C-ELF.33"], "INVAL",
         "refuse")
     add("stack-4", img(p, note=note(stack=4)), ["C-ELF.34"])
     add("stack-65520", img(p, note=note(stack=(64 << 10) - 16)), ["C-ELF.34"])

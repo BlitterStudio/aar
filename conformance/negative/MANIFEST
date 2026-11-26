@@ -61,6 +61,9 @@ note-profile-9 a32 C-ELF.30 PROFILE refuse
 api-major-1 a32 C-ELF.32 INVAL refuse
 api-major-65535 a32 C-ELF.32 INVAL refuse
 api-minor-9999 a32 C-ELF.33 INVAL refuse
+api-minor-above a32 C-ELF.33 INVAL refuse
+api-minor-below a32 C-ELF.33 INVAL refuse
+api-minor-0 a32 C-ELF.33 INVAL refuse
 stack-4 a32 C-ELF.34 PROFILE|INVAL refuse
 stack-65520 a32 C-ELF.34 PROFILE|INVAL refuse
 stack-65544 a32 C-ELF.35 PROFILE|INVAL refuse
@@ -138,6 +141,9 @@ note-profile-9 a64 C-ELF.30 PROFILE refuse
 api-major-1 a64 C-ELF.32 INVAL refuse
 api-major-65535 a64 C-ELF.32 INVAL refuse
 api-minor-9999 a64 C-ELF.33 INVAL refuse
+api-minor-above a64 C-ELF.33 INVAL refuse
+api-minor-below a64 C-ELF.33 INVAL refuse
+api-minor-0 a64 C-ELF.33 INVAL refuse
 stack-4 a64 C-ELF.34 PROFILE|INVAL refuse
 stack-65520 a64 C-ELF.34 PROFILE|INVAL refuse
 stack-65544 a64 C-ELF.35 PROFILE|INVAL refuse
