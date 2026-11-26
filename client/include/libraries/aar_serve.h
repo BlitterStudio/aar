@@ -280,7 +280,7 @@ typedef struct aar_serve_config {
                                        buttons (AAR_JOY_*). A port here is polled whether or not
                                        joy_ports names it. ReadJoyPort senses the controller by
                                        driving the port pins, so it is opt-in. aar_serve_create
-                                       answers AAR_E_NOSYS when lowlevel.library does not open.
+                                       answers AAR_E_NOSYS when lowlevel.library 40 does not open.
                                        Default 0 */
 } aar_serve_config;
 

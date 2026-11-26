@@ -208,9 +208,9 @@ static void write_scaled(struct aar_serve *s, const struct RenderInfo *ri,
         return;
     if (s->gfx.strip_bytes < row * AAR_SERVE_STRIP_ROWS) {
         if (s->gfx.strip)
-            X_FREE_VEC(s->gfx.strip);
+            X_FREE_MEM(s->gfx.strip, s->gfx.strip_bytes);
         s->gfx.strip_bytes = 0;
-        s->gfx.strip = X_ALLOC_VEC(row * AAR_SERVE_STRIP_ROWS, MEMF_PUBLIC);
+        s->gfx.strip = X_ALLOC_MEM(row * AAR_SERVE_STRIP_ROWS, MEMF_PUBLIC);
         if (!s->gfx.strip) {
             launcher_say(s, "no memory to scale the display");
             return;
@@ -265,11 +265,13 @@ static void display_op_present(void *ctx)
     }
     memset(&ri, 0, sizeof(ri));
     lock = X_P96_LOCK_BITMAP(s, s->gfx.surface, &ri, sizeof(ri));
-    if (s->gfx.scaled)
-        write_scaled(s, &ri, rp, ox + x, oy + y, w, h);
-    else
-        X_P96_WRITE_PIXEL_ARRAY(s, &ri, 0, 0, rp, ox, oy, w, h);
-    X_P96_UNLOCK_BITMAP(s, s->gfx.surface, lock);
+    if (lock) {
+        if (s->gfx.scaled)
+            write_scaled(s, &ri, rp, ox + x, oy + y, w, h);
+        else
+            X_P96_WRITE_PIXEL_ARRAY(s, &ri, 0, 0, rp, ox, oy, w, h);
+        X_P96_UNLOCK_BITMAP(s, s->gfx.surface, lock);
+    }
 }
 
 /* The inner size of the window, for AAR_EV_RESIZE; a scaled surface follows it. */
@@ -537,7 +539,7 @@ static void close_display(struct aar_serve *s)
         s->gfx.surface = NULL;
     }
     if (s->gfx.strip) {
-        X_FREE_VEC(s->gfx.strip);
+        X_FREE_MEM(s->gfx.strip, s->gfx.strip_bytes);
         s->gfx.strip = NULL;
         s->gfx.strip_bytes = 0;
     }
@@ -720,8 +722,6 @@ static int open_window_display(struct aar_serve *s, uint32_t w, uint32_t h,
         WA_SizeBBottom, size ? TRUE : FALSE,
         WA_MinWidth, 64,
         WA_MinHeight, 64,
-        WA_MaxWidth, ~0UL,
-        WA_MaxHeight, ~0UL,
         WA_Activate, TRUE,
         WA_SmartRefresh, TRUE,
         WA_NoCareRefresh, TRUE,

@@ -750,7 +750,11 @@ LONG AARPostEvent(AARHandle *handle, const aar_event *event);
 Pushes an input event to the app: a key, the mouse, a joystick, a stop request
 or a break. It takes the app's event structure from `aar/app.h`, not an
 `AAREvent`. The event reaches the app as given (the reserved word is 0). Mouse
-motion is merged while the queue is full or an event is pending. Dropped motion
+motion is merged while the queue is full or an event is pending: the deltas are
+summed (saturating at the `int16_t` range), and an event with
+`AAR_MOUSE_ABSOLUTE` in `buttons`, whose `dx` and `dy` are a position, replaces
+the pending position instead. A button change is never folded into a pending
+motion. Dropped motion
 is counted, so it is never lost without a count. A posted `AAR_EV_STOP` is an
 event only: it does not stop the app, which `AARStop` does. Returns
 `AAR_E_BUSY` when a full queue drops the event. The library counts the drop in

@@ -30,8 +30,9 @@ m68k-amigaos-gcc -std=gnu11 -noixemul -m68030 -O2 -Iclient/include -Iinclude \
   in an interrupt.
 - The program supplies `AARBase`, `IntuitionBase` and `GfxBase`.
   `aar_serve` opens `timer.device`, `Picasso96API.library` (when there
-  is one) and `ahi.device` (for the AHI audio route) itself and keeps those
-  bases to itself.
+  is one), `ahi.device` (for the AHI audio route), `lowlevel.library` (only for
+  `cd32_ports`) and `keymap.library` (only for a display that asks for text input)
+  itself and keeps those bases to itself.
 - The calling task needs `AAR_SERVE_MIN_STACK` bytes of stack (16 KiB); a
   palette update holds a 3 KiB table. `aar_serve` does not check it.
 - A request's buffer is touched only between the request and its completion,
@@ -54,8 +55,9 @@ structure is size-first and grows at the end only.
 | `console_spec` | opened at the first console use when `console_out` is 0 (a Workbench start, for example `CON:0/0/640/160/aar-run/CLOSE/WAIT`). That window is one bidirectional console: with `console_in` 0 it is the input as well. NULL: none, console I/O then fails as `AAR_E_IO` |
 | `audio_route` | `AAR_AUDIO_ROUTE_PLATFORM` or `AAR_AUDIO_ROUTE_AHI`: what this loop serves; it must equal the `AAR_TAG_AUDIO_ROUTE` the handle was given |
 | `groups` | `AAR_GROUP_*` to serve; the display and audio ops of a group not in the mask complete with `AAR_E_NOSYS`. 0: every group |
-| `joy_ports` | bit 0 port 0, bit 1 port 1; default `AAR_SERVE_DEFAULT_JOY_PORTS` (port 1 only) |
-| `poll_us` | the heartbeat of the timer in microseconds; 0: none. Without a heartbeat the loop still wakes for what waits on time: a stop that was asked or a stop event that found the queue full (10 ms), the joysticks of the input window (20 ms), completions waiting for room in the completion queue (1 ms), and a claim that is revoked without a signal (250 ms). Default `AAR_SERVE_DEFAULT_POLL_US` |
+| `joy_ports` | bit 0 port 0, bit 1 port 1; default `AAR_SERVE_DEFAULT_JOY_PORTS` (port 1 only). These ports are read from `JOYxDAT` and the CIA: the axes and one fire button |
+| `cd32_ports` | bit 0 port 0, bit 1 port 1: read these ports with `lowlevel.library` `ReadJoyPort`, which reports the seven buttons of a CD32 pad. A port named here is polled whether or not `joy_ports` names it. Opt-in, because `ReadJoyPort` drives the port pins to sense the controller. `aar_serve_create` answers `AAR_E_NOSYS` when `lowlevel.library` does not open. Default 0 |
+| `poll_us` | the heartbeat of the timer in microseconds; 0: none. Without a heartbeat the loop still wakes for what waits on time: a stop that was asked or a stop event that found the queue full (10 ms), the joysticks of the input window (20 ms), completions waiting for room in the completion queue (1 ms), a claim that is revoked without a signal (250 ms), and the timeout of a waiting `DISPLAY_VBLANK`. Default `AAR_SERVE_DEFAULT_POLL_US` |
 | `break_mask` | the task signals the loop consumes: Ctrl-C stops the app, Ctrl-D, Ctrl-E and Ctrl-F become `AAR_EV_BREAK` events. A signal left out is the program's: the loop's DOS packet waits and the keys of its window do not wait on it, test it, or clear it either. Default `AAR_SERVE_BREAK_ALL`; 0: the program owns its signals |
 | `display_strategy` | `AAR_SERVE_DISPLAY_*`, the first strategy to try |
 | `hooks` | an `aar_serve_hooks`, may be NULL |
@@ -118,6 +120,21 @@ An `open` that gives no front token or pitch has opened nothing: the result is
 With `load_rgb32` NULL, palette requests complete with `AAR_E_NOSYS`. `close` is
 called at `DISPLAY_CLOSE` and at `aar_serve_destroy`.
 
+Seven more members serve the ops of API 0.6, all optional. `present` is called
+after each flip of a one buffer display (the built-in table draws its window or
+its scaled screen there). `info` fills the refresh rate, the screen size and the
+`AAR_DISPINFO_ACTIVE` flag of `DISPLAY_INFO`; with it NULL the refresh rate is
+unknown and the screen is the surface. `modes` writes the first records of the
+table's modes and returns how many it has in all. `resize` is called for
+`DISPLAY_RESIZE` as `open` is, with the new size in the request's open arguments,
+and fills the same completion; without it, or without `AAR_DISPCAP_RESIZE`, the
+call answers `AAR_E_NOSYS`, which a replacement table always does, because it is
+granted no cap. `set_title` gets the title as ISO-8859-1. `set_pointer` gets the
+mode and, for `AAR_POINTER_CUSTOM`, the size, the hot spot and the big-endian
+ARGB words. `vblank` is told to watch (1) or stop (0) and returns 0 when it
+cannot see a vertical blank; the program then calls `aar_serve_vblank` at each
+one. A call a table does not have answers `AAR_E_NOSYS`.
+
 `struct aar_serve_console_ops` is the table under the console handlers:
 `write_start`, `read_start` and `live` are required, `open`, `read_allowed` and
 `output_error` optional. A start that returns 1 is completed by exactly one
@@ -128,6 +145,130 @@ first member of both tables is the `ctx` that every call receives.
 `aar_serve_create` answers `AAR_E_INVAL` for a table without what it requires.
 The other hooks (`status`, `log`, `message`, `stop_wanted`) are synchronous
 notifications that nothing completes, and the audio route cannot be replaced.
+
+## The display and the input of API 0.6
+
+The display flags of `aar_display_open` are requests. The built-in display
+grants the caps for the ones it could meet and leaves the others out of the
+reply, so an app reads `aar_surface.caps` to see what it got. A replacement
+display table is granted none of the caps below, because the table, not the loop,
+owns the window.
+
+`AAR_DISPLAY_WINDOW` shows the surface in a window on the default public screen.
+The surface is then a bitmap of its own in the requested format, made with
+`p96AllocBitMap` on the board and named by a token like any other surface; there
+is one buffer, and each flip draws it into the window with `p96WritePixelArray`,
+at the top left of the inner area and clipped to it. The window has a drag bar,
+a depth gadget and a close gadget, the title of `screen_title`, and the inner
+size of the surface. The cap `AAR_DISPCAP_WINDOW` is granted when the public
+screen is a Picasso96 screen of at least 16 bits per pixel and the bitmap could
+be made and named. Otherwise the display opens as it does without the flag, on a
+screen of its own, and none of the caps that need a window are granted. A CLUT8
+surface always takes a screen of its own, because its palette would change the
+public screen's.
+
+`AAR_DISPLAY_RESIZABLE` needs `AAR_DISPLAY_WINDOW`: the window gets a size gadget
+in its border and the input window's `IDCMP_NEWSIZE` becomes `AAR_EV_RESIZE` with
+the new inner size. It is granted as `AAR_DISPCAP_RESIZE` only with an input
+window. `DISPLAY_RESIZE` then makes a new surface bitmap of the size the app
+asked for, frees the old one after it, and answers as `DISPLAY_OPEN` does; a bitmap
+that cannot be made leaves the display as it was and answers `AAR_E_NOMEM`. It
+answers `AAR_E_BUSY` while a flip is pending (a window display has none, a
+replacement table may).
+
+`AAR_DISPLAY_POINTER_ABS`: the input window reports the pointer position in
+`dx` and `dy` of every `AAR_EV_MOUSE`, relative to the top-left pixel of the
+surface, with `AAR_MOUSE_ABSOLUTE` in `buttons`. It leaves out `IDCMP_DELTAMOVE`.
+In a window the position is taken from the inner area, and on a scaled display
+it is mapped back through the rectangle the surface is drawn in, rounded down.
+It can lie outside the surface. The client library keeps the latest of two
+absolute positions when it has to merge motion. Granted with an input window.
+
+`AAR_DISPLAY_TEXT_INPUT`: each key press is also mapped with `keymap.library`
+(`MapRawKey`, the default keymap, with the previous keys of a dead key sequence
+that Intuition keeps in the message) and every character it makes is sent as an
+`AAR_EV_TEXT` after the key event, with the qualifiers of the key. Latin-1
+characters are the code points of the same number. Control characters, the
+escape sequences of cursor and function keys, and a key pressed with an Amiga
+key held make none. A key release makes none. The cap is granted with an input
+window when `keymap.library` opens, which the loop does at the first display
+that asks for text.
+
+`AAR_DISPLAY_CLOSE_REQUEST`: the close gadget of a window display sends
+`AAR_EV_CLOSE_REQUEST` and does not stop the app. Ctrl-C and the other break
+keys still do. The cap is granted for a window with an input window only: a
+display on a screen has no close gadget.
+
+`AAR_DISPLAY_SCALE`: the client shows the surface scaled to its window or its
+screen, keeping the aspect ratio, centred, with the rest of the area black. The
+scaling is nearest neighbour, done by the loop in strips of 16 rows and drawn
+with `p96WritePixelArray`; no Picasso96 or CyberGraphX scaling call is used. A
+window display follows its window: a size change redraws the frame at the new
+size. On a screen the surface is a bitmap of its own again, and the screen has the
+size of the Workbench screen, in the mode that suits the surface's format. The
+cap `AAR_DISPCAP_SCALED` is granted when that surface could be made.
+
+Two events need no flag. `AAR_EV_ACTIVE` is sent for `IDCMP_ACTIVEWINDOW` and
+`IDCMP_INACTIVEWINDOW`, with code 1 and 0, so also once when the display opens
+active. The NewMouse raw keys 0x7A and 0x7B (up and down) and 0x7C and 0x7D (left
+and right) become `AAR_EV_WHEEL` with one step in `dy` (positive down) or `dx`
+(positive right) and the qualifiers; neither the press nor the release of a
+wheel key is sent as a key. `AAR_EV_MOUSE` carries the button that changed in
+`code` (0 for motion, else 1 left, 2 right, 3 middle) and the state of all the
+buttons in `buttons`.
+
+`DISPLAY_INFO` reports the surface size, the size of the screen it is on, the
+refresh rate in millihertz and the flags `AAR_DISPINFO_WINDOW` and
+`AAR_DISPINFO_SCALED` (what was granted) and `AAR_DISPINFO_ACTIVE` (the window
+has the focus, or for a display with no window of ours its screen is the active
+one). The refresh rate comes from the monitor of the mode shown (`MonitorInfo`
+total rows and colour clocks of 280 ns) and is 0 when that gives nothing sensible
+(below 20 Hz or above 300 Hz).
+
+`DISPLAY_MODES` lists the Picasso96 modes of the display database that are
+available and show at least one of the surface formats, up to 256 of them, with
+their size, refresh rate and the formats the mode is compatible with. The first
+mode of the size of the Workbench screen is marked `AAR_MODEF_PREFERRED`. It
+needs no open display. Without `Picasso96API.library` the list is empty.
+
+`DISPLAY_TITLE` converts the UTF-8 title to ISO-8859-1 (a character above U+00FF
+and a malformed sequence become `?`) and sets it as the title of the window of a
+window display. On a screen it is the screen title, set through the input
+window, or on the screen itself when the program has no input window of ours.
+
+`DISPLAY_POINTER` acts on the window of the display, or its input window. The
+default pointer is the system's. The busy pointer is `WA_BusyPointer`. A hidden
+pointer and a custom one are sprite images that need Intuition 39: a two plane
+bitmap in a `pointerclass` object, with the hot spot as the object's offset. The
+ARGB pixels (alpha below 0x80 is transparent) are quantised to the nearest of the
+three pointer colours of Preferences (colours 17 to 19, read with `GetPrefs`), so
+the image takes the user's pointer colours. The image is at most 64 by 64. A
+program with no window of ours has nothing to set it on and the call answers
+`AAR_E_NOSYS`.
+
+`DISPLAY_VBLANK` parks the app until the next vertical blank and does not block
+the loop. The loop sends a one microsecond request to the VBLANK unit of
+`timer.device`, which ends at the next vertical blank, and the unit's reply port
+is in `aar_serve_sigmask`. After `arg1` microseconds (rounded up to a
+millisecond; the loop wakes for it even with no heartbeat) the call ends with
+`AAR_E_TIMEDOUT`. A close or the destroy of the loop ends it with `AAR_E_IO`.
+It answers `AAR_E_NOSYS` when the VBLANK unit does not open. This is the
+vertical blank of the Amiga's own chipset, as `timer.device` counts it. A
+Picasso96 board that does not raise that interrupt for its own refresh does not
+change it.
+
+The joystick ports are read from `JOY0DAT`, `JOY1DAT` and the CIA by default,
+which changes no state: one fire button, the axes of a digital stick. The second
+and third button of a stick are on the POT lines. Those belong to
+`potgo.resource` and the input handlers, and a mouse in the port puts its right
+and middle buttons on the same lines, so they are not read. A port in
+`cd32_ports` is read with `lowlevel.library` `ReadJoyPort` instead, and reports
+all seven buttons of a CD32 pad as `AAR_JOY_*` bits with the axes. It is read
+about once a frame. A port with nothing a pad or a joystick in it (a mouse, no
+device) reads as released. `ReadJoyPort` senses the controller by driving the
+port pins, which is why it is not the default: an earlier launcher that used it
+left the left mouse button repeating and releasing on its own after it had
+exited. The window must have the focus for either kind of reading.
 
 ## Calls
 
@@ -140,11 +281,12 @@ size and the defaults.
 
 `LONG aar_serve_create(AARHandle *h, const aar_serve_config *cfg, aar_serve **out)`:
 validates the configuration (`AAR_E_INVAL`), checks the handle (`AAR_E_OWNER`,
-`AAR_E_STALE`), allocates about 20 KiB, reads `AARInfo.stop_grace_ms`,
+`AAR_E_STALE`), allocates about 26 KiB, reads `AARInfo.stop_grace_ms`,
 duplicates the root, opens `timer.device` (`AAR_E_NOSYS` when there is none) and
 `Picasso96API.library`, installs the log sink with `AARSetLogSink` and arms the
 heartbeat. `AAR_E_NOSYS` also for the AHI route with a `poll_us` of 0 or above
-20000. On an error `*out` is NULL and nothing is left behind (`AAR_E_NOMEM` for
+20000, and for a `cd32_ports` that names a port when `lowlevel.library` does not
+open. On an error `*out` is NULL and nothing is left behind (`AAR_E_NOMEM` for
 memory).
 
 ### aar_serve_run
@@ -156,9 +298,10 @@ the app has ended. Returns `AAR_SERVE_ENDED` or `AAR_SERVE_LOST`.
 
 `ULONG aar_serve_sigmask(const aar_serve *s)`: every signal the loop waits on
 now: the break signals of `break_mask`, the timer, the console packet port, the
-input window, the SafeMessage port of a flip and the AHI port when they exist,
-and the library signal with `AAR_SERVEF_USE_SIGNAL`. It changes while the app
-runs, so ask again before each `Wait`. The heartbeat timer is armed whenever it
+input window, the SafeMessage port of a flip, the port of the `timer.device`
+vertical blank unit while a `DISPLAY_VBLANK` waits, and the AHI port when they
+exist, and the library signal with `AAR_SERVEF_USE_SIGNAL`. It changes while the
+app runs, so ask again before each `Wait`. The heartbeat timer is armed whenever it
 is in the mask. `aar_serve_create`, the end of every step and every call that
 waits on DOS (`aar_serve_locate` included) arm it again, so a program may call
 those between `aar_serve_create` and its first `Wait`.
@@ -168,7 +311,8 @@ those between `aar_serve_create` and its first `Wait`.
 `LONG aar_serve_step(aar_serve *s, ULONG signals)`: one pass of the loop;
 `signals` is what `Wait` returned. It takes the break signals, drains the input
 window and the joystick, flushes the stop event, serves up to 16 requests, pumps
-the console, the display and the audio, flushes the completion backlog and reads
+the console, the display (a flip's SafeMessage, a `DISPLAY_VBLANK` and its
+timeout) and the audio, flushes the completion backlog and reads
 the state. It returns `AAR_SERVE_CONTINUE` until the app has ended and the
 output that must be written is written. Then it returns `AAR_SERVE_ENDED`, also
 when both grace periods have elapsed after a stop. It returns `AAR_SERVE_LOST`
@@ -184,6 +328,13 @@ again on every pass until it is delivered.
 
 `void aar_serve_flip_shown(aar_serve *s)`: a replacement display table tells the
 loop that the flip it started with `change_buffer` is on the screen.
+
+### aar_serve_vblank
+
+`void aar_serve_vblank(aar_serve *s)`: a replacement display table, whose
+`vblank` call was told to watch, tells the loop that a vertical blank has come.
+A parked `DISPLAY_VBLANK` completes with `AAR_OK`. Ignored when none is parked.
+The built-in table does not need it.
 
 ### aar_serve_write_done
 

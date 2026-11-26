@@ -614,7 +614,7 @@ LONG aar_serve_create(AARHandle *h, const aar_serve_config *cfg,
     s->gfx.p96 = X_OPEN_LIB((CONST_STRPTR)"Picasso96API.library", 2);
     /* A CD32 pad is read through lowlevel.library; the program asked for it. */
     if (cfg->cd32_ports) {
-        s->in.ll = X_OPEN_LIB((CONST_STRPTR)"lowlevel.library", 37);
+        s->in.ll = X_OPEN_LIB((CONST_STRPTR)"lowlevel.library", 40);
         if (!s->in.ll) {
             serve_free(s);
             return AAR_E_NOSYS;

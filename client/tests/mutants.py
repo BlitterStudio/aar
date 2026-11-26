@@ -718,8 +718,8 @@ mutant("unserved-op-is-ok", "serve_core", SC,
 mutant("abort-forgets-a-console-read", "destroy_held", SC,
        ("    if (c->read_active)\n        read_finish(c, AAR_E_IO, 0);\n    if (d->flip_active) {", "    if (d->flip_active) {"))
 mutant("abort-forgets-a-flip", "destroy_held", SC,
-       ("    if (d->flip_active) {\n        struct aar_serve_req finished = d->flip_req;\n\n        d->flip_active = 0;\n        flip_complete(d, &finished, AAR_E_IO);\n    }\n    if (d->flip_queued) {\n        struct aar_serve_req next = d->flip_next;\n\n        d->flip_queued = 0;\n        flip_complete(d, &next, AAR_E_IO);\n    }\n}",
-        "}"))
+       ("    if (d->flip_active) {\n        struct aar_serve_req finished = d->flip_req;\n\n        d->flip_active = 0;\n        flip_complete(d, &finished, AAR_E_IO);\n    }\n    if (d->flip_queued) {\n        struct aar_serve_req next = d->flip_next;\n\n        d->flip_queued = 0;\n        flip_complete(d, &next, AAR_E_IO);\n    }\n    vblank_finish(d, AAR_E_IO);\n}",
+        "    vblank_finish(d, AAR_E_IO);\n}"))
 # ---- serve: the decisions (client/serve/aar_serve_core.h) ----------------------------------
 mutant("reply-reserve-off-by-one", "serve_policy", SH,
        ("return backlog_used + AAR_SERVE_REPLY_RESERVE < AAR_SERVE_REPLY_BACKLOG;", "return backlog_used + AAR_SERVE_REPLY_RESERVE <= AAR_SERVE_REPLY_BACKLOG;"))
@@ -922,11 +922,11 @@ mutant("console-table-without-read-accepted", "hooks_tables", SL,
 mutant("console-table-without-live-accepted", "hooks_tables", SL,
        ("(!h->console->write_start || !h->console->read_start || !h->console->live))", "(!h->console->write_start || !h->console->read_start))"))
 mutant("no-timed-wake-while-a-stop-is-pending", "poll0_stop", SL,
-       ("    if ((s->stop_asked || s->events.stop_pending) && us > 10000UL)\n        us = 10000UL;\n", ""))
+       ("        if ((s->stop_asked || s->events.stop_pending) && us > 10000UL)\n            us = 10000UL;\n", ""))
 mutant("no-watchdog-without-a-heartbeat", "poll0_claim", SL,
        ("    us = AAR_SERVE_WATCHDOG_US;", "    us = 900000UL;"))
 mutant("no-timed-wake-for-a-completion-backlog", "poll0_backlog", SL,
-       ("    if (s->reply_n)\n        us = 1000UL;\n", ""))
+       ("        if (s->reply_n)\n            us = 1000UL;\n", ""))
 mutant("step-arms-the-timer-only-with-a-heartbeat", "poll0_stop", SL,
        ("    timer_arm_for(s, timed_wake_us(s));\n    return AAR_SERVE_CONTINUE;", "    if (s->cfg.poll_us)\n        timer_arm(s);\n    return AAR_SERVE_CONTINUE;"))
 mutant("sigmask-ignores-a-timed-wake", "poll0_mask", SL,
@@ -973,7 +973,7 @@ mutant("nil-takes-no-packets", "nil_output", "client/serve/aar_serve_con.c",
 mutant("output-note-into-the-failed-pipe", "output_error_note", "client/serve/aar_serve_con.c",
        ("        console_user_note(s, note);\n    }\n    s->console_output_failed = 1;", "        console_write_fh(console_output(s), note);\n    }\n    s->console_output_failed = 1;"))
 mutant("display-buffers-forced", "display_strategy", "client/serve/aar_serve_gfx.c",
-       ("    if (s->cfg.display_strategy == AAR_SERVE_DISPLAY_BUFFERS) {", "    if (1) {"))
+       ("    if (!scale_screen && s->cfg.display_strategy == AAR_SERVE_DISPLAY_BUFFERS) {", "    if (!scale_screen) {"))
 mutant("pan3-forced", "display_strategy", "client/serve/aar_serve_gfx.c",
        ("        if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN3 &&\n            h <= AAR_SERVE_SCREEN_MAX / 3u)", "        if (h <= AAR_SERVE_SCREEN_MAX / 3u)"))
 mutant("pan2-forced", "display_strategy", "client/serve/aar_serve_gfx.c",
@@ -1002,6 +1002,117 @@ mutant("joystick-port-mask-ignored", "joystick", "client/serve/aar_serve_input.c
        ("        if (!(s->cfg.joy_ports & (1UL << port)))\n            continue;\n", ""))
 mutant("close-gadget-ignored", "mouse_and_close", "client/serve/aar_serve_input.c",
        ("            want_stop(s, AAR_SERVE_WHY_WINDOW);", "            (void)0;"))
+# ---- serve: display and input, API 0.6 ----------------------------------------------------
+SI = "client/serve/aar_serve_input.c"
+SG = "client/serve/aar_serve_gfx.c"
+mutant("mouse-absolute-summed", "absolute mouse merge", CORE,
+       ("                h->mouse.dx = ev->dx;\n                h->mouse.dy = ev->dy;\n",
+        "                h->mouse.dx = sat16((int32_t)h->mouse.dx + ev->dx);\n                h->mouse.dy = sat16((int32_t)h->mouse.dy + ev->dy);\n"))
+mutant("wheel-up-is-down", "serve_core", SC,
+       ("    case 0x7Au: *dy = -1; return 1;", "    case 0x7Au: *dy = 1; return 1;"))
+mutant("text-keeps-control-characters", "serve_core", SC,
+       ("        if (c < 0x20u || (c >= 0x7Fu && c <= 0x9Fu))\n            continue;\n", ""))
+mutant("text-ignores-the-command-qualifier", "serve_core", SC,
+       ("    if (qualifiers & command_mask)\n        return 0;\n", ""))
+mutant("latin1-passes-wide-characters", "serve_core", SC,
+       ("        out[o++] = cp <= 0xFFu ? (char)cp : '?';", "        out[o++] = (char)cp;"))
+mutant("resize-without-the-cap", "serve_core", SC,
+       ("    if (!(d->caps & AAR_DISPCAP_RESIZE) || !d->ops.resize) {", "    if (!d->ops.resize) {"))
+mutant("resize-with-a-flip-pending", "serve_core", SC,
+       ("    if (d->flip_active || d->flip_queued) {\n        done->result = AAR_E_BUSY;\n        return;\n    }\n", ""))
+mutant("vblank-timeout-ignored", "serve_core", SC,
+       ("    if (d->vb_active && (int32_t)(now_ms - d->vb_deadline_ms) >= 0)", "    if (0)"))
+mutant("vblank-timeout-rounded-down", "serve_core", SC,
+       ("    ms = us / 1000u + ((us % 1000u) ? 1u : 0u);", "    ms = us / 1000u;"))
+mutant("vblank-survives-the-close", "serve_core", SC,
+       ("    vblank_finish(d, AAR_E_IO);\n    aar_serve_display_reset(d);\n    done->result = AAR_OK;",
+        "    aar_serve_display_reset(d);\n    done->result = AAR_OK;"))
+mutant("window-cap-without-the-flag", "serve_core", SC,
+       ("    if ((open_flags & AAR_DISPLAY_WINDOW) && (features & AAR_DISPCAP_WINDOW)) {",
+        "    if (features & AAR_DISPCAP_WINDOW) {"))
+mutant("fit-rectangle-not-centred", "serve_core", SC,
+       ("    *x = (dw - fw) / 2u;", "    *x = 0;"))
+mutant("surface-position-truncates", "serve_core", SC,
+       ("    if (a % b < 0)\n        q--;", "    (void)0;"))
+mutant("scaling-takes-the-left-edge", "serve_core", SC,
+       ("        uint32_t sx = 0, ax = sw;", "        uint32_t sx = 0, ax = 0;"))
+mutant("pointer-half-alpha-is-opaque", "serve_core", SC,
+       ("    if ((argb >> 24) < 0x80u)\n        return 0;", "    if ((argb >> 24) == 0)\n        return 0;"))
+mutant("cd32-forward-is-reverse", "serve_core", SC,
+       ("    if (jp & AAR_SERVE_JPF_FORWARD)\n        b |= AAR_JOY_FORWARD;",
+        "    if (jp & AAR_SERVE_JPF_FORWARD)\n        b |= AAR_JOY_REVERSE;"))
+mutant("cd32-mouse-is-a-pad", "serve_core", SC,
+       ("    return type == AAR_SERVE_JP_TYPE_GAMECTLR || type == AAR_SERVE_JP_TYPE_JOYSTK;",
+        "    return type != 0;"))
+mutant("refresh-rate-unbounded", "serve_core", SC,
+       ("    return (mhz < 20000u || mhz > 300000u) ? 0u : mhz;", "    return mhz;"))
+mutant("modes-written-is-the-total", "serve_core", SC,
+       ("    done->out[AAR_R_DISPLAY_MODES_COUNT] = n;", "    done->out[AAR_R_DISPLAY_MODES_COUNT] = total;"))
+mutant("title-nul-not-required", "serve_core", SC,
+       ("    if (n >= req->buf_len || n >= 256u) {", "    if (n >= 256u) {"))
+mutant("pointer-hot-spot-unchecked", "serve_core", SC,
+       ("         hot_x < 0 || hot_y < 0 || hot_x >= (int32_t)w || hot_y >= (int32_t)h ||\n", ""))
+mutant("info-flags-from-the-table", "serve_core", SC,
+       ("    info.flags &= ~(uint32_t)(AAR_DISPINFO_WINDOW | AAR_DISPINFO_SCALED);\n", ""))
+mutant("every-mode-is-preferred", "serve_core", SC,
+       ("            modes[i].flags |= AAR_MODEF_PREFERRED;\n            found = 1;",
+        "            modes[i].flags |= AAR_MODEF_PREFERRED;"))
+mutant("wheel-is-also-a-key", "input_events", SI,
+       ("                    push_event(s, AAR_EV_WHEEL, 0, wheel_dx, wheel_dy, qual);\n                continue;",
+        "                    push_event(s, AAR_EV_WHEEL, 0, wheel_dx, wheel_dy, qual);"))
+mutant("active-event-dropped", "input_events", SI,
+       ("            push_event(s, AAR_EV_ACTIVE, 1, 0, 0, 0);", "            (void)0;"))
+mutant("close-request-stops-anyway", "close_request", SI,
+       ("            if (s->gfx.caps & AAR_DISPCAP_CLOSE_REQUEST)\n", "            if (0)\n"))
+mutant("text-for-a-key-release", "text_input", SI,
+       ("            if (type == AAR_EV_KEY_DOWN && (s->gfx.caps & AAR_DISPCAP_TEXT_INPUT))",
+        "            if (s->gfx.caps & AAR_DISPCAP_TEXT_INPUT)"))
+mutant("dead-key-address-not-passed", "text_input", SI,
+       ("            dead = *(APTR *)im->IAddress;", "            dead = NULL;"))
+mutant("absolute-flag-ignored", "pointer_abs", SI,
+       ("    int absolute = (s->gfx.caps & AAR_DISPCAP_POINTER_ABS) != 0;", "    int absolute = 0;"))
+mutant("cd32-read-at-every-pass", "joystick_cd32", SI,
+       ("    if (s->in.joy_valid[port] && now - s->in.cd32_ms[port] < 16u)\n        return;\n", ""))
+mutant("cd32-port-also-read-from-the-registers", "joystick_cd32", SI,
+       ("            poll_cd32(s, port);\n            continue;", "            poll_cd32(s, port);"))
+mutant("window-position-from-the-corner", "pointer_abs", SG,
+       ("        px -= win->BorderLeft;\n", ""))
+mutant("scaled-position-not-mapped", "display_scale_window", SG,
+       ("                          s->gfx.scaled ? s->gfx.fit_w : 0u,\n", "                          0u,\n"))
+mutant("window-on-an-8-bit-public-screen", "display_window_fallback", SG,
+       ("X_P96_BITMAP_ATTR(s, pub->RastPort.BitMap, P96BMA_BYTESPERPIXEL) < 2) {",
+        "X_P96_BITMAP_ATTR(s, pub->RastPort.BitMap, P96BMA_BYTESPERPIXEL) < 0) {"))
+mutant("clut8-in-a-window", "display_window_fallback", SG,
+       ("    if (format == AAR_FMT_CLUT8 || !s->gfx.p96", "    if (!s->gfx.p96"))
+mutant("surface-token-not-checked", "display_window_fallback", SG,
+       ("    if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb ||\n        !bitmap_token(s, bm, token, pitch)) {",
+        "    if ((ULONG)X_P96_BITMAP_ATTR(s, bm, P96BMA_RGBFORMAT) != rgb) {\n        (void)bitmap_token(s, bm, token, pitch);"))
+mutant("scaled-flip-draws-unscaled", "display_scale_window", SG,
+       ("    if (s->gfx.scaled)\n        write_scaled(s, &ri, rp, ox + x, oy + y, w, h);",
+        "    if (0)\n        write_scaled(s, &ri, rp, ox + x, oy + y, w, h);"))
+mutant("scaled-area-not-cleared", "display_scale_window", SG,
+       ("            update_fit(s);\n            clear_inner(s);\n", "            update_fit(s);\n"))
+mutant("resize-keeps-the-old-bitmap", "display_resize", SG,
+       ("    X_P96_FREE_BITMAP(s, s->gfx.surface);\n    adopt_surface(s, bm, w, h, format);", "    adopt_surface(s, bm, w, h, format);"))
+mutant("new-size-not-reported", "display_scale_window", SG,
+       ("    if (s->gfx.caps & AAR_DISPCAP_RESIZE)\n        push_event(s, AAR_EV_RESIZE, 0, (int16_t)iw, (int16_t)ih, 0);",
+        "    if (0)\n        push_event(s, AAR_EV_RESIZE, 0, (int16_t)iw, (int16_t)ih, 0);"))
+mutant("pointer-freed-while-shown", "display_pointer", SG,
+       ("    X_SET_WINDOW_POINTER(win, WA_Pointer, (ULONG)obj, TAG_DONE);\n    pointer_release(s);\n",
+        "    pointer_release(s);\n    X_SET_WINDOW_POINTER(win, WA_Pointer, (ULONG)obj, TAG_DONE);\n"))
+mutant("keymap-opened-without-text-input", "text_input", SG,
+       ("        if ((flags & AAR_DISPLAY_TEXT_INPUT) && !s->in.keymap)", "        if (!s->in.keymap)"))
+mutant("modes-list-non-picasso96-modes", "display_info", SG,
+       ("        if (!X_P96_MODE_ATTR(s, id, P96IDA_ISP96))\n            continue;\n", ""))
+mutant("modes-list-unavailable-modes", "display_info", SG,
+       ("            disp.NotAvailable ||\n", ""))
+mutant("vblank-reply-not-served", "display_vblank", SG,
+       ("    s->gfx.vb_pending = 0;\n    aar_serve_display_vblank_seen(&s->core.display);\n}",
+        "    s->gfx.vb_pending = 0;\n}"))
+mutant("no-timed-wake-for-a-vblank-timeout", "display_vblank_timeout", SL,
+       ("    if (vb < us)\n        us = vb;\n", ""))
+mutant("cd32-without-lowlevel-is-served", "joystick_cd32", SL,
+       ("        if (!s->in.ll) {", "        if (0) {"))
 NAMES = {m[0]: m for m in M}
 
 
