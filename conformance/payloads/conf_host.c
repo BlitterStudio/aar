@@ -88,6 +88,8 @@ static int not_served(struct conf_test *t, int rc, const char *call)
 {
     if (rc != AAR_E_NOSYS && rc != AAR_E_ACCES)
         return 0;
+    if (t->note.n)
+        conf_buf_str(&t->note, "; ");
     conf_buf_str(&t->note, call);
     conf_buf_str(&t->note, rc == AAR_E_NOSYS ? ": AAR_E_NOSYS, the client does not serve it"
                                               : ": AAR_E_ACCES, the client refuses it by policy");
@@ -380,18 +382,18 @@ static int clip_get(uint32_t unit, uint32_t type, void *buf, uint32_t room, uint
     return aar_clip_read(unit, type, buf, room, n);
 }
 
-/* Writes text and reads it back whole. Returns 1 when the clip is exactly the text. */
-static int clip_round(struct conf_test *t, uint32_t unit, uint32_t type, const void *data, uint32_t bytes,
+/* Writes a clip and checks its exact size and bytes if both calls are served. */
+static void clip_round(struct conf_test *t, uint32_t unit, uint32_t type, const void *data, uint32_t bytes,
                       void *buf, uint32_t room, const char *what)
 {
     uint32_t n;
     int rc = aar_clip_write(unit, type, data, bytes);
 
-    if (rc != AAR_OK) {
-        why_rc(t, what, rc);
-        return 0;
-    }
+    if (not_served(t, rc, "clip_write") || !expect(t, rc, AAR_OK, what))
+        return;
     rc = clip_get(unit, type, buf, room, &n);
+    if (not_served(t, rc, "clip_read"))
+        return;
     if (rc != AAR_OK || n != bytes || !same(buf, data, bytes)) {
         if (conf_fail_first(t)) {
             conf_buf_str(&t->why, what);
@@ -403,9 +405,7 @@ static int clip_round(struct conf_test *t, uint32_t unit, uint32_t type, const v
             conf_buf_u64(&t->why, bytes);
             conf_buf_str(&t->why, ")");
         }
-        return 0;
     }
-    return 1;
 }
 
 static void test_clip_text(void)
@@ -420,31 +420,30 @@ static void test_clip_text(void)
 
     conf_begin(&t, "C-HOST.8");
     rc = aar_clip_write(CH_SCRATCH_UNIT, AAR_CLIP_TEXT, first, len);
-    if (not_served(&t, rc, "clip_write")) {
+    if (not_served(&t, rc, "clip_write") || !expect(&t, rc, AAR_OK, "clip_write of text")) {
         conf_end(&t);
         return;
     }
-    expect(&t, rc, AAR_OK, "clip_write of text");
     rc = clip_get(CH_SCRATCH_UNIT, AAR_CLIP_TEXT, buf, sizeof buf, &n);
-    if (not_served(&t, rc, "clip_read")) {
-        conf_end(&t);
-        return;
-    }
-    if (expect(&t, rc, AAR_OK, "clip_read of the text")) {
+    if (!not_served(&t, rc, "full TEXT read") && expect(&t, rc, AAR_OK, "clip_read of the text")) {
         conf_check(&t, n == len, "the size of the clip is not the text size");
         conf_check(&t, same(buf, first, len), "the text read differs from the text written");
     }
     rc = clip_get(CH_SCRATCH_UNIT, AAR_CLIP_TEXT, buf, 0, &n);
-    expect(&t, rc, AAR_E_NOSPC, "clip_read with bytes 0");
-    conf_check(&t, n == len, "*n after bytes 0 is not the text size");
+    if (!not_served(&t, rc, "zero-byte TEXT read") &&
+        expect(&t, rc, AAR_E_NOSPC, "clip_read with bytes 0"))
+        conf_check(&t, n == len, "*n after bytes 0 is not the text size");
     fill(buf, 0xAAu, sizeof buf);
     rc = clip_get(CH_SCRATCH_UNIT, AAR_CLIP_TEXT, buf, 5, &n);
-    expect(&t, rc, AAR_E_NOSPC, "clip_read into 5 bytes");
-    conf_check(&t, n == len, "*n after a short read is not the text size");
-    conf_check(&t, same(buf, first, 5) && buf[5] == 0xAAu, "a short read did not copy exactly bytes bytes");
+    if (!not_served(&t, rc, "short TEXT read") &&
+        expect(&t, rc, AAR_E_NOSPC, "clip_read into 5 bytes")) {
+        conf_check(&t, n == len, "*n after a short read is not the text size");
+        conf_check(&t, same(buf, first, 5) && buf[5] == 0xAAu, "a short read did not copy exactly bytes bytes");
+    }
     clip_round(&t, CH_SCRATCH_UNIT, AAR_CLIP_TEXT, second, (uint32_t)sizeof second - 1u, buf, sizeof buf,
                "the second write");
-    conf_buf_str(&t.note, "round trip, NOSPC with the size, a second write replaces the first");
+    if (!t.note.n)
+        conf_buf_str(&t.note, "round trip, NOSPC with the size, a second write replaces the first");
     conf_end(&t);
 }
 
@@ -461,20 +460,21 @@ static void test_clip_charset(void)
     }
     conf_begin(&t, "C-HOST.9");
     rc = aar_clip_write(CH_SCRATCH_UNIT, AAR_CLIP_TEXT, CH_APP_UTF8, slen(CH_APP_UTF8));
-    if (not_served(&t, rc, "clip_write")) {
+    if (not_served(&t, rc, "clip_write") ||
+        !expect(&t, rc, AAR_OK, "clip_write of text with U+00E9 and U+4E2D")) {
         conf_end(&t);
         return;
     }
-    expect(&t, rc, AAR_OK, "clip_write of text with U+00E9 and U+4E2D");
     rc = clip_get(CH_SCRATCH_UNIT, AAR_CLIP_TEXT, buf, sizeof buf, &n);
-    if (expect(&t, rc, AAR_OK, "clip_read of the converted text")) {
+    if (!not_served(&t, rc, "clip_read") && expect(&t, rc, AAR_OK, "clip_read of the converted text")) {
         /* "App clip: caf" U+00E9 " " "?" */
         static const char want[] = "App clip: caf\xC3\xA9 ?";
 
         conf_check(&t, n == (uint32_t)sizeof want - 1u && same(buf, want, n),
                    "the text read back is not the UTF-8 text with U+4E2D replaced by ?");
     }
-    conf_buf_str(&t.note, "U+00E9 round-trips, U+4E2D becomes ?");
+    if (!t.note.n)
+        conf_buf_str(&t.note, "U+00E9 round-trips, U+4E2D becomes ?");
     conf_end(&t);
 }
 
@@ -488,17 +488,18 @@ static void test_clip_iff(void)
 
     conf_begin(&t, "C-HOST.10");
     rc = aar_clip_write(CH_SCRATCH_UNIT, AAR_CLIP_IFF, form, sizeof form);
-    if (not_served(&t, rc, "clip_write")) {
+    if (not_served(&t, rc, "clip_write") || !expect(&t, rc, AAR_OK, "clip_write of an IFF FORM")) {
         conf_end(&t);
         return;
     }
-    expect(&t, rc, AAR_OK, "clip_write of an IFF FORM");
     rc = clip_get(CH_SCRATCH_UNIT, AAR_CLIP_IFF, buf, sizeof buf, &n);
-    if (expect(&t, rc, AAR_OK, "clip_read of the IFF FORM"))
+    if (!not_served(&t, rc, "IFF read") && expect(&t, rc, AAR_OK, "clip_read of the IFF FORM"))
         conf_check(&t, n == sizeof form && same(buf, form, sizeof form), "the FORM read differs from the one written");
     rc = clip_get(CH_SCRATCH_UNIT, AAR_CLIP_TEXT, buf, sizeof buf, &n);
-    expect(&t, rc, AAR_E_NOENT, "clip_read of text from a unit that holds a FORM that is not text");
-    conf_buf_str(&t.note, "the FORM is unchanged; text from it is AAR_E_NOENT");
+    if (!not_served(&t, rc, "TEXT read after IFF write"))
+        expect(&t, rc, AAR_E_NOENT, "clip_read of text from a unit that holds a FORM that is not text");
+    if (!t.note.n)
+        conf_buf_str(&t.note, "the FORM is unchanged; text from it is AAR_E_NOENT");
     conf_end(&t);
 }
 
@@ -508,24 +509,11 @@ static void test_clip_big(void)
     static uint8_t src[CH_BIG_BYTES];
     static uint8_t dst[CH_BIG_BYTES + 8u];
     uint32_t i;
-    int rc;
 
     conf_begin(&t, "C-HOST.11");
     for (i = 0; i < CH_BIG_BYTES; i++)
         src[i] = ch_big_byte(i);
-    rc = aar_clip_write(CH_SCRATCH_UNIT, AAR_CLIP_TEXT, src, CH_BIG_BYTES);
-    if (not_served(&t, rc, "clip_write")) {
-        conf_end(&t);
-        return;
-    }
-    expect(&t, rc, AAR_OK, "clip_write of 70000 bytes of text");
-    {
-        uint32_t n;
-
-        rc = clip_get(CH_SCRATCH_UNIT, AAR_CLIP_TEXT, dst, sizeof dst, &n);
-        if (expect(&t, rc, AAR_OK, "clip_read of 70000 bytes of text"))
-            conf_check(&t, n == CH_BIG_BYTES && same(dst, src, CH_BIG_BYTES), "the text read differs from the text written");
-    }
+    clip_round(&t, CH_SCRATCH_UNIT, AAR_CLIP_TEXT, src, CH_BIG_BYTES, dst, sizeof dst, "write of 70000 bytes of text");
     /* An IFF FORM of the same size: FORM, size 69992, AARC, then bytes. */
     src[0] = 'F';
     src[1] = 'O';
@@ -539,8 +527,9 @@ static void test_clip_big(void)
     src[9] = 'A';
     src[10] = 'R';
     src[11] = 'C';
-    clip_round(&t, CH_SCRATCH_UNIT, AAR_CLIP_IFF, src, CH_BIG_BYTES, dst, sizeof dst, "the 70000 byte FORM");
-    conf_buf_str(&t.note, "70000 bytes as text and as a FORM, exact");
+    clip_round(&t, CH_SCRATCH_UNIT, AAR_CLIP_IFF, src, CH_BIG_BYTES, dst, sizeof dst, "write of the 70000 byte FORM");
+    if (!t.note.n)
+        conf_buf_str(&t.note, "70000 bytes as text and as a FORM, exact");
     conf_end(&t);
 }
 

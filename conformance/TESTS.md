@@ -378,8 +378,9 @@ runs on the host runner and under qemu user mode.
 ## C-HOST: host environment: locale, environment variables, clipboard (section 7.4)
 
 The client serves these core calls (spec 7.4, 9.6). A client that does not serve one answers
-`AAR_E_NOSYS` and may refuse by policy with `AAR_E_ACCES`; both answers pass the rows C-HOST.1
-to C-HOST.14 with a note, and C-HOST.15 judges `AAR_E_NOSYS`. The runner prepares the
+`AAR_E_NOSYS` and may refuse by policy with `AAR_E_ACCES`. For valid clipboard requests in
+C-HOST.8 to C-HOST.11, the payload accepts these results independently for each read and write
+and notes what was unavailable. C-HOST.15 judges `AAR_E_NOSYS`. The runner prepares the
 environment variables and the clipboard unit that `payloads/conf_host.h` lists, and is the peer
 of C-HOST.3, C-HOST.7, C-HOST.9, C-HOST.13 and C-HOST.14 (host build: `SKIP host:`; the qemu run
 has the variables of C-HOST.4 to C-HOST.6 and no runner). The suite does not touch clipboard unit
@@ -397,7 +398,7 @@ has the variables of C-HOST.4 to C-HOST.6 and no runner). The suite does not tou
 | C-HOST.8 | 7.4 | MUST | core | any | payload | yes | `aar_clip_write` of text to unit 200 and `aar_clip_read` give it back: `*n` is the text size, a `bytes` of 0 is `AAR_E_NOSPC` with `*n` set, a short buffer gets `min(bytes, *n)` bytes and `AAR_E_NOSPC`, and a second write replaces the first |
 | C-HOST.9 | 7.4 | MUST | core | any | payload | yes | text conversion (host build: `SKIP host:`, because the loader has no character set): a character in ISO-8859-1 (U+00E9) round-trips and one that no Amiga character set has (U+4E2D) is written as `?` |
 | C-HOST.10 | 7.4 | MUST | core | any | payload | yes | `AAR_CLIP_IFF` passes one IFF FORM through unchanged, and a read of `AAR_CLIP_TEXT` from a unit that holds a FORM that is not text is `AAR_E_NOENT` |
-| C-HOST.11 | 7.4 | MUST | core | any | payload | yes | a clip of 70000 bytes, more than one staging buffer of the runtime, is written and read back exactly, as text and as an IFF FORM |
+| C-HOST.11 | 7.4 | MUST | core | any | payload | yes | a clip of 70000 bytes, more than one staging buffer of the runtime, is written and read back exactly; the TEXT and IFF FORM round trips are checked independently |
 | C-HOST.12 | 7.4 | MUST | core | any | payload | yes | a unit of 256 or more (`AAR_CLIP_UNITS`) and a type of 0 or 3 are `AAR_E_INVAL` for `aar_clip_read` and `aar_clip_write` |
 | C-HOST.13 | 7.4 | MUST | core | any | payload | yes | what the runner put on clipboard unit 201 as an IFF FTXT in ISO-8859-1 reads as UTF-8 (runner peer) |
 | C-HOST.14 | 7.4 | MUST | core | any | payload | yes | what the app writes to unit 202 is an IFF FTXT on the clipboard, with the text converted to ISO-8859-1 and `?` for U+4E2D (runner peer reads `clipboard.device`) |
