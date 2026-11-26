@@ -378,8 +378,13 @@ static void service_requests(struct aar_serve *s)
         memset(&d, 0, sizeof(d));
         if (!group_served(s, q.op))
             d.result = AAR_E_NOSYS;
-        else if (aar_serve_core_request(&s->core, &q, &d) != AAR_SERVE_REQ_DONE)
+        else if (aar_serve_core_request(&s->core, &q, &d) != AAR_SERVE_REQ_DONE) {
+            /* A parked DISPLAY_VBLANK has a deadline. The timer still armed may be
+             * set for longer, so it is taken back and the step arms the deadline. */
+            if (q.op == AAR_OP_DISPLAY_VBLANK)
+                timer_reap(s);
             continue;
+        }
         reply_request(s, &q, &d);
     }
     if (rc == AAR_E_IO && !s->queue_corrupt) {
@@ -547,7 +552,6 @@ static void serve_free(struct aar_serve *s)
     }
     if (s->tm.port)
         X_DELETE_PORT(s->tm.port);
-    vb_free(s);
     if (s->in.ll)
         X_CLOSE_LIB(s->in.ll);
     if (s->in.keymap)
@@ -732,8 +736,6 @@ ULONG aar_serve_sigmask(const aar_serve *cs)
      * AHI. */
     if (s->gfx.safe_port)
         mask |= 1UL << s->gfx.safe_port->mp_SigBit;
-    if (s->gfx.vb_port)
-        mask |= 1UL << s->gfx.vb_port->mp_SigBit;
     if (s->ahi.port)
         mask |= 1UL << s->ahi.port->mp_SigBit;
     if (s->cfg.flags & AAR_SERVEF_USE_SIGNAL)

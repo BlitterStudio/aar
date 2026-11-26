@@ -3528,104 +3528,121 @@ static void test_the_pointer_can_be_hidden_busy_or_an_image(void)
     finish();
 }
 
-static void test_vblank_completes_at_the_blank_without_blocking_the_loop(void)
+static void test_the_built_in_displays_cannot_see_a_vertical_blank(void)
 {
     struct comp c;
     uint32_t arg[6];
-    uint64_t t0;
 
-    setup("display_vblank");
+    setup("display_vblank_nosys");
     make_serve();
     memset(arg, 0, sizeof(arg));
     arg[0] = AAR_SERVE_DISPLAY_ID;
-    arg[1] = 100000u;
-    /* no display */
+    arg[1] = 5000u;
+    /* no display, and a zero timeout */
     CHECK(call6(AAR_OP_DISPLAY_VBLANK, 29, arg, 0, 0, &c) && c.result == AAR_E_INVAL);
     CHECK(open_display(&c, AAR_FMT_RGB565, 0));
     arg[1] = 0u;
     CHECK(call6(AAR_OP_DISPLAY_VBLANK, 30, arg, 0, 0, &c) && c.result == AAR_E_INVAL);
-    /* the next vertical blank: within one period, and the loop serves other things meanwhile */
-    hx_vblank_us = 400000;
-    arg[1] = 1000000u;
-    t0 = hx_now;
-    CHECK(post6(AAR_OP_DISPLAY_VBLANK, 31, arg, 0, 0) == AAR_OK);
-    ticks(5);
-    CHECK(!next_comp(&c)); /* parked: the blank is 400 ms away */
-    hx_window_post(IDCMP_RAWKEY, 0x45, 0, 0, 0);
-    ticks(3);
-    drain();
-    CHECK(events_of(AAR_EV_KEY_DOWN) == 1); /* the input was served while the call waited */
-    CHECK(wait_comp(&c, 2000));
-    CHECK(c.id == 31 && c.result == AAR_OK);
-    CHECK(hx_now - t0 >= 300000u - 20000u && hx_now - t0 <= 400000u + 10000u);
-    CHECK(hx_timer_open_count == 2); /* the heartbeat's timer and the VBLANK unit's */
-    /* a blank of a short period completes the next call within it */
-    hx_vblank_us = 20000;
-    t0 = hx_now;
-    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 32, arg, 0, 0, &c) && c.result == AAR_OK);
-    CHECK(hx_now - t0 <= 20000u + 2000u);
-    /* one at a time is enforced by the app being parked; the core says busy if it is not */
-    CHECK(call(AAR_OP_DISPLAY_CLOSE, 33, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    /* a Picasso96 screen, then a window with a scaled surface: the vertical blank that
+     * timer.device counts is the chipset's, not the RTG display's, so none is promised */
+    arg[1] = 5000u;
+    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 31, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
+    CHECK(hx_timer_open_count == 1); /* the heartbeat's timer only */
+    CHECK(call(AAR_OP_DISPLAY_CLOSE, 32, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW | AAR_DISPLAY_SCALE));
+    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 33, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
+    CHECK(hx_timer_open_count == 1);
     finish();
 }
 
-static void test_vblank_times_out_and_ends_with_the_display(void)
+/* A replacement display's vertical blank: the program reports each one. */
+static int xv_watch_on, xv_watch_off, xv_can = 1;
+
+static int xv_vblank(void *ctx, int watch)
 {
+    (void)ctx;
+    if (watch) {
+        xv_watch_on++;
+        return xv_can;
+    }
+    xv_watch_off++;
+    return 1;
+}
+
+/* A request posted and served at once, without waiting for a wake of the loop. */
+static int post_now(uint32_t op, uint32_t id, const uint32_t arg[6])
+{
+    if (post6(op, id, arg, 0, 0) != AAR_OK)
+        return 0;
+    aar_serve_step(S, 0);
+    return 1;
+}
+
+static void test_a_replacement_display_waits_for_its_vblank_and_times_out(void)
+{
+    static struct aar_serve_display_ops table;
     struct comp c;
     uint32_t arg[6];
     uint64_t t0;
 
-    setup("display_vblank_timeout");
+    setup("repl_display_vblank");
+    memset(&rd, 0, sizeof(rd));
+    table = rd_full;
+    table.vblank = xv_vblank;
+    xv_watch_on = xv_watch_off = 0;
+    xv_can = 1;
     cfg.poll_us = 0; /* no heartbeat: the loop must wake for the timeout itself */
+    use_hooks(&table, NULL);
     make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
     memset(arg, 0, sizeof(arg));
     arg[0] = AAR_SERVE_DISPLAY_ID;
-    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
-    hx_vblank_us = 500000;
-    /* a platform with no VBLANK unit: not implemented (it is tried again at the next call) */
-    hx_timer_fail_open = 1;
-    arg[1] = 5000u;
-    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 28, arg, 0, 0, &c) && c.result == AAR_E_NOSYS);
-    hx_timer_fail_open = 0;
+    arg[1] = 400000u;
+    /* parked until the program reports the blank, while the loop serves other requests */
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 30, arg));
+    CHECK(xv_watch_on == 1 && !next_comp(&c));
+    CHECK(post_now(AAR_OP_DISPLAY_INFO, 31, arg));
+    CHECK(next_comp(&c) && c.id == 31 && c.result == AAR_OK);
+    CHECK(!next_comp(&c));
+    aar_serve_vblank(S);
+    CHECK(wait_comp(&c, 400) && c.id == 30 && c.result == AAR_OK && xv_watch_off == 1);
+    /* no blank comes: the call ends at its timeout, without a heartbeat */
     arg[1] = 30000u;
     t0 = hx_now;
-    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 30, arg, 0, 0, &c));
-    CHECK(c.result == AAR_E_TIMEDOUT);
-    CHECK(hx_now - t0 >= 29000u && hx_now - t0 <= 30000u + 20000u + 1000u);
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 32, arg));
+    CHECK(wait_comp(&c, 400) && c.id == 32 && c.result == AAR_E_TIMEDOUT);
+    CHECK(hx_now - t0 >= 29000u && hx_now - t0 <= 30000u + 1000u);
     /* the timeout is rounded up to a millisecond */
     arg[1] = 1u;
     t0 = hx_now;
-    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 31, arg, 0, 0, &c) && c.result == AAR_E_TIMEDOUT);
-    CHECK(hx_now - t0 >= 1000u && hx_now - t0 <= 21000u);
-    /* a close ends a parked call with AAR_E_IO and the VBLANK request is gone */
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 33, arg));
+    CHECK(wait_comp(&c, 400) && c.id == 33 && c.result == AAR_E_TIMEDOUT);
+    CHECK(hx_now - t0 >= 1000u && hx_now - t0 <= 2000u);
+    CHECK(xv_watch_off == 3);
+    /* a close while the call waits ends it with AAR_E_IO */
     arg[1] = 400000u;
-    CHECK(post6(AAR_OP_DISPLAY_VBLANK, 32, arg, 0, 0) == AAR_OK);
-    ticks(3);
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 34, arg));
     CHECK(!next_comp(&c));
-    CHECK(post(AAR_OP_DISPLAY_CLOSE, 33, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0) == AAR_OK);
-    ticks(3);
     {
-        unsigned got32 = 0, got33 = 0;
+        unsigned got34 = 0, got35 = 0;
 
+        CHECK(post_now(AAR_OP_DISPLAY_CLOSE, 35, arg));
         while (next_comp(&c)) {
-            if (c.id == 32) {
-                got32 = 1;
+            if (c.id == 34) {
+                got34 = 1;
                 CHECK(c.result == AAR_E_IO);
             }
-            if (c.id == 33) {
-                got33 = 1;
+            if (c.id == 35) {
+                got35 = 1;
                 CHECK(c.result == AAR_OK);
             }
         }
-        CHECK(got32 && got33);
+        CHECK(got34 && got35);
     }
-    /* the display closes with the loop while a call waits */
+    /* and the destroy of the loop while a call waits */
     CHECK(open_display(&c, AAR_FMT_RGB565, 0));
-    arg[1] = 5000u;
-    CHECK(call6(AAR_OP_DISPLAY_VBLANK, 35, arg, 0, 0, &c));
-    arg[1] = 400000u;
-    CHECK(post6(AAR_OP_DISPLAY_VBLANK, 36, arg, 0, 0) == AAR_OK);
-    ticks(3);
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 36, arg));
+    CHECK(!next_comp(&c));
     aar_serve_destroy(S);
     S = NULL;
     {
@@ -3636,8 +3653,16 @@ static void test_vblank_times_out_and_ends_with_the_display(void)
                 got36 = 1;
                 CHECK(c.result == AAR_E_IO);
             }
-        CHECK(got36);
+        CHECK(got36 && xv_watch_off == 5);
     }
+    /* a table that cannot see a vertical blank: not implemented, nothing parked */
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0));
+    xv_can = 0;
+    arg[1] = 5000u;
+    CHECK(post_now(AAR_OP_DISPLAY_VBLANK, 37, arg));
+    CHECK(next_comp(&c) && c.id == 37 && c.result == AAR_E_NOSYS);
+    CHECK(!next_comp(&c));
     finish();
 }
 
@@ -3982,8 +4007,8 @@ static const struct {
     T(test_display_info_and_modes),
     T(test_the_title_goes_to_the_window_or_the_screen),
     T(test_the_pointer_can_be_hidden_busy_or_an_image),
-    T(test_vblank_completes_at_the_blank_without_blocking_the_loop),
-    T(test_vblank_times_out_and_ends_with_the_display),
+    T(test_the_built_in_displays_cannot_see_a_vertical_blank),
+    T(test_a_replacement_display_waits_for_its_vblank_and_times_out),
     T(test_cd32_ports_are_read_with_lowlevel),
     T(test_a_replacement_display_has_no_window_caps_and_serves_the_rest),
     T(test_a_32_bit_surface_is_scaled_by_cybergraphics_when_it_is_there),

@@ -272,6 +272,7 @@ document is too long.`
 | `MODE` | Optional Picasso96 DisplayID, in decimal, `$` hexadecimal, or `0x` hexadecimal. The app still chooses width, height, and RGB format. |
 | `ARGS` | Arguments for the app, separated by spaces or tabs. Double quotes keep spaces in one argument. |
 | `JOYPORT0` | Enabled by the same values as `ABS`. Enables joystick port 0 as well as port 1. |
+| `CD32=<ports>` | The game ports to read as CD32 pads with lowlevel.library `ReadJoyPort`: bit 0 is port 0 and bit 1 is port 1, so `0` to `3`. The default (`0`) keeps the read-only `JOYxDAT` path. `ReadJoyPort` senses the controller by driving the port pins, which is why it is an explicit opt-in; a port named here is read even without `JOYPORT0`. |
 | `AUDIO=AHI` | Route app PCM to AHI. The default remains the platform's own audio path. |
 | `MAXMEM=<MiB>` | Positive decimal MiB cap on the app's private memory (`AAR_TAG_PRIVATE_MIB`). |
 | `HOSTMEM=<MiB>` | Positive decimal MiB shared memory limit (`AAR_TAG_SHARED_MIB`), up to the platform's `shared_max_mib` and 4095. |
@@ -318,6 +319,7 @@ not passed to the app. A bad value prints the usage and returns 10.
 | --- | --- |
 | `POLL=<us>` | The heartbeat of the loop, in microseconds. The default is 1000. The parser accepts 0 to 999999 (`AAR_RUN_POLL_US_LIMIT` in `aar_run_policy.h`). `POLL=20000` suits a program that tolerates a vertical-blank wake-up. `POLL=0` turns the heartbeat off and waits on the library's signal and timed wakes: 10 ms while a stop is pending, 20 ms for display joysticks, 1 ms for completions waiting for queue space, and 250 ms to see a revoked claim. With `AUDIO=AHI`, the serving loop requires 1 to 20000 us instead; other values fail at startup with `AAR_E_NOSYS` (currently reported as `timer.device is required.`). A slower heartbeat costs latency for DOS and audio work. |
 | `DISPLAY=<BUFFERS\|PAN3\|PAN2\|SINGLE>` | The display strategy aar-run starts with, and the fallbacks after it. `BUFFERS` (the default) uses screen buffers, then a three page tall screen, a two page one and one buffer. `PAN3` starts at the three page tall screen, `PAN2` at the two page one, and `SINGLE` uses one buffer the platform copies each frame. A strategy the screen cannot open falls back to the next one, as in the default order. |
+| `CD32=<ports>` | The same as the ToolType: bit 0 is port 0 and bit 1 is port 1, `0` to `3`; any other value is refused. |
 
 ```text
 aar-run RAM:swquake.elf POLL=20000 DISPLAY=PAN2
@@ -505,7 +507,9 @@ stay in `buttons`. Mouse movement carries deltas, and mouse buttons use bits
 button in bit 0 and `dx`/`dy` in `-1, 0, 1`. aar-run reads joystick port 1 only
 while its display window is active; `JOYPORT0=1` also enables port 0. It only
 reads `JOYxDAT` and the CIA-A fire bits and never drives the port pins, so the
-mouse and joystick ports are left exactly as it found them.
+mouse and joystick ports are left exactly as it found them. `CD32=<ports>` opts
+ports in to `ReadJoyPort`, which reports the seven buttons of a CD32 pad and
+does drive the pins.
 
 Events travel on the completion queue, which holds 64 entries shared with
 completions and messages. The library sums consecutive mouse motion into one

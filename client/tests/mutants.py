@@ -1105,10 +1105,7 @@ mutant("modes-list-non-picasso96-modes", "display_info", SG,
        ("        if (!X_P96_MODE_ATTR(s, id, P96IDA_ISP96))\n            continue;\n", ""))
 mutant("modes-list-unavailable-modes", "display_info", SG,
        ("            disp.NotAvailable ||\n", ""))
-mutant("vblank-reply-not-served", "display_vblank", SG,
-       ("    s->gfx.vb_pending = 0;\n    aar_serve_display_vblank_seen(&s->core.display);\n}",
-        "    s->gfx.vb_pending = 0;\n}"))
-mutant("no-timed-wake-for-a-vblank-timeout", "display_vblank_timeout", SL,
+mutant("no-timed-wake-for-a-vblank-timeout", "repl_display_vblank", SL,
        ("    if (vb < us)\n        us = vb;\n", ""))
 mutant("cd32-without-lowlevel-is-served", "joystick_cd32", SL,
        ("        if (!s->in.ll) {", "        if (0) {"))

@@ -250,16 +250,16 @@ the image takes the user's pointer colours. The image is at most 64 by 64. A
 program with no window of ours has nothing to set it on and the call answers
 `AAR_E_NOSYS`.
 
-`DISPLAY_VBLANK` parks the app until the next vertical blank and does not block
-the loop. The loop sends a one microsecond request to the VBLANK unit of
-`timer.device`, which ends at the next vertical blank, and the unit's reply port
-is in `aar_serve_sigmask`. After `arg1` microseconds (rounded up to a
-millisecond; the loop wakes for it even with no heartbeat) the call ends with
-`AAR_E_TIMEDOUT`. A close or the destroy of the loop ends it with `AAR_E_IO`.
-It answers `AAR_E_NOSYS` when the VBLANK unit does not open. This is the
-vertical blank of the Amiga's own chipset, as `timer.device` counts it. A
-Picasso96 board that does not raise that interrupt for its own refresh does not
-change it.
+`DISPLAY_VBLANK` parks the app until the next vertical blank of the display's
+screen and does not block the loop. The built-in displays (a Picasso96 screen, a
+window, a scaled surface) cannot see that blank: the vertical blank that
+`timer.device` counts is the chipset's, not an RTG board's, so they answer
+`AAR_E_NOSYS`. A replacement display table whose `vblank` call watches answers it:
+the loop completes a parked call when the program calls `aar_serve_vblank`, and
+after `arg1` microseconds (rounded up to a millisecond; the loop wakes for it even
+with no heartbeat) with `AAR_E_TIMEDOUT`. A close or the destroy of the loop ends
+it with `AAR_E_IO`. A platform that can serve the call itself does so before it
+reaches the client.
 
 The joystick ports are read from `JOY0DAT`, `JOY1DAT` and the CIA by default,
 which changes no state: one fire button, the axes of a digital stick. The second
@@ -302,9 +302,8 @@ the app has ended. Returns `AAR_SERVE_ENDED` or `AAR_SERVE_LOST`.
 
 `ULONG aar_serve_sigmask(const aar_serve *s)`: every signal the loop waits on
 now: the break signals of `break_mask`, the timer, the console packet port, the
-input window, the SafeMessage port of a flip, the port of the `timer.device`
-vertical blank unit while a `DISPLAY_VBLANK` waits, and the AHI port when they
-exist, and the library signal with `AAR_SERVEF_USE_SIGNAL`. It changes while the
+input window, the SafeMessage port of a flip and the AHI port when they exist,
+and the library signal with `AAR_SERVEF_USE_SIGNAL`. It changes while the
 app runs, so ask again before each `Wait`. The heartbeat timer is armed whenever it
 is in the mask. `aar_serve_create`, the end of every step and every call that
 waits on DOS (`aar_serve_locate` included) arm it again, so a program may call
@@ -315,8 +314,8 @@ those between `aar_serve_create` and its first `Wait`.
 `LONG aar_serve_step(aar_serve *s, ULONG signals)`: one pass of the loop;
 `signals` is what `Wait` returned. It takes the break signals, drains the input
 window and the joystick, flushes the stop event, serves up to 16 requests, pumps
-the console, the display (a flip's SafeMessage, a `DISPLAY_VBLANK` and its
-timeout) and the audio, flushes the completion backlog and reads
+the console, the display (a flip's SafeMessage, the timeout of a
+`DISPLAY_VBLANK`) and the audio, flushes the completion backlog and reads
 the state. It returns `AAR_SERVE_CONTINUE` until the app has ended and the
 output that must be written is written. Then it returns `AAR_SERVE_ENDED`, also
 when both grace periods have elapsed after a stop. It returns `AAR_SERVE_LOST`

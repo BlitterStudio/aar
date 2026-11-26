@@ -127,7 +127,6 @@
 #define TR_ADDREQUEST 9
 #define TIMERNAME "timer.device"
 #define UNIT_MICROHZ 0
-#define UNIT_VBLANK 1
 #define AHINAME "ahi.device"
 #define AHI_DEFAULT_UNIT 0
 #define AHIST_S16S 3
@@ -837,7 +836,7 @@ HX_UNUSED static void hx_delete_ioreq(struct IORequest *io)
 
 HX_UNUSED static BYTE hx_open_device(const char *name, ULONG unit, struct IORequest *io, ULONG flags)
 {
-    io->io_Unit = (void *)(uintptr_t)unit;
+    (void)unit;
     (void)flags;
     if (strcmp(name, TIMERNAME) == 0) {
         if (hx_timer_fail_open)
@@ -880,17 +879,7 @@ HX_UNUSED static void hx_send_io(struct IORequest *io)
 
         if (io->io_Command != TR_ADDREQUEST)
             HX_FAIL("timer command");
-        if ((uintptr_t)io->io_Unit == UNIT_VBLANK) {
-            /* The VBLANK unit counts vertical blanks: a request ends at the next one at
-             * the earliest, and a time of one microsecond is the next. */
-            uint64_t us = (uint64_t)tr->tr_time.tv_secs * 1000000u + tr->tr_time.tv_micro;
-            uint64_t first = hx_vblank_us - (hx_now % hx_vblank_us);
-
-            hx_sched(first + (us > hx_vblank_us ? (us - 1u) / hx_vblank_us * hx_vblank_us : 0u),
-                     hx_io_done, io);
-        } else {
-            hx_sched((uint64_t)tr->tr_time.tv_secs * 1000000u + tr->tr_time.tv_micro, hx_io_done, io);
-        }
+        hx_sched((uint64_t)tr->tr_time.tv_secs * 1000000u + tr->tr_time.tv_micro, hx_io_done, io);
     } else if (io->io_Device == &hx_ahi_dev) {
         struct AHIRequest *ar = (struct AHIRequest *)io;
         uint64_t us;

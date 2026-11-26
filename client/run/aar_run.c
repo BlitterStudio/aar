@@ -126,6 +126,7 @@ static int doc_first = 1; /* the first WBArg that is a document */
 static BPTR root_lock;
 static int abs_paths;
 static int joy_port0;
+static uint32_t cd32_ports;      /* CD32=<ports>: the ports read as CD32 pads; 0: none */
 static int audio_ahi;
 static uint32_t maxmem_mib;
 static uint32_t hostmem_mib;
@@ -237,7 +238,7 @@ static void usage(void)
          "Diagnostics: POLL=<us> DISPLAY=<BUFFERS|PAN3|PAN2|SINGLE>\n"
          "Debugging: CRASHLOG=<path> PROFILE=<hz> PROFILEFILE=<path>\n"
          "Run Stack 32768 in this Shell first.\n"
-         "Workbench ToolTypes: APP, ROOT, ABS, MODE, ARGS, JOYPORT0, AUDIO, MAXMEM, HOSTMEM, WEIGHT,\n"
+         "Workbench ToolTypes: APP, ROOT, ABS, MODE, ARGS, JOYPORT0, CD32, AUDIO, MAXMEM, HOSTMEM, WEIGHT,\n"
          "CRASHLOG, PROFILE, PROFILEFILE.\n"
          "ROOT defaults to the current directory, or the icon directory.");
 }
@@ -373,6 +374,7 @@ static int load_tooltypes(void)
     } else {
         abs_paths = settings.abs_paths;
         joy_port0 = settings.joy_port0;
+        cd32_ports = settings.cd32_ports;
         audio_ahi = settings.audio_ahi;
         maxmem_mib = settings.maxmem_mib;
         hostmem_mib = settings.hostmem_mib;
@@ -898,6 +900,9 @@ static int take_option(const char *arg)
     r = aar_run_display_arg(arg, &display_strategy);
     if (r != AAR_RUN_ARG_OTHER)
         return r;
+    r = aar_run_cd32_arg(arg, &cd32_ports);
+    if (r != AAR_RUN_ARG_OTHER)
+        return r;
     return aar_run_debug_arg(arg, &debug_opts);
 }
 
@@ -1070,6 +1075,8 @@ static int begin_claim(int *rc)
     cfg.console_spec = _WBenchMsg && !wb_console ? (CONST_STRPTR)AAR_RUN_WB_CONSOLE : NULL;
     cfg.audio_route = audio_ahi ? AAR_AUDIO_ROUTE_AHI : AAR_AUDIO_ROUTE_PLATFORM;
     cfg.joy_ports = joy_port0 ? 3UL : 2UL;
+    /* CD32=<ports>: an explicit opt-in, since ReadJoyPort drives the port pins. */
+    cfg.cd32_ports = cd32_ports;
     cfg.poll_us = poll_us;
     if (!poll_us)
         cfg.flags |= AAR_SERVEF_USE_SIGNAL;

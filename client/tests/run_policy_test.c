@@ -1270,19 +1270,53 @@ static void test_a_project_flag_set_off_beats_the_tool_icon(void)
     assert(strcmp(s.app, "Work:t.elf") == 0);
 }
 
+static void test_cd32_argument_and_tooltype(void)
+{
+    static const char *const tool[] = {"CD32", "3", NULL};
+    static const char *const tool_one[] = {"CD32", "1", NULL};
+    static const char *const tool_four[] = {"CD32", "4", NULL};
+    static const char *const tool_word[] = {"CD32", "YES", NULL};
+    static const char *const tool_empty[] = {"CD32", "", NULL};
+    struct aar_run_tt_chain chain = chain_of(NULL, tool);
+    struct aar_run_settings s;
+    const char *bad = NULL;
+    uint32_t ports = 9u;
+
+    /* the argument: explicit, a bit per port, anything else is refused */
+    assert(aar_run_cd32_arg("CD32=3", &ports) == AAR_RUN_ARG_TAKEN && ports == 3u);
+    assert(aar_run_cd32_arg("cd32=0", &ports) == AAR_RUN_ARG_TAKEN && ports == 0u);
+    assert(aar_run_cd32_arg("CD32=4", &ports) == AAR_RUN_ARG_BAD && ports == 0u);
+    assert(aar_run_cd32_arg("CD32=", &ports) == AAR_RUN_ARG_BAD);
+    assert(aar_run_cd32_arg("CD32=YES", &ports) == AAR_RUN_ARG_BAD);
+    assert(aar_run_cd32_arg("CD32=03", &ports) == AAR_RUN_ARG_BAD);
+    assert(aar_run_cd32_arg("CD32", &ports) == AAR_RUN_ARG_OTHER);
+    assert(aar_run_cd32_arg("JOYPORT0=1", &ports) == AAR_RUN_ARG_OTHER);
+    assert(aar_run_cd32_arg(NULL, &ports) == AAR_RUN_ARG_OTHER);
+    /* the ToolType: the same values, strict */
+    assert(aar_run_tt_settings(&chain, &s, &bad) && s.cd32_ports == 3u && !s.joy_port0);
+    chain = chain_of(NULL, tool_one);
+    assert(aar_run_tt_settings(&chain, &s, &bad) && s.cd32_ports == 1u);
+    chain = chain_of(NULL, tool_four);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && bad && strcmp(bad, "CD32") == 0);
+    chain = chain_of(NULL, tool_word);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "CD32") == 0);
+    chain = chain_of(NULL, tool_empty);
+    assert(!aar_run_tt_settings(&chain, &s, &bad) && strcmp(bad, "CD32") == 0);
+}
+
 static void test_tooltypes_without_a_project_icon(void)
 {
-    static const char *const tool[] = {"ABS", "", "MAXMEM", "128", NULL};
+    static const char *const tool[] = {"ABS", "", "MAXMEM", "128", "CD32", "3", NULL};
     struct aar_run_tt_chain chain = chain_of(NULL, tool);
     struct aar_run_settings s;
     const char *bad;
 
     assert(aar_run_tt_settings(&chain, &s, &bad));
-    assert(s.abs_paths && s.maxmem_mib == 128u && !s.have_mode && !s.args);
+    assert(s.abs_paths && s.maxmem_mib == 128u && s.cd32_ports == 3u && !s.have_mode && !s.args);
     /* no icon at all */
     chain = chain_of(NULL, NULL);
     assert(aar_run_tt_settings(&chain, &s, &bad));
-    assert(!s.abs_paths && !s.joy_port0 && !s.audio_ahi && s.maxmem_mib == 0u &&
+    assert(!s.abs_paths && !s.joy_port0 && !s.audio_ahi && s.cd32_ports == 0u && s.maxmem_mib == 0u &&
            s.app[0] == '\0' && s.root[0] == '\0' && !s.args);
 }
 
@@ -1774,6 +1808,7 @@ int main(void)
     test_status_keyword_is_case_insensitive();
     test_claim_loss_does_not_look_like_a_clean_exit();
     test_load_break_consumed_by_packet_returns_warn();
+    test_cd32_argument_and_tooltype();
     puts("run_policy_test: ok");
     return 0;
 }

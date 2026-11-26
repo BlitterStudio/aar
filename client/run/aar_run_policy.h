@@ -262,6 +262,25 @@ static inline int aar_run_display_arg(const char *arg, uint32_t *strategy_out)
     return AAR_RUN_ARG_BAD;
 }
 
+/* CD32=<ports>: bit 0 is port 0 and bit 1 is port 1, read as CD32 pads with
+ * lowlevel.library ReadJoyPort, which drives the port pins to sense the
+ * controller. An explicit opt-in: one digit, 0 to 3. */
+static inline int aar_run_cd32_value(const char *value, uint32_t *ports_out)
+{
+    if (!value || value[0] < '0' || value[0] > '3' || value[1] != '\0')
+        return 0;
+    *ports_out = (uint32_t)(value[0] - '0');
+    return 1;
+}
+
+static inline int aar_run_cd32_arg(const char *arg, uint32_t *ports_out)
+{
+    const char *value = aar_run_key_value(arg, "CD32=");
+
+    if (!value)
+        return AAR_RUN_ARG_OTHER;
+    return aar_run_cd32_value(value, ports_out) ? AAR_RUN_ARG_TAKEN : AAR_RUN_ARG_BAD;
+}
 
 /* What aar-run can serve, for AAR_TAG_CLIENT_CAPS: CLUT8 screens, pan-flip
  * acknowledgement by completion flag and platform-owned flips. The lease
@@ -938,6 +957,7 @@ struct aar_run_settings {
     char root[256];       /* ROOT, empty: the default */
     int abs_paths;        /* ABS */
     int joy_port0;        /* JOYPORT0 */
+    uint32_t cd32_ports;  /* CD32: 0 to 3; 0 when not given */
     int audio_ahi;        /* AUDIO=AHI */
     int have_mode;        /* MODE was given */
     uint32_t mode;
@@ -949,8 +969,8 @@ struct aar_run_settings {
 
 /* Every key from the project icon, then from aar-run's icon. A value that
  * cannot be used (an APP or ROOT too long for the buffer, a MODE that is not a
- * number, an AUDIO other than AHI, a MAXMEM, HOSTMEM or WEIGHT that is not a
- * positive number) returns 0 and names the key in *bad_key. */
+ * number, an AUDIO other than AHI, a CD32 other than 0 to 3, a MAXMEM, HOSTMEM or
+ * WEIGHT that is not a positive number) returns 0 and names the key in *bad_key. */
 static inline int aar_run_tt_settings(const struct aar_run_tt_chain *chain,
                                       struct aar_run_settings *s,
                                       const char **bad_key)
@@ -981,6 +1001,11 @@ static inline int aar_run_tt_settings(const struct aar_run_tt_chain *chain,
     }
     s->have_mode = value != NULL;
     s->joy_port0 = aar_run_flag_value(aar_run_tt_get(chain, "JOYPORT0"));
+    value = aar_run_tt_get(chain, "CD32");
+    if (value && !aar_run_cd32_value(value, &s->cd32_ports)) {
+        *bad_key = "CD32";
+        return 0;
+    }
     value = aar_run_tt_get(chain, "AUDIO");
     if (value && !aar_run_tool_is_ahi(value)) {
         *bad_key = "AUDIO";

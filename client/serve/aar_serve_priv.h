@@ -342,9 +342,6 @@ struct aar_serve {
         char title_buf[256];            /* the title of the window or screen, ISO-8859-1 */
         APTR pointer_obj;               /* the custom pointer set, or NULL */
         struct BitMap *pointer_bm;
-        struct MsgPort *vb_port;        /* DISPLAY_VBLANK: timer.device's VBLANK unit */
-        struct timerequest *vb_io;
-        int vb_pending;                 /* the request is sent */
     } gfx;
 
     /* ---- aar_serve_ahi.c: AHI audio -------------------------------------------------------- */

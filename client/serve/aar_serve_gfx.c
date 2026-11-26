@@ -1,8 +1,8 @@
 /*
  * aar_serve: the display backend (a Picasso96 screen, two screen buffers or a
  * panned tall screen, or a surface of its own shown in a window or scaled to
- * the screen; the palette, the input window, the pointer, the title, the mode
- * list and the vertical blank).
+ * the screen; the palette, the input window, the pointer, the title and the mode
+ * list).
  *
  * This file is part of aar_serve.c, which includes it after the services of the
  * loop and before the public calls; it is not compiled alone. State lives in the
@@ -57,84 +57,6 @@ static void flip_wait_safe_messages(struct aar_serve *s)
         X_WAIT_PORT(s->gfx.safe_port);
         flip_reap_safe_messages(s);
     }
-}
-
-/* ---- The vertical blank: timer.device's VBLANK unit ------------------------------------- */
-
-/* A timer request of the VBLANK unit with a time of one microsecond ends at the
- * next vertical blank: no interrupt server is needed, and the loop is woken by
- * the unit's reply port. */
-static void vb_stop(struct aar_serve *s)
-{
-    if (!s->gfx.vb_pending)
-        return;
-    if (!X_CHECK_IO((struct IORequest *)s->gfx.vb_io))
-        X_ABORT_IO((struct IORequest *)s->gfx.vb_io);
-    X_WAIT_IO((struct IORequest *)s->gfx.vb_io);
-    /* The reply set the port's signal and nothing is waiting for it. */
-    X_SET_SIGNAL(0, 1UL << s->gfx.vb_port->mp_SigBit);
-    s->gfx.vb_pending = 0;
-}
-
-static void vb_free(struct aar_serve *s)
-{
-    vb_stop(s);
-    if (s->gfx.vb_io) {
-        if (s->gfx.vb_io->tr_node.io_Device)
-            X_CLOSE_DEVICE((struct IORequest *)s->gfx.vb_io);
-        X_DELETE_IOREQ((struct IORequest *)s->gfx.vb_io);
-        s->gfx.vb_io = NULL;
-    }
-    if (s->gfx.vb_port) {
-        X_DELETE_PORT(s->gfx.vb_port);
-        s->gfx.vb_port = NULL;
-    }
-}
-
-static int vb_ready(struct aar_serve *s)
-{
-    if (s->gfx.vb_io)
-        return 1;
-    s->gfx.vb_port = X_CREATE_PORT();
-    if (s->gfx.vb_port)
-        s->gfx.vb_io = (struct timerequest *)X_CREATE_IOREQ(
-            s->gfx.vb_port, sizeof(struct timerequest));
-    if (!s->gfx.vb_io ||
-        X_OPEN_DEVICE((CONST_STRPTR)TIMERNAME, UNIT_VBLANK,
-                      (struct IORequest *)s->gfx.vb_io, 0)) {
-        if (s->gfx.vb_io)
-            s->gfx.vb_io->tr_node.io_Device = NULL;
-        vb_free(s);
-        return 0;
-    }
-    return 1;
-}
-
-static int display_op_vblank(void *ctx, int watch)
-{
-    struct aar_serve *s = ctx;
-
-    if (!watch) {
-        vb_stop(s);
-        return 1;
-    }
-    if (!vb_ready(s))
-        return 0;
-    s->gfx.vb_io->tr_node.io_Command = TR_ADDREQUEST;
-    s->gfx.vb_io->tr_time.tv_secs = 0;
-    s->gfx.vb_io->tr_time.tv_micro = 1;
-    X_SEND_IO((struct IORequest *)s->gfx.vb_io);
-    s->gfx.vb_pending = 1;
-    return 1;
-}
-
-static void service_vblank(struct aar_serve *s)
-{
-    if (!s->gfx.vb_pending || !X_CHECK_IO((struct IORequest *)s->gfx.vb_io))
-        return;
-    X_WAIT_IO((struct IORequest *)s->gfx.vb_io);
-    s->gfx.vb_pending = 0;
-    aar_serve_display_vblank_seen(&s->core.display);
 }
 
 /* ---- Windows, the pointer, the title ------------------------------------------------------ */
@@ -539,7 +461,6 @@ static void close_display(struct aar_serve *s)
             flip_wait_safe_messages(s);
         }
     }
-    vb_stop(s);
     pointer_reset(s);
     if (s->gfx.win && s->gfx.win != s->gfx.input_win)
         X_CLOSE_WINDOW(s->gfx.win);
@@ -969,7 +890,6 @@ static void service_display(struct aar_serve *s)
         s->gfx.safe_pending = aar_serve_screen_safe_completed(s->gfx.safe_pending);
         aar_serve_display_flip_safe(&s->core.display);
     }
-    service_vblank(s);
 }
 
 /* DISPLAY_OPEN: opens the screen, finds the bitmaps' tokens and reports them
@@ -1080,5 +1000,6 @@ static const struct aar_serve_display_ops aar_serve_gfx_backend = {
     NULL, display_op_open, display_op_change_buffer, display_op_pan,
     display_op_wait_tof, display_op_load_rgb32, display_op_close,
     display_op_present, display_op_info, display_op_modes, display_op_resize,
-    display_op_set_title, display_op_set_pointer, display_op_vblank
+    display_op_set_title, display_op_set_pointer,
+    NULL /* no vertical blank of an RTG display: DISPLAY_VBLANK answers AAR_E_NOSYS */
 };
