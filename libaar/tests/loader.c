@@ -412,7 +412,7 @@ static int app_file_delete(const char *path)
 static int app_file_rename(const char *from, const char *to, uint32_t flags)
 {
     char a[300], b[300];
-    struct stat st;
+    struct stat st, st2;
 
     if (bad_path(from) || bad_path(to) || (flags & ~(uint32_t)AAR_RENAME_REPLACE))
         return AAR_E_INVAL;
@@ -420,7 +420,11 @@ static int app_file_rename(const char *from, const char *to, uint32_t flags)
     host_path(b, sizeof b, to);
     if (stat(a, &st) != 0)
         return aar_error();
-    if (!(flags & AAR_RENAME_REPLACE) && stat(b, &st) == 0)
+    /* The same object (spec 7.1): nothing changes, with or without the flag. The loader compares
+     * device and inode, not the strings. */
+    if (stat(b, &st2) == 0 && st.st_dev == st2.st_dev && st.st_ino == st2.st_ino)
+        return AAR_OK;
+    if (!(flags & AAR_RENAME_REPLACE) && stat(b, &st2) == 0)
         return AAR_E_EXIST;
     if (rename(a, b) != 0)
         return aar_error();

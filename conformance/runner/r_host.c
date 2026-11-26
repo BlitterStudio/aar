@@ -95,14 +95,19 @@ static void h_locale(struct conf_run *run, const AARMessage *msg)
     CloseLocale(loc);
 }
 
-/* CONF_HOST_LOC2: a = hash of the decimal point, b = hash of the group separator. */
+/* CONF_HOST_LOC2: a = hash of the decimal point, b = hash of the group separator, c = hash of the country
+ * (0: the client reported none). The country is the non-zero bytes of loc_CountryCode, most significant
+ * first (spec 7.4). */
 static void h_loc2(struct conf_run *run, const AARMessage *msg)
 {
     ULONG dec = cm_get32(msg->bytes, 20);
     ULONG grp = cm_get32(msg->bytes, 24);
+    ULONG cty = cm_get32(msg->bytes, 28);
     struct Locale *loc = open_locale();
     const char *d;
     const char *g;
+    char country[8];
+    ULONG code, k, n = 0;
 
     if (!loc) {
         send_result(run, 2, 0, 0);
@@ -110,7 +115,16 @@ static void h_loc2(struct conf_run *run, const AARMessage *msg)
     }
     d = loc->loc_DecimalPoint ? (const char *)loc->loc_DecimalPoint : "";
     g = loc->loc_GroupSeparator ? (const char *)loc->loc_GroupSeparator : "";
-    send_result(run, (hash_str(d) == dec && hash_str(g) == grp) ? 1UL : 0UL, 0, 0);
+    code = (ULONG)loc->loc_CountryCode;
+    for (k = 0; k < 4; k++) {
+        UBYTE ch = (UBYTE)(code >> (24 - 8 * k));
+
+        if (ch)
+            country[n++] = (char)ch;
+    }
+    country[n] = '\0';
+    send_result(run, (hash_str(d) == dec && hash_str(g) == grp && (cty == 0UL || hash_str(country) == cty))
+                         ? 1UL : 0UL, 0, 0);
     CloseLocale(loc);
 }
 

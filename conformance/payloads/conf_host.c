@@ -207,7 +207,8 @@ static void test_locale_peer(void)
     }
     if (!expect(&t, rc, AAR_OK, "aar_get_locale_info") || !terminated(l.language, sizeof l.language) ||
         !terminated(l.decimal_point, sizeof l.decimal_point) ||
-        !terminated(l.group_separator, sizeof l.group_separator)) {
+        !terminated(l.group_separator, sizeof l.group_separator) ||
+        !terminated(l.country, sizeof l.country)) {
         conf_check(&t, 0, "the record cannot be compared");
         conf_end(&t);
         return;
@@ -226,12 +227,14 @@ static void test_locale_peer(void)
         conf_buf_str(&t.note, "the runner has no locale.library to compare with");
     }
     if (ok == 1u) {
-        (void)cmio_kw(CH_K_LOC2, ch_hash(l.decimal_point), ch_hash(l.group_separator), 0);
+        /* c is 0 when the client reports no country: the runner then does not compare it. */
+        (void)cmio_kw(CH_K_LOC2, ch_hash(l.decimal_point), ch_hash(l.group_separator),
+                      l.country[0] ? ch_hash(l.country) : 0u);
         rc = cmio_result(10000000u, &ok, &count, &errors, 0, 0, 0);
         if (rc != 1)
             conf_check(&t, 0, "no answer from the runner");
         else
-            conf_check(&t, ok != 0u, "decimal_point or group_separator differs from the client's locale");
+            conf_check(&t, ok != 0u, "decimal_point, group_separator or country differs from the client's locale");
         if (!t.failed)
             conf_buf_str(&t.note, "offset, language, decimal point and group separator agree with the client");
     }

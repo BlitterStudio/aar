@@ -598,8 +598,8 @@ int _rename(const char *from, const char *to)
         return -1;
     }
     if (strcmp(from, to) == 0) {
-        /* A rename onto itself does nothing, and must not delete the target
-         * that is also the source. */
+        /* A rename onto itself does nothing. The client does that for any two names of one
+         * object (spec 7.1); this shortcut for equal strings saves the call and the delete. */
         aar_stat as;
 
         rc = aar_file_stat(from, &as);

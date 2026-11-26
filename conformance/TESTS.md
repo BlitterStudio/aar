@@ -334,7 +334,8 @@ path) and checks the files the payload leaves behind.
 | C-FILE.48 | 7.1 | SHOULD | core | any | payload | yes | the client serves the seven file calls of API 0.6: none of `file_delete`, `file_rename`, `dir_create`, `file_set_date`, `file_set_protect`, `file_truncate` and `volume_info` answers `AAR_E_NOSYS` (spec 7.1 allows it for a client that does not serve them, so this is a SHOULD) |
 | C-FILE.49 | 7.1 | MUST | core | any | payload | yes | after the client asked the app to stop, `file_delete`, `file_rename`, `dir_create`, `file_set_date`, `file_set_protect` and `file_truncate` give negative codes and the runner finds, when the app has ended, the file still there, the old name still the only name, no new directory, the date and the protection unchanged and the length still 5 (the same judgement as C-FILE.6) |
 | C-FILE.50 | 7.1 | MUST | core | any | none | todo | not tested: a `file_rename` across volumes is `AAR_E_INVAL` and `AAR_VOLF_READONLY` marks a volume that cannot be written; both need a second or a write-protected volume, which a conformance run does not have |
-| C-FILE.51 | 7.1 | MUST | core | any | none | todo | not tested: `AAR_RENAME_REPLACE` deletes the target and then renames, which is not atomic on AmigaDOS (spec 7.1); a failure between the two steps is not something an app can provoke; a rename of a name onto itself with the flag is left out [spec question 67] |
+| C-FILE.51 | 7.1 | MUST | core | any | none | todo | not tested: `AAR_RENAME_REPLACE` deletes the target and then renames, which is not atomic on AmigaDOS (spec 7.1); a failure between the two steps is not something an app can provoke |
+| C-FILE.52 | 7.1 | MUST | core | any | payload | yes | `file_rename` of a path onto itself is `AAR_OK` and changes nothing, with `AAR_RENAME_REPLACE` and without it: the file keeps its bytes, and the same holds for a second spelling of the same path (the name in another letter case, which AmigaDOS compares without case) when the client resolves both to one object; a missing path is still `AAR_E_NOENT` [spec question 67] |
 
 ## C-CON: console and log (section 7.2, 10.4)
 
@@ -388,7 +389,7 @@ has the variables of C-HOST.4 to C-HOST.6 and no runner). The suite does not tou
 |---|---|---|---|---|---|---|---|
 | C-HOST.1 | 7.4 | MUST | core | any | payload | yes | `aar_get_locale_info` fills the record: `language`, `country`, `decimal_point` and `group_separator` are NUL-terminated inside their arrays, `language` has no `.language` suffix, `flags` holds only `AAR_LOCALEF_OFFSET_KNOWN`, `utc_offset_min` is within -1440 to 1440 and `reserved` is 0 |
 | C-HOST.2 | 3.4 | MUST | core | any | payload | yes | the `size` rule for `aar_get_locale_info`: with a `size` larger than the structure the bytes past it, up to `size`, are zeroed and nothing beyond is written; with a `size` of 8 nothing past byte 8 changes (the rule of C-TABLE.11 and C-TABLE.12) |
-| C-HOST.3 | 7.4 | MUST | core | any | payload | yes | the record agrees with the client's locale (runner peer): `utc_offset_min` is `loc_GMTOffset` negated, `language` is `loc_LanguageName` without `.language`, `decimal_point` and `group_separator` are the locale's. The runner answers 2 and the row passes with a note when it cannot open `locale.library` [spec question 68] |
+| C-HOST.3 | 7.4 | MUST | core | any | payload | yes | the record agrees with the client's locale (runner peer): `utc_offset_min` is `loc_GMTOffset` negated, `language` is `loc_LanguageName` without `.language`, `country` is the non-zero bytes of `loc_CountryCode`, most significant first (compared when the client reports a country), `decimal_point` and `group_separator` are the locale's. The runner answers 2 and the row passes with a note when it cannot open `locale.library` [spec question 68] |
 | C-HOST.4 | 7.4 | MUST | core | any | payload | yes | `aar_env_get` of a global variable of 11 bytes: `AAR_OK` with `*n` 11 and the value NUL-terminated; a `bytes` of 0 and of 11 are `AAR_E_NOSPC` with `*n` 11; a `bytes` of 12 fits |
 | C-HOST.5 | 7.4 | MUST | core | any | payload | yes | a value of 300 bytes: a 64-byte buffer is `AAR_E_NOSPC` with `*n` 300, a buffer of exactly 300 is `AAR_E_NOSPC`, a buffer of 301 holds all 300 bytes, which are the stored ones |
 | C-HOST.6 | 7.4 | MUST | core | any | payload | yes | an unset name is `AAR_E_NOENT`; a name of 0 bytes and a name of 256 bytes are `AAR_E_INVAL`; a name of 255 bytes is not (it is `AAR_E_NOENT`) |
@@ -1020,14 +1021,13 @@ developers.
     settled: spec 8.5 (a swap may return before its frame is visible; at most two swapped frames are in flight)
 67. **A rename onto the same name** (7.1). `file_rename(a, a, AAR_RENAME_REPLACE)` "deletes the target
     first", and the target is the source. A client that does that destroys the file and then fails.
-    POSIX makes it a no-op. The libc glue (`rename`) tests for equal strings and does nothing, which
-    does not catch two spellings of one path (`a` and `A` on AmigaDOS). The text should say that a
-    source and a target that are the same object leave it unchanged. The suite does not test it.
-    open: not put to the other platform developers yet
-68. **What the locale record reports** (7.4). `country` is "the country code the client reports
-    (`loc_CountryCode` as text)", but `loc_CountryCode` is a `ULONG`; the text form is not stated, so the
-    suite does not compare it. `language` is "the Amiga language name without `.language`": the runner
-    compares it with `loc_LanguageName` of the default locale, which may be empty on a system without
-    locale preferences, and an empty name then has to match an empty answer. C-HOST.3 compares the UTC
-    offset (negated), the language, the decimal point and the group separator only.
-    open: not put to the other platform developers yet
+    POSIX makes it a no-op, and C-FILE.52 tests it, with a second spelling of the same path where the
+    client can express one.
+    settled: spec 7.1 (a source and a target that are the same object leave it unchanged and the call is `AAR_OK`, with or without the flag; the client compares objects, not strings)
+68. **What the locale record reports** (7.4). `country` was "the country code the client reports
+    (`loc_CountryCode` as text)" and `loc_CountryCode` is a `ULONG`. `language` is compared with
+    `loc_LanguageName` of the default locale, which may be empty on a system without locale
+    preferences, and an empty name then has to match an empty answer. C-HOST.3 compares the UTC offset
+    (negated), the language, the country where the client reports one, the decimal point and the group
+    separator.
+    settled: spec 7.4 (`country` is the non-zero bytes of `loc_CountryCode`, most significant first, as text)

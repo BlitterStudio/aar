@@ -1504,6 +1504,64 @@ static void test_rename_errors(void)
     conf_end(&t);
 }
 
+/* C-FILE.52: a rename of an object onto itself changes nothing (spec 7.1). The client compares objects, so a
+ * second spelling that it resolves to the same file (another letter case on AmigaDOS) is tried too; a client
+ * whose names are case-sensitive has no such file and the spelling is left out. */
+static void test_rename_self(void)
+{
+    struct conf_test t;
+    const char *file = uniq("r52");
+    const char *missing = uniq("r52m");
+    char *up = path_slot();
+    uint8_t buf[8];
+    uint32_t n = 0;
+    aar_stat st;
+    uint32_t i;
+    int fd;
+    int rc;
+
+    conf_begin(&t, "C-FILE.52");
+    rc = put(file, "abc", 3);
+    if (rc != AAR_OK) {
+        fail_rc(&t, "creating the scratch file", rc);
+        conf_end(&t);
+        return;
+    }
+    rc = aar_file_rename(file, file, 0);
+    if (not_served(&t, rc, "file_rename")) {
+        (void)aar_file_delete(file);
+        conf_end(&t);
+        return;
+    }
+    expect(&t, rc, AAR_OK, "file_rename onto itself");
+    expect_file(&t, file, 3, "stat after file_rename onto itself");
+    expect(&t, aar_file_rename(file, file, AAR_RENAME_REPLACE), AAR_OK, "file_rename onto itself with REPLACE");
+    expect_file(&t, file, 3, "stat after file_rename onto itself with REPLACE");
+    fd = aar_file_open(file, AAR_FILE_READ);
+    if (fd >= 0) {
+        rc = aar_file_read(fd, buf, sizeof buf, &n);
+        conf_check(&t, rc == AAR_OK && n == 3u && buf[0] == 'a' && buf[2] == 'c',
+                   "the file's bytes changed after a rename onto itself");
+        (void)aar_file_close(fd);
+    }
+    /* The same path spelled in upper case. */
+    for (i = 0; file[i] && i < 318u; i++)
+        up[i] = (file[i] >= 'a' && file[i] <= 'z') ? (char)(file[i] - 'a' + 'A') : file[i];
+    up[i] = '\0';
+    if (!seq(up, file) && aar_file_stat(up, &st) == AAR_OK) {
+        expect(&t, aar_file_rename(up, file, AAR_RENAME_REPLACE), AAR_OK, "file_rename of a second spelling onto the file, with REPLACE");
+        expect(&t, aar_file_rename(file, up, 0), AAR_OK, "file_rename of the file onto a second spelling");
+        expect_file(&t, file, 3, "stat after the renames between two spellings");
+        conf_buf_str(&t.note, "a second spelling of the path was tried; ");
+    }
+    expect(&t, aar_file_rename(missing, missing, 0), AAR_E_NOENT, "file_rename of a missing path onto itself");
+    expect(&t, aar_file_rename(missing, missing, AAR_RENAME_REPLACE), AAR_E_NOENT,
+           "file_rename of a missing path onto itself with REPLACE");
+    (void)aar_file_delete(file);
+    conf_buf_str(&t.note, "onto itself is AAR_OK and nothing changes, with and without REPLACE");
+    conf_end(&t);
+}
+
 /* C-FILE.43 */
 static void test_dir_create(void)
 {
@@ -2044,6 +2102,7 @@ int aar_main(int argc, char **argv)
     test_delete_busy();
     test_rename();
     test_rename_errors();
+    test_rename_self();
     test_dir_create();
     test_set_date();
     test_set_protect();

@@ -20,7 +20,8 @@
  * compare with.
  *   CONF-HOST-LOCALE  a = utc_offset_min (as a 32-bit word), b = ch_hash(language),
  *                     c = flags
- *   CONF-HOST-LOC2    a = ch_hash(decimal_point), b = ch_hash(group_separator)
+ *   CONF-HOST-LOC2    a = ch_hash(decimal_point), b = ch_hash(group_separator),
+ *                     c = ch_hash(country), or 0 when the client reports none
  *   CONF-HOST-CLIP    a = a clipboard unit: the runner reads it and compares the text
  *                     with CH_APP_LATIN1
  *
