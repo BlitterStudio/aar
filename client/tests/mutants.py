@@ -99,6 +99,33 @@ mutant("arg-length-unchecked", "load_start", CORE,
        ("if (pi->max_arg_bytes != 0u && n + 1u > pi->max_arg_bytes)", "if (0)"))
 mutant("limits-not-written", "tags", CORE,
        ("    aar_put_be32(h->cb + AAR_CB_WEIGHT, h->weight);\n", ""))
+mutant("profile-hz-not-written", "tags", CORE,
+       ("    aar_put_be32(h->cb + AAR_CB_PROFILE_HZ, h->profile_hz);\n", ""))
+mutant("profile-hz-unchecked", "tags", CORE,
+       ("    case 7u:\n        if (data > AAR_PROFILE_HZ_MAX)\n            return AAR_E_INVAL;\n",
+        "    case 7u:\n"))
+# ---- core: stack snapshot and profile samples -------------------------------------------------
+mutant("stack-size-unchecked", "stack", CORE,
+       ("        } else if (have > AAR_CB_STACK_MAX) {\n            rc = AAR_E_IO;\n",
+        "        } else if (0) {\n            rc = AAR_E_IO;\n"))
+mutant("profile-loss-not-counted", "profile_lost", CORE,
+       ("gone = behind - usable;", "gone = 0u;"))
+mutant("profile-start-not-moved-on-loss", "profile_lost", CORE,
+       ("        start = head - usable;\n        behind = usable;", "        behind = usable;"))
+mutant("profile-torn-copy-kept", "profile_torn", CORE,
+       ("    if (over > usable) {", "    if (0) {"))
+mutant("profile-no-cache-acquire", "profile_torn", CORE,
+       ("    if (!(mapf & (AAR_MAPF_UNCACHED | AAR_MAPF_COHERENT)) && o->cache_acquire)",
+        "    if (0 && !(mapf & (AAR_MAPF_UNCACHED | AAR_MAPF_COHERENT)) && o->cache_acquire)"))
+mutant("profile-head-going-back-ignored", "profile_corrupt", CORE,
+       ("    if (behind > 0x80000000u)\n        return AAR_E_IO; /* the counter went back */\n", ""))
+mutant("profile-newest-slot-trusted", "profile_partial", CORE,
+       ("    usable = count - 1u;", "    usable = count;"))
+mutant("profile-wrap-unhandled", "profile_wrap", CORE,
+       ("    behind = head - start; /* modulo 2^32 */", "    behind = head < start ? 0u : head - start;"))
+mutant("profile-ring-size-unchecked", "profile_corrupt", CORE,
+       ("    if (bytes < AAR_PROFILE_RING_MIN_BYTES || (bytes & (bytes - 1u)) != 0u)\n        return AAR_E_IO;\n",
+        ""))
 # ---- core: status, messages, events -------------------------------------------------------
 mutant("status-ignores-size", "status", CORE,
        ("    memcpy(st, &local, n);\n    st->size = size;", "    memcpy(st, &local, sizeof(local));\n    st->size = size;"))

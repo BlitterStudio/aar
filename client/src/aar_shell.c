@@ -177,10 +177,10 @@ static LONG aar_x_file_size(BPTR f)
     return Seek(f, 0L, OFFSET_BEGINNING);
 }
 
-#define AAR_LIB_REVISION 1
+#define AAR_LIB_REVISION AAR_LIB_REVISION_READ
 /* A function address as a library vector or an object pointer. */
 #define AAR_VEC(f) ((APTR)(uintptr_t)(f))
-#define AAR_LIB_IDSTRING AAR_LIB_NAME " 0.1 (2026)\r\n"
+#define AAR_LIB_IDSTRING AAR_LIB_NAME " 0.2 (2026)\r\n"
 #endif /* AAR_SHELL_HOST */
 
 #define AAR_DISPATCH_PRIORITY 5
@@ -1043,6 +1043,17 @@ static LONG v_set_log_sink(AARHandle *h, AARLogSink sink, APTR user)
     return aar_core_set_log_sink(&g_base->core, h, sink, user);
 }
 
+static LONG v_read_stack(AARHandle *h, void *buf, ULONG bytes, ULONG *got)
+{
+    return aar_core_read_stack(&g_base->core, h, buf, bytes, got);
+}
+
+static LONG v_read_profile(AARHandle *h, void *buf, ULONG max_samples, ULONG *got,
+                           ULONG *lost)
+{
+    return aar_core_read_profile(&g_base->core, h, buf, max_samples, got, lost);
+}
+
 /* ====================================================================== */
 /* Amiga glue: the library skeleton, the interrupt, the dispatcher process */
 /* ====================================================================== */
@@ -1295,6 +1306,19 @@ static LONG f_set_log_sink(REG(a0, AARHandle *handle), REG(a1, AARLogSink sink),
     return v_set_log_sink(handle, sink, user);
 }
 
+static LONG f_read_stack(REG(a0, AARHandle *handle), REG(a1, void *buf),
+                         REG(d0, ULONG bytes), REG(a2, ULONG *got))
+{
+    return v_read_stack(handle, buf, bytes, got);
+}
+
+static LONG f_read_profile(REG(a0, AARHandle *handle), REG(a1, void *buf),
+                           REG(d0, ULONG max_samples), REG(a2, ULONG *got),
+                           REG(a3, ULONG *lost))
+{
+    return v_read_profile(handle, buf, max_samples, got, lost);
+}
+
 /* -6 to -24 are Open, Close, Expunge and the reserved slot, then -30 on in the
  * order of the .fd file. */
 static const APTR aar_lib_vectors[] = {
@@ -1327,6 +1351,8 @@ static const APTR aar_lib_vectors[] = {
     AAR_VEC(f_shared_token),
     AAR_VEC(f_ext),
     AAR_VEC(f_set_log_sink),
+    AAR_VEC(f_read_stack),
+    AAR_VEC(f_read_profile),
     (APTR)-1
 };
 

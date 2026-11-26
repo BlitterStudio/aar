@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""A flat profile from the sample file of aar-run (PROFILE=<hz> PROFILEFILE=<path>).
+
+  aar-profile samples.bin [app.elf] [--elf app.elf] [--top N]
+
+Each sample is the app's pc at one tick of the platform's sampling clock. The
+tool subtracts the load base from the file's header, finds the function that
+holds the address in the symbol table of the ELF file (the one the header names
+unless one is given), and prints one line per function: the samples, their share
+of all the samples read, and the name, the most sampled first. Addresses that no
+symbol holds are listed as (no symbol), and addresses outside the image (library
+or runtime code, if the platform samples it) as (outside the image).
+
+A sample is a point in time, not a cost: a function with 30 % of the samples held
+the pc for about 30 % of the run. The rate is in the header, so the time of a
+function is its samples divided by the rate. The ring that holds the samples is
+finite: the header counts the samples that were lost because aar-run came back
+too late.
+
+Exit status: 0 the file was read, 1 the file or the ELF file could not be read,
+2 usage error.
+"""
+import argparse
+import collections
+import os
+import struct
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from aar_elf import Elf, ElfError  # noqa: E402
+
+MAGIC = b"AARP"
+VERSION = 1
+FIXED = 32
+
+
+class ProfileError(Exception):
+    pass
+
+
+class Profile:
+    def __init__(self, data):
+        if len(data) < FIXED or data[:4] != MAGIC:
+            raise ProfileError("not a profile file of aar-run (no AARP header)")
+        version, hz, lost, base_hi, base_lo, _reserved, elf_len = struct.unpack_from(">IIIIIII", data, 4)
+        if version != VERSION:
+            raise ProfileError("profile file version %d is not the %d this tool reads" % (version, VERSION))
+        padded = (elf_len + 7) & ~7
+        if len(data) < FIXED + padded:
+            raise ProfileError("the header is cut short")
+        self.hz = hz
+        self.lost = lost
+        self.load_base = (base_hi << 32) | base_lo
+        self.elf = data[FIXED:FIXED + elf_len].decode("utf-8", "replace")
+        body = data[FIXED + padded:]
+        count = len(body) // 8
+        self.samples = struct.unpack_from(">%dQ" % count, body) if count else ()
+        self.partial = len(body) % 8  # bytes of a sample that was being written
+
+
+def flat(profile, elf):
+    """[(samples, name)] most sampled first. A function is its start address, not
+    its name: two static functions called tick are two rows, told apart by their
+    addresses in the name."""
+    by_addr = collections.Counter()
+    other = collections.Counter()
+    names = {}
+    for pc in profile.samples:
+        rel = pc - profile.load_base
+        sym = elf.find(rel) if pc >= profile.load_base else None
+        if sym:
+            by_addr[sym.addr] += 1
+            names[sym.addr] = sym.name
+        elif pc >= profile.load_base and elf.in_image(rel):
+            other["(no symbol)"] += 1
+        else:
+            other["(outside the image)"] += 1
+    shared = collections.Counter(name for name, _ in {(s.name, s.addr) for s in elf.symbols})
+    rows = [(n, "%s@0x%x" % (names[addr], addr) if shared[names[addr]] > 1 else names[addr])
+            for addr, n in by_addr.items()]
+    rows += [(n, name) for name, n in other.items()]
+    return sorted(rows, key=lambda item: (-item[0], item[1]))
+
+
+def report(profile, elf, top, out):
+    total = len(profile.samples)
+    out.write("elf          %s\n" % elf.path)
+    out.write("rate         %d Hz\n" % profile.hz)
+    out.write("load base    0x%x\n" % profile.load_base)
+    out.write("samples      %d" % total)
+    if profile.hz:
+        out.write(" (%.2f s)" % (total / profile.hz))
+    out.write("\nlost         %d\n" % profile.lost)
+    if profile.partial:
+        out.write("note         the file ends in %d bytes of a cut sample, ignored\n" % profile.partial)
+    out.write("\n%8s %8s  %s\n" % ("samples", "percent", "function"))
+    rows = flat(profile, elf)
+    for n, name in rows[:top] if top else rows:
+        out.write("%8d %7.2f%%  %s\n" % (n, 100.0 * n / total, name))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="aar-profile", description="A flat profile from an aar-run sample file.")
+    parser.add_argument("samples")
+    parser.add_argument("elf_positional", nargs="?", metavar="app.elf")
+    parser.add_argument("--elf", help="the ELF file (default: the one the file's header names)")
+    parser.add_argument("--top", type=int, default=0, help="print only the N most sampled functions")
+    args = parser.parse_args(argv)
+    try:
+        with open(args.samples, "rb") as f:
+            profile = Profile(f.read())
+        elf = Elf(args.elf or args.elf_positional or profile.elf)
+    except (OSError, ProfileError, ElfError) as exc:
+        sys.stderr.write("aar-profile: %s\n" % exc)
+        return 1
+    if not profile.samples:
+        sys.stderr.write("aar-profile: the file holds no samples\n")
+        return 1
+    report(profile, elf, args.top, sys.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -253,7 +253,7 @@ The probe does not judge it against the platform. Compare `profile` with
 
 ### AARStatusInfo
 
-A snapshot of one app (136 bytes). `AARU64` is two `ULONG`, high word first.
+A snapshot of one app (160 bytes). `AARU64` is two `ULONG`, high word first.
 The fields from `state` to `end_reason` come first so that a poll with
 `size = 16` reads three words of the control block instead of about thirty.
 
@@ -285,10 +285,19 @@ The fields from `state` to `end_reason` come first so that a poll with
 | 124 | `log_dropped` | log records dropped |
 | 128 | `events_dropped` | events the client dropped (completion queue full) |
 | 132 | `cq_full` | times the client found the completion queue full |
+| 136 | `stack_sp` | `AARU64`, the app address of the first byte of the stack snapshot |
+| 144 | `stack_bytes` | bytes of the snapshot, 0 when there is none (see [AARReadStack](#aarreadstack)) |
+| 148 | `profile_hz` | the sampling rate the platform granted, 0 when it samples nothing |
+| 152 | `profile_samples` | the samples the platform has written so far, modulo 2^32 (the ring's head) |
+| 156 | `profile_dropped` | ticks at which the platform could not record a sample |
+
+The fault fields also describe a watchdog end. For `AAR_END_STALL` the platform
+fills `fault_pc`, `fault_sp` and `fault_lr` with where the app was when it ended
+it, `fault_class` is `AAR_FAULT_NONE` and the other fault fields are 0.
 
 ### AAREvent
 
-What the library posts to a notify port (164 bytes): a `struct Message` of 20
+What the library posts to a notify port (188 bytes): a `struct Message` of 20
 bytes with no reply port (do not `ReplyMsg` it), `type` (an `AAR_NOTIFY_*`
 value), `handle` (the `AARHandle *`, kept as an `APTR`) and the `AARStatusInfo`
 at the time of posting.
@@ -348,10 +357,15 @@ indexes for `arg` and the `AAR_R_*` indexes for `out` of each op, in
 
 ## Constants
 
-### AAR_LIB_NAME and AAR_LIB_VERSION
+### AAR_LIB_NAME, AAR_LIB_VERSION and AAR_LIB_REVISION_READ
 
 `AAR_LIB_NAME` is `"aar.library"`. `AAR_LIB_VERSION` is the version to ask
-`OpenLibrary` for. It is `AAR_API_MAJOR`.
+`OpenLibrary` for. It is `AAR_API_MAJOR`. `AAR_LIB_REVISION_READ` (2) is the first
+revision of the library that has `AARReadStack` and `AARReadProfile`, vectors 26
+and 27. `OpenLibrary` checks the version only, so a program that calls them
+compares `AARBase->lib_Revision` with it after the open and does not start on
+an older library: a call through a vector the library lacks jumps into
+whatever follows its vector table.
 
 ### AAR_PROFILEF_A32 and AAR_PROFILEF_A64
 
@@ -386,6 +400,11 @@ use.
 | `AAR_CCAP_DISPLAY_PAN_ACK` | acknowledges pan flips (`AAR_CFLAG_FLIP_SUBMITTED`) |
 | `AAR_CCAP_DISPLAY_LATEST` | accepts flips that the platform completes itself (`AAR_DISPLAY_LATEST`) |
 
+### AAR_PROFILE_HZ_MAX
+
+The largest value of `AAR_TAG_PROFILE_HZ` the library accepts, 10000. The
+platform may grant less.
+
 ### AAR_TAG_BASE and AAR_TAG_PLATFORM_BASE
 
 `AAR_TAG_BASE` is `TAG_USER + 0x00415200` and gives 256 tag ids. A platform's own
@@ -406,6 +425,7 @@ in full before any tag is applied, so a list with a bad tag changes nothing.
 | `AAR_TAG_LEASE_EXTENDED` | `BOOL` | the long lease; default TRUE |
 | `AAR_TAG_AUDIO_ROUTE` | `ULONG` | `AAR_AUDIO_ROUTE_PLATFORM` or `AAR_AUDIO_ROUTE_AHI`: the client says which route it serves; any other value is `AAR_E_INVAL` |
 | `AAR_TAG_CLIENT_CAPS` | `ULONG` | a mask of `AAR_CCAP_*`; a bit outside `AAR_CCAP_KNOWN` is `AAR_E_INVAL` |
+| `AAR_TAG_PROFILE_HZ` | `ULONG` | samples per second of the app's program counter, 0 for none; above `AAR_PROFILE_HZ_MAX` is `AAR_E_INVAL`. A platform without a profiler accepts the tag and grants 0, and it may grant a lower rate than asked: `AARStatusInfo.profile_hz` says what it grants (see [AARReadProfile](#aarreadprofile)) |
 
 An id the library does not know is `AAR_E_INVAL`. A defined tag that the
 platform cannot support is `AAR_E_NOSYS`.
@@ -826,6 +846,57 @@ arguments in registers by default (SAS/C, or GCC with `-mregparm`) must declare
 the sink with the stack convention (`__stdargs` in SAS/C); the library cannot
 detect a mismatch.
 
+### AARReadStack
+
+```c
+LONG AARReadStack(AARHandle *handle, void *buf, ULONG bytes, ULONG *got);
+```
+
+Copies the stack snapshot that the platform took when the app ended in a fault
+(`AAR_END_USER_FAULT`) or a stall (`AAR_END_STALL`): at most `AAR_CB_STACK_MAX`
+(512) bytes, from the app's stack pointer upward. The bytes are copied as they
+lie in app memory, so a 32-bit app word is little-endian and the call never
+swaps it. `AARStatusInfo.stack_sp` is the app address of the first byte. App
+addresses are those of `fault_pc` and `fault_sp`: subtract `load_base` to find
+an address in the ELF file.
+
+Copies the smaller of `bytes` and the size of the snapshot, and sets `*got` to
+the count. With `bytes` 0 it copies nothing and sets `*got` to the size of the
+snapshot, and `buf` may be NULL then. `got` is always required, and `buf` is
+required when `bytes` is not 0, else `AAR_E_INVAL`. `AAR_E_NOENT` when there is
+no snapshot: the app has not ended in a fault or a stall, or the platform does
+not take one. `AAR_E_IO` when the size in the control block is above
+`AAR_CB_STACK_MAX`. The snapshot stays readable until `AARClose`.
+
+### AARReadProfile
+
+```c
+LONG AARReadProfile(AARHandle *handle, void *buf, ULONG max_samples,
+                    ULONG *got, ULONG *lost);
+```
+
+Copies the program counter samples that the platform has written since the
+previous call, oldest first, up to `max_samples`. Ask for a profile with
+`AAR_TAG_PROFILE_HZ` before the load. The platform samples the app's pc at that
+rate or lower, and `AARStatusInfo.profile_hz` is the rate it granted.
+
+Each sample is a 64-bit app address, high word first, which is the byte order of
+the 68k, so `buf` holds `*got` pairs of `ULONG`. Subtract `load_base` for an
+address in the ELF file. The first call starts at the first sample of the run.
+`*got` is the number of samples copied. The platform keeps the samples in a ring
+of fixed size, of which the newest one fewer than the ring holds can be trusted: a caller that comes back too late has missed the oldest samples,
+and `*lost` (it may be NULL) is the number of samples that were overwritten
+before this call took them. The lost samples are not in `buf`. Call it from the
+serving loop often enough that the ring does not fill: `AARStatusInfo.profile_samples`
+minus what has been taken (both modulo 2^32) is how far behind the caller is.
+
+With `max_samples` 0 it copies nothing and sets `*got` to the number of samples
+waiting, and `buf` may be NULL then. `got` is always required, and `buf` is
+required when `max_samples` is not 0, else `AAR_E_INVAL`. `AAR_E_NOSYS` when the
+platform granted no profile: none was asked for, or the platform has no
+profiler. `AAR_E_IO` when the ring or its counter breaks the rules of the
+control block.
+
 ## Errors
 
 | Code | When the library returns it |
@@ -835,8 +906,8 @@ detect a mismatch.
 | `AAR_E_INVAL` | a bad argument, a `size` below 4, an unknown tag or flag, a range outside the aperture, an image that fails the probe |
 | `AAR_E_NOMEM` | no memory for a handle, a map or a signal bit, or the platform lacks memory |
 | `AAR_E_BUSY` | a queue is full or empty (messages, requests), an option set too late, an image loaded twice |
-| `AAR_E_NOENT` | a file does not exist |
-| `AAR_E_NOSYS` | no platform, or a map, tag or call the platform cannot provide |
+| `AAR_E_NOENT` | a file does not exist, or `AARReadStack` found no snapshot |
+| `AAR_E_NOSYS` | no platform, or a map, tag or call the platform cannot provide (`AARReadProfile` when none was granted) |
 | `AAR_E_PROFILE` | the platform's loader refuses the image's profile; the probe never returns it |
 | `AAR_E_NOGROUP` | the platform's loader refuses an image that needs a group it lacks |
 | `AAR_E_NORESOURCE` | admission or load refused for lack of a resource; `AAR_REASON_*` says which |

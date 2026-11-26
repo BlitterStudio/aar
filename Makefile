@@ -102,19 +102,26 @@ MODE_TARGETS := $(foreach p,$(PROFILES),check-mode-switch-$(p))
 GUARD_TARGETS := $(foreach p,$(PROFILES),check-freestanding-guard-$(p))
 ABI_TARGETS := $(foreach p,$(PROFILES),check-abi-$(p))
 
-.PHONY: all check clean check-tool check-fp-codegen check-mode-switch \
+.PHONY: all check clean check-tool check-debug-tools check-fp-codegen check-mode-switch \
 	check-freestanding-guard check-abi check-abi-host check-loader-host \
 	check-expect-note check-runtime check-conf-catalogue check-conf-payloads \
 	conf-bundle
 
 all: $(BUILD_TARGETS)
 
-check: check-tool check-abi check-fp-codegen $(CHECK_TARGETS) \
+check: check-tool check-debug-tools check-abi check-fp-codegen $(CHECK_TARGETS) \
 	check-expect-note check-mode-switch check-freestanding-guard check-conf-catalogue
 
 # The checker's own tests, with synthetic images for both profiles.
 check-tool:
 	$(PYTHON) $(AAR_SDK)/tests/aar_check_test.py
+
+# tools/aar-symbolize and tools/aar-profile, on synthetic images and on the fault
+# template of every profile (named by its symbol aar_main, with addr2line of the
+# profile's toolchain when it is on PATH).
+check-debug-tools: $(foreach p,$(PROFILES),build-$(p)-fault)
+	$(PYTHON) $(AAR_SDK)/tests/aar_debug_tools_test.py \
+		$(foreach p,$(PROFILES),$(AAR_SDK)/build/$(p)/fault.elf)
 
 # Header layout and AAR_NOTE bytes with the profile's compiler. check-abi-host
 # (layout and transport model on the host, 64-bit and -m32, plus C++) needs a

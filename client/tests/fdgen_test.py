@@ -52,6 +52,8 @@ VECTORS = [
     ("AARSharedToken", "a0/a1/d0/a2"),
     ("AARExt", "d0/d1"),
     ("AARSetLogSink", "a0/a1/a2"),
+    ("AARReadStack", "a0/a1/d0/a2"),
+    ("AARReadProfile", "a0/a1/d0/a2/a3"),
 ]
 
 GENERATED = ["clib/aar_protos.h", "pragmas/aar_pragmas.h", "inline/aar.h", "proto/aar.h"]
@@ -67,13 +69,13 @@ def quiet(fn, *args):
 class VectorList(unittest.TestCase):
     def test_vectors_are_the_contract(self):
         funcs = fdgen.parse_fd(FD_TEXT)
-        self.assertEqual(len(funcs), 25)
+        self.assertEqual(len(funcs), 27)
         for n, (func, (name, regs)) in enumerate(zip(funcs, VECTORS)):
             self.assertEqual(func.name, name)
             self.assertEqual(func.lvo, 30 + 6 * n, name)
             self.assertEqual("/".join(r for _, _, r in func.params), regs, name)
         self.assertEqual(funcs[0].lvo, 30)
-        self.assertEqual(funcs[-1].lvo, 174)
+        self.assertEqual(funcs[-1].lvo, 186)
 
     def test_results(self):
         funcs = {f.name: f for f in fdgen.parse_fd(FD_TEXT)}
@@ -110,13 +112,15 @@ class Output(unittest.TestCase):
         self.assertIn("AARSharedMap 072 9210805\n", text)
         self.assertIn("AARExt 0A8 1002\n", text)
         self.assertIn("AARSetLogSink 0AE A9803\n", text)
+        self.assertIn("AARReadStack 0B4 A09804\n", text)
+        self.assertIn("AARReadProfile 0BA BA09805\n", text)
         self.assertIn("#pragma tagcall AARBase AARSetTags 03C 9802\n", text)
 
     def test_inline_vectors(self):
         text = self.files["inline/aar.h"]
         for n, (name, _) in enumerate(VECTORS):
             self.assertIn("jsr -%d(a6)" % (30 + 6 * n), text, name)
-        self.assertIn("jsr -174(a6)", text)
+        self.assertIn("jsr -186(a6)", text)
 
     def test_inline_clobbers_and_results(self):
         text = self.files["inline/aar.h"]

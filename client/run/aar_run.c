@@ -45,6 +45,7 @@
 
 #include "aar_run_policy.h"
 #include "aar_run_workbench.h"
+#include "aar_run_debug.h"
 
 struct Library *AARBase;
 struct GfxBase *GfxBase;
@@ -129,6 +130,17 @@ static int audio_ahi;
 static uint32_t maxmem_mib;
 static uint32_t hostmem_mib;
 static uint32_t weight_value;
+static struct aar_run_debug debug_opts;
+static BPTR profile_file;
+static int profile_wrote_header;
+static uint32_t profile_granted;
+static uint32_t profile_passes;
+static unsigned long profile_samples;
+static unsigned long profile_lost;
+static uint8_t profile_header[AAR_RUN_PROFILE_HEADER_MAX];
+static ULONG profile_buf[AAR_RUN_PROFILE_CHUNK * 2u];
+static uint8_t crash_stack[AAR_CB_STACK_MAX];
+static char crash_text[AAR_RUN_CRASH_BUF];
 static uint32_t poll_us = AAR_RUN_DEFAULT_POLL_US;
 static uint32_t display_strategy = AAR_SERVE_DISPLAY_BUFFERS;
 static int launcher_output_active;
@@ -223,8 +235,10 @@ static void usage(void)
          "aar-run STATUS\n"
          "aar-run RELEASE <handle>\n"
          "Diagnostics: POLL=<us> DISPLAY=<BUFFERS|PAN3|PAN2|SINGLE>\n"
+         "Debugging: CRASHLOG=<path> PROFILE=<hz> PROFILEFILE=<path>\n"
          "Run Stack 32768 in this Shell first.\n"
-         "Workbench ToolTypes: APP, ROOT, ABS, MODE, ARGS, JOYPORT0, AUDIO, MAXMEM, HOSTMEM, WEIGHT.\n"
+         "Workbench ToolTypes: APP, ROOT, ABS, MODE, ARGS, JOYPORT0, AUDIO, MAXMEM, HOSTMEM, WEIGHT,\n"
+         "CRASHLOG, PROFILE, PROFILEFILE.\n"
          "ROOT defaults to the current directory, or the icon directory.");
 }
 
@@ -352,7 +366,8 @@ static int load_tooltypes(void)
     chain.lookup = icon_tool_type;
     chain.project = project_icon;
     chain.tool = tool_icon;
-    if (!aar_run_tt_settings(&chain, &settings, &bad_key)) {
+    if (!aar_run_tt_settings(&chain, &settings, &bad_key) ||
+        !aar_run_debug_tooltypes(&chain, &debug_opts, &bad_key)) {
         printf("aar-run: bad %s ToolType\n", bad_key);
         ok = 0;
     } else {
@@ -404,6 +419,16 @@ static int open_library(void)
     if (!AARBase) {
         tell("aar.library not found. Install Libs:aar.library for this "
              "platform.");
+        return 0;
+    }
+    if (!aar_run_library_ok(AARBase->lib_Version, AARBase->lib_Revision)) {
+        char line[256];
+
+        aar_run_library_line(line, sizeof(line), AARBase->lib_Version,
+                             AARBase->lib_Revision);
+        tell(line);
+        CloseLibrary(AARBase);
+        AARBase = NULL;
         return 0;
     }
     return 1;
@@ -507,8 +532,7 @@ static void report_fault(uint32_t code, int32_t exit_code, uint32_t pc,
 
     snprintf(line, sizeof(line), "aar-run: %s", fault_name(code));
     say(line);
-    snprintf(line, sizeof(line), "  pc=%08lx sp=%08lx lr=%08lx",
-             (unsigned long)pc, (unsigned long)sp, (unsigned long)lr);
+    aar_run_reg_line(line, sizeof(line), pc, sp, lr);
     say(line);
     snprintf(line, sizeof(line), "  far=%08lx fsr=%08lx cpsr=%08lx",
              (unsigned long)far, (unsigned long)fsr, (unsigned long)cpsr);
@@ -523,6 +547,166 @@ static void report_fault(uint32_t code, int32_t exit_code, uint32_t pc,
                  (long)exit_code);
         requester(line);
     }
+}
+
+/* A stall: the watchdog ended the app, and the fault record holds where it was. */
+static void report_stall(const AARStatusInfo *st)
+{
+    char line[160];
+
+    snprintf(line, sizeof(line), "aar-run: %s", aar_run_end_reason_name(st->end_reason));
+    say(line);
+    aar_run_reg_line(line, sizeof(line), st->fault_pc.lo, st->fault_sp.lo, st->fault_lr.lo);
+    say(line);
+    snprintf(line, sizeof(line), "  exit=%ld generation=%08lx", (long)st->exit_code,
+             (unsigned long)st->generation);
+    say(line);
+}
+
+/* CRASHLOG: the registers and the stack snapshot of a fault or a stall, in a
+ * text file for tools/aar-symbolize. */
+static void write_crash_log(const AARStatusInfo *st)
+{
+    char line[320];
+    ULONG got = 0;
+    BPTR file;
+    size_t n;
+
+    if (!debug_opts.crashlog[0])
+        return;
+    if (AARReadStack(aar_handle, crash_stack, sizeof(crash_stack), &got) != AAR_OK)
+        got = 0;
+    n = aar_run_crash_report(crash_text, sizeof(crash_text), elf_full, st, crash_stack, got);
+    file = Open((CONST_STRPTR)debug_opts.crashlog, MODE_NEWFILE);
+    if (file && Write(file, crash_text, (LONG)n) == (LONG)n)
+        snprintf(line, sizeof(line), "aar-run: crash report written to %s", debug_opts.crashlog);
+    else
+        snprintf(line, sizeof(line), "aar-run: cannot write the crash report to %s",
+                 debug_opts.crashlog);
+    say(line);
+    if (file)
+        Close(file);
+}
+
+/* PROFILEFILE: the file is created before the load, so that a path that cannot
+ * be written stops the launch and not the end of a long run. */
+static int profile_open(void)
+{
+    if (!debug_opts.profilefile[0])
+        return 1;
+    profile_file = Open((CONST_STRPTR)debug_opts.profilefile, MODE_NEWFILE);
+    if (!profile_file) {
+        printf("aar-run: cannot create %s\n", debug_opts.profilefile);
+        return 0;
+    }
+    return 1;
+}
+
+/* No more samples: the file is closed, and removed when it has no header. */
+static void profile_drop(void)
+{
+    if (profile_file) {
+        Close(profile_file);
+        profile_file = 0;
+        if (!profile_wrote_header)
+            (void)DeleteFile((CONST_STRPTR)debug_opts.profilefile);
+    }
+}
+
+/* After the start: what the platform granted, and the header of the file. */
+static void profile_begin(void)
+{
+    char line[320];
+    AARStatusInfo st;
+    size_t n;
+
+    if (!profile_file)
+        return;
+    memset(&st, 0, sizeof(st));
+    st.size = sizeof(st);
+    if (AARStatus(aar_handle, &st) != AAR_OK || st.profile_hz == 0) {
+        say("aar-run: this platform grants no profile, so PROFILEFILE is not written.");
+        profile_drop();
+        return;
+    }
+    n = aar_run_profile_header(profile_header, sizeof(profile_header), st.profile_hz,
+                               st.load_base, elf_full);
+    if (!n || Write(profile_file, profile_header, (LONG)n) != (LONG)n) {
+        say("aar-run: cannot write the profile file.");
+        profile_drop();
+        return;
+    }
+    profile_wrote_header = 1;
+    profile_granted = st.profile_hz;
+    snprintf(line, sizeof(line), "aar-run: sampling the pc at %lu Hz into %s",
+             (unsigned long)st.profile_hz, debug_opts.profilefile);
+    say(line);
+}
+
+/* Takes what the ring holds, at most max_chunks of AAR_RUN_PROFILE_CHUNK samples,
+ * so that a platform that writes as fast as the file can take them does not keep
+ * the loop from serving the app. A failure of the library or of the file ends the
+ * profile; what was written stays. */
+static void profile_drain(uint32_t max_chunks)
+{
+    ULONG got, lost;
+    uint32_t chunks = 0;
+
+    while (profile_file) {
+        got = 0;
+        lost = 0;
+        if (AARReadProfile(aar_handle, profile_buf, AAR_RUN_PROFILE_CHUNK, &got, &lost) !=
+            AAR_OK)
+            return;
+        profile_lost += lost;
+        if (got) {
+            LONG bytes = (LONG)(got * AAR_PROFILE_SAMPLE_BYTES);
+
+            if (Write(profile_file, profile_buf, bytes) != bytes) {
+                say("aar-run: cannot write the profile file.");
+                profile_drop();
+                return;
+            }
+            profile_samples += got;
+        }
+        if (!aar_run_profile_drain_more(++chunks, max_chunks, got))
+            return;
+    }
+}
+
+/* The last samples, the lost count into the header, the file closed. */
+static void profile_end(void)
+{
+    char line[320];
+    uint8_t word[4];
+
+    if (!profile_file)
+        return;
+    profile_drain(AAR_RUN_PROFILE_END_CHUNKS);
+    if (!profile_file)
+        return;
+    aar_run_profile_lost_word(word, (uint32_t)profile_lost);
+    if (Seek(profile_file, AAR_RUN_PROFILE_LOST_OFFSET, OFFSET_BEGINNING) >= 0)
+        (void)Write(profile_file, word, 4);
+    aar_run_profile_summary_line(line, sizeof(line), profile_granted, profile_samples,
+                                 profile_lost, debug_opts.profilefile);
+    say(line);
+    profile_drop();
+}
+
+/* aar_serve_run, with a turn for the profile ring between the passes. */
+static LONG serve_loop(void)
+{
+    LONG rc;
+
+    if (!profile_file)
+        return aar_serve_run(g_serve);
+    do {
+        rc = aar_serve_step(g_serve, Wait(aar_serve_sigmask(g_serve)));
+        if (aar_run_profile_due(&profile_passes))
+            profile_drain(AAR_RUN_PROFILE_PASS_CHUNKS);
+    } while (rc == AAR_SERVE_CONTINUE);
+    return rc;
 }
 
 /* The report after the loop and the process exit code. */
@@ -560,6 +744,8 @@ static int finish_run(LONG ended)
         report_fault(st->fault_class, st->exit_code, st->fault_pc.lo,
                      st->fault_sp.lo, st->fault_lr.lo, st->fault_addr.lo,
                      st->fault_syndrome, st->fault_pstate, st->generation);
+    else if (st->end_reason == AAR_END_STALL)
+        report_stall(st);
     else if (aar_run_claim_loss_text(0, st->end_reason)) {
         snprintf(line, sizeof(line), "aar-run: claim lost (%s).",
                  aar_run_claim_loss_text(0, st->end_reason));
@@ -569,6 +755,9 @@ static int finish_run(LONG ended)
                  (long)st->exit_code, state_name(st->state));
         say(line);
     }
+    if (aar_run_crash_wanted(st->end_reason, st->fault_class,
+                             (res.flags & AAR_SERVE_R_FAULTED) != 0))
+        write_crash_log(st);
     return aar_run_process_exit(
         aar_run_app_exit_code(st->end_reason, st->exit_code,
                               (res.flags & AAR_SERVE_R_STOP_ASKED) != 0),
@@ -583,6 +772,10 @@ static void cleanup(void)
     if (g_serve) {
         aar_serve_destroy(g_serve);
         g_serve = NULL;
+    }
+    if (profile_file) {
+        Close(profile_file);
+        profile_file = 0;
     }
     if (root_lock) {
         UnLock(root_lock);
@@ -639,12 +832,13 @@ static int claim_gone(void)
  * capabilities of LOAD_BEGIN). */
 static int apply_options(void)
 {
-    struct TagItem tags[AAR_RUN_TAG_MAX];
+    struct TagItem tags[AAR_RUN_TAG_MAX + 1u];
     char line[160];
     LONG rc;
+    unsigned n;
 
-    (void)aar_run_build_tags(tags, maxmem_mib, hostmem_mib, weight_value,
-                             audio_ahi);
+    n = aar_run_build_tags(tags, maxmem_mib, hostmem_mib, weight_value, audio_ahi);
+    (void)aar_run_debug_tags(tags, n, debug_opts.profile_hz);
     rc = AARSetTagList(aar_handle, tags);
     if (rc == AAR_OK)
         return 1;
@@ -701,7 +895,10 @@ static int take_option(const char *arg)
     r = aar_run_poll_arg(arg, &poll_us);
     if (r != AAR_RUN_ARG_OTHER)
         return r;
-    return aar_run_display_arg(arg, &display_strategy);
+    r = aar_run_display_arg(arg, &display_strategy);
+    if (r != AAR_RUN_ARG_OTHER)
+        return r;
+    return aar_run_debug_arg(arg, &debug_opts);
 }
 
 /* The image files of the app: the one asked for, then its profile files
@@ -1045,6 +1242,19 @@ int main(int argc, char **argv)
             }
         }
     }
+    if (!show_status && !release_handle) {
+        enum aar_run_debug_verdict dv = aar_run_debug_check(&debug_opts);
+
+        if (dv != AAR_RUN_DEBUG_OK) {
+            char line[96];
+
+            aar_run_debug_line(line, sizeof(line), dv);
+            tell(line);
+            usage();
+            cleanup();
+            return 10;
+        }
+    }
     if (!show_status && !release_handle && !open_root(settings.root)) {
         cleanup();
         return 20;
@@ -1155,6 +1365,10 @@ int main(int argc, char **argv)
         cleanup();
         return 20;
     }
+    if (!profile_open()) {
+        cleanup();
+        return 20;
+    }
     printf("loading %s\n", elf_full);
     status = AARLoadFile(aar_handle, elf_full);
     if (status != AAR_OK) {
@@ -1168,9 +1382,15 @@ int main(int argc, char **argv)
         cleanup();
         return 20;
     }
+    profile_begin();
     fflush(stdout);
     launcher_output_active = 1;
-    rc = finish_run(aar_serve_run(g_serve));
+    {
+        LONG ended = serve_loop();
+
+        profile_end();
+        rc = finish_run(ended);
+    }
     cleanup();
     return rc;
 }

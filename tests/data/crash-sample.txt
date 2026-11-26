@@ -1,0 +1,18 @@
+aar-crash 1
+end_reason: 3 user fault
+fault_class: 1 data abort
+syndrome: 0x00000805
+pstate: 0x60000010
+pc: 0x0000000000011210
+lr: 0x0000000000011150
+sp: 0x00000000bffff000
+fault_addr: 0x0000000000000004
+load_base: 0x0000000000010000
+profile: 1 A32
+exit_code: -1
+elf: Work:Apps/game.elf
+stack_sp: 0x00000000bffff000
+stack_bytes: 24
+stack:
+0x00000000bffff000: 00000000 00011134 bffff040 000110c4
+0x00000000bffff010: 00013100 0001122c

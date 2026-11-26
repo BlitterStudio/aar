@@ -149,6 +149,20 @@ static void copy_to_dev(volatile uint8_t *dst, const uint8_t *src, uint32_t n)
         dst[i] = src[i];
 }
 
+/* The reverse: from memory behind the platform's mapping. */
+static void copy_from_dev(uint8_t *dst, const volatile uint8_t *src, uint32_t n)
+{
+    uint32_t i = 0u;
+
+    if ((((uintptr_t)dst | (uintptr_t)src) & 3u) == 0u) {
+        for (; i + 4u <= n; i += 4u)
+            *(uint32_t *)(void *)(dst + i) =
+                *(const volatile uint32_t *)(const volatile void *)(src + i);
+    }
+    for (; i < n; i++)
+        dst[i] = src[i];
+}
+
 static void cb_add(AARHandle *h, uint32_t off, uint32_t n)
 {
     volatile uint8_t *cb = h->cb;
@@ -1010,6 +1024,11 @@ int aar_core_tags_add(aar_core *c, struct aar_core_tags *t, uint32_t id, uint32_
             return AAR_E_INVAL;
         t->caps = data;
         break;
+    case 7u:
+        if (data > AAR_PROFILE_HZ_MAX)
+            return AAR_E_INVAL;
+        t->profile_hz = data;
+        break;
     default:
         return AAR_E_INVAL;
     }
@@ -1037,6 +1056,8 @@ static int set_tags_locked(AARHandle *h, const struct aar_core_tags *t)
         h->opts.audio_route = t->audio_route;
     if (t->set & (1u << 6))
         h->opts.client_caps = t->caps;
+    if (t->set & (1u << 7))
+        h->profile_hz = t->profile_hz;
     return AAR_OK;
 }
 
@@ -1070,6 +1091,7 @@ static int load_begin(AARHandle *h, uint32_t image_bytes, volatile uint8_t **sta
     aar_put_be32(h->cb + AAR_CB_PRIVATE_MIB, h->private_mib);
     aar_put_be32(h->cb + AAR_CB_SHARED_MIB, h->shared_mib);
     aar_put_be32(h->cb + AAR_CB_WEIGHT, h->weight);
+    aar_put_be32(h->cb + AAR_CB_PROFILE_HZ, h->profile_hz);
     h->reason = AAR_REASON_NONE;
     rc = ops_of(h)->load_begin(plat_of(h), &h->claim, &h->opts, &area, &chunk, &why);
     if (rc != AAR_OK) {
@@ -1461,6 +1483,16 @@ static void status_read(AARHandle *h, AARStatusInfo *st, uint32_t size)
         local.events_dropped = aar_get_be32(cb + AAR_CB_EVENTS_DROPPED);
     if (FITS(n, cq_full))
         local.cq_full = aar_get_be32(cb + AAR_CB_CQ_FULL);
+    if (FITS(n, stack_sp))
+        get_u64(cb, AAR_CB_STACK_SP_HI, &local.stack_sp);
+    if (FITS(n, stack_bytes))
+        local.stack_bytes = aar_get_be32(cb + AAR_CB_STACK_BYTES);
+    if (FITS(n, profile_hz))
+        local.profile_hz = aar_get_be32(cb + AAR_CB_PROFILE_GRANTED_HZ);
+    if (FITS(n, profile_samples))
+        local.profile_samples = aar_get_be32(cb + AAR_CB_PROFILE_HEAD);
+    if (FITS(n, profile_dropped))
+        local.profile_dropped = aar_get_be32(cb + AAR_CB_PROFILE_DROPPED);
     memcpy(st, &local, n);
     st->size = size;
 }
@@ -1477,6 +1509,131 @@ int aar_core_status(aar_core *c, AARHandle *h, AARStatusInfo *status)
         rc = claim_live(h);
     if (rc == AAR_OK)
         status_read(h, status, status->size);
+    leave(h);
+    return rc;
+}
+
+/* ---- Stack snapshot and profile samples ------------------------------------------------------------ */
+
+int aar_core_read_stack(aar_core *c, AARHandle *h, void *buf, ULONG bytes, ULONG *got)
+{
+    uint32_t have, n = 0u;
+    int rc = require_live(c, h);
+
+    if (rc != AAR_OK)
+        return rc;
+    if (got)
+        *got = 0u;
+    if (!got || (bytes != 0u && !buf))
+        rc = AAR_E_INVAL;
+    else
+        rc = claim_live(h);
+    if (rc == AAR_OK) {
+        have = aar_get_be32(h->cb + AAR_CB_STACK_BYTES);
+        if (have == 0u) {
+            rc = AAR_E_NOENT;
+        } else if (have > AAR_CB_STACK_MAX) {
+            rc = AAR_E_IO;
+        } else if (bytes == 0u) {
+            n = have; /* the size query */
+        } else {
+            n = bytes < have ? bytes : have;
+            copy_from_dev((uint8_t *)buf, h->cb + AAR_CB_STACK_DATA, n);
+        }
+        if (rc == AAR_OK)
+            *got = n;
+    }
+    leave(h);
+    return rc;
+}
+
+static int read_profile(AARHandle *h, void *buf, uint32_t max, uint32_t *got, uint32_t *lost)
+{
+    const struct aar_plat_ops *o = ops_of(h);
+    uint32_t token, bytes, count, usable, mask, mapf = 0u, i, n, k, head, again, start, behind, over;
+    uint32_t gone = 0u;
+    volatile uint8_t *ring;
+    uint8_t *out = (uint8_t *)buf;
+    int rc = claim_live(h);
+
+    if (rc != AAR_OK)
+        return rc;
+    token = aar_get_be32(h->cb + AAR_CB_PROFILE_TOKEN);
+    bytes = aar_get_be32(h->cb + AAR_CB_PROFILE_BYTES);
+    if (aar_get_be32(h->cb + AAR_CB_PROFILE_GRANTED_HZ) == 0u || token == 0u)
+        return AAR_E_NOSYS;
+    if (bytes < AAR_PROFILE_RING_MIN_BYTES || (bytes & (bytes - 1u)) != 0u)
+        return AAR_E_IO;
+    rc = map_range(h, token, 0u, bytes, &ring, &mapf);
+    if (rc != AAR_OK)
+        return rc;
+    count = bytes / AAR_PROFILE_SAMPLE_BYTES;
+    mask = count - 1u;
+    /* The platform may be writing the slot of the next sample, which holds the
+     * oldest one: only count - 1 samples can be trusted (AAR_CB_PROFILE_*). */
+    usable = count - 1u;
+    head = aar_get_be32(h->cb + AAR_CB_PROFILE_HEAD);
+    start = h->prof_next;
+    behind = head - start; /* modulo 2^32 */
+    if (behind > 0x80000000u)
+        return AAR_E_IO; /* the counter went back */
+    if (behind > usable) {
+        gone = behind - usable; /* overwritten before the client came */
+        start = head - usable;
+        behind = usable;
+    }
+    if (max == 0u) {
+        *got = behind; /* the size query: nothing is taken */
+        return AAR_OK;
+    }
+    n = behind < max ? behind : max;
+    if (!(mapf & (AAR_MAPF_UNCACHED | AAR_MAPF_COHERENT)) && o->cache_acquire)
+        o->cache_acquire(plat_of(h), ring, bytes);
+    for (i = 0u; i < n; i++)
+        copy_from_dev(out + i * AAR_PROFILE_SAMPLE_BYTES,
+                      ring + ((start + i) & mask) * AAR_PROFILE_SAMPLE_BYTES,
+                      AAR_PROFILE_SAMPLE_BYTES);
+    /* The platform kept writing while the samples were copied: the oldest ones
+     * may have been overwritten under the copy. They are lost, not returned. */
+    again = aar_get_be32(h->cb + AAR_CB_PROFILE_HEAD);
+    over = again - start;
+    if (over > 0x80000000u)
+        return AAR_E_IO;
+    h->prof_next = start + n;
+    if (over > usable) {
+        k = over - usable < n ? over - usable : n;
+        for (i = 0u; i < (n - k) * AAR_PROFILE_SAMPLE_BYTES; i++)
+            out[i] = out[i + k * AAR_PROFILE_SAMPLE_BYTES];
+        gone += k;
+        n -= k;
+    }
+    *got = n;
+    if (lost)
+        *lost = gone;
+    return AAR_OK;
+}
+
+int aar_core_read_profile(aar_core *c, AARHandle *h, void *buf, ULONG max_samples,
+                          ULONG *got, ULONG *lost)
+{
+    uint32_t g = 0u, l = 0u;
+    int rc = require_live(c, h);
+
+    if (rc != AAR_OK)
+        return rc;
+    if (got)
+        *got = 0u;
+    if (lost)
+        *lost = 0u;
+    if (!got || (max_samples != 0u && !buf))
+        rc = AAR_E_INVAL;
+    else
+        rc = read_profile(h, buf, max_samples, &g, &l);
+    if (rc == AAR_OK) {
+        *got = g;
+        if (lost)
+            *lost = l;
+    }
     leave(h);
     return rc;
 }

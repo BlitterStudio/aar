@@ -147,11 +147,14 @@ client's own tally of what it could not post.
 
 ### Fault record, written by the platform
 
-Valid once the state is FAULTED or the end reason is `AAR_END_USER_FAULT`.
+Valid once the state is FAULTED or the end reason is `AAR_END_USER_FAULT` or `AAR_END_STALL`.
 Addresses are app virtual addresses; on A32 the high word is 0. The syndrome is
 the FSR on A32 and the low 32 bits of `ESR_EL1` on A64. The processor state is
 the CPSR on A32 and the low 32 bits of PSTATE on A64. A client that wants a
 symbolised trace subtracts the load base.
+For `AAR_END_STALL` the same words hold where the watchdog found the app: the
+program counter, stack pointer and link register, with class `AAR_FAULT_NONE`
+and the syndrome, the processor state and the faulting address 0.
 
 | Symbol | Offset | Meaning |
 |---|---|---|
@@ -175,6 +178,7 @@ service buffers.
 | `AAR_CB_PRIVATE_MIB` | `0x140` | Cap on private memory, MiB. |
 | `AAR_CB_SHARED_MIB` | `0x144` | Limit on shared memory, MiB. |
 | `AAR_CB_WEIGHT` | `0x148` | CPU share weight, default 1. |
+| `AAR_CB_PROFILE_HZ` | `0x14C` | Samples per second of the app's program counter that the client asks for, 0 for none. |
 
 ### Accounting, written by the platform
 
@@ -219,6 +223,60 @@ The descriptor words, added to `AAR_CB_Q_DESC(q)`:
 | `AAR_QD_OFFSET` | `0x04` | Byte offset of the first entry in that buffer. |
 | `AAR_QD_DEPTH` | `0x08` | Entries, a power of two. |
 | `AAR_QD_ENTRY_BYTES` | `0x0C` | `AAR_ENTRY_BYTES`. |
+
+### Stack snapshot, written by the platform
+
+A fault (`AAR_END_USER_FAULT`) or a stall (`AAR_END_STALL`) takes a snapshot of
+the app's stack, if the platform can read it. The words are on a line of their
+own and are written with the fault record, before the state and the end reason
+change. The bytes are copied as they lie in app memory, so a 32-bit app word is
+little-endian and nothing is swapped, as for message bytes. Bytes that the app
+cannot read are not copied. The size is written last, so a reader reads it
+first and then the bytes it names.
+
+| Symbol | Value or offset | Meaning |
+|---|---|---|
+| `AAR_CB_STACK_SP_HI`, `AAR_CB_STACK_SP_LO` | `0x340`, `0x344` | The app address of the first byte, the app's stack pointer. On A32 the high word is 0. |
+| `AAR_CB_STACK_BYTES` | `0x348` | Bytes in the snapshot, 0 when there is none. |
+| `AAR_CB_STACK_DATA` | `0x400` | The bytes. |
+| `AAR_CB_STACK_MAX` | 512 | The most bytes a snapshot holds. |
+
+### Profiler, written by the platform
+
+A platform with a profiler reads `AAR_CB_PROFILE_HZ` when the load begins and
+samples the app's program counter at that rate, or at a lower one. It
+allocates a shared buffer for the samples and names it in the profile line
+below, once, before the app runs. A platform without a profiler leaves the line
+0. The granted rate is written last: a reader that finds it other than 0 may use
+the token and the size.
+
+The buffer is a ring of big-endian 64-bit app addresses, high word first, that
+starts at byte 0 of the buffer. `AAR_CB_PROFILE_BYTES` is a power of two of at
+least `AAR_PROFILE_RING_MIN_BYTES`, so the ring holds `bytes / 8` samples.
+Sample number `n`, counted from 0 at the start of the run, is at byte
+`(n & (bytes / 8 - 1)) * 8`. The head is one 32-bit word on a line of its own,
+the number of samples written modulo 2^32. The platform stores the sample, then
+a release barrier, then the head with a single aligned store, so a reader never
+sees half of it. The reader keeps its own 32-bit count of the samples it has
+taken, never writes the ring, and works in modular arithmetic: `behind = head -
+taken`. A `behind` above 2^31 is a corrupt counter.
+
+Before it stores sample `n` the platform may already be writing slot
+`n & (bytes / 8 - 1)`, which holds sample `n - bytes / 8`, while the head is
+still `n`. A reader therefore trusts only the `bytes / 8 - 1` newest samples:
+those with index at least `head - (bytes / 8 - 1)`, where it reads the head
+again after it copies. Older samples that it had not taken, or took while the
+head moved past them, are lost, and it counts them itself.
+
+| Symbol | Value or offset | Meaning |
+|---|---|---|
+| `AAR_CB_PROFILE_GRANTED_HZ` | `0x380` | The rate the platform samples at, 0 for no profile. |
+| `AAR_CB_PROFILE_TOKEN` | `0x384` | The shared-buffer token of the ring. |
+| `AAR_CB_PROFILE_BYTES` | `0x388` | The size of the ring in bytes. |
+| `AAR_CB_PROFILE_DROPPED` | `0x38C` | Ticks at which the platform could not record a sample. |
+| `AAR_CB_PROFILE_HEAD` | `0x3C0` | Samples written so far, modulo 2^32. Own 64-byte line. |
+| `AAR_PROFILE_SAMPLE_BYTES` | 8 | Bytes of one sample. |
+| `AAR_PROFILE_RING_MIN_BYTES` | 64 | The smallest ring. |
 
 ### Control block helpers
 

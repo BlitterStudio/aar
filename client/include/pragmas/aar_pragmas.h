@@ -41,6 +41,8 @@
 #pragma libcall AARBase AARSharedToken 0A2 A09804
 #pragma libcall AARBase AARExt 0A8 1002
 #pragma libcall AARBase AARSetLogSink 0AE A9803
+#pragma libcall AARBase AARReadStack 0B4 A09804
+#pragma libcall AARBase AARReadProfile 0BA BA09805
 #endif
 
 #endif /* PRAGMAS_AAR_PRAGMAS_H */

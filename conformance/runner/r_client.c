@@ -599,7 +599,7 @@ static void t_status(int idx)
     ULONG reason = 0;
     char path[256];
     char d[CONF_DETAIL_MAX];
-    UBYTE raw[160];
+    UBYTE raw[sizeof(AARStatusInfo) + 16];
     AARStatusInfo *small = (AARStatusInfo *)raw;
     AARStatusInfo full;
     LONG rc;
