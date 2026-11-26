@@ -189,6 +189,43 @@ static int be_lock_examine(void *ctx, uintptr_t lock, struct aar_serve_info *inf
     return ok;
 }
 
+/* Only the comment of the object: fib_Comment as the handler returns it, a
+ * BSTR of at most 79 characters. The FIB lives for this call alone. */
+static int be_lock_comment(void *ctx, uintptr_t lock, uint8_t *dst, uint32_t cap,
+                           uint32_t *len, int *transport_ok, int32_t *io)
+{
+    struct aar_serve *s = ctx;
+    struct FileInfoBlock *fib = X_ALLOC_DOS_OBJECT(DOS_FIB, NULL);
+    uint32_t n;
+    int ok;
+
+    *transport_ok = 1;
+    *io = 0;
+    *len = 0;
+    if (!fib) {
+        *io = ERROR_NO_FREE_STORE;
+        return 0;
+    }
+    fib->fib_Comment[0] = 0;
+    ok = examine_lock_async(s, (BPTR)lock, fib, transport_ok);
+    *io = (int32_t)X_IO_ERR();
+    if (ok) {
+        n = (uint8_t)fib->fib_Comment[0];
+        if (n > AAR_FILE_COMMENT_MAX) {
+            ok = 0;
+            *io = 0;
+        } else {
+            uint32_t copy = n < cap ? n : cap;
+
+            if (copy)
+                memcpy(dst, fib->fib_Comment + 1, copy);
+            *len = n;
+        }
+    }
+    X_FREE_DOS_OBJECT(DOS_FIB, fib);
+    return ok;
+}
+
 static void be_target_begin(void *ctx, uintptr_t dir, const char *name)
 {
     struct aar_serve *s = ctx;
@@ -428,6 +465,7 @@ static const struct aar_serve_dos_ops aar_serve_dos_backend = {
     .volume_info = be_volume_info,
     .same_volume = be_same_volume,
     .check_replace = be_check_replace,
+    .lock_comment = be_lock_comment,
 };
 
 /*
@@ -1082,14 +1120,15 @@ static int be_utc_offset(void *ctx, int32_t *east_min)
     return known;
 }
 
-/* One packet that names an object: delete, create a directory, set the date or
- * the protection. It runs through the target's resolver, so a name with a
+/* One packet that names an object: delete, create a directory, set the date,
+ * the protection or the comment. It runs through the target's resolver, so a name with a
  * volume or assign goes to every GetDeviceProc candidate that does not have it. */
 struct named_path_request {
     struct aar_serve *s;
     LONG action;
     LONG protect;
     struct DateStamp *date;
+    uint8_t *comment_bstr; /* public, longword aligned, until the reply */
     LONG result;
     LONG error;
 };
@@ -1115,6 +1154,11 @@ static void send_named_path_packet(
     else if (request->action == ACTION_SET_PROTECT)
         delivered = dos_packet_async(request->s, handler, ACTION_SET_PROTECT, 0, dir,
                                      (LONG)name_bstr_bptr, request->protect, 0,
+                                     1, &result, NULL, &abandoned);
+    else if (request->action == ACTION_SET_COMMENT)
+        delivered = dos_packet_async(request->s, handler, ACTION_SET_COMMENT, 0, dir,
+                                     (LONG)name_bstr_bptr,
+                                     (LONG)((uintptr_t)request->comment_bstr >> 2), 0,
                                      1, &result, NULL, &abandoned);
     else
         delivered = dos_packet_async(request->s, handler, request->action, dir,
@@ -1154,6 +1198,9 @@ static int be_target_named(void *ctx, enum aar_serve_named kind,
         request.action = ACTION_SET_PROTECT;
         request.protect = (LONG)args->protect;
         break;
+    case AAR_SERVE_NAMED_SET_COMMENT:
+        request.action = ACTION_SET_COMMENT;
+        break;
     default:
         *transport_ok = 1;
         *io = ERROR_ACTION_NOT_KNOWN;
@@ -1161,7 +1208,17 @@ static int be_target_named(void *ctx, enum aar_serve_named kind,
     }
     if (!open_target_arm(&s->dos.target))
         return 0;
-    name_bstr = bstr_storage_alloc();
+    if (kind == AAR_SERVE_NAMED_SET_COMMENT) {
+        /* Round the 258-byte name BSTR buffer up to a BPTR boundary. Both
+         * strings are public and stay alive until the packet is answered. */
+        const uint32_t comment_off = 260u;
+
+        name_bstr = X_ALLOC_VEC(comment_off + args->comment_len + 2u, MEMF_PUBLIC);
+        if (name_bstr)
+            request.comment_bstr = name_bstr + comment_off;
+    } else {
+        name_bstr = bstr_storage_alloc();
+    }
     if (kind == AAR_SERVE_NAMED_SET_DATE)
         request.date = X_ALLOC_VEC(sizeof(*request.date), MEMF_PUBLIC | MEMF_CLEAR);
     if (!name_bstr || (kind == AAR_SERVE_NAMED_SET_DATE && !request.date)) {
@@ -1172,6 +1229,12 @@ static int be_target_named(void *ctx, enum aar_serve_named kind,
         *transport_ok = 1;
         *io = ERROR_NO_FREE_STORE;
         return 0;
+    }
+    if (request.comment_bstr) {
+        request.comment_bstr[0] = (uint8_t)args->comment_len;
+        if (args->comment_len)
+            memcpy(request.comment_bstr + 1, args->comment, args->comment_len);
+        request.comment_bstr[args->comment_len + 1u] = 0;
     }
     if (request.date) {
         request.date->ds_Days = (LONG)args->days;

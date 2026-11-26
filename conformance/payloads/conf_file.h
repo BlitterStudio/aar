@@ -76,6 +76,13 @@
 #define CONF_FILE_VARIANT_STALL "stall"
 #define CONF_FILE_VARIANT_LEAK  "leak"
 
+/* The scratch file stopcmt.tmp of the second stop row (C-FILE.49): the payload gives it the comment KEPT
+ * before the stop request, if the client serves comments, and asks for AFTER once it is stopped. The runner
+ * accepts an empty comment (no comments) or KEPT, and nothing else. */
+#define CONF_FILE_STOP_COMMENT_NAME  "stopcmt.tmp"
+#define CONF_FILE_STOP_COMMENT_KEPT  "kept before the stop"
+#define CONF_FILE_STOP_COMMENT_AFTER "written after the stop"
+
 /* ---- Fixture names --------------------------------------------------------------- */
 
 #define CONF_FILE_DIR      "conf-fixtures"

@@ -376,6 +376,8 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_OP_FILE_SET_PROTECT 0x1Du /* path in buf; arg: PROTECT (AAR_PROT_*) */
 #define AAR_OP_FILE_TRUNCATE 0x1Eu /* arg: FD, SIZE_HI, SIZE_LO */
 #define AAR_OP_VOLUME_INFO   0x1Fu /* path in buf; out: BLOCKS_TOTAL, BLOCKS_USED, BLOCK_BYTES, FLAGS (AAR_VOLF_*) */
+#define AAR_OP_FILE_GET_COMMENT 0x22u /* path in buf; arg: CAP; comment goes to buf; out: LEN */
+#define AAR_OP_FILE_SET_COMMENT 0x23u /* buf holds path NUL followed by the comment bytes */
 
 /* Console. The bytes sit in a console buffer named by buf, buf_off, buf_len. */
 #define AAR_OP_CONSOLE_WRITE 0x20u /* bytes in buf; out: COUNT consumed */
@@ -439,6 +441,8 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_R_VOLUME_BLOCKS_USED  1u
 #define AAR_R_VOLUME_BLOCK_BYTES  2u
 #define AAR_R_VOLUME_FLAGS     3u /* AAR_VOLF_* */
+#define AAR_A_FILE_COMMENT_CAP 0u /* GET_COMMENT: output room, at most buf_len */
+#define AAR_R_FILE_COMMENT_LEN 0u /* GET_COMMENT: full length, excluding any terminator */
 
 #define AAR_A_DISPLAY_OPEN_W      0u
 #define AAR_A_DISPLAY_OPEN_H      1u

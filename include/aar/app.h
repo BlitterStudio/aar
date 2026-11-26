@@ -328,6 +328,8 @@ typedef struct aar_event {
 #define AAR_PROT_SCRIPT  (1u << 6)
 #define AAR_PROT_HOLD    (1u << 7)
 
+#define AAR_FILE_COMMENT_MAX 79u /* native bytes, excluding any terminator */
+
 #define AAR_VOLF_READONLY (1u << 0) /* aar_volume_info.flags */
 
 typedef struct aar_stat {
@@ -650,6 +652,9 @@ typedef struct aar_api {
     const void *(*ext)(uint32_t platform_id, uint32_t ext_id);
     int      (*map_file)(const char *path, const void **data, uint64_t *bytes);
     void     (*unmap_file)(const void *data);
+    int      (*file_get_comment)(const char *path, void *buf, uint32_t bytes,
+                                 uint32_t *out_n);
+    int      (*file_set_comment)(const char *path, const void *data, uint32_t bytes);
 
     /* -- group AAR_GROUP_DISPLAY -- */
     int      (*display_open)(uint32_t w, uint32_t h, uint32_t format,
@@ -795,6 +800,12 @@ int      aar_file_set_date(const char *path, int64_t mtime);
 int      aar_file_set_protect(const char *path, uint32_t protect);
 int      aar_file_truncate(int fd, uint64_t size);
 int      aar_get_volume_info(const char *path, aar_volume_info *out);
+/* Copies up to bytes native comment bytes; *out_n is the full length.
+ * A short buffer returns AAR_E_NOSPC. No NUL terminator is written. */
+int      aar_file_get_comment(const char *path, void *buf, uint32_t bytes,
+                              uint32_t *out_n);
+/* Replaces the comment. Zero bytes clears it; embedded NUL is invalid. */
+int      aar_file_set_comment(const char *path, const void *data, uint32_t bytes);
 /* Microseconds since 1970-01-01 UTC. */
 int      aar_time_unix_us(int64_t *out_us);
 int      aar_get_locale_info(aar_locale_info *out);
@@ -905,7 +916,7 @@ void     aar_free(void *p);
       AAR_ALIGNOF(type) - 1u) & ~(AAR_ALIGNOF(type) - 1u))
 
 /* Number of pointer slots in the table after the 16-byte header. */
-#define AAR_API_SLOT_COUNT 75u
+#define AAR_API_SLOT_COUNT 77u
 #define AAR_API_CORE_SLOT_COUNT 42u
 
 AAR_STATIC_ASSERT(sizeof(aar_info) == 88, "aar_info size");

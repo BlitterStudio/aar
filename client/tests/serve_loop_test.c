@@ -4158,6 +4158,7 @@ static const struct {
     T(test_stat_of_a_file_uses_the_offset_too),
     T(test_set_date_errors),
     T(test_protection_bits_go_both_ways),
+    T(test_file_comments_preserve_native_bytes),
     T(test_truncate_shortens_and_extends_with_zeros),
     T(test_truncate_needs_an_id_opened_for_writing),
     T(test_truncate_below_another_handles_position_is_busy),

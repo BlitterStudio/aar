@@ -67,6 +67,7 @@ static unsigned long failures;
     X(time_unix_us) X(locale_info) X(env_get) X(clip_read)               \
     X(clip_write)                                                        \
     X(ext) X(map_file) X(unmap_file)                                     \
+    X(file_get_comment) X(file_set_comment)                             \
     X(display_open) X(display_flip) X(display_flip_async)                \
     X(display_flip_idle) X(display_refresh) X(display_vsync)             \
     X(display_set_palette) X(display_close) X(display_latest_dropped)    \
@@ -135,14 +136,16 @@ static void test_table(void)
     CHECK_EQ(offsetof(aar_api, ext), 16 + 42 * P);
     CHECK_EQ(offsetof(aar_api, map_file), 16 + 43 * P);
     CHECK_EQ(offsetof(aar_api, unmap_file), 16 + 44 * P);
-    CHECK_EQ(offsetof(aar_api, display_open), 16 + 45 * P);
-    CHECK_EQ(offsetof(aar_api, display_latest_dropped), 16 + 53 * P);
-    CHECK_EQ(offsetof(aar_api, display_info), 16 + 54 * P);
-    CHECK_EQ(offsetof(aar_api, display_last_present_us), 16 + 60 * P);
-    CHECK_EQ(offsetof(aar_api, audio_open), 16 + 61 * P);
-    CHECK_EQ(offsetof(aar_api, gl_bind), 16 + 64 * P);
-    CHECK_EQ(offsetof(aar_api, sha256), 16 + 67 * P);
-    CHECK_EQ(offsetof(aar_api, audio_decode_close), 16 + 74 * P);
+    CHECK_EQ(offsetof(aar_api, file_get_comment), 16 + 45 * P);
+    CHECK_EQ(offsetof(aar_api, file_set_comment), 16 + 46 * P);
+    CHECK_EQ(offsetof(aar_api, display_open), 16 + 47 * P);
+    CHECK_EQ(offsetof(aar_api, display_latest_dropped), 16 + 55 * P);
+    CHECK_EQ(offsetof(aar_api, display_info), 16 + 56 * P);
+    CHECK_EQ(offsetof(aar_api, display_last_present_us), 16 + 62 * P);
+    CHECK_EQ(offsetof(aar_api, audio_open), 16 + 63 * P);
+    CHECK_EQ(offsetof(aar_api, gl_bind), 16 + 66 * P);
+    CHECK_EQ(offsetof(aar_api, sha256), 16 + 69 * P);
+    CHECK_EQ(offsetof(aar_api, audio_decode_close), 16 + 76 * P);
 
     /* AAR_API_COVERS gates on size. */
     {
@@ -361,14 +364,14 @@ static void test_structures(void)
         CHECK_EQ(sizeof(aar_audio), 40);
         CHECK_EQ(sizeof(aar_image_params), 32);
         CHECK_EQ(sizeof(aar_pointer), 32);
-        CHECK_EQ(sizeof(aar_api), 16 + 75 * 8);
+        CHECK_EQ(sizeof(aar_api), 16 + 77 * 8);
         CHECK_EQ(sizeof(aar_gl), 8 + 123 * 8);
     } else {
         CHECK_EQ(sizeof(aar_surface), 40);
         CHECK_EQ(sizeof(aar_audio), 28);
         CHECK_EQ(sizeof(aar_image_params), 28);
         CHECK_EQ(sizeof(aar_pointer), 28);
-        CHECK_EQ(sizeof(aar_api), 16 + 75 * 4);
+        CHECK_EQ(sizeof(aar_api), 16 + 77 * 4);
         CHECK_EQ(sizeof(aar_gl), 8 + 123 * 4);
 #if defined(__arm__)
         CHECK_EQ(sizeof(aar_shared), 24);
@@ -708,6 +711,7 @@ static void test_transport_layout(void)
             AAR_OP_FILE_DELETE, AAR_OP_FILE_RENAME, AAR_OP_DIR_CREATE,
             AAR_OP_FILE_SET_DATE, AAR_OP_FILE_SET_PROTECT,
             AAR_OP_FILE_TRUNCATE, AAR_OP_VOLUME_INFO,
+            AAR_OP_FILE_GET_COMMENT, AAR_OP_FILE_SET_COMMENT,
             AAR_OP_DISPLAY_INFO, AAR_OP_DISPLAY_MODES,
             AAR_OP_DISPLAY_RESIZE, AAR_OP_DISPLAY_TITLE,
             AAR_OP_DISPLAY_POINTER, AAR_OP_DISPLAY_VBLANK,
@@ -739,6 +743,8 @@ static void test_transport_layout(void)
     CHECK_EQ(AAR_OP_FILE_SET_PROTECT, 0x1D);
     CHECK_EQ(AAR_OP_FILE_TRUNCATE, 0x1E);
     CHECK_EQ(AAR_OP_VOLUME_INFO, 0x1F);
+    CHECK_EQ(AAR_OP_FILE_GET_COMMENT, 0x22);
+    CHECK_EQ(AAR_OP_FILE_SET_COMMENT, 0x23);
     CHECK_EQ(AAR_OP_DISPLAY_INFO, 0x34);
     CHECK_EQ(AAR_OP_DISPLAY_MODES, 0x35);
     CHECK_EQ(AAR_OP_DISPLAY_RESIZE, 0x36);

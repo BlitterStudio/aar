@@ -396,6 +396,32 @@ static int fx_stamp(const char *name, struct DateStamp *date, LONG *prot)
     return rc;
 }
 
+/* Whether the comment of a file in the fixture directory is as the payload left it before the stop request:
+ * empty (a client without comments cannot keep one) or CONF_FILE_STOP_COMMENT_KEPT. A missing file is not. */
+static int fx_comment_kept(const char *name)
+{
+    char path[256];
+    struct FileInfoBlock *fib;
+    BPTR lock;
+    int ok = 0;
+
+    if (!fx_path(path, sizeof path, name))
+        return 0;
+    lock = Lock((STRPTR)path, SHARED_LOCK);
+    if (!lock)
+        return 0;
+    fib = AllocDosObject(DOS_FIB, NULL);
+    if (fib && Examine(lock, fib)) {
+        const char *c = (const char *)fib->fib_Comment;
+
+        ok = c[0] == '\0' || strcmp(c, CONF_FILE_STOP_COMMENT_KEPT) == 0;
+    }
+    if (fib)
+        FreeDosObject(DOS_FIB, fib);
+    UnLock(lock);
+    return ok;
+}
+
 /* The payload runs create, truncate and write after the stop request. A stop
  * ends a parked call with AAR_E_IO whatever the client then does with the
  * request, so the payload's codes prove nothing: the files do. The payload prints
@@ -439,6 +465,8 @@ static void on_end(const struct conf_run *run, const struct conf_outcome *out,
             conf_record(id, 0, "a set_protect after the stop request changed the protection of a file");
         else if (fx_size("stoptr.tmp") != 5)
             conf_record(id, 0, "a truncate after the stop request changed the length of a file");
+        else if (!fx_comment_kept(CONF_FILE_STOP_COMMENT_NAME))
+            conf_record(id, 0, "a set_comment after the stop request changed the comment of a file");
     }
 }
 
