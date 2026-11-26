@@ -52,6 +52,11 @@ extern "C" {
  * implementation's own. At 1.0 this macro and nothing else changes. */
 #define AAR_LIB_VERSION AAR_API_MAJOR
 
+/* The first revision of the library with AARReadStack and AARReadProfile
+ * (vectors 26 and 27). OpenLibrary checks the version only: a program that calls
+ * them checks AARBase->lib_Revision against this after the open. */
+#define AAR_LIB_REVISION_READ 2UL
+
 /* ---- Profiles as masks ---------------------------------------------------- */
 
 /* AAR_PROFILE_A32 and AAR_PROFILE_A64 are values; AARInfo.profiles is a mask

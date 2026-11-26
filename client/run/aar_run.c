@@ -421,6 +421,16 @@ static int open_library(void)
              "platform.");
         return 0;
     }
+    if (!aar_run_library_ok(AARBase->lib_Version, AARBase->lib_Revision)) {
+        char line[256];
+
+        aar_run_library_line(line, sizeof(line), AARBase->lib_Version,
+                             AARBase->lib_Revision);
+        tell(line);
+        CloseLibrary(AARBase);
+        AARBase = NULL;
+        return 0;
+    }
     return 1;
 }
 

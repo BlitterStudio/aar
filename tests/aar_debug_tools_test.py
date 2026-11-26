@@ -384,6 +384,18 @@ class Profile(Files):
         self.assertIn("41.67%", out)
         self.assertIn("25.00%", out)
 
+    def test_two_static_functions_with_one_name_are_two_rows(self):
+        base = 0x10000
+        symbols = [("tick", 0x1000, 0x80, STT_FUNC), ("tick", 0x1100, 0x80, STT_FUNC),
+                   ("main", 0x1200, 0x40, STT_FUNC)]
+        elf = self.path("g.elf", build_elf(32, symbols=symbols))
+        data = self.path("p.bin", profile_file([base + 0x1010] * 5 + [base + 0x1110] * 3 + [base + 0x1210]))
+        code, out, _ = self.run_tool(profile, [data, "--elf", elf])
+        self.assertEqual(code, 0)
+        rows = [line.split(None, 2) for line in out.split("function\n")[1].splitlines()]
+        self.assertEqual([(int(r[0]), r[2]) for r in rows],
+                         [(5, "tick@0x1000"), (3, "tick@0x1100"), (1, "main")])
+
     def test_top(self):
         base = 0x10000
         data = self.path("p.bin", profile_file([base + 0x1010] * 3 + [base + 0x1150] * 2 + [base + 0x1210]))

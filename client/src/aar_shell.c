@@ -177,7 +177,7 @@ static LONG aar_x_file_size(BPTR f)
     return Seek(f, 0L, OFFSET_BEGINNING);
 }
 
-#define AAR_LIB_REVISION 2
+#define AAR_LIB_REVISION AAR_LIB_REVISION_READ
 /* A function address as a library vector or an object pointer. */
 #define AAR_VEC(f) ((APTR)(uintptr_t)(f))
 #define AAR_LIB_IDSTRING AAR_LIB_NAME " 0.2 (2026)\r\n"

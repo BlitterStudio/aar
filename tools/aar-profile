@@ -60,18 +60,27 @@ class Profile:
 
 
 def flat(profile, elf):
-    """[(samples, name)] most sampled first."""
-    counts = collections.Counter()
+    """[(samples, name)] most sampled first. A function is its start address, not
+    its name: two static functions called tick are two rows, told apart by their
+    addresses in the name."""
+    by_addr = collections.Counter()
+    other = collections.Counter()
+    names = {}
     for pc in profile.samples:
         rel = pc - profile.load_base
-        sym = elf.lookup(rel) if pc >= profile.load_base else None
+        sym = elf.find(rel) if pc >= profile.load_base else None
         if sym:
-            counts[sym[0]] += 1
+            by_addr[sym.addr] += 1
+            names[sym.addr] = sym.name
         elif pc >= profile.load_base and elf.in_image(rel):
-            counts["(no symbol)"] += 1
+            other["(no symbol)"] += 1
         else:
-            counts["(outside the image)"] += 1
-    return sorted(((n, name) for name, n in counts.items()), key=lambda item: (-item[0], item[1]))
+            other["(outside the image)"] += 1
+    shared = collections.Counter(name for name, _ in {(s.name, s.addr) for s in elf.symbols})
+    rows = [(n, "%s@0x%x" % (names[addr], addr) if shared[names[addr]] > 1 else names[addr])
+            for addr, n in by_addr.items()]
+    rows += [(n, name) for name, n in other.items()]
+    return sorted(rows, key=lambda item: (-item[0], item[1]))
 
 
 def report(profile, elf, top, out):

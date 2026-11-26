@@ -357,10 +357,15 @@ indexes for `arg` and the `AAR_R_*` indexes for `out` of each op, in
 
 ## Constants
 
-### AAR_LIB_NAME and AAR_LIB_VERSION
+### AAR_LIB_NAME, AAR_LIB_VERSION and AAR_LIB_REVISION_READ
 
 `AAR_LIB_NAME` is `"aar.library"`. `AAR_LIB_VERSION` is the version to ask
-`OpenLibrary` for. It is `AAR_API_MAJOR`.
+`OpenLibrary` for. It is `AAR_API_MAJOR`. `AAR_LIB_REVISION_READ` (2) is the first
+revision of the library that has `AARReadStack` and `AARReadProfile`, vectors 26
+and 27. `OpenLibrary` checks the version only, so a program that calls them
+compares `AARBase->lib_Revision` with it after the open and does not start on
+an older library: a call through a vector the library lacks jumps into
+whatever follows its vector table.
 
 ### AAR_PROFILEF_A32 and AAR_PROFILEF_A64
 

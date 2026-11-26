@@ -16,7 +16,12 @@ graphics and Intuition 39 or later, `timer.device`, Picasso96 when the app asks
 for a display and `ahi.device` for `AUDIO=AHI`. Without the library it prints
 `aar.library not found.` and returns 20. With a library that has no platform
 behind it, it prints `no AAR platform found` (or that `AARQuery` failed) and
-returns 20.
+returns 20. It also needs revision `AAR_LIB_REVISION_READ` (2) or later of
+`aar.library`, the first with `AARReadStack` and `AARReadProfile` (vectors 26 and
+27), which it calls for `CRASHLOG` and `PROFILEFILE`. `OpenLibrary` does not check
+the revision, so aar-run does after the open: on an older library it prints
+`aar.library <version>.<revision> is too old` with the revision it needs, and
+returns 20, before it claims anything.
 
 Every instance claims its own app, so many apps can run at once. The platform's
 resources are the limit. When the platform cannot admit another one, a launch

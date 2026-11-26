@@ -167,11 +167,10 @@ class Elf:
         """Is it inside an executable segment?"""
         return any(s.executable and s.contains(addr) for s in self.segments)
 
-    def lookup(self, addr):
-        """The symbol that holds the image-relative address, as (name, offset),
-        or None. A symbol with a size holds the addresses of that size; one
-        without (an assembly label) holds everything up to the next symbol or the
-        end of its section."""
+    def find(self, addr):
+        """The Symbol that holds the image-relative address, or None. A symbol
+        with a size holds the addresses of that size; one without (an assembly
+        label) holds everything up to the next symbol or the end of its section."""
         lo, hi = 0, len(self.symbols)
         while lo < hi:
             mid = (lo + hi) // 2
@@ -183,9 +182,12 @@ class Elf:
         if i < 0:
             return None
         sym = self.symbols[i]
-        if addr < sym.end:
-            return sym.name, addr - sym.addr
-        return None
+        return sym if addr < sym.end else None
+
+    def lookup(self, addr):
+        """(name, offset into the symbol) for the address, or None."""
+        sym = self.find(addr)
+        return (sym.name, addr - sym.addr) if sym else None
 
     @property
     def is_a64(self):

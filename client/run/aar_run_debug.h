@@ -377,4 +377,27 @@ static inline void aar_run_profile_summary_line(char *buf, size_t size,
              samples, (unsigned long)hz, lost, path);
 }
 
+/* ---- The library ---------------------------------------------------------------- */
+
+/* aar-run calls AARReadStack and AARReadProfile, vectors 26 and 27, and
+ * OpenLibrary does not check the revision: a library of an earlier revision has no
+ * such vectors, and a call would jump into whatever follows its table. aar-run
+ * checks the version and revision it was given and refuses to start on an older
+ * one. */
+static inline int aar_run_library_ok(uint32_t version, uint32_t revision)
+{
+    return version > AAR_LIB_VERSION ||
+           (version == AAR_LIB_VERSION && revision >= AAR_LIB_REVISION_READ);
+}
+
+static inline void aar_run_library_line(char *buf, size_t size, uint32_t version,
+                                        uint32_t revision)
+{
+    snprintf(buf, size,
+             "aar-run: aar.library %lu.%lu is too old: aar-run needs revision %lu "
+             "of version %lu or later. Install the current Libs:aar.library.",
+             (unsigned long)version, (unsigned long)revision,
+             (unsigned long)AAR_LIB_REVISION_READ, (unsigned long)AAR_LIB_VERSION);
+}
+
 #endif /* AAR_RUN_DEBUG_H */

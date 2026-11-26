@@ -199,6 +199,23 @@ static void test_which_ends_leave_a_report(void)
     assert(!aar_run_crash_wanted(AAR_END_STUCK_CALL, AAR_FAULT_NONE, 0));
 }
 
+static void test_an_old_library_is_refused(void)
+{
+    char line[256];
+
+    /* Revision 1 has no AARReadStack and AARReadProfile. */
+    assert(AAR_LIB_REVISION_READ == 2UL);
+    assert(!aar_run_library_ok(AAR_LIB_VERSION, 0u));
+    assert(!aar_run_library_ok(AAR_LIB_VERSION, 1u));
+    assert(aar_run_library_ok(AAR_LIB_VERSION, 2u));
+    assert(aar_run_library_ok(AAR_LIB_VERSION, 3u));
+    /* A later version restarts its revisions. */
+    assert(aar_run_library_ok(AAR_LIB_VERSION + 1u, 0u));
+    aar_run_library_line(line, sizeof(line), 0u, 1u);
+    assert(strstr(line, "aar.library 0.1 is too old") != NULL);
+    assert(strstr(line, "revision 2 of version 0") != NULL);
+}
+
 static void test_register_line(void)
 {
     char line[80];
@@ -393,6 +410,7 @@ int main(void)
     test_debug_tooltypes_follow_the_icon_order();
     test_a_bad_debug_tooltype_names_its_key();
     test_which_ends_leave_a_report();
+    test_an_old_library_is_refused();
     test_register_line();
     test_crash_report_is_the_sample_file();
     test_crash_report_other_shapes();
