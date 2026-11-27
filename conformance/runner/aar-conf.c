@@ -164,22 +164,6 @@ int conf_group_declared(unsigned short group)
     return (conf_g.info.groups & group) != 0;
 }
 
-static int has_prefix_nocase(const char *s, const char *prefix)
-{
-    while (*prefix) {
-        char a = *s++;
-        char b = *prefix++;
-
-        if (a >= 'a' && a <= 'z')
-            a = (char)(a - 'a' + 'A');
-        if (b >= 'a' && b <= 'z')
-            b = (char)(b - 'a' + 'A');
-        if (a != b)
-            return 0;
-    }
-    return 1;
-}
-
 ULONG conf_ticks(void)
 {
     struct DateStamp ds;
@@ -574,6 +558,7 @@ void conf_run_payload(struct conf_run *run, struct conf_outcome *out)
     aar_serve_config_default(&cfg);
     cfg.flags = (AAR_SERVEF_NO_INPUT_WINDOW | run->serve_flags) & ~run->serve_flags_off;
     cfg.groups = run->serve_groups;
+    cfg.cd32_ports = run->cd32_ports;
     cfg.root = root;
     cfg.screen_title = (CONST_STRPTR)"aar-conf";
     memset(&con_ops, 0, sizeof con_ops);
@@ -953,17 +938,6 @@ static void run_area(int area)
     }
 }
 
-/* Operator tests that are left: SKIP manual without INTERACTIVE. */
-static void run_operator(int idx)
-{
-    if (!conf_g.interactive) {
-        conf_set_result(idx, CONF_R_SKIP, "manual");
-        return;
-    }
-    conf_emitf("# [%s] %s", conf_tests[idx].id, conf_tests[idx].prompt);
-    judge_operator(idx, NULL, "Did it happen as described?");
-}
-
 /* ---- The run ------------------------------------------------------------------------------ */
 
 static void dump_info(void)
@@ -1014,17 +988,25 @@ static void plan(void)
 
     for (i = 0; i < CONF_TEST_COUNT; i++) {
         const struct conf_test *t = &conf_tests[i];
+        const char *skip = NULL;
 
         if (t->judge == CONF_J_NONE || !(t->profiles & conf_g.profile_bit))
             continue;
-        if (conf_g.only && !has_prefix_nocase(t->id, conf_g.only))
+        if (!conf_id_matches(t->id, conf_g.only, 0))
             continue;
         selected[i] = 1;
-        if (!conf_group_declared(t->group)) {
-            conf_set_result(i, CONF_R_SKIP, "group not declared");
-            results[i].locked = 1;
-        } else if (!t->impl) {
-            conf_set_result(i, CONF_R_SKIP, "suite: not implemented in this version");
+        if (!conf_group_declared(t->group))
+            skip = "group not declared";
+        else if (!t->impl)
+            skip = "suite: not implemented in this version";
+        else if (t->judge == CONF_J_OPERATOR) {
+            const struct conf_operator *op = find_operator(t->id);
+
+            skip = conf_operator_skip_reason(conf_g.interactive, op && op->exact_only,
+                                             t->id, conf_g.only);
+        }
+        if (skip) {
+            conf_set_result(i, CONF_R_SKIP, skip);
             results[i].locked = 1;
         }
     }
@@ -1093,11 +1075,6 @@ static void run_tests(void)
     for (i = 0; i < CONF_AREA_COUNT && !conf_g.aborted; i++)
         run_area(i);
     run_observer_fallback();
-    for (i = 0; i < CONF_TEST_COUNT; i++) {
-        if (selected[i] && results[i].status == CONF_R_NONE &&
-            conf_tests[i].judge == CONF_J_OPERATOR)
-            run_operator(i);
-    }
 }
 
 static int report(void)
@@ -1199,7 +1176,7 @@ int main(void)
     conf_g.query_rc = AARQuery(&conf_g.info);
     conf_g.profile_value = AAR_PROFILE_A32;
     if (args[A_PROFILE]) {
-        if (has_prefix_nocase((const char *)args[A_PROFILE], "a64"))
+        if (conf_id_matches((const char *)args[A_PROFILE], "a64", 0))
             conf_g.profile_value = AAR_PROFILE_A64;
     } else if (!(conf_g.info.profiles & AAR_PROFILEF_A32) &&
                (conf_g.info.profiles & AAR_PROFILEF_A64)) {

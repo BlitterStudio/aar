@@ -175,6 +175,14 @@ def manifest_text(bundle, commit):
         out.append("    aar-conf DIR=<this directory> PROFILE=a64 ONLY=%s" % area)
     out += [
         "",
+        "With a CD32 pad (test the connected port with its exact id):",
+        "",
+        "    aar-conf DIR=<this directory> ONLY=C-INPUT.20 INTERACTIVE",
+        "    aar-conf DIR=<this directory> ONLY=C-INPUT.21 INTERACTIVE",
+        "",
+        "C-INPUT.20 selects port 0; C-INPUT.21 selects port 1. Press and release",
+        "each of the seven buttons one at a time when the grey screen opens.",
+        "",
         "Check the report with conformance/tools/check_results.py of the source",
         "commit above:",
         "",

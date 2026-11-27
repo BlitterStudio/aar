@@ -496,10 +496,9 @@ static void variant_overfull(void)
     cmio_kw(CI_K_GOT, n, ok, 0);
 }
 
-/* Variant show (the operator row C-INPUT.11, only with INTERACTIVE): the app opens a
- * display, which gives the client's input window, and reports every event it gets as a
- * message that the runner lists for the operator. */
-static void variant_show(int argc, char **argv, uint32_t flags, uint32_t ms)
+/* Interactive variants open a display for the client's input window and tell
+ * the runner what the app received. The CD32 probe only reports joystick events. */
+static void variant_show(int argc, char **argv, uint32_t flags, uint32_t ms, int joy_only)
 {
     aar_surface s;
     uint64_t start;
@@ -527,6 +526,8 @@ static void variant_show(int argc, char **argv, uint32_t flags, uint32_t ms)
         for (i = 0; i < got; i++) {
             uint32_t k;
 
+            if (joy_only && ev[i].type != AAR_EV_JOY)
+                continue;
             for (k = 0; k < AAR_MSG_BYTES; k++)
                 m[k] = 0;
             m[0] = 'S';
@@ -560,12 +561,16 @@ int aar_main(int argc, char **argv)
         return conf_finish("C-INPUT");
     }
     if (variant && cmio_streq(variant, "show")) {
-        variant_show(argc, argv, AAR_DISPLAY_VSYNC, 12000u);
+        variant_show(argc, argv, AAR_DISPLAY_VSYNC, 12000u, 0);
         return conf_finish("C-INPUT");
     }
     if (variant && cmio_streq(variant, "buttons")) {
         variant_show(argc, argv, AAR_DISPLAY_VSYNC | AAR_DISPLAY_WINDOW | AAR_DISPLAY_POINTER_ABS |
-                                     AAR_DISPLAY_TEXT_INPUT, 20000u);
+                                     AAR_DISPLAY_TEXT_INPUT, 20000u, 0);
+        return conf_finish("C-INPUT");
+    }
+    if (variant && (cmio_streq(variant, "cd32-port0") || cmio_streq(variant, "cd32-port1"))) {
+        variant_show(argc, argv, AAR_DISPLAY_VSYNC, 30000u, 1);
         return conf_finish("C-INPUT");
     }
     test_nonblocking();

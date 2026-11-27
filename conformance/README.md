@@ -59,6 +59,30 @@ operator test that is skipped does not affect the verdict. A MUST operator test
 (C-LIFE.24) that is skipped does, so a platform's report must include the operator's
 run of it.
 
+### CD32 pad
+
+Run the row for the physical port with a CD32 pad connected:
+
+```text
+aar-conf ONLY=C-INPUT.20 INTERACTIVE
+aar-conf ONLY=C-INPUT.21 INTERACTIVE
+```
+
+`C-INPUT.20` selects Amiga port 0 (the usual mouse port); `C-INPUT.21` selects
+port 1. Run them separately, moving the pad between ports. Use the same `DIR`,
+`PROFILE` and `TO` options as for a full run. Each row requires its exact
+`ONLY` id. Full and area runs skip the rows, even with `INTERACTIVE`, so they
+do not opt any port into `ReadJoyPort`, which drives the selected port's pins.
+
+Start with all buttons released. When the grey screen opens, press and release
+red, blue, green, yellow, play, forward and reverse one at a time within 30
+seconds. Check the row's `PASS`, `FAIL` or `SKIP` line, since a failed SHOULD
+row does not set a failure return code. `PASS` requires the app to see all
+seven separate press and release pairs on the selected port. The report names
+any missing presses and any observed presses with no matching release.
+
+### Unimplemented tests
+
 A test marked `todo` in `TESTS.md` is not written yet. The runner prints
 `SKIP suite: not implemented` for it, which is not allowed for a MUST test, so a
 full run of a suite that is not complete says `DOES-NOT-CONFORM` whatever the

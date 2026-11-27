@@ -111,6 +111,7 @@ struct conf_run {
     ULONG serve_groups;              /* aar_serve_config.groups, 0: all */
     ULONG serve_flags_off;           /* cleared from aar_serve_config.flags after the
                                         core's own (NO_INPUT_WINDOW) and serve_flags */
+    ULONG cd32_ports;                /* aar_serve_config.cd32_ports, 0: no opt-in */
     const struct aar_serve_display_ops *display; /* replaces the P96 display, or NULL */
     /* Console modes. The console is a capture; these shape it. Slow output: a
      * write completes write_hold_ticks (1/50 s) after it started. Scripted
@@ -230,6 +231,7 @@ struct conf_operator {
     const char *variant;                     /* "show" */
     int (*review)(const struct conf_run *run);
     int (*accept)(char *why);
+    int exact_only;                          /* require this exact ONLY id */
 };
 
 /* What an area registers (r_areas.h). Everything is optional. */

@@ -1,15 +1,48 @@
 /*
- * Three decisions of the runner core, apart from the Amiga code so that a host test
- * can run them (conformance/tests/select_test.c).
+ * Runner selection and result rules, apart from the Amiga code so that a host
+ * test can run them (conformance/tests/select_test.c).
  *
  * SPDX-License-Identifier: MIT
  */
 #ifndef AAR_CONF_SELECT_H
 #define AAR_CONF_SELECT_H
 
+#include <stddef.h>
+
 #include "../payloads/conf_proto.h"
 
 enum { CONF_R_NONE = 0, CONF_R_PASS, CONF_R_FAIL, CONF_R_SKIP };
+
+/* ONLY normally matches an id prefix. A hardware opt-in needs an exact id. */
+static inline int conf_id_matches(const char *id, const char *only, int exact)
+{
+    if (!only)
+        return !exact;
+    while (*only) {
+        char a = *id++;
+        char b = *only++;
+
+        if (a >= 'a' && a <= 'z')
+            a = (char)(a - 'a' + 'A');
+        if (b >= 'a' && b <= 'z')
+            b = (char)(b - 'a' + 'A');
+        if (a != b)
+            return 0;
+    }
+    return !exact || !*id;
+}
+
+/* Plan operator skips before any variants run, even if an earlier variant
+ * fails and the runner never reaches the operator's variant. */
+static inline const char *conf_operator_skip_reason(int interactive, int exact_only,
+                                                    const char *id, const char *only)
+{
+    if (!interactive)
+        return "manual";
+    if (exact_only && !conf_id_matches(id, only, 1))
+        return "manual: select this exact id with ONLY";
+    return NULL;
+}
 
 /* May a new result replace the old one? A result of a test that plan() skipped (a
  * group the platform does not declare) is locked: nothing changes it, so an
