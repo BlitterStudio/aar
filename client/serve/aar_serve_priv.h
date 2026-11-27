@@ -208,6 +208,12 @@
 #define X_CIAA_PRA() (*(volatile UBYTE *)0xBFE001UL)
 #endif /* AAR_SERVE_HOST */
 
+/* Intuition V51 wheel message ABI. The m68k SDK predates these names,
+ * but an m68k client can receive this message on AmigaOS 4. */
+#define AAR_IDCMP_EXTENDEDMOUSE 0x08000000UL
+#define AAR_IMSGCODE_INTUIWHEELDATA 0x8000u
+#define AAR_INTUIWHEELDATA_VERSION 1u
+
 /* ---- The instance ---------------------------------------------------------------------- */
 
 /* Whether the caller's hook table has a hook: the table is size-first and may

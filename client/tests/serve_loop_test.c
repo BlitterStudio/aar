@@ -2889,9 +2889,9 @@ static void test_a_window_display_shows_its_surface_in_a_window_on_the_public_sc
     CHECK(w->Width == (WORD)(DW + 8u) && w->Height == (WORD)(DH + 11u + 10u)); /* a size gadget below */
     CHECK(w->hx_close_gadget && w->hx_size_gadget);
     CHECK(strcmp(w->hx_title, "aar-serve") == 0);
-    CHECK((w->hx_idcmp & IDCMP_NEWSIZE) && (w->hx_idcmp & IDCMP_ACTIVEWINDOW) &&
-          (w->hx_idcmp & IDCMP_INACTIVEWINDOW) && (w->hx_idcmp & IDCMP_CLOSEWINDOW));
-    CHECK(!(w->hx_idcmp & IDCMP_DELTAMOVE)); /* absolute positions */
+    CHECK((w->IDCMPFlags & IDCMP_NEWSIZE) && (w->IDCMPFlags & IDCMP_ACTIVEWINDOW) &&
+          (w->IDCMPFlags & IDCMP_INACTIVEWINDOW) && (w->IDCMPFlags & IDCMP_CLOSEWINDOW));
+    CHECK(!(w->IDCMPFlags & IDCMP_DELTAMOVE)); /* absolute positions */
     front = c.out[AAR_R_DISPLAY_OPEN_FRONT];
     CHECK(front != 0 && c.out[AAR_R_DISPLAY_OPEN_BACK] == 0 && c.out[AAR_R_DISPLAY_OPEN_SPARE] == 0);
     CHECK(c.out[AAR_R_DISPLAY_OPEN_PITCH] == ((DW * 2u + 15u) & ~15u));
@@ -3302,6 +3302,71 @@ static void test_active_wheel_and_mouse_events(void)
     finish();
 }
 
+/* Intuition owns the payload until ReplyMsg frees the message and its data. */
+static void post_extended_mouse(UWORD code, UWORD qual, const void *data, size_t bytes)
+{
+    const ULONG class = 0x08000000UL; /* IDCMP_EXTENDEDMOUSE */
+    struct IntuiMessage *im;
+
+    if (!(hx_cur_window->IDCMPFlags & class))
+        return;
+    im = hx_alloc(sizeof(*im) + bytes, 1);
+    im->Class = class;
+    im->Code = code;
+    im->Qualifier = qual;
+    if (bytes)
+        im->IAddress = memcpy(im + 1, data, bytes);
+    hx_post(hx_cur_window->UserPort, &im->ExecMessage);
+}
+
+static void test_intuition_v51_delivers_signed_wheel_deltas_once(void)
+{
+    const uint32_t displays[] = {0, AAR_DISPLAY_WINDOW};
+    const uint16_t unknown_version = 2;
+    const int16_t down_left[] = {1, 0, -2, 3};
+    const int16_t up_right[] = {1, 0, 4, -5};
+    const int16_t no_movement[] = {1, 0, 0, 0};
+    const UWORD wheel = 0x8000u; /* IMSGCODE_INTUIWHEELDATA */
+    unsigned d;
+
+    for (d = 0; d < sizeof(displays) / sizeof(displays[0]); ++d) {
+        struct comp c;
+        unsigned i, wheels = 0;
+
+        setup("intuition_v51_wheel");
+        hx_intuition_version = 51;
+        make_serve();
+        CHECK(open_display(&c, AAR_FMT_RGB565, displays[d]));
+        post_extended_mouse(wheel, 0, &unknown_version, sizeof(unknown_version));
+        post_extended_mouse(wheel | 1u, 0, down_left, sizeof(down_left));
+        post_extended_mouse(wheel, 0, NULL, 0);
+        post_extended_mouse(wheel, 0, no_movement, sizeof(no_movement));
+        post_extended_mouse(wheel, IEQUALIFIER_CONTROL, down_left, sizeof(down_left));
+        /* A driver may also send the corresponding NewMouse key. */
+        hx_window_post(IDCMP_RAWKEY, 0x7b, 0, 0, 0);
+        hx_window_post(IDCMP_RAWKEY, 0x7b | IECODE_UP_PREFIX, 0, 0, 0);
+        post_extended_mouse(wheel, 0, up_right, sizeof(up_right));
+        hx_window_post(IDCMP_RAWKEY, 0x45, 0, 0, 0);
+        ticks(4);
+        drain();
+        CHECK(events_of(AAR_EV_WHEEL) == 2);
+        CHECK(events_of(AAR_EV_KEY_DOWN) == 1 && events_of(AAR_EV_KEY_UP) == 0);
+        for (i = 0; i < nev; ++i) {
+            if (evs[i].type == AAR_EV_WHEEL) {
+                const int16_t *expected = wheels ? up_right : down_left;
+
+                CHECK(evs[i].code == 0 && evs[i].dx == expected[2] && evs[i].dy == expected[3]);
+                CHECK(evs[i].buttons == (wheels ? 0 : IEQUALIFIER_CONTROL));
+                ++wheels;
+            } else if (evs[i].type == AAR_EV_KEY_DOWN) {
+                CHECK(evs[i].code == 0x45);
+            }
+        }
+        CHECK(call(AAR_OP_DISPLAY_CLOSE, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+        finish();
+    }
+}
+
 static void test_text_input_maps_keys_with_the_keymap(void)
 {
     struct comp c;
@@ -3375,7 +3440,7 @@ static void test_absolute_pointer_positions(void)
     /* on a screen: positions from the surface's top-left, in the buttons too */
     CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_POINTER_ABS));
     CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_POINTER_ABS));
-    CHECK(!(hx_cur_window->hx_idcmp & IDCMP_DELTAMOVE));
+    CHECK(!(hx_cur_window->IDCMPFlags & IDCMP_DELTAMOVE));
     hx_window_post(IDCMP_MOUSEMOVE, 0, 0, 30, 40);
     hx_window_post(IDCMP_MOUSEBUTTONS, SELECTDOWN, 0, 31, 41);
     hx_window_post(IDCMP_MOUSEMOVE, 0, 0, 32, 42);
@@ -3413,7 +3478,7 @@ static void test_absolute_pointer_positions(void)
     nev = 0;
     CHECK(open_display(&c, AAR_FMT_RGB565, AAR_DISPLAY_WINDOW));
     CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW));
-    CHECK(hx_cur_window->hx_idcmp & IDCMP_DELTAMOVE);
+    CHECK(hx_cur_window->IDCMPFlags & IDCMP_DELTAMOVE);
     hx_window_post(IDCMP_MOUSEMOVE, 0, 0, 3, -2);
     ticks(2);
     drain();
@@ -3567,7 +3632,7 @@ static void test_the_title_goes_to_the_window_or_the_screen(void)
     /* and a window display without an input window: no IDCMP, none of the caps that need input */
     CHECK(open_display(&c, AAR_FMT_RGB565, WINF_ALL));
     CHECK(c.flags == (CAPS_BASE | AAR_DISPCAP_WINDOW));
-    CHECK(hx_cur_window->hx_idcmp == 0 && !hx_cur_window->hx_size_gadget && !hx_cur_window->hx_close_gadget);
+    CHECK(hx_cur_window->IDCMPFlags == 0 && !hx_cur_window->hx_size_gadget && !hx_cur_window->hx_close_gadget);
     memcpy((void *)(uintptr_t)buf(0), "Zo\xC3\xAB \xE2\x82\xAC", 9);
     CHECK(call6(AAR_OP_DISPLAY_TITLE, 37, arg, 0, 9, &c) && c.result == AAR_OK);
     CHECK(strcmp(hx_cur_window->hx_title, "Zo\xEB ?") == 0);
@@ -4269,6 +4334,7 @@ static const struct {
     T(test_a_scaled_screen_has_a_surface_of_its_own),
     T(test_a_window_is_resized_by_the_app),
     T(test_active_wheel_and_mouse_events),
+    T(test_intuition_v51_delivers_signed_wheel_deltas_once),
     T(test_text_input_maps_keys_with_the_keymap),
     T(test_absolute_pointer_positions),
     T(test_the_close_gadget_sends_a_close_request_when_asked),
