@@ -656,6 +656,25 @@ int aar_get_volume_info(const char *path, aar_volume_info *out)
     return AAR_E_NOSYS;
 }
 
+int aar_file_get_comment(const char *path, void *buf, uint32_t bytes,
+                         uint32_t *out_n)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, file_get_comment) && api->file_get_comment)
+        return api->file_get_comment(path, buf, bytes, out_n);
+    return AAR_E_NOSYS;
+}
+
+int aar_file_set_comment(const char *path, const void *data, uint32_t bytes)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, file_set_comment) && api->file_set_comment)
+        return api->file_set_comment(path, data, bytes);
+    return AAR_E_NOSYS;
+}
+
 int aar_time_unix_us(int64_t *out_us)
 {
     const aar_api *api = aar_api_ptr;

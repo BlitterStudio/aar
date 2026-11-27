@@ -644,12 +644,15 @@ enum aar_serve_named {
     AAR_SERVE_NAMED_DELETE = 1,
     AAR_SERVE_NAMED_CREATE_DIR,
     AAR_SERVE_NAMED_SET_DATE,
-    AAR_SERVE_NAMED_SET_PROTECT
+    AAR_SERVE_NAMED_SET_PROTECT,
+    AAR_SERVE_NAMED_SET_COMMENT
 };
 
 struct aar_serve_named_args {
     uint32_t days, minutes, ticks; /* SET_DATE: the DateStamp */
     uint32_t protect;              /* SET_PROTECT */
+    const uint8_t *comment;        /* SET_COMMENT: native bytes, no NUL */
+    uint32_t comment_len;          /* at most AAR_FILE_COMMENT_MAX */
 };
 
 /* A volume as Info() reports it. */
@@ -760,6 +763,10 @@ struct aar_serve_dos_ops {
      * Absolute names are passed in full; relative names are passed as NULL. */
     int32_t (*check_replace)(void *ctx, uintptr_t source, uintptr_t target,
                              const char *from_abs, const char *to_abs);
+    /* Examine a lock and copy up to cap native comment bytes to dst.
+     * *len receives the complete length. NULL means comments are unavailable. */
+    int (*lock_comment)(void *ctx, uintptr_t lock, uint8_t *dst, uint32_t cap,
+                        uint32_t *len, int *transport_ok, int32_t *io);
 };
 
 struct aar_serve_files {

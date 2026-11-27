@@ -34,6 +34,8 @@ struct fnode {
     uint32_t mtime_days;
     uint32_t protect;
     int dev;            /* the volume (handler) the object is on */
+    uint8_t comment[AAR_FILE_COMMENT_MAX]; /* the native bytes, no terminator */
+    uint32_t comment_len;
 };
 
 struct flock {
@@ -84,7 +86,7 @@ struct fake {
     /* the calls that name an object, rename, report a volume and the offset */
     int east;             /* minutes east of UTC that the locale reports */
     int east_known;
-    int named_n[5];       /* calls per aar_serve_named */
+    int named_n[6];       /* calls per aar_serve_named */
     int named_io;         /* the next named call fails with this DOS error */
     int named_lost;       /* the next named call loses its packet */
     struct aar_serve_named_args last_args;
@@ -94,6 +96,9 @@ struct fake {
     char rename_from[256];
     char rename_to[256];
     int vol_ro;
+    int comment_calls;    /* lock_comment calls: stat and listing make none */
+    int comment_io;       /* the next comment read fails with this DOS error */
+    int comment_lost;     /* the next comment read loses its packet */
 
     /* a log of what the handlers asked of DOS */
     int opens[3];        /* per aar_serve_mode */
@@ -338,6 +343,32 @@ static int f_lock_examine(void *ctx, uintptr_t lock, struct aar_serve_info *info
     *transport_ok = 1;
     *io = 0;
     info_from(lock_node(lock), info);
+    return 1;
+}
+
+static int f_lock_comment(void *ctx, uintptr_t lock, uint8_t *dst, uint32_t cap,
+                          uint32_t *len, int *transport_ok, int32_t *io)
+{
+    const struct fnode *node = &fk.nodes[lock_node(lock)];
+
+    (void)ctx;
+    fk.comment_calls++;
+    *transport_ok = 1;
+    *io = 0;
+    *len = 0;
+    if (fk.comment_lost) {
+        *transport_ok = 0;
+        return 0;
+    }
+    if (fk.comment_io) {
+        *io = fk.comment_io;
+        return 0;
+    }
+    if (cap > node->comment_len)
+        cap = node->comment_len;
+    if (cap)
+        memcpy(dst, node->comment, cap);
+    *len = node->comment_len;
     return 1;
 }
 
@@ -665,7 +696,7 @@ static int f_target_named(void *ctx, enum aar_serve_named kind,
     int n;
 
     (void)ctx;
-    assert(kind >= AAR_SERVE_NAMED_DELETE && kind <= AAR_SERVE_NAMED_SET_PROTECT);
+    assert(kind >= AAR_SERVE_NAMED_DELETE && kind <= AAR_SERVE_NAMED_SET_COMMENT);
     fk.named_n[kind]++;
     fk.last_args = *args;
     *transport_ok = 1;
@@ -710,6 +741,12 @@ static int f_target_named(void *ctx, enum aar_serve_named kind,
         return 1;
     case AAR_SERVE_NAMED_SET_DATE:
         fk.nodes[n].mtime_days = args->days;
+        return 1;
+    case AAR_SERVE_NAMED_SET_COMMENT:
+        assert(args->comment_len <= AAR_FILE_COMMENT_MAX);
+        assert(!args->comment_len || !memchr(args->comment, 0, args->comment_len));
+        memcpy(fk.nodes[n].comment, args->comment, args->comment_len);
+        fk.nodes[n].comment_len = args->comment_len;
         return 1;
     default:
         fk.nodes[n].protect = args->protect;
@@ -821,7 +858,7 @@ static const struct aar_serve_dos_ops fake_dos = {
     f_target_probe, f_target_open, f_target_end, f_fh_set_size, f_fh_read,
     f_fh_write, f_fh_seek, f_fh_end_or_close, f_fh_close, f_list_open,
     f_list_next, f_list_close, f_utc_offset, f_target_named, f_rename,
-    f_volume_info, f_same_volume, f_check_replace
+    f_volume_info, f_same_volume, f_check_replace, f_lock_comment
 };
 
 /* ---- Completions the sink collects -------------------------------------- */
@@ -3950,6 +3987,277 @@ static void test_volume_info_and_the_stop(void)
     fixture_free();
 }
 
+/* ---- File comments ------------------------------------------------------ */
+
+#define CBUF 512u
+
+/* The request buffer a GET_COMMENT starts from: the path, and 0xee after it. */
+static void comment_orig(uint8_t *buf, const char *path)
+{
+    memset(buf, 0xee, CBUF);
+    strcpy((char *)buf, path);
+}
+
+static int32_t do_get_comment(const char *path, uint32_t cap, uint32_t buf_len,
+                              uint8_t *buf, struct aar_serve_done *d)
+{
+    struct aar_serve_req r = mkreq(AAR_OP_FILE_GET_COMMENT);
+
+    comment_orig(buf, path);
+    r.arg[AAR_A_FILE_COMMENT_CAP] = cap;
+    r.buf = buf;
+    r.buf_len = buf_len;
+    return serve_one(&r, d);
+}
+
+/* Nothing at or after index n of the request buffer changed. */
+static int comment_tail_kept(const uint8_t *buf, const char *path, uint32_t n)
+{
+    uint8_t orig[CBUF];
+
+    comment_orig(orig, path);
+    return memcmp(buf + n, orig + n, CBUF - n) == 0;
+}
+
+static int32_t do_set_comment(const char *path, const void *data, uint32_t len)
+{
+    struct aar_serve_req r = mkreq(AAR_OP_FILE_SET_COMMENT);
+    struct aar_serve_done d;
+    uint8_t buf[2u * AAR_SERVE_PATH_BYTES + 128u];
+    size_t lp = strlen(path) + 1u;
+
+    memcpy(buf, path, lp);
+    if (len)
+        memcpy(buf + lp, data, len);
+    r.buf = buf;
+    r.buf_len = (uint32_t)lp + len;
+    return serve_one(&r, &d);
+}
+
+static void test_file_comments(void)
+{
+    static const uint8_t raw[] = { 'c', 'a', 'f', 0xe9, 0xff, 0x80, 0x01, ' ', 'z' };
+    uint8_t full[AAR_FILE_COMMENT_MAX + 1u];
+    uint8_t buf[CBUF];
+    uint8_t bad[AAR_FILE_COMMENT_MAX];
+    struct aar_serve_done d;
+    struct aar_serve_dos_ops no_dos;
+    char name[64];
+    char longpath[AAR_SERVE_PATH_BYTES + 1u];
+    uint32_t mode;
+    int calls;
+    int named;
+    int lookups;
+    int top;
+    int i;
+
+    for (i = 0; i < (int)sizeof(full); i++)
+        full[i] = (uint8_t)(0x80 + i);
+    fixture(0);
+    top = child_of(N_ROOT, "top.txt");
+
+    /* no comment is an empty one, and nothing of the buffer changes */
+    memset(&d, 0xaa, sizeof(d));
+    assert(do_get_comment("top.txt", 79, 100, buf, &d) == AAR_OK);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == 0 && comment_tail_kept(buf, "top.txt", 0));
+    assert(do_get_comment("top.txt", 0, 8, buf, &d) == AAR_OK);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == 0 && comment_tail_kept(buf, "top.txt", 0));
+
+    /* raw bytes round trip, no conversion and no terminator */
+    assert(do_set_comment("top.txt", raw, sizeof(raw)) == AAR_OK);
+    assert(fk.named_n[AAR_SERVE_NAMED_SET_COMMENT] == 1);
+    assert(fk.nodes[top].comment_len == sizeof(raw) &&
+           memcmp(fk.nodes[top].comment, raw, sizeof(raw)) == 0);
+    assert(do_get_comment("top.txt", 79, 100, buf, &d) == AAR_OK);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == sizeof(raw));
+    assert(memcmp(buf, raw, sizeof(raw)) == 0 && comment_tail_kept(buf, "top.txt", sizeof(raw)));
+    assert(do_get_comment("top.txt", sizeof(raw), sizeof(raw), buf, &d) == AAR_OK);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == sizeof(raw) && memcmp(buf, raw, sizeof(raw)) == 0);
+    /* a capacity above the maximum is the maximum */
+    assert(do_get_comment("top.txt", 200, 300, buf, &d) == AAR_OK);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == sizeof(raw) && memcmp(buf, raw, sizeof(raw)) == 0);
+
+    /* a short capacity copies what fits and reports the full length */
+    assert(do_get_comment("top.txt", 4, 100, buf, &d) == AAR_E_NOSPC);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == sizeof(raw));
+    assert(memcmp(buf, raw, 4) == 0 && comment_tail_kept(buf, "top.txt", 4));
+    assert(do_get_comment("top.txt", sizeof(raw) - 1u, 100, buf, &d) == AAR_E_NOSPC);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == sizeof(raw));
+    assert(do_get_comment("top.txt", 0, 100, buf, &d) == AAR_E_NOSPC);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == sizeof(raw) && comment_tail_kept(buf, "top.txt", 0));
+    /* a capacity beyond the buffer, or a path without its NUL, is invalid */
+    assert(do_get_comment("top.txt", 101, 100, buf, &d) == AAR_E_INVAL);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == 0 && comment_tail_kept(buf, "top.txt", 0));
+    assert(do_get_comment("top.txt", 0, 7, buf, &d) == AAR_E_INVAL);
+    assert(do_get_comment("", 79, 100, buf, &d) == AAR_E_INVAL);
+
+    /* the longest comment: 79 bytes in, 79 out, one short is NOSPC */
+    assert(do_set_comment("top.txt", full, AAR_FILE_COMMENT_MAX) == AAR_OK);
+    assert(fk.nodes[top].comment_len == AAR_FILE_COMMENT_MAX);
+    assert(do_get_comment("top.txt", 79, 200, buf, &d) == AAR_OK);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == 79u && memcmp(buf, full, 79) == 0);
+    assert(comment_tail_kept(buf, "top.txt", 79));
+    assert(do_get_comment("top.txt", 78, 200, buf, &d) == AAR_E_NOSPC);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == 79u && memcmp(buf, full, 78) == 0);
+    assert(comment_tail_kept(buf, "top.txt", 78));
+
+    /* the comment is checked before a name is looked up */
+    named = fk.named_n[AAR_SERVE_NAMED_SET_COMMENT];
+    lookups = fk.lock_rel_calls;
+    assert(do_set_comment("top.txt", full, AAR_FILE_COMMENT_MAX + 1u) == AAR_E_INVAL);
+    assert(do_set_comment("missing", full, AAR_FILE_COMMENT_MAX + 1u) == AAR_E_INVAL);
+    assert(do_set_comment("../outside", full, AAR_FILE_COMMENT_MAX + 1u) == AAR_E_INVAL);
+    memcpy(bad, full, sizeof(bad));
+    for (i = 0; i < 3; i++) {
+        bad[i == 0 ? 0 : i == 1 ? 40 : AAR_FILE_COMMENT_MAX - 1u] = 0;
+        assert(do_set_comment("top.txt", bad, AAR_FILE_COMMENT_MAX) == AAR_E_INVAL);
+        assert(do_set_comment("missing", bad, AAR_FILE_COMMENT_MAX) == AAR_E_INVAL);
+        memcpy(bad, full, sizeof(bad));
+    }
+    assert(do_set_comment("top.txt", "a\0b", 3) == AAR_E_INVAL);
+    assert(fk.lock_rel_calls == lookups);
+    assert(fk.named_n[AAR_SERVE_NAMED_SET_COMMENT] == named);
+    assert(fk.nodes[top].comment_len == AAR_FILE_COMMENT_MAX &&
+           memcmp(fk.nodes[top].comment, full, 79) == 0);
+    /* a path without its terminator, or too long, is no path */
+    memset(longpath, 'a', AAR_SERVE_PATH_BYTES);
+    longpath[AAR_SERVE_PATH_BYTES] = 0;
+    assert(do_set_comment(longpath, "x", 1) == AAR_E_INVAL);
+    assert(fk.named_n[AAR_SERVE_NAMED_SET_COMMENT] == named);
+    {
+        struct aar_serve_req r = mkreq(AAR_OP_FILE_SET_COMMENT);
+        struct aar_serve_done sd;
+        uint8_t unterminated[8] = { 't', 'o', 'p', '.', 't', 'x', 't', 'x' };
+
+        r.buf = unterminated;
+        r.buf_len = sizeof(unterminated);
+        assert(serve_one(&r, &sd) == AAR_E_INVAL);
+        r.buf_len = 0;
+        assert(serve_one(&r, &sd) == AAR_E_INVAL);
+        r.buf = NULL;
+        assert(serve_one(&r, &sd) == AAR_E_INVAL);
+    }
+    assert(fk.named_n[AAR_SERVE_NAMED_SET_COMMENT] == named);
+
+    /* an empty comment clears it, and the object stays found */
+    assert(do_set_comment("top.txt", NULL, 0) == AAR_OK);
+    assert(fk.nodes[top].comment_len == 0);
+    assert(do_get_comment("top.txt", 0, 8, buf, &d) == AAR_OK);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == 0);
+    assert(do_set_comment("top.txt", NULL, 0) == AAR_OK);
+
+    /* directories carry comments too */
+    assert(do_set_comment("dir", raw, sizeof(raw)) == AAR_OK);
+    assert(do_get_comment("dir", 79, 100, buf, &d) == AAR_OK &&
+           d.out[AAR_R_FILE_COMMENT_LEN] == sizeof(raw) && memcmp(buf, raw, sizeof(raw)) == 0);
+    assert(do_set_comment("dir/hello.txt", "hi", 2) == AAR_OK);
+    assert(do_get_comment("dir/hello.txt", 79, 100, buf, &d) == AAR_OK &&
+           d.out[AAR_R_FILE_COMMENT_LEN] == 2 && buf[0] == 'h' && buf[1] == 'i');
+
+    /* only a comment request asks the handler for a comment */
+    calls = fk.comment_calls;
+    assert(do_stat("dir", &d) == AAR_OK && do_stat("top.txt", &d) == AAR_OK);
+    assert(do_list_open(3, "dir") == AAR_OK);
+    assert(do_list_next(3, name, sizeof(name), &mode) == AAR_OK);
+    assert(do_list_close(3) == AAR_OK);
+    assert(fk.comment_calls == calls);
+    assert(do_get_comment("top.txt", 79, 100, buf, &d) == AAR_OK);
+    assert(fk.comment_calls == calls + 1);
+
+    /* the names are confined like every other path */
+    assert(do_get_comment("missing", 79, 100, buf, &d) == AAR_E_NOENT);
+    assert(do_set_comment("missing", "x", 1) == AAR_E_NOENT);
+    assert(do_get_comment("../outside", 79, 100, buf, &d) == AAR_E_ACCES);
+    assert(do_set_comment("../outside", "x", 1) == AAR_E_ACCES);
+    assert(do_get_comment("../outside/secret.txt", 79, 100, buf, &d) == AAR_E_ACCES);
+    assert(do_get_comment("escape", 79, 100, buf, &d) == AAR_E_ACCES);
+    assert(do_set_comment("escape", "x", 1) == AAR_E_ACCES);
+    assert(do_get_comment("Vol:root/top.txt", 79, 100, buf, &d) == AAR_E_ACCES);
+    assert(do_set_comment("Vol:root/top.txt", "x", 1) == AAR_E_ACCES);
+    assert(do_set_comment(".", "x", 1) == AAR_E_ACCES);
+    assert(do_set_comment("", "x", 1) == AAR_E_INVAL);
+    assert(fk.nodes[N_SECRET].comment_len == 0);
+
+    /* what the handler says of a change maps as for the other changes; an
+     * action it does not know is a missing feature, here and only here */
+    assert(do_set_comment("top.txt", raw, sizeof(raw)) == AAR_OK);
+    fk.named_io = AAR_SERVE_IOERR_WRITE_PROTECTED;
+    assert(do_set_comment("top.txt", "new", 3) == AAR_E_ACCES);
+    fk.named_io = AAR_SERVE_IOERR_OBJECT_IN_USE;
+    assert(do_set_comment("top.txt", "new", 3) == AAR_E_BUSY);
+    fk.named_io = AAR_SERVE_IOERR_ACTION_NOT_KNOWN;
+    assert(do_set_comment("top.txt", "new", 3) == AAR_E_NOSYS);
+    assert(do_path(AAR_OP_FILE_SET_PROTECT, "top.txt", 1, 0, NULL) == AAR_E_IO);
+    fk.named_io = 0;
+    fk.named_lost = 1;
+    assert(do_set_comment("top.txt", "new", 3) == AAR_E_IO);
+    fk.named_lost = 0;
+    assert(fk.nodes[top].comment_len == sizeof(raw) &&
+           memcmp(fk.nodes[top].comment, raw, sizeof(raw)) == 0);
+
+    /* and what it says of a read; a packet that never arrived leaves the buffer alone */
+    fk.comment_io = AAR_SERVE_IOERR_OBJECT_NOT_FOUND;
+    assert(do_get_comment("top.txt", 79, 100, buf, &d) == AAR_E_NOENT);
+    fk.comment_io = AAR_SERVE_IOERR_READ_PROTECTED;
+    assert(do_get_comment("top.txt", 79, 100, buf, &d) == AAR_E_ACCES);
+    fk.comment_io = AAR_SERVE_IOERR_ACTION_NOT_KNOWN;
+    assert(do_get_comment("top.txt", 79, 100, buf, &d) == AAR_E_NOSYS);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == 0 && comment_tail_kept(buf, "top.txt", 0));
+    fk.comment_io = 0;
+    fk.comment_lost = 1;
+    assert(do_get_comment("top.txt", 79, 100, buf, &d) == AAR_E_IO);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == 0 && comment_tail_kept(buf, "top.txt", 0));
+    fk.comment_lost = 0;
+
+    /* a lost request neither reads nor changes; a stop leaves the read alone and stops the change */
+    calls = fk.comment_calls;
+    named = fk.named_n[AAR_SERVE_NAMED_SET_COMMENT];
+    fk.live = 0;
+    assert(do_get_comment("top.txt", 79, 100, buf, &d) == AAR_E_IO);
+    assert(do_set_comment("top.txt", "new", 3) == AAR_E_IO);
+    fk.live = 1;
+    fk.stop = 1;
+    assert(do_set_comment("top.txt", "new", 3) == AAR_E_IO);
+    assert(do_get_comment("top.txt", 79, 100, buf, &d) == AAR_OK);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == sizeof(raw));
+    fk.stop = 0;
+    fk.broken = 1;
+    assert(do_set_comment("top.txt", "new", 3) == AAR_E_IO);
+    fk.broken = 0;
+    assert(fk.comment_calls == calls + 1);
+    assert(fk.named_n[AAR_SERVE_NAMED_SET_COMMENT] == named);
+    assert(fk.nodes[top].comment_len == sizeof(raw));
+
+    /* storage without the calls is NOSYS, before any name is looked up */
+    lookups = fk.lock_rel_calls;
+    calls = fk.comment_calls;
+    no_dos = fake_dos;
+    no_dos.lock_comment = NULL;
+    serve.files.dos = &no_dos;
+    assert(do_get_comment("top.txt", 79, 100, buf, &d) == AAR_E_NOSYS);
+    serve.files.dos = &fake_dos;
+    no_dos.lock_comment = f_lock_comment;
+    no_dos.target_named = NULL;
+    serve.files.dos = &no_dos;
+    assert(do_set_comment("top.txt", "new", 3) == AAR_E_NOSYS);
+    serve.files.dos = &fake_dos;
+    assert(fk.lock_rel_calls == lookups && fk.comment_calls == calls);
+    assert(fk.nodes[top].comment_len == sizeof(raw));
+    fixture_free();
+
+    /* an absolute name needs ABS, and then goes where the volume says */
+    fixture(1);
+    top = child_of(N_ROOT, "top.txt");
+    assert(do_set_comment("Vol:root/top.txt", raw, sizeof(raw)) == AAR_OK);
+    assert(fk.nodes[top].comment_len == sizeof(raw));
+    assert(do_get_comment("Vol:root/top.txt", 79, 100, buf, &d) == AAR_OK);
+    assert(d.out[AAR_R_FILE_COMMENT_LEN] == sizeof(raw) && memcmp(buf, raw, sizeof(raw)) == 0);
+    assert(do_get_comment("Vol:root/nothing", 79, 100, buf, &d) == AAR_E_NOENT);
+    assert(do_set_comment("Vol:root/nothing", "x", 1) == AAR_E_NOENT);
+    assert(do_set_comment("Vol:", "x", 1) == AAR_E_ACCES);
+    fixture_free();
+}
+
 /* ---- The host requests: time, locale, environment, clipboard ------------------------------ */
 
 static struct {
@@ -4373,6 +4681,7 @@ int main(void)
     test_a_truncation_another_handle_holds_back_is_not_one();
     test_a_failed_truncate_extension_restores_the_position();
     test_volume_info_and_the_stop();
+    test_file_comments();
     test_host_time_and_locale();
     test_host_env();
     test_host_clip_read_sequence_is_one_clip();

@@ -39,12 +39,13 @@ AAR_NOTE(0, 0, 0, 0)
 
 /* Slot i of the table (after the 16-byte header), as a pointer-sized word. */
 #define SLOT_CORE      0u   /* exit .. clip_write: 42 slots */
-#define SLOT_EXT       42u
-#define SLOT_DISPLAY   45u  /* display_open .. display_last_present_us: 16 slots */
-#define SLOT_AUDIO     61u  /* audio_open, audio_close, audio_stats */
-#define SLOT_GL        64u  /* gl_bind, gl_swap, gl_unbind */
-#define SLOT_SERVICES  67u  /* sha256 .. audio_decode_close: 8 slots */
-#define SLOT_COUNT     75u
+#define SLOT_EXT       42u  /* ext, map_file, unmap_file */
+#define SLOT_COMMENT   45u  /* file_get_comment, file_set_comment: optional, C-FILE.53 to C-FILE.55 */
+#define SLOT_DISPLAY   47u  /* display_open .. display_last_present_us: 16 slots */
+#define SLOT_AUDIO     63u  /* audio_open, audio_close, audio_stats */
+#define SLOT_GL        66u  /* gl_bind, gl_swap, gl_unbind */
+#define SLOT_SERVICES  69u  /* sha256 .. audio_decode_close: 8 slots */
+#define SLOT_COUNT     77u
 
 static const char *const slot_names[SLOT_COUNT] = {
     "exit", "yield", "should_stop", "time_us", "sleep_us", "info",
@@ -57,7 +58,7 @@ static const char *const slot_names[SLOT_COUNT] = {
     "file_delete", "file_rename", "dir_create", "file_set_date",
     "file_set_protect", "file_truncate", "volume_info",
     "time_unix_us", "locale_info", "env_get", "clip_read", "clip_write",
-    "ext", "map_file", "unmap_file",
+    "ext", "map_file", "unmap_file", "file_get_comment", "file_set_comment",
     "display_open", "display_flip", "display_flip_async", "display_flip_idle",
     "display_refresh", "display_vsync", "display_set_palette", "display_close",
     "display_latest_dropped",

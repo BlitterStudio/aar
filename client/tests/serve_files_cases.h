@@ -498,6 +498,47 @@ static void test_protection_bits_go_both_ways(void)
     finish();
 }
 
+/* An app can copy an existing native comment and restore it on a second file. */
+static void test_file_comments_preserve_native_bytes(void)
+{
+    static const char path[] = "hello.txt";
+    static const char to[] = "second";
+    uint8_t saved[AAR_FILE_COMMENT_MAX];
+    struct comp c;
+    int n;
+    uint32_t i;
+
+    setup("file_comments");
+    data_dir();
+    make_serve();
+    n = in_data(path);
+    hx_nodes[n].comment[0] = AAR_FILE_COMMENT_MAX;
+    for (i = 0; i < sizeof(saved); i++)
+        hx_nodes[n].comment[i + 1u] = (uint8_t)(0x80u + i);
+
+    CHECK(pcall(AAR_OP_FILE_GET_COMMENT, path, 2, 0, 0, &c) &&
+          c.result == AAR_E_NOSPC && c.out[AAR_R_FILE_COMMENT_LEN] == sizeof(saved));
+    CHECK(buf(0x100)[0] == 0x80 && buf(0x100)[1] == 0x81 && buf(0x100)[2] == 'l');
+
+    put_str(0x100, path);
+    CHECK(callf(AAR_OP_FILE_GET_COMMENT, 0, sizeof(saved), 0, 0, 0, 0x100, sizeof(saved), &c) &&
+          c.result == AAR_OK && c.out[AAR_R_FILE_COMMENT_LEN] == sizeof(saved));
+    memcpy(saved, (const void *)(uintptr_t)buf(0x100), sizeof(saved));
+    CHECK(memcmp(saved, hx_nodes[n].comment + 1, sizeof(saved)) == 0);
+
+    put_str(0x100, to);
+    put_bytes(0x100 + sizeof(to), saved, sizeof(saved));
+    CHECK(callf(AAR_OP_FILE_SET_COMMENT, 0, 0, 0, 0, 0, 0x100, sizeof(to) + sizeof(saved), &c) &&
+          c.result == AAR_OK);
+    n = in_data(to);
+    CHECK(hx_nodes[n].comment[0] == sizeof(saved) &&
+          memcmp(hx_nodes[n].comment + 1, saved, sizeof(saved)) == 0);
+    CHECK(pcall(AAR_OP_FILE_SET_COMMENT, to, 0, 0, 0, &c) && c.result == AAR_OK);
+    CHECK(pcall(AAR_OP_FILE_GET_COMMENT, to, 0, 0, 0, &c) &&
+          c.result == AAR_OK && c.out[AAR_R_FILE_COMMENT_LEN] == 0);
+    finish();
+}
+
 /* ---- FILE_TRUNCATE ------------------------------------------------------------------------------- */
 
 static void test_truncate_shortens_and_extends_with_zeros(void)
@@ -652,6 +693,7 @@ static void test_a_stop_cancels_the_new_file_requests_and_not_the_reads(void)
     CHECK(pcall(AAR_OP_DIR_CREATE, "made", 0, 0, 0, &c) && c.result == AAR_E_IO);
     CHECK(pcall(AAR_OP_FILE_SET_DATE, "hello.txt", 0, T_UTC, 0, &c) && c.result == AAR_E_IO);
     CHECK(pcall(AAR_OP_FILE_SET_PROTECT, "hello.txt", 5, 0, 0, &c) && c.result == AAR_E_IO);
+    CHECK(pcall(AAR_OP_FILE_SET_COMMENT, "hello.txt", 0, 0, 0, &c) && c.result == AAR_E_IO);
     CHECK(call(AAR_OP_FILE_TRUNCATE, 70, 3, 0, 1, 0, 0, 0, &c) && c.result == AAR_E_IO);
     CHECK(call(AAR_OP_FILE_TRUNCATE, 71, 3, 0, 20, 0, 0, 0, &c) && c.result == AAR_E_IO);
     sub = in_data("hello.txt");

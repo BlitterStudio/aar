@@ -1073,6 +1073,13 @@ static uintptr_t loc_lock(const struct aar_serve_files *f, const struct aar_serv
                          d->lock_rel(d->ctx, l->dir, l->leaf, transport_ok, io);
 }
 
+/* A handler that does not know the packet of a comment cannot keep one: the
+ * feature is not there, unlike the other changes' generic I/O error. */
+static int32_t comment_errno(int32_t io)
+{
+    return io == AAR_SERVE_IOERR_ACTION_NOT_KNOWN ? AAR_E_NOSYS : lock_errno(io);
+}
+
 /* One packet that names the object, refused like every other change once a stop
  * is under way. */
 static int32_t loc_named(const struct aar_serve_files *f, const struct aar_serve_loc *l,
@@ -1090,28 +1097,38 @@ static int32_t loc_named(const struct aar_serve_files *f, const struct aar_serve
     d->target_end(d->ctx);
     if (ok)
         return AAR_OK;
-    return transport_ok ? lock_errno(io) : AAR_E_IO;
+    if (!transport_ok)
+        return AAR_E_IO;
+    return kind == AAR_SERVE_NAMED_SET_COMMENT ? comment_errno(io) : lock_errno(io);
 }
 
-/* FILE_DELETE, DIR_CREATE, FILE_SET_DATE and FILE_SET_PROTECT: the path in buf. */
+/* Path in buf. FILE_SET_COMMENT carries native bytes after the path's NUL. */
 static int32_t serve_named(struct aar_serve_files *f, const struct aar_serve_req *req,
                            enum aar_serve_named kind,
                            const struct aar_serve_named_args *args)
 {
     char path[AAR_SERVE_PATH_BYTES];
     struct aar_serve_loc loc;
-    struct aar_serve_named_args none;
+    struct aar_serve_named_args local;
     int32_t err = AAR_OK;
-
-    if (!args) {
-        memset(&none, 0, sizeof(none));
-        args = &none;
-    }
 
     if (!f->dos->target_named)
         return AAR_E_NOSYS;
     if (!path_from_req(req, path, &err))
         return err;
+    if (!args) {
+        memset(&local, 0, sizeof(local));
+        args = &local;
+        if (kind == AAR_SERVE_NAMED_SET_COMMENT) {
+            size_t path_bytes = strlen(path) + 1u;
+
+            local.comment = req->buf + path_bytes;
+            local.comment_len = req->buf_len - (uint32_t)path_bytes;
+            if (local.comment_len > AAR_FILE_COMMENT_MAX ||
+                (local.comment_len && memchr(local.comment, 0, local.comment_len)))
+                return AAR_E_INVAL;
+        }
+    }
     if (!f->dos->live(f->dos->ctx))
         return AAR_E_IO;
     if (!loc_resolve(f, path, &loc, &err))
@@ -1412,6 +1429,49 @@ done:
     return err;
 }
 
+/* FILE_GET_COMMENT: the object is found as for FILE_STAT, and only this request
+ * asks the handler for the comment. Its bytes replace the path at the start of
+ * buf; the full length is returned, and a smaller capacity is AAR_E_NOSPC. */
+static int32_t serve_get_comment(struct aar_serve_files *f, const struct aar_serve_req *req,
+                                 struct aar_serve_done *done)
+{
+    const struct aar_serve_dos_ops *d = f->dos;
+    char path[AAR_SERVE_PATH_BYTES];
+    uintptr_t dir = 0;
+    uintptr_t locked = 0;
+    uint32_t cap = req->arg[AAR_A_FILE_COMMENT_CAP];
+    uint32_t len = 0;
+    int transport_ok = 0;
+    int32_t io = 0;
+    int32_t err = AAR_OK;
+
+    if (!d->lock_comment)
+        return AAR_E_NOSYS;
+    if (!path_from_req(req, path, &err))
+        return err;
+    if (path[0] == 0 || cap > req->buf_len)
+        return AAR_E_INVAL;
+    if (cap > AAR_FILE_COMMENT_MAX)
+        cap = AAR_FILE_COMMENT_MAX;
+    if (!d->live(d->ctx))
+        return AAR_E_IO;
+    if (!lock_named(f, path, 0, &dir, &locked, &err))
+        goto done;
+    if (!d->lock_comment(d->ctx, locked, req->buf, cap, &len, &transport_ok, &io)) {
+        err = transport_ok ? comment_errno(io) : AAR_E_IO;
+        goto done;
+    }
+    done->out[AAR_R_FILE_COMMENT_LEN] = len;
+    if (len > cap)
+        err = AAR_E_NOSPC;
+done:
+    if (locked)
+        d->unlock(d->ctx, locked);
+    if (dir)
+        d->unlock(d->ctx, dir);
+    return err;
+}
+
 void aar_serve_files_serve(struct aar_serve_files *f, const struct aar_serve_req *req,
                            struct aar_serve_done *done)
 {
@@ -1437,6 +1497,10 @@ void aar_serve_files_serve(struct aar_serve_files *f, const struct aar_serve_req
         break;
     case AAR_OP_FILE_SET_DATE: result = serve_set_date(f, req); break;
     case AAR_OP_FILE_SET_PROTECT: result = serve_set_protect(f, req); break;
+    case AAR_OP_FILE_GET_COMMENT: result = serve_get_comment(f, req, done); break;
+    case AAR_OP_FILE_SET_COMMENT:
+        result = serve_named(f, req, AAR_SERVE_NAMED_SET_COMMENT, NULL);
+        break;
     case AAR_OP_FILE_TRUNCATE: result = serve_truncate(f, req); break;
     case AAR_OP_VOLUME_INFO: result = serve_volume_info(f, req, done); break;
     default: result = AAR_E_NOSYS; break;
@@ -3333,6 +3397,8 @@ int aar_serve_core_request(struct aar_serve_core *s, const struct aar_serve_req 
     case AAR_OP_DIR_CREATE:
     case AAR_OP_FILE_SET_DATE:
     case AAR_OP_FILE_SET_PROTECT:
+    case AAR_OP_FILE_GET_COMMENT:
+    case AAR_OP_FILE_SET_COMMENT:
     case AAR_OP_FILE_TRUNCATE:
     case AAR_OP_VOLUME_INFO:
         aar_serve_files_serve(&s->files, req, done);

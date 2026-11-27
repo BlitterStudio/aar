@@ -119,6 +119,7 @@
 #define ACTION_SET_PROTECT 21
 #define ACTION_CREATE_DIR 22
 #define ACTION_INFO 26
+#define ACTION_SET_COMMENT 28
 #define ACTION_SET_DATE 34
 #define ID_WRITE_PROTECTED 80
 #define ID_VALIDATED 82
@@ -377,6 +378,7 @@ struct FileInfoBlock {
     LONG fib_Size;
     LONG fib_Protection;
     struct DateStamp fib_Date;
+    char fib_Comment[80];
     LONG hx_next;                /* EXAMINE_NEXT's position */
 };
 struct InfoData {
@@ -1049,6 +1051,7 @@ struct hx_node {
     uint32_t mtime_min;
     uint32_t mtime_tick;
     uint32_t protect;            /* FIB_Protection */
+    uint8_t comment[AAR_FILE_COMMENT_MAX + 1u]; /* native BSTR */
 };
 #define HX_FILE_CAP 65536u
 HX_UNUSED static struct hx_node hx_nodes[HX_NODES];
@@ -1231,6 +1234,7 @@ static void hx_fib_fill(struct FileInfoBlock *fib, int node)
     fib->fib_Date.ds_Minute = (LONG)n->mtime_min;
     fib->fib_Date.ds_Tick = (LONG)n->mtime_tick;
     fib->fib_Protection = (LONG)n->protect;
+    memcpy(fib->fib_Comment, n->comment, (size_t)n->comment[0] + 1u);
 }
 
 static void hx_vol_reply(struct StandardPacket *pkt, LONG res1, LONG res2)
@@ -1327,9 +1331,10 @@ static void hx_vol_names(struct StandardPacket *pkt)
         hx_vol_reply(pkt, 1, 0);
         return;
     }
-    if (d->dp_Type == ACTION_SET_DATE || d->dp_Type == ACTION_SET_PROTECT) {
+    if (d->dp_Type == ACTION_SET_DATE || d->dp_Type == ACTION_SET_PROTECT ||
+        d->dp_Type == ACTION_SET_COMMENT) {
         if (d->dp_Arg1 != 0)
-            HX_FAIL("a SET_DATE or SET_PROTECT packet with a first argument");
+            HX_FAIL("a metadata packet with a first argument");
         dir = BADDR(d->dp_Arg2);
         hx_bstr_to_c(BADDR(d->dp_Arg3), name, sizeof(name));
     } else {
@@ -1404,6 +1409,17 @@ static void hx_vol_names(struct StandardPacket *pkt)
         hx_nodes[node].protect = (uint32_t)d->dp_Arg4;
         hx_vol_reply(pkt, 1, 0);
         return;
+    case ACTION_SET_COMMENT: {
+        const uint8_t *comment = BADDR(d->dp_Arg4);
+
+        if (!hx_mem_live(comment) || ((uintptr_t)comment & 3u))
+            HX_FAIL("a comment BSTR that is not live, longword aligned memory");
+        if (comment[0] > AAR_FILE_COMMENT_MAX)
+            HX_FAIL("a comment BSTR with more than 79 data bytes");
+        memcpy(hx_nodes[node].comment, comment, (size_t)comment[0] + 1u);
+        hx_vol_reply(pkt, 1, 0);
+        return;
+    }
     default:
         hx_vol_reply(pkt, 0, ERROR_ACTION_NOT_KNOWN);
         return;
@@ -1590,6 +1606,7 @@ static void hx_vol_run(void *arg)
     case ACTION_SET_PROTECT:
     case ACTION_CREATE_DIR:
     case ACTION_INFO:
+    case ACTION_SET_COMMENT:
     case ACTION_SET_DATE:
         hx_vol_names(pkt);
         return;

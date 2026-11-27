@@ -1866,6 +1866,248 @@ static void test_served(void)
     conf_end(&t);
 }
 
+/* ---- C-FILE.53 to C-FILE.55: file comments (aar_file_get_comment, aar_file_set_comment) ------------------------ */
+
+#define CMT_MAX AAR_FILE_COMMENT_MAX
+#define CMT_SENTINEL 0xA5u
+#define CMT_NO_BUF ((void *)0)
+
+/* Native comment bytes: no byte is 0 and half of them are above 0x7F. */
+static const uint8_t cmt_raw[8] = { 0xE4, 0xF6, 0xFC, 0xDF, 0x80, 0xFF, 'A', 0x01 };
+
+/* n comment bytes in 1..255 (the pattern covers the whole byte range but 0). */
+static void cmt_fill(uint8_t *b, uint32_t n)
+{
+    uint32_t i;
+
+    for (i = 0; i < n; i++)
+        b[i] = (uint8_t)((i * 37u) % 255u + 1u);
+}
+
+static void cmt_why(struct conf_test *t, const char *what, const char *why)
+{
+    if (!conf_fail_first(t))
+        return;
+    conf_buf_str(&t->why, what);
+    conf_buf_str(&t->why, ": ");
+    conf_buf_str(&t->why, why);
+}
+
+/* The comment of path is exactly the n bytes of want: AAR_OK, the full length, the bytes, and nothing written
+ * past them in a buffer of 79 bytes (guard bytes follow it). */
+static void cmt_check(struct conf_test *t, const char *path, const uint8_t *want, uint32_t n, const char *what)
+{
+    uint8_t buf[CMT_MAX + 8u];
+    uint32_t got = 0xFFFFFFFFu;
+    uint32_t i;
+    int rc;
+
+    for (i = 0; i < sizeof buf; i++)
+        buf[i] = CMT_SENTINEL;
+    rc = aar_file_get_comment(path, buf, CMT_MAX, &got);
+    if (rc != AAR_OK) {
+        fail_rc(t, what, rc);
+        return;
+    }
+    if (got != n) {
+        cmt_why(t, what, "the length read back is not the length set");
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        if (buf[i] != want[i]) {
+            cmt_why(t, what, "a byte read back differs from the byte set");
+            return;
+        }
+    }
+    for (i = n; i < sizeof buf; i++) {
+        if (buf[i] != CMT_SENTINEL) {
+            cmt_why(t, what, "file_get_comment wrote past the comment");
+            return;
+        }
+    }
+}
+
+/* Sets a comment and, when file_get_comment is served, reads it back (n bytes of want; 0 is a cleared one). */
+static void cmt_set(struct conf_test *t, const char *path, const uint8_t *want, uint32_t n, int get_ok,
+                    const char *what)
+{
+    if (expect(t, aar_file_set_comment(path, n ? want : (const uint8_t *)0, n), AAR_OK, what) && get_ok)
+        cmt_check(t, path, want, n, what);
+}
+
+/* C-FILE.53: a client that does not serve a comment call answers AAR_E_NOSYS (the route is optional). The row
+ * then passes for that call and says so, as the other conditional rows of the file do; C-FILE.54 judges it.
+ * A client may serve one call without the other: the reads are checked when it serves file_get_comment, the
+ * writes when it serves file_set_comment, and the round trip when it serves both. */
+static int test_comment(void)
+{
+    struct conf_test t;
+    const char *file = uniq("c53");
+    const char *missing = uniq("c53m");
+    uint8_t full[CMT_MAX + 1u];
+    uint8_t buf[CMT_MAX];
+    static const uint8_t nul3[3] = { 'a', 0, 'b' };
+    uint32_t got = 0;
+    uint32_t i;
+    int get_ok;
+    int set_ok;
+    int rc;
+
+    cmt_fill(full, sizeof full);
+    conf_begin(&t, "C-FILE.53");
+    rc = put_small(file);
+    if (rc != AAR_OK) {
+        fail_rc(&t, "creating the scratch file", rc);
+        conf_end(&t);
+        return 0;
+    }
+    rc = aar_file_get_comment(file, CMT_NO_BUF, 0, &got);
+    get_ok = !not_served(&t, rc, "file_get_comment");
+    if (get_ok) {
+        if (expect(&t, rc, AAR_OK, "reading a file with no comment, capacity 0"))
+            conf_check(&t, got == 0, "the length of an empty comment is not 0");
+        cmt_check(&t, file, cmt_raw, 0, "a file with no comment");
+        expect(&t, aar_file_get_comment(file, buf, CMT_MAX, NULL), AAR_E_INVAL,
+               "file_get_comment without a length output");
+        expect(&t, aar_file_get_comment(missing, NULL, 0, &got), AAR_E_NOENT,
+               "file_get_comment of a missing path");
+    } else {
+        conf_buf_str(&t.note, "; ");
+    }
+    rc = aar_file_set_comment(file, cmt_raw, sizeof cmt_raw);
+    set_ok = !not_served(&t, rc, "file_set_comment");
+    if (set_ok)
+        expect(&t, rc, AAR_OK, "file_set_comment of raw bytes");
+    else
+        conf_buf_str(&t.note, "; ");
+    if (!set_ok) {
+        if (get_ok)
+            cmt_check(&t, file, cmt_raw, 0, "the comment after the unsupported set");
+    } else {
+        expect(&t, aar_file_set_comment(missing, NULL, 0), AAR_E_NOENT,
+               "file_set_comment of a missing path");
+        if (get_ok)
+            cmt_check(&t, file, cmt_raw, sizeof cmt_raw, "reading the raw bytes set");
+        if (get_ok) {
+            /* A short buffer: AAR_E_NOSPC, the full length, the bytes that fit and no more. */
+            got = 0;
+            if (expect(&t, aar_file_get_comment(file, CMT_NO_BUF, 0, &got), AAR_E_NOSPC,
+                       "capacity 0 for a comment of 8 bytes"))
+                conf_check(&t, got == sizeof cmt_raw, "capacity 0 does not report the full length");
+            for (i = 0; i < sizeof buf; i++)
+                buf[i] = CMT_SENTINEL;
+            got = 0;
+            if (expect(&t, aar_file_get_comment(file, buf, 3, &got), AAR_E_NOSPC,
+                       "capacity 3 for a comment of 8 bytes")) {
+                conf_check(&t, got == sizeof cmt_raw, "capacity 3 does not report the full length");
+                conf_check(&t, buf[0] == cmt_raw[0] && buf[1] == cmt_raw[1] && buf[2] == cmt_raw[2],
+                           "capacity 3 does not copy the first 3 bytes");
+                conf_check(&t, buf[3] == CMT_SENTINEL && buf[7] == CMT_SENTINEL, "capacity 3 wrote past 3 bytes");
+            }
+            got = 0;
+            if (expect(&t, aar_file_get_comment(file, buf, sizeof cmt_raw, &got), AAR_OK,
+                       "capacity 8 for a comment of 8 bytes"))
+                conf_check(&t, got == sizeof cmt_raw, "capacity 8 does not report 8");
+        }
+        /* The longest comment is 79 bytes; one more, an embedded NUL and a missing buffer are refused and
+         * leave it. */
+        cmt_set(&t, file, full, CMT_MAX, get_ok, "file_set_comment of 79 bytes");
+        expect(&t, aar_file_set_comment(file, full, CMT_MAX + 1u), AAR_E_INVAL, "file_set_comment of 80 bytes");
+        expect(&t, aar_file_set_comment(file, nul3, sizeof nul3), AAR_E_INVAL,
+               "file_set_comment with an embedded NUL");
+        expect_neg(&t, aar_file_set_comment(file, CMT_NO_BUF, 1), "file_set_comment of 1 byte from NULL");
+        if (get_ok)
+            cmt_check(&t, file, full, CMT_MAX, "the comment after the refused sets");
+        /* A new comment replaces the old one; 0 bytes clears it, from a buffer or from NULL. */
+        cmt_set(&t, file, cmt_raw, sizeof cmt_raw, get_ok, "file_set_comment replacing a comment");
+        expect(&t, aar_file_set_comment(file, cmt_raw, 0), AAR_OK, "file_set_comment of 0 bytes");
+        if (get_ok)
+            cmt_check(&t, file, cmt_raw, 0, "a comment cleared by 0 bytes");
+        cmt_set(&t, file, cmt_raw, sizeof cmt_raw, get_ok, "file_set_comment before clearing with NULL");
+        cmt_set(&t, file, cmt_raw, 0, get_ok, "file_set_comment of NULL with 0 bytes");
+        if (get_ok) {
+            got = 0xFFFFFFFFu;
+            if (expect(&t, aar_file_get_comment(file, CMT_NO_BUF, 0, &got), AAR_OK,
+                       "capacity 0 for a cleared comment"))
+                conf_check(&t, got == 0, "the length of a cleared comment is not 0");
+        }
+    }
+    expect_file(&t, file, 100, "the file after its comment was used");
+    (void)aar_file_delete(file);
+    conf_buf_str(&t.note, "raw bytes, 79 byte limit, clear, short and zero capacity");
+    conf_end(&t);
+    return get_ok && set_ok;
+}
+
+/* C-FILE.54: the client serves the two comment calls (the route is optional, so this is a SHOULD). */
+static void test_comment_served(int served)
+{
+    struct conf_test t;
+
+    if (!peer) {
+        conf_skip("C-FILE.54", "host: needs a client that serves file comments");
+        return;
+    }
+    conf_begin(&t, "C-FILE.54");
+    conf_check(&t, served, "the client or filesystem does not serve both comment calls");
+    if (served)
+        conf_buf_str(&t.note, "both comment calls are served");
+    conf_end(&t);
+}
+
+/* C-FILE.55: refusals that need no comment support: bad arguments are negative, an unsupported call writes
+ * nothing, and a comment on a path that does not exist makes nothing. */
+static void test_comment_refused(void)
+{
+    struct conf_test t;
+    const char *missing = uniq("c55");
+    char *longp = path_slot();
+    uint8_t full[CMT_MAX + 1u];
+    uint8_t buf[CMT_MAX];
+    static const uint8_t nul3[3] = { 'a', 0, 'b' };
+    uint32_t got;
+    uint32_t i;
+    int rc;
+
+    cmt_fill(full, sizeof full);
+    for (i = 0; i < 256u; i++)
+        longp[i] = 'c';
+    longp[256] = '\0';
+    conf_begin(&t, "C-FILE.55");
+    expect_neg(&t, aar_file_set_comment(missing, full, CMT_MAX + 1u), "file_set_comment of 80 bytes");
+    expect_neg(&t, aar_file_set_comment(missing, nul3, sizeof nul3), "file_set_comment with an embedded NUL");
+    expect_neg(&t, aar_file_set_comment(missing, CMT_NO_BUF, 1), "file_set_comment of 1 byte from NULL");
+    expect_neg(&t, aar_file_get_comment(missing, buf, sizeof buf, (uint32_t *)0),
+               "file_get_comment without a length output");
+    got = 0xFFFFFFFFu;
+    expect_neg(&t, aar_file_get_comment(longp, buf, sizeof buf, &got), "file_get_comment of a path of 256 bytes");
+    expect_neg(&t, aar_file_set_comment(longp, full, 4), "file_set_comment of a path of 256 bytes");
+    for (i = 0; i < sizeof buf; i++)
+        buf[i] = CMT_SENTINEL;
+    got = 0xFFFFFFFFu;
+    rc = aar_file_get_comment(missing, buf, sizeof buf, &got);
+    if (rc == AAR_E_NOSYS) {
+        uint32_t k;
+
+        conf_check(&t, got == 0xFFFFFFFFu, "an unsupported file_get_comment wrote the length");
+        for (k = 0; k < sizeof buf; k++) {
+            if (buf[k] != CMT_SENTINEL) {
+                conf_check(&t, 0, "an unsupported file_get_comment wrote the buffer");
+                break;
+            }
+        }
+        conf_buf_str(&t.note, "no comments: AAR_E_NOSYS, nothing written; ");
+    } else {
+        expect(&t, rc, AAR_E_NOENT, "file_get_comment of a missing path");
+    }
+    rc = aar_file_set_comment(missing, cmt_raw, sizeof cmt_raw);
+    if (rc != AAR_E_NOSYS)
+        expect(&t, rc, AAR_E_NOENT, "file_set_comment of a missing path");
+    expect_gone(&t, missing, "file_set_comment of a missing path made an object");
+    conf_buf_str(&t.note, "bad arguments and a missing path are refused");
+    conf_end(&t);
+}
+
 /* ---- C-FILE.49: the new calls after a stop request ------------------------------------------------------------- */
 
 struct stop49 {
@@ -1876,7 +2118,6 @@ struct stop49 {
  * (r_file.c) checks them when the app has ended. */
 static int stop49_prepare(struct stop49 *s)
 {
-    const char *tr = fx("stoptr.tmp");
     int rc;
 
     s->fd = -1;
@@ -1888,9 +2129,16 @@ static int stop49_prepare(struct stop49 *s)
     if (rc == AAR_OK)
         rc = put(fx("stopprot.tmp"), "12345", 5);
     if (rc == AAR_OK)
-        rc = put(tr, "12345", 5);
+        rc = put(fx(CONF_FILE_STOP_COMMENT_NAME), "12345", 5);
     if (rc == AAR_OK) {
-        s->fd = aar_file_open(tr, FILE_RW);
+        /* Comments are optional: a client that does not serve them leaves the comment empty, which the
+         * runner accepts as unchanged. */
+        (void)aar_file_set_comment(fx(CONF_FILE_STOP_COMMENT_NAME), CONF_FILE_STOP_COMMENT_KEPT,
+                                   slen(CONF_FILE_STOP_COMMENT_KEPT));
+        rc = put(fx("stoptr.tmp"), "12345", 5);
+    }
+    if (rc == AAR_OK) {
+        s->fd = aar_file_open(fx("stoptr.tmp"), FILE_RW);
         if (s->fd < 0)
             rc = s->fd;
     }
@@ -1905,9 +2153,12 @@ static void stop49_run(struct conf_test *t, const struct stop49 *s)
     expect_neg(t, aar_file_set_date(fx("stopdate.tmp"), CONF_FILE_MTIME), "file_set_date after the stop request");
     expect_neg(t, aar_file_set_protect(fx("stopprot.tmp"), 0xFu), "file_set_protect after the stop request");
     expect_neg(t, aar_file_truncate(s->fd, 0), "file_truncate after the stop request");
+    expect_neg(t, aar_file_set_comment(fx(CONF_FILE_STOP_COMMENT_NAME), CONF_FILE_STOP_COMMENT_AFTER,
+                                       slen(CONF_FILE_STOP_COMMENT_AFTER)),
+               "file_set_comment after the stop request");
     if (s->fd >= 0)
         (void)aar_file_close(s->fd);
-    conf_buf_str(&t->note, "delete, rename, mkdir, set_date, set_protect and truncate after the stop request give negative codes");
+    conf_buf_str(&t->note, "delete, rename, mkdir, set_date, set_protect, truncate and set_comment after the stop request give negative codes");
 }
 
 /* ---- C-FILE.6: after a stop request ------------------------------------------------------------------------------- */
@@ -1918,9 +2169,6 @@ static void test_stop(void)
     struct conf_test t49;
     struct stop49 s49;
     int rc49;
-    const char *keep = fx("stopkeep.tmp");
-    const char *wfile = fx("stopw.tmp");
-    const char *created = fx("afterstop.tmp");
     uint8_t buf[128];
     uint32_t n = 0;
     uint32_t len = slen(CONF_FILE_TEXT);
@@ -1936,8 +2184,8 @@ static void test_stop(void)
     }
     conf_begin(&t, "C-FILE.6");
     conf_begin(&t49, "C-FILE.49");
-    rc = put(keep, "keep", 4);
-    wfd = rc == AAR_OK ? aar_file_open(wfile, FILE_NEW) : rc;
+    rc = put(fx("stopkeep.tmp"), "keep", 4);
+    wfd = rc == AAR_OK ? aar_file_open(fx("stopw.tmp"), FILE_NEW) : rc;
     if (rc != AAR_OK || wfd < 0) {
         fail_rc(&t, "preparing the files for the stop test", wfd);
         conf_end(&t);
@@ -1964,11 +2212,11 @@ static void test_stop(void)
      * and the call after it can find the abandoned request still open (AAR_E_BUSY):
      * every answer is negative. What the client did with the requests is judged
      * by the runner when the app has ended [spec question 57]. */
-    fd = aar_file_open(created, AAR_FILE_WRITE | AAR_FILE_CREATE);
+    fd = aar_file_open(fx("afterstop.tmp"), AAR_FILE_WRITE | AAR_FILE_CREATE);
     if (fd >= 0)
         (void)aar_file_close(fd);
     expect_neg(&t, fd, "a create after the stop request");
-    fd = aar_file_open(keep, AAR_FILE_WRITE | AAR_FILE_TRUNCATE);
+    fd = aar_file_open(fx("stopkeep.tmp"), AAR_FILE_WRITE | AAR_FILE_TRUNCATE);
     if (fd >= 0)
         (void)aar_file_close(fd);
     expect_neg(&t, fd, "a truncate after the stop request");
@@ -2128,6 +2376,8 @@ int aar_main(int argc, char **argv)
     test_truncate_fd();
     test_volume_info();
     test_served();
+    test_comment_served(test_comment());
+    test_comment_refused();
     if (platform_id == AAR_PLATFORM_ZZ9000)
         test_map_zz9000();
     test_stop();

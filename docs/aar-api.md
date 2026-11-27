@@ -42,7 +42,7 @@ calls `aar_main`.
 - The 42 core slots, `exit` through `clip_write`, are non-NULL in every
   conforming runtime. A call that the client serves can still return
   `AAR_E_NOSYS` when the client does not serve that op. The optional slots
-  (`ext`, `map_file`, `unmap_file`) are
+  (`ext`, `map_file`, `unmap_file`, `file_get_comment`, `file_set_comment`) are
   NULL or absent where the platform does not provide them. A group is present
   when its bit is set in `aar_api.groups`. Then every call of that group that
   the table's `size` covers is non-NULL, except where a slot is marked
@@ -1004,7 +1004,8 @@ runtime](#how-an-app-reaches-the-runtime). The slot order is fixed until 1.0:
    `msg_wait`, `file_delete`, `file_rename`, `dir_create`, `file_set_date`,
    `file_set_protect`, `file_truncate`, `volume_info`, `time_unix_us`,
    `locale_info`, `env_get`, `clip_read`, `clip_write`.
-3. Optional: `ext`, `map_file`, `unmap_file`.
+3. Optional: `ext`, `map_file`, `unmap_file`, `file_get_comment`,
+   `file_set_comment`.
 4. Groups, in this order: display (`display_open`, `display_flip`,
    `display_flip_async`, `display_flip_idle`, `display_refresh`,
    `display_vsync`, `display_set_palette`, `display_close`,
@@ -1015,7 +1016,7 @@ runtime](#how-an-app-reaches-the-runtime). The slot order is fixed until 1.0:
    services (`sha256`, `decompress`, `image_open`, `image_decode`,
    `image_close`, `audio_decode_open`, `audio_decode`, `audio_decode_close`).
 
-The table has 75 pointer slots after the header. The table is const and apps
+The table has 77 pointer slots after the header. The table is const and apps
 must not write to it. A wrapper has the slot's name with an `aar_` prefix, except
 that a slot whose name is a type name gets a `get`: `aar_get_info`,
 `aar_get_heap_info`, `aar_audio_get_stats`, `aar_get_volume_info`,
@@ -1041,7 +1042,7 @@ structures.
 
 ### AAR_API_SLOT_COUNT
 
-`75u`. The number of pointer slots in `aar_api` after the 16-byte header.
+`77u`. The number of pointer slots in `aar_api` after the 16-byte header.
 
 ### AAR_API_CORE_SLOT_COUNT
 
@@ -1675,6 +1676,40 @@ Describes the volume that holds `path`. The caller sets `out->size`. NULL `out`
 is `AAR_E_INVAL`. The path rules and the policy are those of `aar_file_open`.
 Parks for one client reply. Gate: `AAR_API_COVERS(api, volume_info)`. Missing
 slot: `AAR_E_NOSYS`. Minimum minor: 6.
+
+### aar_file_get_comment
+
+```c
+int aar_file_get_comment(const char *path, void *buf, uint32_t bytes,
+                         uint32_t *out_n);
+```
+
+Reads native comment bytes without charset conversion or a terminator. The
+call returns `AAR_OK` with an empty result if the object has no comment.
+If `bytes` is too small, it copies the prefix and returns `AAR_E_NOSPC`.
+Both results set `*out_n` to the full length. To query the length without
+copying bytes, pass NULL for `buf` and zero for `bytes`: the result is `AAR_OK`
+for an empty comment or `AAR_E_NOSPC` for a nonempty one. `out_n` is required.
+Parks for one client reply. Gate: `AAR_API_COVERS(api, file_get_comment)`.
+An unsupported operation returns `AAR_E_NOSYS`. See [spec 7.1](../spec/aar.md#71-files).
+Minimum minor: 6.
+
+### aar_file_set_comment
+
+```c
+int aar_file_set_comment(const char *path, const void *data, uint32_t bytes);
+```
+
+Sets a file or directory comment. Pass the native bytes without a terminator,
+or pass zero bytes to clear the comment. NULL `data` with a nonzero length,
+embedded NUL, and lengths beyond `AAR_FILE_COMMENT_MAX` return `AAR_E_INVAL`.
+The same path policy and stop rules apply as for other file mutations.
+Parks for one client reply. Gate: `AAR_API_COVERS(api, file_set_comment)`.
+An unsupported operation returns `AAR_E_NOSYS`. Minimum minor: 6.
+
+### AAR_FILE_COMMENT_MAX
+
+`79u`. The maximum number of native bytes in a file comment.
 
 ### AAR_FILE_READ
 
