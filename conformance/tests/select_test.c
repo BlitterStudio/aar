@@ -1,8 +1,6 @@
 /*
- * Host test of three decisions of the runner core (conformance/runner/conf_select.h):
- * a planned skip of an undeclared group cannot be changed by a payload line or an
- * observer, a variant that exists only for a runner test runs only for it, and a MUST
- * test may skip only for an optional route.
+ * Host test of the runner's selection and result rules
+ * (conformance/runner/conf_select.h).
  *
  * SPDX-License-Identifier: MIT
  */
@@ -50,6 +48,22 @@ int main(void)
            "input group must not run overfull)", !conf_variant_runs(1, 0, 1));
     expect("nothing selected: nothing runs", !conf_variant_runs(0, 0, 0));
     expect("nothing selected: a solo variant does not run", !conf_variant_runs(0, 0, 1));
+
+    /* A broad interactive check must never drive a pad's port pins. */
+    expect("an exact-only row skips in a full interactive suite",
+           conf_operator_skip_reason(1, 1, "C-INPUT.20", NULL) != NULL);
+    expect("an exact-only row skips with an area prefix",
+           conf_operator_skip_reason(1, 1, "C-INPUT.20", "C-INPUT") != NULL);
+    expect("selecting port 1 does not opt in port 0",
+           conf_operator_skip_reason(1, 1, "C-INPUT.20", "C-INPUT.21") != NULL);
+    expect("an exact port id works with lower-case input",
+           conf_operator_skip_reason(1, 1, "C-INPUT.20", "c-input.20") == NULL);
+    expect("an exact port id still requires INTERACTIVE",
+           conf_operator_skip_reason(0, 1, "C-INPUT.20", "C-INPUT.20") != NULL);
+    expect("ordinary operator rows run in a full interactive suite",
+           conf_operator_skip_reason(1, 0, "C-INPUT.11", NULL) == NULL);
+    expect("area prefixes still select ordinary rows", conf_id_matches("C-INPUT.11", "c-input", 0));
+    expect("a full run still selects ordinary rows", conf_id_matches("C-INPUT.11", NULL, 0));
 
     /* A MUST test may skip only for the optional route, and only a row the catalogue marks
      * (C-AUDIO.1 to C-AUDIO.9 without a PLATFORM route, spec 8.4): `route_skip` is that mark. */

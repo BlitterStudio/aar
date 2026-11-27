@@ -3,8 +3,8 @@
  * keywords of payloads/conf_input.h make the runner call AARPostEvent (key, mouse and
  * joystick events, a stop event, floods that fill the event queue) or signal its own
  * task Ctrl-D, Ctrl-E or Ctrl-F, which the serving loop turns into AAR_EV_BREAK events
- * (its break mask). C-INPUT.9 is judged here (variant overfull); the operator row
- * C-INPUT.11 is the variant show (INTERACTIVE only).
+ * (its break mask). C-INPUT.9 is judged here (variant overfull), as are the
+ * interactive variants fed by the input events the app reports.
  *
  * Assumptions for the card run: AARPostEvent on a handle whose app does not poll
  * keeps events in the completion queue and the runtime until it does, and refuses
@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "aar-conf.h"
+#include "cd32_judge.h"
 #include "../payloads/conf_input.h"
 
 struct in_state {
@@ -414,9 +415,89 @@ static int buttons_accept(char *why)
     return 0;
 }
 
+static struct conf_cd32_judge cd32;
+static int cd32_finished;
+
+static void cd32_message(struct conf_run *run, const AARMessage *m)
+{
+    (void)run;
+    if (memcmp(m->bytes, "SHOW", 4) == 0)
+        conf_cd32_event(&cd32, cm_get32(m->bytes, 4), cm_get32(m->bytes, 8),
+                       cm_get32(m->bytes, 20));
+}
+
+static void prep_cd32(struct conf_run *run, unsigned port)
+{
+    prep_std(run);
+    cd32 = (struct conf_cd32_judge){ .port = port };
+    cd32_finished = 0;
+    run->cd32_ports = 1UL << port;
+    run->on_message = cd32_message;
+    run->extra_args[run->extra_count++] = "conf:show=1";
+}
+
+static void prep_cd32_port0(struct conf_run *run)
+{
+    prep_cd32(run, 0);
+}
+
+static void prep_cd32_port1(struct conf_run *run)
+{
+    prep_cd32(run, 1);
+}
+
+static void cd32_button_names(char out[64], uint32_t mask)
+{
+    static const struct {
+        uint32_t bit;
+        const char *name;
+    } buttons[] = {
+        { AAR_JOY_BUTTON1, "red" }, { AAR_JOY_BUTTON2, "blue" },
+        { AAR_JOY_BUTTON3, "green" }, { AAR_JOY_BUTTON4, "yellow" },
+        { AAR_JOY_PLAY, "play" }, { AAR_JOY_FORWARD, "forward" },
+        { AAR_JOY_REVERSE, "reverse" },
+    };
+    size_t len = 0;
+    unsigned i;
+
+    for (i = 0; i < CONF_COUNT(buttons); ++i) {
+        if (mask & buttons[i].bit)
+            len += (size_t)snprintf(out + len, 64 - len, "%s%s", len ? ", " : "", buttons[i].name);
+    }
+    if (!len)
+        strcpy(out, "none");
+}
+
+static int cd32_accept(char *why)
+{
+    uint32_t presses = conf_cd32_missing_presses(&cd32);
+    uint32_t releases = conf_cd32_missing_releases(&cd32);
+    char down[64];
+    char up[64];
+
+    cd32_button_names(down, presses);
+    cd32_button_names(up, releases);
+    conf_detailf(why, "CD32 port %u: missing presses: %s; missing releases: %s%s",
+                 (unsigned)cd32.port, down, up,
+                 cd32_finished ? "" : "; input payload did not finish successfully");
+    return cd32_finished && !presses && !releases;
+}
+
+static int cd32_review(const struct conf_run *run)
+{
+    char detail[CONF_DETAIL_MAX];
+
+    (void)run;
+    (void)cd32_accept(detail);
+    conf_emitf("# %s", detail);
+    return 0;
+}
+
 static const struct conf_operator operators[] = {
-    { "C-INPUT.11", "show", show_review, show_accept },
-    { "C-INPUT.17", "buttons", buttons_review, buttons_accept },
+    { "C-INPUT.11", "show", show_review, show_accept, 0 },
+    { "C-INPUT.17", "buttons", buttons_review, buttons_accept, 0 },
+    { "C-INPUT.20", "cd32-port0", cd32_review, cd32_accept, 1 },
+    { "C-INPUT.21", "cd32-port1", cd32_review, cd32_accept, 1 },
 };
 
 static const struct conf_variant variants[] = {
@@ -424,6 +505,8 @@ static const struct conf_variant variants[] = {
     { "overfull", prep_reset },
     { "show", prep_show },
     { "buttons", prep_buttons },
+    { "cd32-port0", prep_cd32_port0 },
+    { "cd32-port1", prep_cd32_port1 },
     { "std", prep_std },
 };
 
@@ -434,9 +517,13 @@ static void on_end(const struct conf_run *run, const struct conf_outcome *out,
     char d[CONF_DETAIL_MAX];
     int ok;
 
-    (void)pr;
     if (strcmp(run->area, "C-INPUT") != 0 || !run->variant)
         return;
+    if (run->cd32_ports) {
+        cd32_finished = out->ran && !out->timed_out && pr->have_end &&
+                        out->end_reason == AAR_END_EXIT && out->exit_code == 0;
+        return;
+    }
     if (strcmp(run->variant, "show") == 0) {
         unsigned i;
 

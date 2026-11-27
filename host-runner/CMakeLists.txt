@@ -165,6 +165,11 @@ target_link_libraries(sleep_unit PRIVATE ${AAR_SDL2})
 add_executable(free_judge_test ${AAR_CONF_DIR}/tests/free_judge_test.c)
 target_compile_options(free_judge_test PRIVATE -Wall -Wextra -Werror)
 
+# The CD32 pad operator decision (plain C, no SDL).
+add_executable(cd32_judge_test ${AAR_CONF_DIR}/tests/cd32_judge_test.c)
+target_include_directories(cd32_judge_test PRIVATE ${AAR_ROOT}/include)
+target_compile_options(cd32_judge_test PRIVATE -Wall -Wextra -Werror)
+
 # The selection decisions of the conformance runner core (plain C, no SDL).
 add_executable(select_test ${AAR_CONF_DIR}/tests/select_test.c)
 target_compile_options(select_test PRIVATE -Wall -Wextra -Werror)
@@ -279,6 +284,7 @@ if(BUILD_TESTING)
   add_test(NAME memory_unit COMMAND memory_unit)
   add_test(NAME sleep_unit COMMAND sleep_unit)
   add_test(NAME conf_free_judge COMMAND free_judge_test)
+  add_test(NAME conf_cd32_judge COMMAND cd32_judge_test)
   add_test(NAME conf_select COMMAND select_test)
   add_test(NAME freestanding_unit COMMAND freestanding_unit)
   add_test(NAME freestanding_memmove_unit COMMAND freestanding_memmove_unit)

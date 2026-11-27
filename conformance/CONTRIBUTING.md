@@ -161,7 +161,7 @@ the commit.
 
 These are the rows judged `operator`. A test that shows something to a person is a
 variant of the area's payload run (it runs only with `INTERACTIVE`). List
-`{ "C-AREA.n", "<variant>", review, accept }` in the area's `operators` table. The
+`{ "C-AREA.n", "<variant>", review, accept, exact_only }` in the area's `operators` table. The
 core prints the row's text, waits for Return, runs the variant, and asks the
 question right after it (the area's `prepare` prints the instruction for the
 person). `review` may print what the app saw and return 1 to offer one repeat;
@@ -169,6 +169,8 @@ person). `review` may print what the app saw and return 1 to offer one repeat;
 C-INPUT.11, is the example). A row with no entry is a procedure done before the run,
 asked at the start (C-LIFE.24). `ONLY=<operator id>` runs only that variant: payload
 variants that do not belong to a selected test are skipped.
+Set `exact_only` to 1 for a test that opts into driving a physical port. The
+runner skips that test unless `ONLY` names the exact id, even with `INTERACTIVE`.
 
 ### Observers
 

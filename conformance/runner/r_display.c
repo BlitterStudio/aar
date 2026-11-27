@@ -264,9 +264,9 @@ static int resize_accept(char *why)
 }
 
 static const struct conf_operator operators[] = {
-    { "C-DISPLAY.17", "picture", NULL, NULL },
-    { "C-DISPLAY.30", "pointer", NULL, NULL },
-    { "C-DISPLAY.31", "resize", resize_review, resize_accept },
+    { "C-DISPLAY.17", "picture", NULL, NULL, 0 },
+    { "C-DISPLAY.30", "pointer", NULL, NULL, 0 },
+    { "C-DISPLAY.31", "resize", resize_review, resize_accept, 0 },
 };
 
 static const struct conf_variant variants[] = {

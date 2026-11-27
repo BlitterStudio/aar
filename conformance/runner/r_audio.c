@@ -221,7 +221,7 @@ static void prep_tone(struct conf_run *run)
 }
 
 static const struct conf_operator operators[] = {
-    { "C-AUDIO.12", "tone", NULL, NULL },
+    { "C-AUDIO.12", "tone", NULL, NULL, 0 },
 };
 
 static const struct conf_variant variants[] = {
