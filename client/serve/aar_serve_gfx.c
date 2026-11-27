@@ -651,6 +651,7 @@ static ULONG input_idcmp(uint32_t flags, int newsize)
 {
     return IDCMP_RAWKEY | IDCMP_MOUSEMOVE | IDCMP_MOUSEBUTTONS | IDCMP_CLOSEWINDOW |
            IDCMP_ACTIVEWINDOW | IDCMP_INACTIVEWINDOW |
+           (X_INTUITION_VERSION() >= 51UL ? AAR_IDCMP_EXTENDEDMOUSE : 0UL) |
            ((flags & AAR_DISPLAY_POINTER_ABS) ? 0UL : IDCMP_DELTAMOVE) |
            (newsize ? IDCMP_NEWSIZE : 0UL);
 }

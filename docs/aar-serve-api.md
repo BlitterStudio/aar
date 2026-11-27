@@ -237,12 +237,17 @@ surface's own format. `cybergraphics.library` `ScalePixelArray` is not used: it
 takes RECTFMT_RGB, RECTFMT_RGBA, RECTFMT_ARGB (alpha first) and RECTFMT_GREY8
 only, none of them the byte order B, G, R, A of a BGRA8888 surface.
 
-Two events need no flag. `AAR_EV_ACTIVE` is sent for `IDCMP_ACTIVEWINDOW` and
-`IDCMP_INACTIVEWINDOW`, with code 1 and 0, so also once when the display opens
-active. The NewMouse raw keys 0x7A and 0x7B (up and down) and 0x7C and 0x7D (left
-and right) become `AAR_EV_WHEEL` with one step in `dy` (positive down) or `dx`
-(positive right) and the qualifiers; neither the press nor the release of a
-wheel key is sent as a key. `AAR_EV_MOUSE` carries the button that changed in
+`AAR_EV_ACTIVE` is sent for `IDCMP_ACTIVEWINDOW` and `IDCMP_INACTIVEWINDOW`,
+with code 1 and 0, including when the display opens active.
+
+With Intuition V51 or newer the input window uses `IDCMP_EXTENDEDMOUSE`.
+`AAR_EV_WHEEL` carries both signed deltas and the qualifiers. The loop drops
+any accompanying NewMouse keys. On older Intuition, NewMouse keys 0x7A and
+0x7B (up and down) and 0x7C and 0x7D (left and right) produce one step each.
+Positive deltas mean down or right. Neither a wheel key press nor its release
+is sent as a key.
+
+`AAR_EV_MOUSE` carries the button that changed in
 `code` (0 for motion, else 1 left, 2 right, 3 middle) and the state of all the
 buttons in `buttons`.
 

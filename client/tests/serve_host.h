@@ -469,7 +469,7 @@ struct Window {
     BYTE BorderLeft, BorderTop, BorderRight, BorderBottom;
     struct RastPort hx_rp;
     /* what the test asks about the window it was opened with */
-    ULONG hx_idcmp;
+    ULONG IDCMPFlags;
     int hx_close_gadget, hx_size_gadget, hx_custom_screen;
     struct Screen *hx_pub;
     char hx_title[256], hx_screen_title[256];
@@ -2628,7 +2628,7 @@ HX_UNUSED static struct Window *hx_open_window(void *newwin, ULONG first, ...)
     w->UserPort = hx_port_new();
     w->Flags = WFLG_WINDOWACTIVE;
     w->RPort = &w->hx_rp;
-    w->hx_idcmp = idcmp;
+    w->IDCMPFlags = idcmp;
     w->hx_close_gadget = close_gadget;
     w->hx_size_gadget = size_gadget;
     w->hx_custom_screen = scr != NULL;

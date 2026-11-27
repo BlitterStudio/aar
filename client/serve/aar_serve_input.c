@@ -75,9 +75,11 @@ static void drain_window(struct aar_serve *s, struct Window *win)
 {
     struct IntuiMessage *im;
     int absolute = (s->gfx.caps & AAR_DISPCAP_POINTER_ABS) != 0;
+    int extended_wheel;
 
     if (!win || !win->UserPort)
         return;
+    extended_wheel = (win->IDCMPFlags & AAR_IDCMP_EXTENDEDMOUSE) != 0;
     while ((im = (struct IntuiMessage *)X_GET_MSG(win->UserPort)) != NULL) {
         ULONG class = im->Class;
         UWORD code = im->Code;
@@ -85,6 +87,25 @@ static void drain_window(struct aar_serve *s, struct Window *win)
         WORD mx = im->MouseX;
         WORD my = im->MouseY;
         APTR dead = NULL;
+
+        if (class == AAR_IDCMP_EXTENDEDMOUSE) {
+            int16_t delta[2] = {0, 0};
+
+            if (extended_wheel && code == AAR_IMSGCODE_INTUIWHEELDATA && im->IAddress) {
+                const uint8_t *data = im->IAddress;
+                uint16_t version;
+
+                /* Read the Version word before using the rest of IAddress.
+                 * V1 has a reserved word followed by signed WheelX and WheelY. */
+                memcpy(&version, data, sizeof(version));
+                if (version == AAR_INTUIWHEELDATA_VERSION)
+                    memcpy(delta, data + 2u * sizeof(version), sizeof(delta));
+            }
+            X_REPLY_MSG((struct Message *)im);
+            if (delta[0] || delta[1])
+                push_event(s, AAR_EV_WHEEL, 0, delta[0], delta[1], qual);
+            continue;
+        }
 
         /* Intuition keeps the previous keys of a dead key sequence in the
          * message's IAddress, which is gone once the message is replied. */
@@ -113,9 +134,8 @@ static void drain_window(struct aar_serve *s, struct Window *win)
             int16_t wheel_dx, wheel_dy;
 
             if (aar_serve_wheel_key(raw, &wheel_dx, &wheel_dy)) {
-                /* The NewMouse wheel is a wheel event, not a key: the release is
-                 * dropped. */
-                if (type == AAR_EV_KEY_DOWN)
+                /* Drop the release and use only one wheel source per window. */
+                if (!extended_wheel && type == AAR_EV_KEY_DOWN)
                     push_event(s, AAR_EV_WHEEL, 0, wheel_dx, wheel_dy, qual);
                 continue;
             }
