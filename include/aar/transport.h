@@ -417,6 +417,7 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_A_FILE_OFF_LO      2u
 #define AAR_A_FILE_WHENCE      3u
 #define AAR_R_FILE_COUNT       0u /* READ, WRITE */
+#define AAR_FILEF_ASYNC        (1u << 0) /* FILE_READ/WRITE entry flag: do not block the serving loop */
 #define AAR_R_FILE_POS_HI      1u /* SEEK */
 #define AAR_R_FILE_POS_LO      2u
 #define AAR_R_STAT_SIZE_HI     0u

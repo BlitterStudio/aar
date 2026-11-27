@@ -27,7 +27,7 @@
 #endif
 
 static struct host_options opt;
-static int stop_flag;
+static SDL_atomic_t stop_flag;
 static volatile sig_atomic_t sig_stop;
 static int finished;
 static int sdl_video;
@@ -48,18 +48,19 @@ int host_sdl_video_ok(void)
 int host_stop_requested(void)
 {
     if (sig_stop)
-        stop_flag = 1;
-    return stop_flag;
+        host_request_stop();
+    return SDL_AtomicGet(&stop_flag);
 }
 
 void host_request_stop(void)
 {
-    stop_flag = 1;
+    SDL_AtomicSet(&stop_flag, 1);
+    host_files_stop();
 }
 
 int host_stop_event_pending(void)
 {
-    return sig_stop || stop_flag;
+    return sig_stop || SDL_AtomicGet(&stop_flag);
 }
 
 uint64_t host_time_us(void)

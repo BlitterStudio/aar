@@ -13,10 +13,8 @@ and run an app is in the [developer guide](aar-developer-guide.md). The Amiga
 side, `aar.library`, which a launcher uses to load, start and serve an app, is
 in [aar-client-api.md](aar-client-api.md).
 
-`AAR_API_MAJOR` is 0 and `AAR_API_MINOR` is 6. API 0.5 is the first AAR
-version. An entry that ends with "Minimum minor: 5" has been in the API since
-0.5, and one that ends with "Minimum minor: 6" was added in 0.6. Before 1.0 any
-minor may break.
+`AAR_API_MAJOR` is 0 and `AAR_API_MINOR` is 6. Each entry's "Minimum minor"
+gives the version that introduced it. Before 1.0 any minor may break.
 
 ## How an app reaches the runtime
 
@@ -209,7 +207,8 @@ transport statuses to these; that mapping is private to the platform.
 
 ### AAR_E_STALE
 
-`-16`. The handle's generation no longer names a live app. A request that names a stale handle changes nothing.
+`-16`. The handle generation no longer names a live app, or an async file
+ticket is not current. A request that names it changes nothing.
 
 ### AAR_E_OWNER
 
@@ -1015,8 +1014,9 @@ runtime](#how-an-app-reaches-the-runtime). The slot order is fixed until 1.0:
    `audio_close`, `audio_stats`), GL (`gl_bind`, `gl_swap`, `gl_unbind`),
    services (`sha256`, `decompress`, `image_open`, `image_decode`,
    `image_close`, `audio_decode_open`, `audio_decode`, `audio_decode_close`).
+5. Optional async files: `file_read_async`, `file_write_async`, `file_collect`.
 
-The table has 77 pointer slots after the header. The table is const and apps
+The table has 80 pointer slots after the header. The table is const and apps
 must not write to it. A wrapper has the slot's name with an `aar_` prefix, except
 that a slot whose name is a type name gets a `get`: `aar_get_info`,
 `aar_get_heap_info`, `aar_audio_get_stats`, `aar_get_volume_info`,
@@ -1042,7 +1042,7 @@ structures.
 
 ### AAR_API_SLOT_COUNT
 
-`77u`. The number of pointer slots in `aar_api` after the 16-byte header.
+`80u`. The number of pointer slots in `aar_api` after the 16-byte header.
 
 ### AAR_API_CORE_SLOT_COUNT
 
@@ -1525,6 +1525,47 @@ caller may retry with the remainder or treat it as an error. NULL `out_n` is
 `AAR_E_BADF` and nothing is written. Chunk and wait rules match
 `aar_file_read`. Gate: `AAR_API_COVERS(api, file_write)`. Missing slot:
 `AAR_E_NOSYS`. Minimum minor: 5.
+
+### aar_file_read_async
+
+```c
+int aar_file_read_async(int fd, void *buf, uint32_t len, uint32_t *ticket);
+```
+
+Submits a read at the current file position without waiting for disk I/O.
+An id not open for reading gives `AAR_E_BADF`; NULL `ticket` or NULL `buf`
+with nonzero `len` gives `AAR_E_INVAL`. A zero-length transfer does no I/O.
+On `AAR_OK`, `*ticket` is nonzero and must be collected. `AAR_E_BUSY` means
+the transfer slot or staging is in use. An error leaves `*ticket` unchanged.
+Keep the buffer allocated and do not access it until collection.
+All three async slots must be covered and non-NULL, otherwise `AAR_E_NOSYS`.
+Minimum minor: 6.
+
+### aar_file_write_async
+
+```c
+int aar_file_write_async(int fd, const void *buf, uint32_t len, uint32_t *ticket);
+```
+
+Submits a write at the current file position; requires an id opened for
+writing. Ticket, buffer lifetime and error rules match `aar_file_read_async`.
+Do not modify the source until collection. Success does not promise the
+bytes have reached durable storage. Minimum minor: 6.
+
+### aar_file_collect
+
+```c
+int aar_file_collect(uint32_t ticket, int32_t *status, uint32_t *out_n);
+```
+
+Polls or advances a transfer without waiting for I/O. `AAR_E_BUSY` means
+poll again, and `AAR_E_STALE` means the ticket is not current. A zero ticket
+or NULL output is `AAR_E_INVAL`. A return of `AAR_OK` consumes the ticket and
+sets `*status` to the actual I/O result and `*out_n` to the confirmed bytes,
+even on a short transfer or I/O error. Other returns leave outputs untouched.
+The buffer is reusable after terminal collection, but a stop or timeout does
+not cancel native I/O that already started. See [section 7.1](../spec/aar.md#71-files)
+for descriptor and staging rules. Minimum minor: 6.
 
 ### aar_file_seek
 

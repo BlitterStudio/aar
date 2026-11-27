@@ -462,9 +462,9 @@ app waits for that request's completion before it continues. A request does
 not have to park. Some API calls submit a request and return without waiting
 for the completion, for example a console write or a display palette update.
 Such a request is still a request: its completion arrives later and the
-runtime must consume it. An asynchronous flip likewise may leave a second
-request in flight. So other requests can be in flight beside the parking
-one, and the runtime must not assume one outstanding request.
+runtime must consume it. An asynchronous flip or an asynchronous file
+transfer can be in flight beside the parking request. The runtime must not
+assume one outstanding request.
 
 A runtime that submits a request without waiting must keep every buffer the
 request names unchanged and valid until the completion arrives. The API call
@@ -475,6 +475,13 @@ update, and indices that no update named are left as they were. Neither the
 return of `aar_display_set_palette` nor a display flip promises the new
 colors are visible; the transport only promises the completion.
 
+For a file request with `AAR_FILEF_ASYNC`, submit the native operation and
+continue serving input, display and other work while it is pending. Reply
+when native I/O ends; `op`, `id`, result and count are the same as for a
+synchronous transfer. If deferred service is unavailable, reply
+`AAR_E_NOSYS` without carrying out the operation. The ticket exists only
+at the app API; it never goes on the wire.
+
 | Symbol | Value | Direction | Meaning |
 |---|---|---|---|
 | `AAR_OP_NONE` | `0x00` | | Not an operation. |
@@ -483,8 +490,8 @@ colors are visible; the transport only promises the completion.
 | `AAR_OP_LOG` | `0x03` | SQ only | One-way and lossy. `buf`, `buf_off` and `buf_len` name one record in a shared log buffer, at most `AAR_LOG_MAX` bytes and never wrapping. The app side may overwrite it after the client has consumed the entry. A full SQ drops the record and counts it in `AAR_CB_LOG_DROPPED`. |
 | `AAR_OP_FILE_OPEN` | `0x10` | request | Path in `buf`; args `AAR_A_FILE_OPEN_FD`, `AAR_A_FILE_OPEN_FLAGS`. The flags word is the `AAR_FILE_*` combination of `aar_file_open` (read, write, create, truncate, exclusive). The client applies create, truncate and exclusive create as part of this one request. |
 | `AAR_OP_FILE_CLOSE` | `0x11` | request | Arg `AAR_A_FILE_FD`. |
-| `AAR_OP_FILE_READ` | `0x12` | request | Args `AAR_A_FILE_FD`, `AAR_A_FILE_LEN`. The bytes go to `buf`; out `AAR_R_FILE_COUNT`. |
-| `AAR_OP_FILE_WRITE` | `0x13` | request | Args `AAR_A_FILE_FD`, `AAR_A_FILE_LEN`. The bytes come from `buf`; out `AAR_R_FILE_COUNT`. |
+| `AAR_OP_FILE_READ` | `0x12` | request | Args `AAR_A_FILE_FD`, `AAR_A_FILE_LEN`. The bytes go to `buf`; out `AAR_R_FILE_COUNT`. Entry flag `AAR_FILEF_ASYNC` (1) requests deferred service. |
+| `AAR_OP_FILE_WRITE` | `0x13` | request | Args `AAR_A_FILE_FD`, `AAR_A_FILE_LEN`. The bytes come from `buf`; out `AAR_R_FILE_COUNT`. Entry flag `AAR_FILEF_ASYNC` (1) requests deferred service. |
 | `AAR_OP_FILE_SEEK` | `0x14` | request | Args `AAR_A_FILE_FD`, `AAR_A_FILE_OFF_HI`, `AAR_A_FILE_OFF_LO`, `AAR_A_FILE_WHENCE`; out `AAR_R_FILE_POS_HI`, `AAR_R_FILE_POS_LO`. |
 | `AAR_OP_FILE_STAT` | `0x15` | request | Path in `buf`; out `AAR_R_STAT_SIZE_HI`, `AAR_R_STAT_SIZE_LO`, `AAR_R_STAT_MTIME_HI`, `AAR_R_STAT_MTIME_LO`, `AAR_R_STAT_MODE`, `AAR_R_STAT_PROTECT`. |
 | `AAR_OP_LIST_OPEN` | `0x16` | request | Path in `buf`; arg `AAR_A_LIST_ID`. |

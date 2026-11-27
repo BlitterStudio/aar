@@ -87,7 +87,7 @@ extern "C" {
 #define AAR_E_PROFILE  -13  /* image profile or note not acceptable on this platform */
 #define AAR_E_NOGROUP  -14  /* image requires a group the runtime lacks */
 #define AAR_E_NORESOURCE -15 /* admission or load refused; the reason is an AAR_REASON_* code */
-#define AAR_E_STALE    -16  /* the handle's generation no longer names a live app */
+#define AAR_E_STALE    -16  /* a handle generation or async ticket is no longer current */
 #define AAR_E_OWNER    -17  /* handle used by a task that does not own it */
 
 /* Admission refusal reasons (spec 5.6), reported with AAR_E_NORESOURCE. */
@@ -574,10 +574,11 @@ typedef struct aar_audio_decode_result {
  *      slots.) When a group's bit is set in `groups`, all of its slots that
  *      the table's size covers are non-NULL, except where a slot is marked
  *      optional below.
+ *   5. Optional asynchronous file slots.
  * A slot exists if `size` covers it (AAR_API_COVERS). A slot that exists and is
  * NULL means "not implemented".
  *
- * Calls park on files, console, display flip and msg_wait, and return when the
+ * Calls park on synchronous files, console, display flip and msg_wait, and return when the
  * work completes, on stop (AAR_E_IO), or on their own timeout. A sleep is also
  * ended by a stop and has no return value. No call is reentrant: an app has one
  * thread. No call takes variable arguments.
@@ -708,6 +709,11 @@ typedef struct aar_api {
                              int16_t *pcm, uint32_t pcm_frames,
                              aar_audio_decode_result *out);
     int      (*audio_decode_close)(uint32_t session);
+
+    /* -- optional: async files (spec 7.1) -- */
+    int      (*file_read_async)(int fd, void *buf, uint32_t len, uint32_t *ticket);
+    int      (*file_write_async)(int fd, const void *buf, uint32_t len, uint32_t *ticket);
+    int      (*file_collect)(uint32_t ticket, int32_t *status, uint32_t *out_n);
 } aar_api;
 
 /* True when size covers field. A NULL function pointer still means absent. */
@@ -787,6 +793,13 @@ int      aar_file_open(const char *path, uint32_t flags);
 int      aar_file_close(int fd);
 int      aar_file_read(int fd, void *buf, uint32_t len, uint32_t *out_n);
 int      aar_file_write(int fd, const void *buf, uint32_t len, uint32_t *out_n);
+/* Nonblocking, optional. A successful submission returns a nonzero
+ * ticket and borrows buf until a terminal collection. Only one ticket per app.
+ * file_collect returns AAR_E_BUSY while pending. On AAR_OK it consumes the ticket
+ * and returns the transfer status and confirmed byte count through the outputs. */
+int      aar_file_read_async(int fd, void *buf, uint32_t len, uint32_t *ticket);
+int      aar_file_write_async(int fd, const void *buf, uint32_t len, uint32_t *ticket);
+int      aar_file_collect(uint32_t ticket, int32_t *status, uint32_t *out_n);
 int      aar_file_seek(int fd, int64_t off, int whence, int64_t *out_pos);
 int      aar_file_stat(const char *path, aar_stat *out);
 int      aar_file_list_open(const char *path);
@@ -916,7 +929,7 @@ void     aar_free(void *p);
       AAR_ALIGNOF(type) - 1u) & ~(AAR_ALIGNOF(type) - 1u))
 
 /* Number of pointer slots in the table after the 16-byte header. */
-#define AAR_API_SLOT_COUNT 77u
+#define AAR_API_SLOT_COUNT 80u
 #define AAR_API_CORE_SLOT_COUNT 42u
 
 AAR_STATIC_ASSERT(sizeof(aar_info) == 88, "aar_info size");
@@ -1015,9 +1028,12 @@ AAR_STATIC_ASSERT(offsetof(aar_api, display_info) ==
 AAR_STATIC_ASSERT(offsetof(aar_api, audio_open) ==
                       offsetof(aar_api, display_last_present_us) + sizeof(void *),
                   "aar_api audio group follows the display group");
-AAR_STATIC_ASSERT(offsetof(aar_api, audio_decode_close) ==
+AAR_STATIC_ASSERT(offsetof(aar_api, file_read_async) ==
+                      offsetof(aar_api, audio_decode_close) + sizeof(void *),
+                  "aar_api async files follow the service group");
+AAR_STATIC_ASSERT(offsetof(aar_api, file_collect) ==
                       16 + (AAR_API_SLOT_COUNT - 1) * sizeof(void *),
-                  "aar_api ends at audio_decode_close");
+                  "aar_api ends at file_collect");
 
 #ifdef __cplusplus
 }

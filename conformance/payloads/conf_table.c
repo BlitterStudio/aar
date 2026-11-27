@@ -45,7 +45,7 @@ AAR_NOTE(0, 0, 0, 0)
 #define SLOT_AUDIO     63u  /* audio_open, audio_close, audio_stats */
 #define SLOT_GL        66u  /* gl_bind, gl_swap, gl_unbind */
 #define SLOT_SERVICES  69u  /* sha256 .. audio_decode_close: 8 slots */
-#define SLOT_COUNT     77u
+#define SLOT_COUNT     80u
 
 static const char *const slot_names[SLOT_COUNT] = {
     "exit", "yield", "should_stop", "time_us", "sleep_us", "info",
@@ -68,6 +68,7 @@ static const char *const slot_names[SLOT_COUNT] = {
     "gl_bind", "gl_swap", "gl_unbind",
     "sha256", "decompress", "image_open", "image_decode", "image_close",
     "audio_decode_open", "audio_decode", "audio_decode_close",
+    "file_read_async", "file_write_async", "file_collect",
 };
 
 static uint32_t slot_end(uint32_t i)

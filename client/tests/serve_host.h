@@ -1559,6 +1559,8 @@ static void hx_vol_run(void *arg)
         uint32_t want = (uint32_t)d->dp_Arg3, got;
 
         of = &hx_opens[d->dp_Arg1 - 1];
+        if (!of->used)
+            HX_FAIL("a pending read outlived its file handle");
         if (!hx_mem_live(dst))
             HX_FAIL("a file read into memory that is not allocated");
         got = of->pos < hx_nodes[of->node].size ? hx_nodes[of->node].size - of->pos : 0;
@@ -1574,6 +1576,10 @@ static void hx_vol_run(void *arg)
         uint32_t n = (uint32_t)d->dp_Arg3;
 
         of = &hx_opens[d->dp_Arg1 - 1];
+        if (!of->used)
+            HX_FAIL("a pending write outlived its file handle");
+        if (!hx_mem_live(src))
+            HX_FAIL("a file write from memory that is not allocated");
         if (hx_vol_full) {
             hx_vol_reply(pkt, -1, ERROR_DISK_FULL);
             return;

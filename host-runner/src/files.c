@@ -26,6 +26,10 @@
 
 #include "host_internal.h"
 
+#include <SDL_atomic.h>
+#include <SDL_mutex.h>
+#include <SDL_thread.h>
+
 #include <fcntl.h>
 #include <errno.h>
 #include <stdio.h>
@@ -189,6 +193,40 @@ static struct host_fd fds[HOST_FD_COUNT];
 static struct host_list lists[HOST_FD_COUNT];
 static char root_abs[4096];
 static int abs_paths;
+
+enum {
+    FILE_ASYNC_IDLE,
+    FILE_ASYNC_PENDING,
+    FILE_ASYNC_DONE,
+    FILE_ASYNC_STOP_PENDING,
+    FILE_ASYNC_STOP_DONE
+};
+
+/* Only the app thread owns the ticket and app buffer. The semaphore
+ * publishes a job to the worker; state publishes its result and tracks
+ * native ownership separately from the ticket on stop. */
+static struct {
+    SDL_Thread *thread;
+    SDL_sem *ready;
+    SDL_atomic_t state;
+    uint32_t serial;
+    uint32_t ticket;
+    int slot;
+    void *read_dst;
+    FILE *fp;
+    void *stage;
+    uint32_t access;
+    uint32_t len;
+    int32_t status;
+    uint32_t n;
+} async_file = { .slot = -1 };
+
+static int file_slot_busy(int slot)
+{
+    return async_file.slot == slot &&
+           (async_file.ticket ||
+            SDL_AtomicGet(&async_file.state) == FILE_ASYNC_STOP_PENDING);
+}
 
 static int is_sep(char c)
 {
@@ -557,6 +595,8 @@ static int api_file_close(int fd)
 
     if (ix < 0 || !fds[ix].used)
         return AAR_E_BADF;
+    if (file_slot_busy(ix))
+        return AAR_E_BUSY;
     /* fclose flushes; a failed final write (ENOSPC) must not read as
      * success. The descriptor is released either way. */
     rc = fclose(fds[ix].fp) == 0 ? AAR_OK : io_err();
@@ -565,42 +605,199 @@ static int api_file_close(int fd)
     return rc;
 }
 
+static int read_stream(FILE *fp, void *buf, uint32_t len, uint32_t *out_n)
+{
+    size_t n = fread(buf, 1, (size_t)len, fp);
+
+    *out_n = (uint32_t)n;
+    if (n < len && ferror(fp))
+        return AAR_E_IO;
+    return AAR_OK;
+}
+
+static int write_stream(FILE *fp, const void *buf, uint32_t len, uint32_t *out_n)
+{
+    size_t n = fwrite(buf, 1, (size_t)len, fp);
+
+    *out_n = (uint32_t)n;
+    if (n < len) {
+        if (fflush(fp) != 0 && errno == ENOSPC)
+            return AAR_E_NOSPC;
+        return AAR_E_IO;
+    }
+    return AAR_OK;
+}
+
 static int api_file_read(int fd, void *buf, uint32_t len, uint32_t *out_n)
 {
     int ix = slot_of(fd);
-    size_t n;
 
-    if (ix < 0 || !fds[ix].used)
+    if (ix < 0 || !fds[ix].used || !(fds[ix].access & AAR_FILE_READ))
         return AAR_E_BADF;
-    if (!(fds[ix].access & AAR_FILE_READ))
-        return AAR_E_BADF; /* opened without AAR_FILE_READ (spec 7.1) */
     if (!buf || !out_n)
         return AAR_E_INVAL;
-    n = fread(buf, 1, (size_t)len, fds[ix].fp);
-    *out_n = (uint32_t)n;
-    if (n < len && ferror(fds[ix].fp))
-        return AAR_E_IO;
-    return AAR_OK;
+    if (file_slot_busy(ix))
+        return AAR_E_BUSY;
+    return read_stream(fds[ix].fp, buf, len, out_n);
 }
 
 static int api_file_write(int fd, const void *buf, uint32_t len, uint32_t *out_n)
 {
     int ix = slot_of(fd);
-    size_t n;
 
-    if (ix < 0 || !fds[ix].used)
+    if (ix < 0 || !fds[ix].used || !(fds[ix].access & AAR_FILE_WRITE))
         return AAR_E_BADF;
-    if (!(fds[ix].access & AAR_FILE_WRITE))
-        return AAR_E_BADF; /* opened without AAR_FILE_WRITE (spec 7.1) */
     if (!buf || !out_n)
         return AAR_E_INVAL;
-    n = fwrite(buf, 1, (size_t)len, fds[ix].fp);
-    *out_n = (uint32_t)n;
-    if (n < len) {
-        if (fflush(fds[ix].fp) != 0 && errno == ENOSPC)
-            return AAR_E_NOSPC;
+    if (file_slot_busy(ix))
+        return AAR_E_BUSY;
+    return write_stream(fds[ix].fp, buf, len, out_n);
+}
+
+void host_files_stop(void)
+{
+    (void)SDL_AtomicCAS(&async_file.state, FILE_ASYNC_PENDING,
+                        FILE_ASYNC_STOP_PENDING);
+}
+
+static int SDLCALL file_worker(void *unused)
+{
+    (void)unused;
+    while (SDL_SemWait(async_file.ready) == 0) {
+        int state = SDL_AtomicGet(&async_file.state);
+
+        /* Shutdown posts one extra wake, after which there is no job. */
+        if (state != FILE_ASYNC_PENDING && state != FILE_ASYNC_STOP_PENDING)
+            break;
+        if (async_file.access == AAR_FILE_READ)
+            async_file.status = read_stream(async_file.fp, async_file.stage,
+                                            async_file.len, &async_file.n);
+        else
+            async_file.status = write_stream(async_file.fp, async_file.stage,
+                                             async_file.len, &async_file.n);
+        if (!SDL_AtomicCAS(&async_file.state, FILE_ASYNC_PENDING,
+                           FILE_ASYNC_DONE)) {
+            /* A stopped collection never uses the staging block. Reclaim
+             * it here even if the app has already consumed the ticket. */
+            free(async_file.stage);
+            async_file.stage = NULL;
+            SDL_AtomicSet(&async_file.state, FILE_ASYNC_STOP_DONE);
+        }
+    }
+    return 0;
+}
+
+static int file_worker_start(void)
+{
+    if (async_file.thread)
+        return AAR_OK;
+    async_file.ready = SDL_CreateSemaphore(0);
+    if (!async_file.ready)
+        return AAR_E_NOMEM;
+    async_file.thread = SDL_CreateThread(file_worker, "aar-file", NULL);
+    if (!async_file.thread) {
+        SDL_DestroySemaphore(async_file.ready);
+        async_file.ready = NULL;
         return AAR_E_IO;
     }
+    return AAR_OK;
+}
+
+static int file_submit(int fd, const void *buf, uint32_t len, uint32_t *ticket,
+                       uint32_t access)
+{
+    int ix = slot_of(fd);
+
+    if (!ticket || (!buf && len))
+        return AAR_E_INVAL;
+    if (ix < 0 || !fds[ix].used || !(fds[ix].access & access))
+        return AAR_E_BADF;
+    if (async_file.ticket)
+        return AAR_E_BUSY;
+    if (host_stop_requested())
+        return AAR_E_IO;
+    if (async_file.serial == UINT32_MAX)
+        return AAR_E_NOSPC; /* Never recycle a ticket within this runner. */
+
+    if (!len) {
+        async_file.status = AAR_OK;
+        async_file.n = 0;
+        SDL_AtomicSet(&async_file.state, FILE_ASYNC_DONE);
+    } else {
+        void *stage = malloc((size_t)len);
+        int rc;
+
+        if (!stage)
+            return AAR_E_NOMEM;
+        rc = file_worker_start();
+        if (rc != AAR_OK) {
+            free(stage);
+            return rc;
+        }
+        if (access == AAR_FILE_WRITE)
+            memcpy(stage, buf, len);
+        async_file.fp = fds[ix].fp;
+        async_file.stage = stage;
+        async_file.access = access;
+        async_file.len = len;
+        SDL_AtomicSet(&async_file.state, FILE_ASYNC_PENDING);
+        /* Stop may have raced with staging before there was work to mark. */
+        if (host_stop_requested())
+            host_files_stop();
+        if (SDL_SemPost(async_file.ready) != 0) {
+            SDL_AtomicSet(&async_file.state, FILE_ASYNC_IDLE);
+            free(stage);
+            async_file.stage = NULL;
+            return AAR_E_IO;
+        }
+        if (access == AAR_FILE_READ)
+            async_file.read_dst = (void *)buf;
+    }
+    async_file.slot = ix;
+    async_file.ticket = ++async_file.serial;
+    *ticket = async_file.ticket;
+    return AAR_OK;
+}
+
+static int api_file_read_async(int fd, void *buf, uint32_t len, uint32_t *ticket)
+{
+    return file_submit(fd, buf, len, ticket, AAR_FILE_READ);
+}
+
+static int api_file_write_async(int fd, const void *buf, uint32_t len,
+                                uint32_t *ticket)
+{
+    return file_submit(fd, buf, len, ticket, AAR_FILE_WRITE);
+}
+
+static int api_file_collect(uint32_t ticket, int32_t *status, uint32_t *out_n)
+{
+    int state;
+
+    if (!ticket || !status || !out_n)
+        return AAR_E_INVAL;
+    if (ticket != async_file.ticket)
+        return AAR_E_STALE;
+    if (host_stop_requested())
+        host_files_stop();
+    state = SDL_AtomicGet(&async_file.state);
+    if (state == FILE_ASYNC_PENDING)
+        return AAR_E_BUSY;
+    if (state == FILE_ASYNC_DONE) {
+        if (async_file.read_dst && async_file.n)
+            memcpy(async_file.read_dst, async_file.stage, async_file.n);
+        *status = async_file.status;
+        *out_n = async_file.n;
+        free(async_file.stage);
+        async_file.stage = NULL;
+    } else {
+        *status = AAR_E_IO;
+        *out_n = 0;
+    }
+    async_file.read_dst = NULL;
+    if (state != FILE_ASYNC_STOP_PENDING)
+        async_file.slot = -1;
+    async_file.ticket = 0;
     return AAR_OK;
 }
 
@@ -619,6 +816,8 @@ static int api_file_seek(int fd, int64_t off, int whence, int64_t *out_pos)
         w = SEEK_END;
     else
         return AAR_E_INVAL;
+    if (file_slot_busy(ix))
+        return AAR_E_BUSY;
     if (host_seek(fds[ix].fp, off, w) != 0)
         return AAR_E_INVAL;
     if (out_pos)
@@ -1244,6 +1443,8 @@ static int api_file_truncate(int fd, uint64_t size)
     int ix = slot_of(fd);
     int rc;
 
+    if (ix >= 0 && file_slot_busy(ix))
+        return AAR_E_BUSY;
     if (host_stop_requested())
         return AAR_E_ACCES;
     if (ix < 0 || !fds[ix].used)
@@ -1378,6 +1579,21 @@ void host_files_shutdown(void)
 {
     int i;
 
+    if (async_file.thread) {
+        /* The worker must no longer touch its FILE before we close it. */
+        SDL_SemPost(async_file.ready);
+        SDL_WaitThread(async_file.thread, NULL);
+        SDL_DestroySemaphore(async_file.ready);
+        async_file.thread = NULL;
+        async_file.ready = NULL;
+    }
+    free(async_file.stage);
+    async_file.stage = NULL;
+    async_file.read_dst = NULL;
+    async_file.ticket = 0;
+    async_file.slot = -1;
+    SDL_AtomicSet(&async_file.state, FILE_ASYNC_IDLE);
+
     for (i = 0; i < HOST_FD_COUNT; i++) {
         if (fds[i].used && fds[i].fp)
             fclose(fds[i].fp);
@@ -1408,4 +1624,7 @@ void host_files_bind(aar_api *api)
     api->file_set_protect = api_file_set_protect;
     api->file_truncate = api_file_truncate;
     api->volume_info = api_volume_info;
+    api->file_read_async = api_file_read_async;
+    api->file_write_async = api_file_write_async;
+    api->file_collect = api_file_collect;
 }
