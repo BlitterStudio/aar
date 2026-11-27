@@ -152,8 +152,8 @@ static inline int aar_serve_finish_prompt(int pending, int interactive_read)
 /* Completions that find the completion queue full wait in a backlog of
  * AAR_SERVE_REPLY_BACKLOG entries. A request is taken from the submission queue
  * only while AAR_SERVE_REPLY_RESERVE entries stay free for the completions of
- * requests already taken and still outstanding (a console write, a console
- * read and a display flip), so a completion is never dropped for want of room;
+ * requests already taken and still outstanding (console I/O, display flips
+ * or vblank, and a file transfer), so a completion is never dropped for want of room;
  * the app's request then waits in the queue until the backlog drains. */
 #define AAR_SERVE_REPLY_BACKLOG 16u
 #define AAR_SERVE_REPLY_RESERVE 8u

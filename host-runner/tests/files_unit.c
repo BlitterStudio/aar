@@ -7,6 +7,7 @@
  */
 #include "../src/files.c"
 
+#include <SDL_timer.h>
 #include <assert.h>
 
 /* files.c refuses the calls that change a file after a stop; the runner's
@@ -730,6 +731,154 @@ static void test_volume_info(void)
     host_files_shutdown();
 }
 
+static void collect_async_result(const aar_api *api, uint32_t ticket,
+                                 int32_t *status, uint32_t *n)
+{
+    Uint32 start = SDL_GetTicks();
+    int rc;
+
+    do {
+        rc = api->file_collect(ticket, status, n);
+        if (rc != AAR_E_BUSY)
+            break;
+        SDL_Delay(1);
+    } while (SDL_GetTicks() - start < 2000u);
+    assert(rc == AAR_OK);
+}
+
+static void test_async_files(void)
+{
+    aar_api api = {0};
+    char buf[8];
+    uint32_t ticket = 0, old, rejected = UINT32_MAX, n = 99;
+    int32_t status = 99;
+    int64_t pos = -1;
+    int fd, other;
+
+    assert(host_files_init(UNIT_ROOT, 0) == 0);
+    host_files_bind(&api);
+    assert(api.file_read_async && api.file_write_async && api.file_collect);
+    put_file("async.bin", "abcdef");
+    fd = api.file_open("async.bin", AAR_FILE_READ | AAR_FILE_WRITE);
+    other = api.file_open("async.bin", AAR_FILE_READ);
+    assert(fd >= HOST_FD_BASE && other >= HOST_FD_BASE && other != fd);
+    assert(api.file_read_async(fd, NULL, 1, &rejected) == AAR_E_INVAL);
+    assert(api.file_read_async(fd, buf, 1, NULL) == AAR_E_INVAL);
+    assert(api.file_read_async(-1, NULL, 0, &rejected) == AAR_E_BADF);
+    assert(api.file_write_async(other, NULL, 0, &rejected) == AAR_E_BADF);
+    assert(rejected == UINT32_MAX);
+
+    assert(api.file_seek(fd, 2, AAR_SEEK_SET, NULL) == AAR_OK);
+    memset(buf, 'x', sizeof buf);
+    assert(api.file_read_async(fd, buf, sizeof buf, &ticket) == AAR_OK);
+    assert(ticket != 0);
+    assert(api.file_write_async(other, NULL, 0, &rejected) == AAR_E_BADF);
+    assert(api.file_read_async(other, NULL, 0, &rejected) == AAR_E_BUSY);
+    assert(rejected == UINT32_MAX);
+    assert(api.file_read(fd, buf, 1, &n) == AAR_E_BUSY);
+    assert(api.file_write(fd, "X", 1, &n) == AAR_E_BUSY);
+    assert(api.file_seek(fd, 0, AAR_SEEK_SET, &pos) == AAR_E_BUSY);
+    assert(api.file_truncate(fd, 0) == AAR_E_BUSY);
+    assert(api.file_close(fd) == AAR_E_BUSY);
+    assert(api.file_close(other) == AAR_OK);
+    assert(api.file_collect(0, &status, &n) == AAR_E_INVAL);
+    assert(api.file_collect(ticket, NULL, &n) == AAR_E_INVAL);
+    assert(api.file_collect(ticket, &status, NULL) == AAR_E_INVAL);
+    assert(api.file_collect(ticket + 1u, &status, &n) == AAR_E_STALE);
+    assert(pos == -1 && n == 99 && status == 99);
+    assert(memcmp(buf, "xxxxxxxx", sizeof buf) == 0);
+    collect_async_result(&api, ticket, &status, &n);
+    assert(status == AAR_OK && n == 4 && memcmp(buf, "cdefxxxx", sizeof buf) == 0);
+    old = ticket;
+    assert(api.file_collect(old, &status, &n) == AAR_E_STALE);
+    assert(status == AAR_OK && n == 4);
+
+    assert(api.file_read_async(fd, NULL, 0, &ticket) == AAR_OK);
+    assert(ticket && ticket != old);
+    assert(api.file_close(fd) == AAR_E_BUSY);
+    assert(api.file_collect(ticket, &status, &n) == AAR_OK);
+    assert(status == AAR_OK && n == 0);
+    assert(api.file_seek(fd, 0, AAR_SEEK_CUR, &pos) == AAR_OK && pos == 6);
+
+    old = ticket;
+    assert(api.file_seek(fd, 2, AAR_SEEK_SET, NULL) == AAR_OK);
+    assert(api.file_write_async(fd, "XYZ", 3, &ticket) == AAR_OK);
+    assert(ticket && ticket != old);
+    collect_async_result(&api, ticket, &status, &n);
+    assert(status == AAR_OK && n == 3);
+    assert(api.file_seek(fd, 0, AAR_SEEK_CUR, &pos) == AAR_OK && pos == 5);
+    assert(api.file_seek(fd, 0, AAR_SEEK_SET, NULL) == AAR_OK);
+    assert(api.file_read(fd, buf, sizeof buf, &n) == AAR_OK);
+    assert(n == 6 && memcmp(buf, "abXYZf", 6) == 0);
+    assert(api.file_close(fd) == AAR_OK);
+
+    /* Teardown drains an accepted but uncollected write before closing
+     * the stream, which also flushes the write. */
+    fd = api.file_open("async.bin", AAR_FILE_WRITE);
+    assert(fd >= HOST_FD_BASE);
+    assert(api.file_write_async(fd, "Q", 1, &ticket) == AAR_OK);
+    host_files_shutdown();
+    assert(read_file("async.bin", buf, sizeof buf) == 6);
+    assert(memcmp(buf, "QbXYZf", 6) == 0);
+    rm_file("async.bin");
+}
+
+static void test_async_stop_while_native_read_is_pending(void)
+{
+    aar_api api = {0};
+    char buf[4] = "app";
+    uint32_t ticket = 0, rejected = UINT32_MAX, n = 99;
+    int32_t status = 99;
+    int ends[2];
+    FILE *writer;
+    Uint32 start;
+    int rc;
+
+    assert(host_files_init(UNIT_ROOT, 0) == 0);
+    host_files_bind(&api);
+    /* An empty pipe with a live writer holds the real fread until the test
+     * releases it, regardless of when the SDL worker gets scheduled. */
+#ifdef _WIN32
+    assert(_pipe(ends, 4096, HOST_O_BINARY) == 0);
+#else
+    assert(pipe(ends) == 0);
+#endif
+    fds[0].fp = host_fdopen(ends[0], "rb");
+    writer = host_fdopen(ends[1], "wb");
+    assert(fds[0].fp && writer);
+    fds[0].used = 1;
+    fds[0].access = AAR_FILE_READ;
+
+    assert(api.file_read_async(HOST_FD_BASE, buf, sizeof buf, &ticket) == AAR_OK);
+    assert(api.file_collect(ticket, &status, &n) == AAR_E_BUSY);
+    assert(status == 99 && n == 99 && memcmp(buf, "app", sizeof buf) == 0);
+    unit_stop = 1;
+    host_files_stop();
+    assert(api.file_collect(ticket, &status, &n) == AAR_OK);
+    assert(status == AAR_E_IO && n == 0 && memcmp(buf, "app", sizeof buf) == 0);
+    assert(api.file_collect(ticket, &status, &n) == AAR_E_STALE);
+    assert(api.file_read_async(HOST_FD_BASE, NULL, 0, &rejected) == AAR_E_IO);
+    assert(rejected == UINT32_MAX);
+    assert(api.file_close(HOST_FD_BASE) == AAR_E_BUSY);
+    assert(api.file_read(HOST_FD_BASE, buf, 1, &n) == AAR_E_BUSY && n == 0);
+
+    /* Reuse the app buffer while the worker is still in flight. */
+    memcpy(buf, "new", sizeof buf);
+    assert(fwrite("data", 1, sizeof buf, writer) == sizeof buf);
+    assert(fclose(writer) == 0);
+    start = SDL_GetTicks();
+    do {
+        rc = api.file_close(HOST_FD_BASE);
+        if (rc != AAR_E_BUSY)
+            break;
+        SDL_Delay(1);
+    } while (SDL_GetTicks() - start < 2000u);
+    assert(rc == AAR_OK && memcmp(buf, "new", sizeof buf) == 0);
+    assert(api.file_read(HOST_FD_BASE, buf, 1, &n) == AAR_E_BADF);
+    unit_stop = 0;
+    host_files_shutdown();
+}
+
 int main(void)
 {
     make_dir(UNIT_ROOT);
@@ -748,5 +897,7 @@ int main(void)
     test_truncate();
     test_protect_and_date();
     test_volume_info();
+    test_async_files();
+    test_async_stop_while_native_read_is_pending();
     return 0;
 }

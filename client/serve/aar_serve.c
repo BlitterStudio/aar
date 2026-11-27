@@ -384,7 +384,11 @@ static void service_requests(struct aar_serve *s)
         memset(&d, 0, sizeof(d));
         if (!group_served(s, q.op))
             d.result = AAR_E_NOSYS;
-        else if (aar_serve_core_request(&s->core, &q, &d) != AAR_SERVE_REQ_DONE) {
+        else if (file_transfer_busy(s, &q))
+            d.result = AAR_E_BUSY;
+        else if ((file_transfer_flagged(&q) ?
+                  file_transfer_begin(s, &q, &d) :
+                  aar_serve_core_request(&s->core, &q, &d)) != AAR_SERVE_REQ_DONE) {
             /* A parked DISPLAY_VBLANK has a deadline. The timer still armed may be
              * set for longer, so it is taken back and the step arms the deadline. */
             if (q.op == AAR_OP_DISPLAY_VBLANK)
@@ -723,6 +727,7 @@ void aar_serve_destroy(aar_serve *s)
     if (!AAR_SERVE_HOOK(s, console))
         console_read_finish(s);
     /* What a handler still holds is answered, once, with AAR_E_IO. */
+    file_transfer_destroy(s);
     aar_serve_core_abort(&s->core);
     reply_flush(s);
     if (s->con.owned && s->con.handle)
@@ -744,6 +749,8 @@ ULONG aar_serve_sigmask(const aar_serve *cs)
         mask |= 1UL << s->tm.port->mp_SigBit;
     if (s->con.port)
         mask |= 1UL << s->con.port->mp_SigBit;
+    if (s->dos.file.fh)
+        mask |= 1UL << s->dos.file.port->mp_SigBit;
     if (s->gfx.input_win && s->gfx.input_win->UserPort)
         mask |= 1UL << s->gfx.input_win->UserPort->mp_SigBit;
     /* The SafeMessage of a flip and the completion of an AHI buffer: with no
@@ -797,6 +804,7 @@ static LONG step_body(aar_serve *s, ULONG signals)
     service_display(s);
     aar_serve_display_vblank_check(&s->core.display, now_ms(s));
     service_ahi_audio(s);
+    service_file_transfer(s);
     reply_flush(s);
     /* The claim may have been revoked while a request was served. One small
      * status read gives the state and the end reason; any failure of it means

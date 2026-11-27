@@ -610,6 +610,162 @@ static LONG file_packet_async(struct aar_serve *s, BPTR fh, LONG action,
     return result;
 }
 
+/* The flagged transfer has its own reply port and staging: neither DOS nor
+ * other file requests may use the mapped request buffer as their scratch. */
+static int file_transfer_flagged(const struct aar_serve_req *req)
+{
+    return (req->op == AAR_OP_FILE_READ || req->op == AAR_OP_FILE_WRITE) &&
+           (req->flags & AAR_FILEF_ASYNC) != 0;
+}
+
+static BPTR file_transfer_handle(struct aar_serve *s, uint32_t fd)
+{
+    uint32_t slot = fd - AAR_FD_BASE;
+
+    return slot < AAR_SERVE_FD_COUNT ? (BPTR)s->core.files.fh[slot] : 0;
+}
+
+static int file_transfer_busy(struct aar_serve *s, const struct aar_serve_req *req)
+{
+    BPTR pending = s->dos.file.fh;
+
+    if (!pending)
+        return 0;
+    switch (req->op) {
+    case AAR_OP_FILE_READ:
+    case AAR_OP_FILE_WRITE:
+    case AAR_OP_FILE_SEEK:
+    case AAR_OP_FILE_CLOSE:
+        return file_transfer_handle(s, req->arg[AAR_A_FILE_FD]) == pending;
+    case AAR_OP_FILE_TRUNCATE:
+        return file_transfer_handle(s, req->arg[AAR_A_FILE_TRUNC_FD]) == pending;
+    default:
+        return 0;
+    }
+}
+
+/* Check before touching a shared buffer or starting another native chunk.
+ * Unlike an ordinary read, a parked read may outlive the running app. */
+static int file_transfer_allowed(struct aar_serve *s)
+{
+    uint32_t state, end;
+
+    return !s->closing && !s->stop_asked && !be_user_break(s) &&
+           claim_state(s, &state, &end) == AAR_OK &&
+           state == AAR_STATE_RUNNING && end == AAR_END_NONE;
+}
+
+static void file_transfer_send(struct aar_serve_file_transfer *t)
+{
+    struct StandardPacket *packet = &t->storage->packet;
+    struct FileHandle *handle = (struct FileHandle *)BADDR(t->fh);
+    uint32_t left = t->req.arg[AAR_A_FILE_LEN] - t->count;
+    int writing = t->req.op == AAR_OP_FILE_WRITE;
+
+    t->chunk = left > AAR_SERVE_IO_CHUNK ? AAR_SERVE_IO_CHUNK : left;
+    if (writing)
+        memcpy(t->storage->buffer, t->req.buf + t->count, t->chunk);
+    memset(packet, 0, sizeof(*packet)); /* DOS may change dp_Port and the message links. */
+    packet->sp_Msg.mn_Node.ln_Name = (char *)&packet->sp_Pkt;
+    packet->sp_Pkt.dp_Link = &packet->sp_Msg;
+    packet->sp_Pkt.dp_Port = t->port;
+    packet->sp_Pkt.dp_Type = writing ? ACTION_WRITE : ACTION_READ;
+    packet->sp_Pkt.dp_Arg1 = handle->fh_Arg1;
+    packet->sp_Pkt.dp_Arg2 = (LONG)t->storage->buffer;
+    packet->sp_Pkt.dp_Arg3 = (LONG)t->chunk;
+    X_PUT_MSG(handle->fh_Type, &packet->sp_Msg);
+}
+
+static int file_transfer_begin(struct aar_serve *s, const struct aar_serve_req *req,
+                               struct aar_serve_done *done)
+{
+    struct aar_serve_file_transfer *t = &s->dos.file;
+    BPTR fh = file_transfer_handle(s, req->arg[AAR_A_FILE_FD]);
+    uint32_t len = req->arg[AAR_A_FILE_LEN];
+
+    if (t->fh)
+        done->result = AAR_E_BUSY;
+    else if (!fh)
+        done->result = AAR_E_BADF;
+    else if (len > req->buf_len || (len && !req->buf))
+        done->result = AAR_E_INVAL;
+    else if (!len)
+        done->result = AAR_OK;
+    else if (!((struct FileHandle *)BADDR(fh))->fh_Type)
+        done->result = AAR_E_IO;
+    else {
+        if (!t->port)
+            t->port = X_CREATE_PORT();
+        if (t->port && !t->storage)
+            t->storage = X_ALLOC_MEM(sizeof(*t->storage), MEMF_PUBLIC);
+        if (!t->storage)
+            done->result = AAR_E_NOMEM;
+        else if (!file_transfer_allowed(s))
+            done->result = AAR_E_IO;
+        else {
+            t->req = *req;
+            t->fh = fh;
+            t->count = 0;
+            file_transfer_send(t);
+            return AAR_SERVE_REQ_DEFERRED;
+        }
+    }
+    return AAR_SERVE_REQ_DONE;
+}
+
+static void service_file_transfer(struct aar_serve *s)
+{
+    struct aar_serve_file_transfer *t = &s->dos.file;
+    struct aar_serve_done done = {0};
+    LONG n;
+    int allowed, writing;
+
+    if (!t->fh || X_GET_MSG(t->port) != &t->storage->packet.sp_Msg)
+        return;
+    allowed = file_transfer_allowed(s);
+    writing = t->req.op == AAR_OP_FILE_WRITE;
+    n = t->storage->packet.sp_Pkt.dp_Res1;
+    if (n > 0 && (uint32_t)n <= t->chunk && (writing || allowed)) {
+        if (!writing)
+            memcpy(t->req.buf + t->count, t->storage->buffer, (uint32_t)n);
+        t->count += (uint32_t)n;
+    }
+    if (!allowed || (n > 0 && (uint32_t)n > t->chunk))
+        done.result = AAR_E_IO;
+    else if (n < 0) {
+        done.result = aar_serve_errno_from_io(t->storage->packet.sp_Pkt.dp_Res2);
+        if (done.result == AAR_OK)
+            done.result = AAR_E_NOENT; /* As in the synchronous file handlers. */
+    } else if (writing && n == 0)
+        done.result = AAR_E_NOSPC;
+    else if ((uint32_t)n == t->chunk &&
+             t->count < t->req.arg[AAR_A_FILE_LEN]) {
+        file_transfer_send(t);
+        return;
+    }
+    done.out[AAR_R_FILE_COUNT] = t->count;
+    t->fh = 0;
+    t->req.buf = NULL; /* The CQ backlog needs the request identity, not its buffer. */
+    if (claim_live(s))
+        s->core.sink.complete(s->core.sink.ctx, &t->req, &done);
+}
+
+static void file_transfer_destroy(struct aar_serve *s)
+{
+    struct aar_serve_file_transfer *t = &s->dos.file;
+
+    /* The loop never waits here until teardown. In particular, ACTION_END
+     * must not reach this handle while DOS still owns its read/write packet. */
+    while (t->fh) {
+        X_WAIT_PORT(t->port);
+        service_file_transfer(s);
+    }
+    if (t->storage)
+        X_FREE_MEM(t->storage, sizeof(*t->storage));
+    if (t->port)
+        X_DELETE_PORT(t->port);
+}
+
 static int examine_lock_async(struct aar_serve *s, BPTR lock,
                               struct FileInfoBlock *fib, int *transport_ok)
 {

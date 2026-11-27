@@ -258,6 +258,20 @@ struct aar_serve_pending_reply {
     struct aar_serve_done done;
 };
 
+struct aar_serve_file_packet {
+    struct StandardPacket packet;
+    uint8_t buffer[AAR_SERVE_IO_CHUNK];
+};
+
+struct aar_serve_file_transfer {
+    struct MsgPort *port;
+    struct aar_serve_file_packet *storage;
+    struct aar_serve_req req;
+    BPTR fh;                     /* nonzero while a DOS packet owns storage */
+    uint32_t count;              /* bytes already transferred */
+    uint32_t chunk;              /* bytes requested in the packet now out */
+};
+
 /*
  * Each section belongs to one backend file and is touched by that file only,
  * except where a section says otherwise. A backend that needs more state adds
@@ -295,6 +309,7 @@ struct aar_serve {
     struct {
         struct aar_serve_dos_ops ops;   /* the table the file handlers call; ctx is the instance */
         struct aar_serve_target target;
+        struct aar_serve_file_transfer file;
     } dos;
 
     /* ---- aar_serve_con.c: the console ------------------------------------------------------ */

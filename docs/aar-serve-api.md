@@ -320,6 +320,23 @@ relative path is resolved below `ROOT`, `..`, a leading `/` and a link out of
 `ROOT` itself, a directory reached with `..`, or only a volume (`Work:`) has no
 name to act on and is `AAR_E_ACCES` for the requests below that change a name.
 
+`FILE_READ` and `FILE_WRITE` without `AAR_FILEF_ASYNC` retain their synchronous
+behavior. With the flag, `aar_serve_step` sends a DOS packet but does not wait
+for its reply. The client runs one native transfer at a time. While it is
+pending, another flagged transfer or a read, write, seek, close or truncate on
+the same descriptor answers `AAR_E_BUSY`. Input, display, audio, console and
+completion delivery continue between packets.
+
+A flagged transfer moves up to 8 KiB per DOS packet through client-owned
+staging, never directly between AmigaDOS and the app's buffer. A short packet
+ends the transfer, and the usual completion count includes bytes copied to the
+app on reads or taken by DOS on writes, including bytes transferred before an
+error. A stop ends the transfer with `AAR_E_IO`, without sending another
+packet. A write already sent can still take effect; a read reply that arrives
+after stop is not copied to the app. No bytes are copied after a claim is lost.
+The app keeps the request buffer reserved until the matching completion or
+until the app ends.
+
 | Request | AmigaDOS | Notes |
 |---|---|---|
 | `FILE_DELETE` | `ACTION_DELETE_OBJECT` | a file or an empty directory |
@@ -475,9 +492,10 @@ the app has ended. Returns `AAR_SERVE_ENDED` or `AAR_SERVE_LOST`.
 
 `ULONG aar_serve_sigmask(const aar_serve *s)`: every signal the loop waits on
 now: the break signals of `break_mask`, the timer, the console packet port, the
-input window, the SafeMessage port of a flip and the AHI port when they exist,
-and the library signal with `AAR_SERVEF_USE_SIGNAL`. It changes while the
-app runs, so ask again before each `Wait`. The heartbeat timer is armed whenever it
+file reply port while a transfer is pending, the input window, the SafeMessage
+port of a flip, the AHI port when they exist, and the library signal with
+`AAR_SERVEF_USE_SIGNAL`. It changes while the app runs, so ask again before each
+`Wait`. The heartbeat timer is armed whenever it
 is in the mask. `aar_serve_create`, the end of every step and every call that
 waits on DOS (`aar_serve_locate` included) arm it again, so a program may call
 those between `aar_serve_create` and its first `Wait`.
@@ -488,8 +506,9 @@ those between `aar_serve_create` and its first `Wait`.
 `signals` is what `Wait` returned. It takes the break signals, drains the input
 window and the joystick, flushes the stop event, serves up to 16 requests, pumps
 the console, the display (a flip's SafeMessage, the timeout of a
-`DISPLAY_VBLANK`) and the audio, flushes the completion backlog and reads
-the state. It returns `AAR_SERVE_CONTINUE` until the app has ended and the
+`DISPLAY_VBLANK`) and the audio, takes any flagged file packet reply without
+waiting, flushes the completion backlog and reads the state.
+It returns `AAR_SERVE_CONTINUE` until the app has ended and the
 output that must be written is written. Then it returns `AAR_SERVE_ENDED`, also
 when both grace periods have elapsed after a stop. It returns `AAR_SERVE_LOST`
 when the claim is gone (revoked, quarantined, reset).
@@ -569,8 +588,9 @@ launcher's to derive from it.
 `void aar_serve_destroy(aar_serve *s)`: stops the app if it still runs, removes
 the log sink, closes AHI, closes the display (waits for the SafeMessages of the
 flips and restores the public screen), finishes the console reads and writes and
-the launcher text, answers every request a handler still holds with `AAR_E_IO`,
-closes every file and list, unlocks the root, closes `timer.device` and the
+the launcher text, reaps any flagged file packet before closing its handle,
+answers every request a handler still holds with `AAR_E_IO` while the claim is
+live, closes every file and list, unlocks the root, closes `timer.device` and the
 libraries it opened and frees the state. The handle stays open: close it
 afterwards.
 
@@ -628,10 +648,11 @@ program's own window signals are not lost.
   no window of its own for them.
 - A refused audio ring closes AHI again. The library refuses it by turning an
   `AUDIO_OPEN` completion whose ring does not check out into an error.
-- Requests still held at `aar_serve_destroy` (a console read that never started,
-  a console write, a flip waiting for its SafeMessage) are answered with
-  `AAR_E_IO`, once. A completion that cannot be posted because the completion
-  queue is full stays unanswered. The app has gone away with the claim.
+- Requests still held at `aar_serve_destroy` (a deferred file transfer, a console
+  read or write, or a flip waiting for its SafeMessage) are answered with
+  `AAR_E_IO`, once, while the claim is live. A completion that cannot be posted
+  because the completion queue is full stays unanswered. The app has gone away
+  with the claim.
 - PCM goes from the app's ring into a reserve and from there into two AHI
   requests of up to 3/50 s (60 ms). The reserve is a FIFO of up to the size of
   two requests, and at most 20 ms is read from the ring per pass. The two
@@ -649,9 +670,8 @@ program's own window signals are not lost.
 - The AHI route needs a heartbeat of at most 20 ms, because a buffer has to be
   refilled well before the other one has played. With the AHI route,
   `aar_serve_create` answers `AAR_E_NOSYS` for other values. Without AHI,
-  `poll_us` 0 is allowed. The program is then woken by the flip and AHI ports,
-  the console, the input window and, with `AAR_SERVEF_USE_SIGNAL`, by the
-  library.
+  `poll_us` 0 is allowed. The program is then woken by packet replies, the
+  flip port, the input window and, with `AAR_SERVEF_USE_SIGNAL`, by the library.
 - A relative path is resolved below `ROOT` and checked there for every op that
   takes one (open, stat, list, delete, rename, create, set date, set
   protection, volume info), whatever `AAR_SERVEF_ABS_PATHS` says: `..`, a
@@ -662,9 +682,9 @@ program's own window signals are not lost.
   window, or the platform ending the app) no request that changes the file
   system runs. An open that creates, truncates, replaces or updates, a write, a
   delete, a rename, a directory create, a set date or protection and a truncate
-  answer `AAR_E_IO`. Reads, seeks, closes, stat, list and volume info change
-  nothing and still run. The check is one predicate, `aar_serve_stopping`, with
-  the platform state read live before each such step.
+  answer `AAR_E_IO`. Synchronous reads, seeks, closes, stat, list and volume
+  info change nothing and still run. The check for mutations is
+  `aar_serve_stopping`, with the platform state read live before each such step.
 - A requester (a Workbench console that cannot be opened) shows its text as the
   argument of a fixed `%s` format. A `%` in the screen title or in a path stays
   a `%`. No caller or app text is used as a format string anywhere in

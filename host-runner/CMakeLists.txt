@@ -155,6 +155,7 @@ set(AAR_UNIT_INCLUDES
 # files.c uses the shared blocks of memory.c for map_file.
 add_executable(files_unit tests/files_unit.c src/memory.c)
 target_include_directories(files_unit PRIVATE ${AAR_UNIT_INCLUDES})
+target_link_libraries(files_unit PRIVATE ${AAR_SDL2})
 add_executable(memory_unit tests/memory_unit.c ${AAR_ROOT}/libaar/src/aar.c)
 target_include_directories(memory_unit PRIVATE ${AAR_UNIT_INCLUDES})
 add_executable(sleep_unit tests/sleep_unit.c)
@@ -281,6 +282,7 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE} ${AAR_CONF_DIR}/tests/tools_test.py
   )
   add_test(NAME files_unit COMMAND files_unit)
+  set_tests_properties(files_unit PROPERTIES TIMEOUT 15)
   add_test(NAME memory_unit COMMAND memory_unit)
   add_test(NAME sleep_unit COMMAND sleep_unit)
   add_test(NAME conf_free_judge COMMAND free_judge_test)

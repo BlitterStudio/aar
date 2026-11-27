@@ -675,6 +675,36 @@ int aar_file_set_comment(const char *path, const void *data, uint32_t bytes)
     return AAR_E_NOSYS;
 }
 
+static int file_async_available(const aar_api *api)
+{
+    return AAR_API_COVERS(api, file_collect) && api->file_read_async &&
+           api->file_write_async && api->file_collect;
+}
+
+int aar_file_read_async(int fd, void *buf, uint32_t len, uint32_t *ticket)
+{
+    const aar_api *api = aar_api_ptr;
+
+    return file_async_available(api) ? api->file_read_async(fd, buf, len, ticket)
+                                     : AAR_E_NOSYS;
+}
+
+int aar_file_write_async(int fd, const void *buf, uint32_t len, uint32_t *ticket)
+{
+    const aar_api *api = aar_api_ptr;
+
+    return file_async_available(api) ? api->file_write_async(fd, buf, len, ticket)
+                                     : AAR_E_NOSYS;
+}
+
+int aar_file_collect(uint32_t ticket, int32_t *status, uint32_t *out_n)
+{
+    const aar_api *api = aar_api_ptr;
+
+    return file_async_available(api) ? api->file_collect(ticket, status, out_n)
+                                     : AAR_E_NOSYS;
+}
+
 int aar_time_unix_us(int64_t *out_us)
 {
     const aar_api *api = aar_api_ptr;

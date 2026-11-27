@@ -74,6 +74,7 @@ void host_sleep_until(uint64_t deadline);
 void host_idle_slice(void);
 
 int host_files_init(const char *root, int abs_paths);
+void host_files_stop(void);
 void host_files_shutdown(void);
 void host_files_bind(aar_api *api);
 

@@ -78,7 +78,8 @@ static unsigned long failures;
     X(gl_bind) X(gl_swap) X(gl_unbind)                                   \
     X(sha256) X(decompress) X(image_open) X(image_decode)                \
     X(image_close) X(audio_decode_open) X(audio_decode)                  \
-    X(audio_decode_close)
+    X(audio_decode_close)                                              \
+    X(file_read_async) X(file_write_async) X(file_collect)
 
 #define GL_SLOTS(X)                                                      \
     X(Begin) X(End) X(Vertex2f) X(Vertex3f) X(Vertex3fv) X(TexCoord2f)   \
@@ -146,6 +147,9 @@ static void test_table(void)
     CHECK_EQ(offsetof(aar_api, gl_bind), 16 + 66 * P);
     CHECK_EQ(offsetof(aar_api, sha256), 16 + 69 * P);
     CHECK_EQ(offsetof(aar_api, audio_decode_close), 16 + 76 * P);
+    CHECK_EQ(offsetof(aar_api, file_read_async), 16 + 77 * P);
+    CHECK_EQ(offsetof(aar_api, file_write_async), 16 + 78 * P);
+    CHECK_EQ(offsetof(aar_api, file_collect), 16 + 79 * P);
 
     /* AAR_API_COVERS gates on size. */
     {
@@ -364,14 +368,14 @@ static void test_structures(void)
         CHECK_EQ(sizeof(aar_audio), 40);
         CHECK_EQ(sizeof(aar_image_params), 32);
         CHECK_EQ(sizeof(aar_pointer), 32);
-        CHECK_EQ(sizeof(aar_api), 16 + 77 * 8);
+        CHECK_EQ(sizeof(aar_api), 16 + 80 * 8);
         CHECK_EQ(sizeof(aar_gl), 8 + 123 * 8);
     } else {
         CHECK_EQ(sizeof(aar_surface), 40);
         CHECK_EQ(sizeof(aar_audio), 28);
         CHECK_EQ(sizeof(aar_image_params), 28);
         CHECK_EQ(sizeof(aar_pointer), 28);
-        CHECK_EQ(sizeof(aar_api), 16 + 77 * 4);
+        CHECK_EQ(sizeof(aar_api), 16 + 80 * 4);
         CHECK_EQ(sizeof(aar_gl), 8 + 123 * 4);
 #if defined(__arm__)
         CHECK_EQ(sizeof(aar_shared), 24);

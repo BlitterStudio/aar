@@ -2317,6 +2317,93 @@ static void run_leak(void)
     /* ends with the files and the lists open */
 }
 
+/* ---- C-FILE.56: async multi-chunk round trip and ticket lifetime ---- */
+
+static int collect_file(uint32_t ticket, int32_t *status, uint32_t *n)
+{
+    uint64_t deadline = aar_time_us() + 5000000u;
+    int rc;
+
+    do {
+        rc = aar_file_collect(ticket, status, n);
+        if (rc != AAR_E_BUSY)
+            return rc;
+        aar_sleep_us(1000u);
+    } while (aar_time_us() < deadline);
+    return AAR_E_TIMEDOUT;
+}
+
+static void test_async_file(void)
+{
+    struct conf_test t;
+    const char *file = sc("async.tmp");
+    const uint32_t bytes = CONF_FILE_PATTERN_BYTES - 1u;
+    uint32_t ticket = 0, next = 0, n = 0, i;
+    int32_t status = AAR_E_IO;
+    int fd, rc;
+
+    conf_begin(&t, "C-FILE.56");
+    fd = aar_file_open(file, FILE_NEW | AAR_FILE_READ);
+    if (fd < 0) {
+        fail_rc(&t, "create async scratch file", fd);
+        goto end;
+    }
+    for (i = 0; i < bytes; i++)
+        mega[i] = conf_file_pat2(i);
+    rc = aar_file_write_async(fd, mega, bytes, &ticket);
+    if (rc == AAR_E_NOSYS) {
+        (void)aar_file_close(fd);
+        (void)aar_file_delete(file);
+        conf_skip(t.id, "async file slots unavailable");
+        return;
+    }
+    if (rc != AAR_OK) {
+        fail_rc(&t, "submit async write", rc);
+        goto close;
+    }
+    conf_check(&t, ticket != 0u && aar_file_write_async(fd, NULL, 0u, &next) == AAR_E_BUSY && next == 0u,
+               "accepted ticket must own the transfer slot");
+    conf_check(&t, aar_file_seek(fd, 0, AAR_SEEK_SET, NULL) == AAR_E_BUSY,
+               "seek passed an uncollected write");
+    rc = collect_file(ticket, &status, &n);
+    if (rc == AAR_OK && status == AAR_E_NOSYS) {
+        (void)aar_file_close(fd);
+        (void)aar_file_delete(file);
+        conf_skip(t.id, "client does not serve async files");
+        return;
+    }
+    if (rc != AAR_OK || status != AAR_OK || n != bytes) {
+        conf_check(&t, 0, "async write did not complete in full");
+        goto close;
+    }
+    if (aar_file_seek(fd, 0, AAR_SEEK_SET, NULL) != AAR_OK) {
+        conf_check(&t, 0, "seek failed after async write was collected");
+        goto close;
+    }
+    for (i = 0; i < sizeof mega; i++)
+        mega[i] = 0xa5u;
+    rc = aar_file_read_async(fd, mega, sizeof mega, &next);
+    if (rc != AAR_OK) {
+        fail_rc(&t, "submit async read", rc);
+        goto close;
+    }
+    conf_check(&t, next != ticket && aar_file_collect(ticket, &status, &n) == AAR_E_STALE,
+               "a consumed ticket matched a later transfer");
+    rc = collect_file(next, &status, &n);
+    if (rc != AAR_OK || status != AAR_OK || n != bytes) {
+        conf_check(&t, 0, "async read did not return the short EOF count");
+        goto close;
+    }
+    for (i = 0; i < bytes && mega[i] == conf_file_pat2(i); i++)
+        ;
+    conf_check(&t, i == bytes && mega[bytes] == 0xa5u, "wrong bytes or write past EOF");
+close:
+    (void)aar_file_close(fd);
+    (void)aar_file_delete(file);
+end:
+    conf_end(&t);
+}
+
 /* ---- main --------------------------------------------------------------------------------------------------------------- */
 
 int aar_main(int argc, char **argv)
@@ -2378,6 +2465,7 @@ int aar_main(int argc, char **argv)
     test_served();
     test_comment_served(test_comment());
     test_comment_refused();
+    test_async_file();
     if (platform_id == AAR_PLATFORM_ZZ9000)
         test_map_zz9000();
     test_stop();

@@ -350,6 +350,23 @@ the runtime owns, and a platform may return `AAR_E_NOSYS`. Put data files under
 the root, and do not hard-code a volume unless the launcher allows absolute
 paths.
 
+### Stream files without stalling the app
+
+Open the file before entering the frame loop. Use `aar_file_read_async` for
+an asset you want to load during play, or `aar_file_write_async` for a save
+while the UI stays active. Only one transfer per app may be outstanding.
+Keep the buffer alive and untouched. On each later frame, call
+`aar_file_collect`; on `AAR_E_BUSY`, handle input and render as usual, then
+poll again. `AAR_OK` from collect returns the I/O status and confirmed byte
+count separately. For a read, use the bytes only after collection.
+
+The calls are optional. If submission returns `AAR_E_NOSYS`, or a client
+reports that status on collection, schedule the synchronous fallback
+outside the interactive loop. Don't silently retry a failed write: some
+bytes, including an unconfirmed final chunk after a stop or timeout, may
+have reached the file. Wait until successful collection before closing a
+normal transfer. `aar_msg_wait` does not wait for file tickets.
+
 ## Console and log
 
 In the libc flavor, `printf`, `puts` and `write` of fd 1 or 2 go to the console
@@ -964,10 +981,9 @@ through the table.
 
 ## Versioning
 
-The table is append-only from 1.0. `AAR_API_MINOR` is 6. API 0.5 is the first AAR
-version, and 0.6 added the file, time, locale, environment, clipboard and
-display calls. Before 1.0 any
-minor may break, and 1.0 is cut when a second platform passes conformance.
+The table is append-only from 1.0. `AAR_API_MINOR` is 6; the 0.6 draft
+includes optional asynchronous file I/O. Before 1.0 any minor may break,
+and 1.0 is cut when a second platform passes conformance.
 
 Gate every appended slot with `AAR_API_COVERS` and a non-NULL function pointer.
 `libaar` already does this and returns `AAR_E_NOSYS` when a slot is missing. A

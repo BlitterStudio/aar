@@ -729,6 +729,192 @@ static int disp_open(struct comp *c, uint32_t format, uint32_t flags)
     return call(AAR_OP_DISPLAY_OPEN, 20, DW, DH, format, flags, 0, 0, c);
 }
 
+static int post_async_file(uint32_t op, uint32_t id, uint32_t fd, uint32_t off, uint32_t len)
+{
+    const uint32_t arg[6] = {fd, len};
+
+    return refplat_app_request(SLOT, op, AAR_FILEF_ASYNC, id, arg,
+                               refplat_buf_token(SLOT, 0), off, len);
+}
+
+/* A delayed native reply has not arrived, but live input and display service
+ * can already post their event and completion. */
+static void check_async_file_display_progress(uint64_t started)
+{
+    struct comp c;
+
+    hx_window_post(IDCMP_RAWKEY, 0x20, 0, 0, 0);
+    CHECK(post(AAR_OP_DISPLAY_INFO, 40, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0) == AAR_OK);
+    CHECK(tick() == AAR_SERVE_CONTINUE);
+    CHECK(hx_now == started);
+    CHECK(next_comp(&c) && c.id == 40 && c.result == AAR_OK &&
+          c.out[AAR_R_DISPLAY_INFO_WIDTH] == DW);
+    CHECK(event_seen(AAR_EV_KEY_DOWN, 0x20));
+    CHECK(!next_comp(&c));
+}
+
+static void test_async_file_read_keeps_serving_and_reports_a_short_chunk(void)
+{
+    struct comp c;
+    static uint8_t data[AAR_SERVE_IO_CHUNK + 3u];
+    const uint32_t len = 2u * AAR_SERVE_IO_CHUNK;
+    unsigned long reads, waits;
+    uint64_t started;
+    uint8_t *dst;
+
+    setup("async_file_read");
+    cfg.poll_us = 0;
+    cfg.flags |= AAR_SERVEF_USE_SIGNAL;
+    memset(data, 'r', sizeof(data));
+    memcpy(data + AAR_SERVE_IO_CHUNK, "EOF", 3);
+    hx_node_add(1, "big", 0, data, sizeof(data));
+    make_serve();
+    put_str(0x100, "big");
+    CHECK(call(AAR_OP_FILE_OPEN, 3, 3, AAR_FILE_READ, 0, 0, 0x100, 4, &c) && c.result == AAR_OK);
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0) && c.result == AAR_OK);
+    dst = (uint8_t *)(uintptr_t)buf(0x2000);
+    memset(dst, 0xEE, len);
+    hx_vol_delay_us = 5000;
+    reads = hx_packets_by[5];
+    waits = hx_waits;
+    started = hx_now;
+    CHECK(post_async_file(AAR_OP_FILE_READ, 41, 3, 0x2000, len) == AAR_OK);
+    CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+    CHECK(hx_now == started && hx_waits == waits && hx_packets_by[5] == reads + 1u);
+    check_async_file_display_progress(started);
+    CHECK(dst[0] == 0xEE);
+
+    CHECK(post(AAR_OP_FILE_SEEK, 42, 3, 0, 0, 0, 0, 0) == AAR_OK);
+    CHECK(post(AAR_OP_FILE_CLOSE, 43, 3, 0, 0, 0, 0, 0) == AAR_OK);
+    CHECK(post_async_file(AAR_OP_FILE_READ, 44, 4, 0x7000, 1) == AAR_OK);
+    CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+    CHECK(next_comp(&c) && c.id == 42 && c.result == AAR_E_BUSY);
+    CHECK(next_comp(&c) && c.id == 43 && c.result == AAR_E_BUSY);
+    CHECK(next_comp(&c) && c.id == 44 && c.result == AAR_E_BUSY);
+    CHECK(!next_comp(&c) && hx_open_files_now == 1);
+
+    CHECK(wait_comp(&c, 8) && c.id == 41 && c.result == AAR_OK);
+    /* Both replies themselves woke the loop, not the 20 ms input timer. */
+    CHECK(hx_now == started + 2u * hx_vol_delay_us && hx_packets_by[5] == reads + 2u);
+    CHECK(c.out[AAR_R_FILE_COUNT] == sizeof(data) && memcmp(dst, data, sizeof(data)) == 0);
+    CHECK(dst[sizeof(data)] == 0xEE && !next_comp(&c));
+    finish();
+}
+
+static void test_async_file_write_keeps_serving_and_reports_a_partial_error(void)
+{
+    struct comp c;
+    const uint32_t len = 3u * AAR_SERVE_IO_CHUNK;
+    unsigned long writes, waits;
+    uint64_t started;
+    uint8_t *src;
+    int node;
+    unsigned i;
+
+    setup("async_file_write");
+    cfg.poll_us = 0;
+    cfg.flags |= AAR_SERVEF_USE_SIGNAL;
+    make_serve();
+    put_str(0x100, "out");
+    CHECK(call(AAR_OP_FILE_OPEN, 3, 3, AAR_FILE_WRITE | AAR_FILE_CREATE, 0, 0, 0x100, 4, &c) &&
+          c.result == AAR_OK);
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0) && c.result == AAR_OK);
+    node = hx_node_find(1, "out");
+    src = (uint8_t *)(uintptr_t)buf(0x2000);
+    memset(src, 'w', AAR_SERVE_IO_CHUNK);
+    memset(src + AAR_SERVE_IO_CHUNK, 'x', len - AAR_SERVE_IO_CHUNK);
+    hx_vol_delay_us = 5000;
+    writes = hx_packets_by[6];
+    waits = hx_waits;
+    started = hx_now;
+    CHECK(post_async_file(AAR_OP_FILE_WRITE, 41, 3, 0x2000, len) == AAR_OK);
+    CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+    CHECK(hx_now == started && hx_waits == waits && hx_packets_by[6] == writes + 1u);
+    check_async_file_display_progress(started);
+    CHECK(hx_nodes[node].size == 0);
+
+    for (i = 1; i < 3; i++) {
+        hx_run_for(hx_vol_delay_us);
+        CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+        CHECK(hx_packets_by[6] == writes + i + 1u &&
+              hx_nodes[node].size == i * AAR_SERVE_IO_CHUNK);
+        CHECK(!next_comp(&c));
+    }
+    hx_vol_full = 1;
+    CHECK(wait_comp(&c, 8) && c.id == 41 && c.result == AAR_E_NOSPC);
+    CHECK(c.out[AAR_R_FILE_COUNT] == 2u * AAR_SERVE_IO_CHUNK);
+    CHECK(hx_nodes[node].size == 2u * AAR_SERVE_IO_CHUNK &&
+          memcmp(hx_nodes[node].data, src, 2u * AAR_SERVE_IO_CHUNK) == 0);
+    CHECK(hx_packets_by[6] == writes + 3u && !next_comp(&c));
+    finish();
+}
+
+static void test_async_file_write_stops_after_the_packet_already_sent(void)
+{
+    struct comp c;
+    const uint32_t len = 2u * AAR_SERVE_IO_CHUNK;
+    unsigned long writes;
+    int node;
+
+    setup("async_file_write_stop");
+    make_serve();
+    put_str(0x100, "out");
+    CHECK(call(AAR_OP_FILE_OPEN, 3, 3, AAR_FILE_WRITE | AAR_FILE_CREATE, 0, 0, 0x100, 4, &c) &&
+          c.result == AAR_OK);
+    node = hx_node_find(1, "out");
+    memset((uint8_t *)(uintptr_t)buf(0x2000), 'w', len);
+    hx_vol_delay_us = 5000;
+    writes = hx_packets_by[6];
+    CHECK(post_async_file(AAR_OP_FILE_WRITE, 41, 3, 0x2000, len) == AAR_OK);
+    CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+    CHECK(hx_nodes[node].size == 0 && hx_packets_by[6] == writes + 1u);
+    ctrl_c_cb(NULL);
+    CHECK(tick() == AAR_SERVE_CONTINUE);
+    CHECK(!next_comp(&c) && event_seen(AAR_EV_STOP, 0));
+    CHECK(hx_nodes[node].size == 0 && hx_open_files_now == 1);
+    /* The app is now terminal; the in-flight write owns the staged bytes. */
+    buf(0x2000)[0] = 'x';
+    CHECK(wait_comp(&c, 12) && c.id == 41 && c.result == AAR_E_IO);
+    CHECK(c.out[AAR_R_FILE_COUNT] == AAR_SERVE_IO_CHUNK);
+    CHECK(hx_nodes[node].size == AAR_SERVE_IO_CHUNK && hx_packets_by[6] == writes + 1u);
+    CHECK(hx_nodes[node].data[0] == 'w');
+    CHECK(!next_comp(&c));
+    finish();
+}
+
+static void test_async_file_read_never_copies_after_claim_loss(void)
+{
+    struct comp c;
+    unsigned long reads;
+    uint64_t ready;
+    unsigned i;
+
+    setup("async_file_read_lost");
+    make_serve();
+    hx_node_add(1, "hello", 0, "Hello", 5);
+    put_str(0x100, "hello");
+    CHECK(call(AAR_OP_FILE_OPEN, 3, 3, AAR_FILE_READ, 0, 0, 0x100, 6, &c) && c.result == AAR_OK);
+    hx_vol_delay_us = 5000;
+    reads = hx_packets_by[5];
+    ready = hx_now + hx_vol_delay_us;
+    CHECK(post_async_file(AAR_OP_FILE_READ, 41, 3, 0x2000, 5) == AAR_OK);
+    CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+    CHECK(hx_now < ready && hx_packets_by[5] == reads + 1u);
+    revoke_notice_cb(NULL);
+    for (i = 0; i < 5; i++)
+        buf(0x2000)[i] = 0xEE;
+    CHECK(aar_serve_step(S, 0) == AAR_SERVE_LOST);
+    CHECK(hx_now < ready && hx_open_files_now == 1);
+    hx_vol_delay_us = 200; /* ACTION_END cannot overtake the delayed read. */
+    aar_serve_destroy(S);
+    S = NULL;
+    CHECK(hx_now >= ready + hx_vol_delay_us && hx_open_files_now == 0);
+    for (i = 0; i < 5; i++)
+        CHECK(buf(0x2000)[i] == 0xEE);
+    CHECK(!next_comp(&c) && hx_packets_by[5] == reads + 1u);
+    finish();
+}
+
 static void test_display_with_screen_buffers(void)
 {
     struct comp c;
@@ -4208,6 +4394,10 @@ static const struct {
     T(test_output_failure_stops_the_app),
     T(test_files_open_read_seek_stat_close),
     T(test_files_write_creates_and_truncates),
+    T(test_async_file_read_keeps_serving_and_reports_a_short_chunk),
+    T(test_async_file_write_keeps_serving_and_reports_a_partial_error),
+    T(test_async_file_write_stops_after_the_packet_already_sent),
+    T(test_async_file_read_never_copies_after_claim_loss),
     T(test_files_stay_under_the_root),
     T(test_files_absolute_paths_with_abs_through_two_directories),
     T(test_files_list_a_directory),

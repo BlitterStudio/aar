@@ -437,6 +437,22 @@ A larger file is `AAR_E_NOSPC` and a zero-length file is `AAR_E_NOMEM`.
 (`fstatat`), so a listing keeps working after its directory, or a parent of
 it, is renamed.
 
+The async file calls use a background SDL worker on the same stream
+as the synchronous calls. Submission copies writes into private staging memory;
+collection copies back only the bytes read. These calls never wait for disk I/O,
+though staging costs memory and a copy proportional to the transfer. Zero-byte
+requests use neither staging nor the worker.
+
+One ticket can be outstanding. Operations on its file id return `AAR_E_BUSY`
+until collection. If a stop arrives before the worker reports a result, the
+ticket can be collected with `AAR_E_IO` and zero confirmed bytes. The app can
+then reuse its buffer, but the file id stays busy until the worker releases
+the stream; file contents or position may still change in the meantime. New
+async submissions after a stop are refused with `AAR_E_IO`. Runner shutdown
+waits for any outstanding native operation before closing the streams. As with
+synchronous writes, success means the bytes were accepted by stdio, not that
+they are durable on disk.
+
 The calls of API 0.6 resolve their paths as `aar_file_open` does. Those that
 change something (`aar_file_delete`, `aar_file_rename`, `aar_dir_create`,
 `aar_file_set_date`, `aar_file_set_protect`, `aar_file_truncate`) are refused
