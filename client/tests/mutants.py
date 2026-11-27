@@ -11,6 +11,8 @@ shell_test and runs it. A mutant is KILLED when the build succeeds, the run
 fails, and the failing test is the one the mutant names (a crash counts as the
 last test that announced itself). It is a failure of this script when a mutant
 survives, fails in another test, no longer applies, or does not build.
+Mutants that can abort the serving loop before their target fixture may
+select that fixture directly. The named failure is still required.
 
 Needs a C compiler and python3. The tests are built without PIE (the reference
 platform's arena must be below 4 GiB).
@@ -31,16 +33,16 @@ SHELL = "client/src/aar_shell.c"
 LEAK = "client/tests/amiga/aarleak.c"
 SCALE_FLAGS = ["-DREFPLAT_CLAIMS=240u", "-DREFPLAT_LOAD_STRIDE=0x1000u", "-DREFPLAT_BUF_STRIDE=0x1000u"]
 
-# (name, test, file, [(old, new, count)])  count None: exactly one occurrence
+# (name, test, file, [(old, new, count)], optional serve-loop fixture)
 M = []
 
 
-def mutant(name, test, path, *changes):
+def mutant(name, test, path, *changes, loop_case=None):
     fixed = []
     for change in changes:
         old, new = change[0], change[1]
         fixed.append((old, new, change[2] if len(change) > 2 else 1))
-    M.append((name, test, path, fixed))
+    M.append((name, test, path, fixed, loop_case))
 
 
 # ---- core: ownership, registry, lease ------------------------------------------
@@ -888,7 +890,8 @@ mutant("hook-table-size-unchecked", "hooks_size", "client/serve/aar_serve_priv.h
 mutant("dos-wait-leaves-the-heartbeat-unarmed", "heartbeat_after_locate", "client/serve/aar_serve_dos.c",
        ("    if (!s->closing && !s->in_step)\n        timer_arm_for(s, timed_wake_us(s));\n    if (check_live && !claim_live(s)) {", "    if (check_live && !claim_live(s)) {"))
 mutant("destroy-lets-a-dos-wait-arm-the-timer", "heartbeat_after_locate", SL,
-       ("    s->closing = 1; /* the DOS waits below must not arm the timer again */\n", ""))
+       ("    s->closing = 1; /* the DOS waits below must not arm the timer again */\n", ""),
+       loop_case="test_the_heartbeat_runs_after_a_call_made_outside_the_loop")
 mutant("runtime-log-drops-not-reported", "log_dropped", SL,
        ("    out->runtime_dropped_logs = st.log_dropped;\n", ""))
 mutant("runtime-log-drops-forgotten-with-the-claim", "log_dropped", SL,
@@ -1001,7 +1004,8 @@ mutant("no-watchdog-without-a-heartbeat", "poll0_claim", SL,
 mutant("no-timed-wake-for-a-completion-backlog", "poll0_backlog", SL,
        ("        if (s->reply_n)\n            us = 1000UL;\n", ""))
 mutant("step-arms-the-timer-only-with-a-heartbeat", "poll0_stop", SL,
-       ("    timer_arm_for(s, timed_wake_us(s));\n    return AAR_SERVE_CONTINUE;", "    if (s->cfg.poll_us)\n        timer_arm(s);\n    return AAR_SERVE_CONTINUE;"))
+       ("    timer_arm_for(s, timed_wake_us(s));\n    return AAR_SERVE_CONTINUE;", "    if (s->cfg.poll_us)\n        timer_arm(s);\n    return AAR_SERVE_CONTINUE;"),
+       loop_case="test_a_stop_deadline_is_met_without_a_heartbeat")
 mutant("sigmask-ignores-a-timed-wake", "poll0_mask", SL,
        ("    if (s->tm.port && (s->cfg.poll_us || s->tm.pending))", "    if (s->tm.port && s->cfg.poll_us)"))
 mutant("a-dos-wait-takes-the-break-the-program-owns", "break_mask_dos", "client/serve/aar_serve_dos.c",
@@ -1214,7 +1218,7 @@ def build_and_run(work, test_name):
     return srcs, out
 
 
-def run_serve(work, test):
+def run_serve(work, test, loop_case):
     """A serve mutant is built into the three programs that test client/serve:
     serve_core_test and serve_policy_test (assert: a failure is the program's
     name, "serve_core" or "serve_policy") and serve_loop_test (FAIL [name], or the
@@ -1243,8 +1247,9 @@ def run_serve(work, test):
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if build.returncode != 0:
             return "BAD", "does not build (%s):\n%s" % (prog, build.stdout[-800:])
+        argv = [exe, loop_case] if prog == "serve_loop" and loop_case else [exe]
         try:
-            run = subprocess.run([exe], cwd=work, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            run = subprocess.run(argv, cwd=work, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, timeout=120, env=dict(os.environ, SERVE_WATCHDOG="20"))
         except subprocess.TimeoutExpired:
             failed.add("(hang in %s)" % prog)
@@ -1267,7 +1272,7 @@ def run_serve(work, test):
     return "BAD", "failed in %s, not in %s" % (sorted(failed), test)
 
 
-def run_one(name, test, path, changes, tmp):
+def run_one(name, test, path, changes, loop_case, tmp):
     work = os.path.join(tmp, name)
     shutil.copytree(os.path.join(ROOT, "client"), os.path.join(work, "client"),
                     ignore=shutil.ignore_patterns("__pycache__"))
@@ -1285,7 +1290,7 @@ def run_one(name, test, path, changes, tmp):
         fh.write(text)
 
     if path.startswith("client/serve/") or path == "client/run/aar_run_workbench.h" or test == "run_policy":
-        return run_serve(work, test)
+        return run_serve(work, test, loop_case)
 
     is_shell = path == SHELL
     is_leak = path == LEAK
@@ -1361,8 +1366,8 @@ def main(argv):
         if img.returncode != 0:
             return 2
         for n in names:
-            name, test, path, changes = NAMES[n]
-            status, why = run_one(name, test, path, changes, tmp)
+            name, test, path, changes, loop_case = NAMES[n]
+            status, why = run_one(name, test, path, changes, loop_case, tmp)
             print("%-9s %-34s [%s] %s" % (status, name, test, why if status != "KILLED" else why))
             sys.stdout.flush()
             if status != "KILLED":
