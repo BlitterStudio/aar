@@ -2856,7 +2856,8 @@ HX_UNUSED static int hx_nmodes;
 HX_UNUSED static void hx_modes_default(void)
 {
     static const struct hx_mode def[] = {
-        {0x50001UL, 640, 480, 1, RGBFF_R5G6B5 | RGBFF_CLUT, 525, 113, 0},
+        /* Keep padded bitmaps inside the fake claim's graphics arena. */
+        {0x50001UL, 128, 96, 1, RGBFF_R5G6B5 | RGBFF_CLUT, 525, 113, 0},
         {0x50002UL, 1280, 720, 1, RGBFF_R5G6B5 | RGBFF_B8G8R8A8 | RGBFF_CLUT, 750, 95, 0},
         {0x50003UL, 1920, 1080, 1, RGBFF_B8G8R8A8, 1125, 63, 0},
         {0x50004UL, 800, 600, 1, RGBFF_R5G6B5, 628, 90, 1},

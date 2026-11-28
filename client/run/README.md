@@ -634,9 +634,10 @@ the bitmap's actual pitch and the tokens of its memory (the platform's own
 addresses, opaque to aar-run).
 With two displayable P96 bitmaps (`AllocScreenBuffer`), each flip request
 changes screen buffer and completes when P96 has finished with the old one. If
-P96 refuses screen buffers, aar-run first opens a bitmap three times the
-requested height and pans between its pages. If that fails, it retries with a
-double-height bitmap. A pan completes with the submitted flag. The platform
+P96 refuses screen buffers, aar-run tries a bitmap with three app-height
+pages, then two. The bitmap is at least as wide as the visible mode and
+includes enough rows for that mode to fit at the last pan offset.
+A pan completes with the submitted flag. The platform
 acknowledges the flip after its own next vertical blank has latched the new
 address, which keeps the old front unavailable until scanout has stopped reading
 it. Only if both panning layouts fail does it use one bitmap, which the platform

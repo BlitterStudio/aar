@@ -960,11 +960,15 @@ static void test_display_falls_back_to_a_panned_tall_screen(void)
     CHECK(open_display(&c, AAR_FMT_RGB565, 0));
     CHECK(c.result == AAR_OK);
     pitch = c.out[AAR_R_DISPLAY_OPEN_PITCH];
+    CHECK(pitch >= (uint32_t)hx_modes[0].w * 2u);
     CHECK(c.out[AAR_R_DISPLAY_OPEN_BACK] == c.out[AAR_R_DISPLAY_OPEN_FRONT] + pitch * DH);
     CHECK(c.out[AAR_R_DISPLAY_OPEN_SPARE] == c.out[AAR_R_DISPLAY_OPEN_BACK] + pitch * DH);
-    CHECK(hx_cur_screen && hx_cur_screen->Height == (WORD)(DH * 3));
+    CHECK(hx_cur_screen && hx_cur_screen->Height == (WORD)(hx_modes[0].h + DH * 2));
     CHECK(call(AAR_OP_DISPLAY_FLIP, 21, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     CHECK(c.result == AAR_OK && (c.flags & AAR_CFLAG_FLIP_SUBMITTED) && hx_pans == 1);
+    CHECK(call(AAR_OP_DISPLAY_FLIP, 24, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
+    CHECK((c.flags & AAR_CFLAG_FLIP_SUBMITTED) &&
+          hx_cur_screen->Height - hx_cur_screen->ViewPort.RasInfo->RyOffset >= hx_modes[0].h);
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     finish();
 }
@@ -977,11 +981,11 @@ static void test_a_tall_screen_that_opens_too_short_is_not_used(void)
 
     setup("display_pan3_short");
     hx_p96_fail_buffers = 1;
-    hx_p96_clamp_height = DH * 2;
+    hx_p96_clamp_height = hx_modes[0].h + DH;
     make_serve();
     CHECK(open_display(&c, AAR_FMT_RGB565, 0));
     CHECK(c.result == AAR_OK && c.out[AAR_R_DISPLAY_OPEN_SPARE] == 0 && c.out[AAR_R_DISPLAY_OPEN_BACK] != 0);
-    CHECK(hx_screens == 1 && hx_cur_screen->Height == (WORD)(DH * 2));
+    CHECK(hx_screens == 1 && hx_cur_screen->Height == (WORD)(hx_modes[0].h + DH));
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     finish();
 }
@@ -992,11 +996,11 @@ static void test_display_falls_back_to_two_pages_then_one_buffer(void)
 
     setup("display_pan2_single");
     hx_p96_fail_buffers = 1;
-    hx_p96_max_height = DH * 2; /* the three page screen does not open */
+    hx_p96_max_height = hx_modes[0].h + DH; /* the three page screen does not open */
     make_serve();
     CHECK(open_display(&c, AAR_FMT_RGB565, 0));
     CHECK(c.result == AAR_OK && c.out[AAR_R_DISPLAY_OPEN_SPARE] == 0 && c.out[AAR_R_DISPLAY_OPEN_BACK] != 0);
-    CHECK(hx_cur_screen->Height == (WORD)(DH * 2));
+    CHECK(hx_cur_screen->Height == (WORD)(hx_modes[0].h + DH));
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     hx_p96_max_height = DH; /* neither does the two page one */
     CHECK(open_display(&c, AAR_FMT_RGB565, 0));
@@ -1014,7 +1018,8 @@ static void test_display_strategy_starts_the_walk_later(void)
     cfg.display_strategy = AAR_SERVE_DISPLAY_PAN2;
     make_serve();
     CHECK(open_display(&c, AAR_FMT_RGB565, 0));
-    CHECK(c.result == AAR_OK && hx_cur_screen->Height == (WORD)(DH * 2) && hx_buffers_live == 0);
+    CHECK(c.result == AAR_OK &&
+          hx_cur_screen->Height == (WORD)(hx_modes[0].h + DH) && hx_buffers_live == 0);
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     aar_serve_destroy(S);
     S = NULL;
@@ -2162,7 +2167,7 @@ static void test_buffers_with_another_pitch_fall_back_to_panning(void)
     make_serve();
     CHECK(open_display(&c, AAR_FMT_RGB565, 0));
     CHECK(c.result == AAR_OK && hx_buffers_live == 0);
-    CHECK(hx_cur_screen && hx_cur_screen->Height == (WORD)(DH * 3));
+    CHECK(hx_cur_screen && c.out[AAR_R_DISPLAY_OPEN_SPARE] != 0);
     CHECK(call(AAR_OP_DISPLAY_CLOSE, 23, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0, &c));
     finish();
 }
@@ -3724,6 +3729,8 @@ static void test_display_info_and_modes(void)
     volatile uint8_t *b;
 
     setup("display_info");
+    hx_modes[0].w = 640;
+    hx_modes[0].h = 480;
     make_serve();
     /* the modes need no display: the Picasso96 modes that are available, the one of the
      * Workbench screen's size preferred (640 x 480) */
