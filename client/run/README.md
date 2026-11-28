@@ -419,7 +419,7 @@ an app after a stop, read by `aar_serve`), the supported `profiles` and
 `groups`. A launch the platform cannot run is refused before it claims anything.
 
 **ZZ9000.** The first platform behind `aar.library`. It needs a Zorro III board
-with firmware that implements AAR API 0.5, `zz9k.library` revision 36 or later
+with firmware that implements AAR API 0.6, `zz9k.library` revision 36 or later
 (only to reach the board's mailbox) and `mmu.library` 41 or later, because the
 board's shared buffers must be mapped cache-inhibited. The platform takes 16
 strings of 127 bytes (so 15 app arguments), a `WEIGHT` from 1 to 256, and

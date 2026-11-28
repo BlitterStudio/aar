@@ -1000,10 +1000,14 @@ bit once. Do not gate on `aar_api.version` alone; use `size`, `groups` and
 `aar_get_info`. `AAR_API_AT_LEAST` is there for a code path that needs a whole
 release.
 
-A breaking change needs a new major. The runtime rejects a note whose
-`api_major` differs from its own, or whose `api_minor_required` is above its own
-minor. Do not renumber or reorder fields. Do not change the meaning of an
-`AAR_*` value.
+The runtime returns `AAR_E_INVAL` if the note's `api_major` differs from its
+own or if `api_minor_required` falls outside the range from
+`AAR_API_MINOR_OLDEST` to `AAR_API_MINOR`, inclusive. Both bounds are 6 in
+the 0.6 draft. Raising the runtime minor alone does not raise the lower bound;
+that bound tracks the oldest supported table layout.
+
+From 1.0, a breaking change needs a new major. Within a major, do not renumber
+or reorder fields or change the meaning of an `AAR_*` value.
 
 The note layout has its own version, `AAR_NOTE_VERSION`, which is not the API
 minor.
