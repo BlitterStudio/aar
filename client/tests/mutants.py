@@ -1052,9 +1052,9 @@ mutant("output-note-into-the-failed-pipe", "output_error_note", "client/serve/aa
 mutant("display-buffers-forced", "display_strategy", "client/serve/aar_serve_gfx.c",
        ("    if (!scale_screen && s->cfg.display_strategy == AAR_SERVE_DISPLAY_BUFFERS) {", "    if (!scale_screen) {"))
 mutant("pan3-forced", "display_strategy", "client/serve/aar_serve_gfx.c",
-       ("        if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN3 &&\n            h <= AAR_SERVE_SCREEN_MAX / 3u)", "        if (h <= AAR_SERVE_SCREEN_MAX / 3u)"))
+       ("        if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN3 &&\n            pan_base && h <= (AAR_SERVE_SCREEN_MAX - pan_base) / 2u)", "        if (pan_base && h <= (AAR_SERVE_SCREEN_MAX - pan_base) / 2u)"))
 mutant("pan2-forced", "display_strategy", "client/serve/aar_serve_gfx.c",
-       ("            if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN2 &&\n                h <= AAR_SERVE_SCREEN_MAX / 2u)", "            if (h <= AAR_SERVE_SCREEN_MAX / 2u)"))
+       ("            if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN2 &&\n                pan_base && h <= AAR_SERVE_SCREEN_MAX - pan_base)", "            if (pan_base && h <= AAR_SERVE_SCREEN_MAX - pan_base)"))
 mutant("input-window-despite-the-flag", "no_input_window", "client/serve/aar_serve_gfx.c",
        ("    if (!(s->cfg.flags & AAR_SERVEF_NO_INPUT_WINDOW)) {", "    if (1) {"))
 mutant("buffer-pitch-unchecked", "buffer_pitch", "client/serve/aar_serve_gfx.c",
@@ -1066,7 +1066,7 @@ mutant("public-screen-not-restored", "display_buffers", "client/serve/aar_serve_
 mutant("safe-messages-not-awaited", "destroy_flip_out", "client/serve/aar_serve_gfx.c",
        ("        flip_wait_safe_messages(s);\n        s->gfx.flip_pending = 0;", "        s->gfx.flip_pending = 0;"))
 mutant("tall-screen-height-unchecked", "display_pan3_short", "client/serve/aar_serve_gfx.c",
-       ("        if (tall && tall->Height >= (WORD)(h * 3u) &&", "        if (tall &&"))
+       ("        if (tall && tall->Height >= (WORD)(pan_base + h * 2u) &&", "        if (tall &&"))
 mutant("ahi-ring-underrun-not-read", "ahi_gaps", "client/serve/aar_serve_ahi.c",
        ("        if (left == 0u) {", "        if (0) {"))
 mutant("ahi-buffer-reused-while-pending", "audio_chunk", "client/serve/aar_serve_ahi.c",

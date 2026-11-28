@@ -560,7 +560,8 @@ static int test_display_caps(void)
 
         CHECK_RC(aar_display_open(64u, 48u, AAR_FMT_RGB565, flags, &s), AAR_OK, 230);
         CHECK((s.caps & ALL_CAPS) == cases[i].caps, 231);
-        CHECK((s.caps & AAR_DISPCAP_ASYNC) != 0u, 232);
+        CHECK((s.caps & (AAR_DISPCAP_ASYNC | AAR_DISPCAP_PRESENT_FEEDBACK)) ==
+              (AAR_DISPCAP_ASYNC | AAR_DISPCAP_PRESENT_FEEDBACK), 232);
         CHECK_RC(aar_display_close(s.id), AAR_OK, 233);
     }
     CHECK_RC(aar_display_open(64u, 48u, AAR_FMT_RGB565, 1u << 8, &s), AAR_E_INVAL, 234);
@@ -764,6 +765,138 @@ static int test_present_vblank(void)
     printf("vblank=ok period_us=%llu\n", (unsigned long long)period);
     CHECK_RC(aar_display_close(s.id), AAR_OK, 330);
     return 0;
+}
+
+static int feedback_is(const aar_present_result *result, uint64_t id,
+                       uint32_t outcome, uint32_t reason, uint64_t begin, uint64_t end)
+{
+    return result->frame_id == id && result->outcome == outcome &&
+           result->reason == reason && result->completed_us >= begin &&
+           result->completed_us <= end;
+}
+
+static int test_present_feedback(void)
+{
+    aar_surface s;
+    aar_present_result result;
+    SDL_Event stop = {0};
+    uint64_t sync, async, cancelled, resized, stopped, begin, end, shown;
+    uint64_t rejected = 1u;
+    const void *pixels;
+    uint32_t i;
+    int seen_sync = 0;
+    int seen_cancelled = 0;
+
+    CHECK_RC(aar_display_present_poll(NULL), AAR_E_INVAL, 600);
+    CHECK_RC(aar_display_present(0u, 0u, &rejected), AAR_E_INVAL, 601);
+    CHECK(rejected == 0u, 602);
+    CHECK_RC(aar_display_open(8u, 8u, AAR_FMT_RGB565,
+                              AAR_DISPCAP_PRESENT_FEEDBACK, &s), AAR_E_INVAL, 603);
+    CHECK_RC(aar_display_open(8u, 8u, AAR_FMT_RGB565, 0u, &s), AAR_OK, 604);
+    CHECK((s.caps & AAR_DISPCAP_PRESENT_FEEDBACK) != 0u, 605);
+    CHECK_RC(aar_display_present(s.id, 0u, NULL), AAR_E_INVAL, 606);
+    rejected = 1u;
+    CHECK_RC(aar_display_present(s.id + 1u, 0u, &rejected), AAR_E_INVAL, 607);
+    CHECK(rejected == 0u, 608);
+    rejected = 1u;
+    CHECK_RC(aar_display_present(s.id, AAR_PRESENT_GL | AAR_PRESENT_ASYNC, &rejected),
+             AAR_E_INVAL, 609);
+    CHECK(rejected == 0u, 610);
+    rejected = 1u;
+    CHECK_RC(aar_display_present(s.id, 0x80000000u, &rejected), AAR_E_INVAL, 611);
+    CHECK(rejected == 0u, 612);
+    rejected = 1u;
+    CHECK_RC(aar_display_present(s.id, AAR_PRESENT_GL, &rejected), AAR_E_NOSYS, 613);
+    CHECK(rejected == 0u && aar_display_last_present_us() == 0u, 614);
+    result.frame_id = 123u;
+    CHECK_RC(aar_display_present_poll(&result), 0, 615);
+    CHECK(result.frame_id == 123u, 661);
+
+    pixels = s.back;
+    begin = aar_time_us();
+    CHECK_RC(aar_display_present(s.id, 0u, &sync), AAR_OK, 616);
+    end = aar_time_us();
+    CHECK(sync != 0u, 617);
+    CHECK_RC(aar_display_present_poll(&result), 1, 618);
+    CHECK(feedback_is(&result, sync, AAR_PRESENT_ACKNOWLEDGED,
+                      AAR_PRESENT_REASON_NONE, begin, end), 619);
+    shown = aar_display_last_present_us();
+    CHECK(shown == result.completed_us, 620);
+    CHECK_RC(aar_display_refresh(&s), AAR_OK, 621);
+    CHECK(s.front == pixels && s.back != pixels, 622);
+
+    pixels = s.back;
+    CHECK_RC(aar_display_present(s.id, AAR_PRESENT_ASYNC, &async), AAR_OK, 623);
+    CHECK(async != 0u && async != sync, 624);
+    CHECK_RC(aar_display_present_poll(&result), 0, 625);
+    CHECK_RC(aar_display_flip_idle(), 0, 626);
+    CHECK_RC(aar_display_refresh(&s), AAR_E_BUSY, 627);
+    rejected = 1u;
+    CHECK_RC(aar_display_present(s.id, 0u, &rejected), AAR_E_BUSY, 628);
+    CHECK(rejected == 0u && aar_display_last_present_us() == shown, 629);
+    begin = aar_time_us();
+    CHECK_RC(aar_display_vsync(), AAR_OK, 630);
+    end = aar_time_us();
+    CHECK_RC(aar_display_present_poll(&result), 1, 631);
+    CHECK(feedback_is(&result, async, AAR_PRESENT_ACKNOWLEDGED,
+                      AAR_PRESENT_REASON_NONE, begin, end), 632);
+    CHECK_RC(aar_display_flip_idle(), 1, 633);
+    CHECK_RC(aar_display_refresh(&s), AAR_OK, 634);
+    CHECK(aar_display_last_present_us() == result.completed_us && s.front == pixels, 635);
+    CHECK_RC(aar_display_present_poll(&result), 0, 636);
+
+    /* A recorded success survives closing, as does the pending frame's
+     * cancellation. Poll one result now, the other across a reopen. */
+    CHECK_RC(aar_display_present(s.id, 0u, &sync), AAR_OK, 637);
+    shown = aar_display_last_present_us();
+    CHECK_RC(aar_display_present(s.id, AAR_PRESENT_ASYNC, &cancelled), AAR_OK, 638);
+    begin = aar_time_us();
+    CHECK_RC(aar_display_close(s.id), AAR_OK, 639);
+    end = aar_time_us();
+    for (i = 0u; i < 2u; i++) {
+        CHECK_RC(aar_display_present_poll(&result), 1, 640);
+        if (feedback_is(&result, sync, AAR_PRESENT_ACKNOWLEDGED,
+                        AAR_PRESENT_REASON_NONE, shown, shown))
+            seen_sync++;
+        if (feedback_is(&result, cancelled, AAR_PRESENT_UNCONFIRMED,
+                        AAR_PRESENT_REASON_CANCELLED, begin, end))
+            seen_cancelled++;
+        if (i == 0u)
+            CHECK_RC(aar_display_open(8u, 8u, AAR_FMT_RGB565,
+                                      AAR_DISPLAY_LATEST | AAR_DISPLAY_WINDOW |
+                                      AAR_DISPLAY_RESIZABLE, &s), AAR_OK, 641);
+    }
+    CHECK(seen_sync == 1 && seen_cancelled == 1, 642);
+    CHECK_RC(aar_display_present_poll(&result), 0, 643);
+
+    CHECK_RC(aar_display_present(s.id, AAR_PRESENT_ASYNC, &resized), AAR_OK, 644);
+    CHECK(resized != 0u && resized != sync && resized != async && resized != cancelled, 645);
+    begin = aar_time_us();
+    CHECK_RC(aar_display_resize(s.id, 9u, 9u, &s), AAR_OK, 646);
+    end = aar_time_us();
+    CHECK_RC(aar_display_present_poll(&result), 1, 647);
+    CHECK(feedback_is(&result, resized, AAR_PRESENT_UNCONFIRMED,
+                      AAR_PRESENT_REASON_CANCELLED, begin, end), 648);
+    CHECK_RC(aar_display_present_poll(&result), 0, 649);
+
+    CHECK_RC(aar_display_present(s.id, AAR_PRESENT_ASYNC, &stopped), AAR_OK, 650);
+    CHECK(stopped != 0u && stopped != resized, 651);
+    stop.type = SDL_QUIT;
+    CHECK(SDL_PushEvent(&stop) == 1, 652);
+    CHECK_RC(aar_display_present_poll(&result), 0, 653); /* no SDL pump */
+    begin = aar_time_us();
+    aar_yield();
+    end = aar_time_us();
+    CHECK(aar_should_stop() && aar_display_last_present_us() == 0u, 654);
+    CHECK_RC(aar_display_present_poll(&result), 1, 655);
+    CHECK(feedback_is(&result, stopped, AAR_PRESENT_UNCONFIRMED,
+                      AAR_PRESENT_REASON_CANCELLED, begin, end), 656);
+    rejected = 1u;
+    CHECK_RC(aar_display_present(s.id, 0u, &rejected), AAR_E_IO, 657);
+    CHECK(rejected == 0u, 658);
+    CHECK_RC(aar_display_close(s.id), AAR_OK, 659);
+    CHECK_RC(aar_display_present_poll(&result), 0, 660);
+    return AAR_OK;
 }
 
 static int fill(void *p, uint32_t bytes)
@@ -1399,6 +1532,8 @@ int aar_main(int argc, char **argv)
     }
     if (strcmp(mode, "present") == 0)
         return test_present_vblank();
+    if (strcmp(mode, "feedback") == 0)
+        return test_present_feedback();
     if (strcmp(mode, "resize") == 0)
         return test_resize();
     if (strcmp(mode, "events") == 0)
@@ -1418,7 +1553,7 @@ int aar_main(int argc, char **argv)
         CHECK(0, 256);
     if (strcmp(mode, "fail-rc") == 0)
         CHECK_RC(AAR_E_INVAL, AAR_OK, 333);
-    fprintf(stderr, "usage: api06 <files|time|locale|envdir|envproc|clip|display|present|"
+    fprintf(stderr, "usage: api06 <files|time|locale|envdir|envproc|clip|display|present|feedback|"
                     "resize|events|events_nocap|events_scaled|script|merge|pads|"
                     "fail-check|fail-rc>\n");
     return 1;

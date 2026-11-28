@@ -858,6 +858,23 @@ static int open_screen(struct aar_serve *s, uint32_t w, uint32_t h,
     if (!scale_screen && !s->gfx.have_two) {
         struct Screen *tall = NULL;
         ULONG tall_front = 0, tall_pitch = 0;
+        struct DimensionInfo dim;
+        uint32_t pan_base = 0, pan_width = w;
+
+        /* At the last page offset the whole visible viewport must still
+         * fit in the bitmap. P96 otherwise clamps the requested pan. */
+        if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN2 &&
+            X_GET_DISPLAY_INFO(&dim, sizeof(dim), DTAG_DIMS, mode)) {
+            int visible_h = dim.Nominal.MaxY - dim.Nominal.MinY + 1;
+            int visible_w = dim.Nominal.MaxX - dim.Nominal.MinX + 1;
+
+            if (visible_w > 0 && (uint32_t)visible_w <= AAR_SERVE_SCREEN_MAX &&
+                visible_h > 0 && (uint32_t)visible_h <= AAR_SERVE_SCREEN_MAX) {
+                pan_base = (uint32_t)visible_h > h ? (uint32_t)visible_h : h;
+                if ((uint32_t)visible_w > w)
+                    pan_width = (uint32_t)visible_w;
+            }
+        }
 
         if (s->gfx.safe_port) {
             X_DELETE_PORT(s->gfx.safe_port);
@@ -871,9 +888,9 @@ static int open_screen(struct aar_serve *s, uint32_t w, uint32_t h,
         s->gfx.buf_front = NULL;
         back = 0;
         if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN3 &&
-            h <= AAR_SERVE_SCREEN_MAX / 3u)
-            tall = open_p96_screen(s, mode, w, h * 3u, depth, rgb);
-        if (tall && tall->Height >= (WORD)(h * 3u) &&
+            pan_base && h <= (AAR_SERVE_SCREEN_MAX - pan_base) / 2u)
+            tall = open_p96_screen(s, mode, pan_width, pan_base + h * 2u, depth, rgb);
+        if (tall && tall->Height >= (WORD)(pan_base + h * 2u) &&
             bitmap_token(s, tall->RastPort.BitMap, &tall_front, &tall_pitch)) {
             X_P96_CLOSE_SCREEN(s, s->gfx.screen);
             s->gfx.screen = tall;
@@ -889,9 +906,9 @@ static int open_screen(struct aar_serve *s, uint32_t w, uint32_t h,
                 X_P96_CLOSE_SCREEN(s, tall);
             tall = NULL;
             if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN2 &&
-                h <= AAR_SERVE_SCREEN_MAX / 2u)
-                tall = open_p96_screen(s, mode, w, h * 2u, depth, rgb);
-            if (tall && tall->Height >= (WORD)(h * 2u) &&
+                pan_base && h <= AAR_SERVE_SCREEN_MAX - pan_base)
+                tall = open_p96_screen(s, mode, pan_width, pan_base + h, depth, rgb);
+            if (tall && tall->Height >= (WORD)(pan_base + h) &&
                 bitmap_token(s, tall->RastPort.BitMap, &tall_front, &tall_pitch)) {
                 X_P96_CLOSE_SCREEN(s, s->gfx.screen);
                 s->gfx.screen = tall;

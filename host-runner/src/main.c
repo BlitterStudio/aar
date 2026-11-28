@@ -358,6 +358,7 @@ static void host_finish(void)
     if (finished)
         return;
     finished = 1;
+    host_display_cancel_tracked();
     host_pump();
     if (opt.dump_front)
         host_display_dump(opt.dump_front);

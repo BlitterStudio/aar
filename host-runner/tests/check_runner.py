@@ -319,6 +319,24 @@ def check_mailbox(exe):
     expect_ok(proc)
 
 
+def check_mailbox_feedback(exe):
+    # The dummy SDL video driver still has a software renderer when
+    # --headless is omitted. Check the visible path and the headless sink.
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "latest.bin")
+        for options in (["--no-gl"], ["--headless", "--no-gl"]):
+            proc = run(exe, [*options, "--dump-front", path, "--", "latest"])
+            expect_ok(proc)
+            if b" flips=2 " not in proc.stderr:
+                show(proc)
+                raise SystemExit("mailbox feedback: only the baseline and B were presented")
+            with open(path, "rb") as fh:
+                if fh.read() != b"\x7c" * (8 * 8 * 2):
+                    raise SystemExit("mailbox feedback: the dump is not frame B")
+            os.remove(path)
+    expect_ok(run(exe, ["--headless", "--no-gl", "--", "saturation"]))
+
+
 def check_nogl(exe):
     # --no-gl takes the group away: aar_gl_bind returns NULL, and the template
     # ends with 2 before it draws anything.
@@ -392,6 +410,19 @@ def check_glpump(exe):
     if proc.returncode == 77:
         gl_missing(proc, "glpump")
     expect_ok(proc)
+
+
+def check_glpresent(exe):
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "gl.bin")
+        proc = run(exe, ["--headless", "--dump-front", path, "--", "present"])
+        if proc.returncode == 77:
+            gl_missing(proc, "glpresent")
+        expect_ok(proc)
+        if b" flips=1 " not in proc.stderr:
+            show(proc)
+            raise SystemExit("glpresent: only the successful SDL swap should count")
+        check_gl_dump(path, 64, 48)
 
 
 def check_glresize(exe):
@@ -884,6 +915,10 @@ def check_api06_present(exe):
     api06_run(exe, ["present"], options=["--no-gl"])
 
 
+def check_api06_feedback(exe):
+    api06_run(exe, ["feedback"], options=["--no-gl"])
+
+
 def check_api06_resize(exe):
     with tempfile.TemporaryDirectory() as root:
         script = os.path.join(root, "input.txt")
@@ -1048,10 +1083,12 @@ CHECKS = {
     "msgflood": check_msgflood,
     "conshort": check_conshort,
     "mailbox": check_mailbox,
+    "mailbox_feedback": check_mailbox_feedback,
     "nogl": check_nogl,
     "glabsent": check_glabsent,
     "gl": check_gl,
     "glpump": check_glpump,
+    "glpresent": check_glpresent,
     "glwindow": check_glwindow,
     "glresize": check_glresize,
     "glconf": check_glconf,
@@ -1067,6 +1104,7 @@ CHECKS = {
     "api06_clip": check_api06_clip,
     "api06_display": check_api06_display,
     "api06_present": check_api06_present,
+    "api06_feedback": check_api06_feedback,
     "api06_resize": check_api06_resize,
     "api06_events": check_api06_events,
     "api06_input": check_api06_input,

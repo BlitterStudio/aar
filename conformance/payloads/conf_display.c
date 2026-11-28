@@ -127,7 +127,8 @@ static void test_open(void)
                 conf_buf_u64(&t.why, w * bpp_of(formats[f]));
             }
             conf_check(&t, s.reserved == 0, "the reserved word of the surface is not 0");
-            conf_check(&t, (s.caps & ~7u) == 0, "caps holds a bit that is not defined");
+            conf_check(&t, (s.caps & ~(7u | AAR_DISPCAP_PRESENT_FEEDBACK)) == 0,
+                       "caps holds a bit that is not defined");
             close_s(&t, &s);
         }
     }
@@ -701,7 +702,8 @@ static void test_palette_refused(void)
 /* The caps bits of the flags of API 0.6. */
 #define NEW_CAPS (AAR_DISPCAP_WINDOW | AAR_DISPCAP_RESIZE | AAR_DISPCAP_POINTER_ABS | AAR_DISPCAP_TEXT_INPUT | \
                   AAR_DISPCAP_CLOSE_REQUEST | AAR_DISPCAP_SCALED)
-#define ALL_CAPS (AAR_DISPCAP_ASYNC | AAR_DISPCAP_LATEST | AAR_DISPCAP_CLUT8 | NEW_CAPS)
+#define ALL_CAPS (AAR_DISPCAP_ASYNC | AAR_DISPCAP_LATEST | AAR_DISPCAP_CLUT8 | \
+                  AAR_DISPCAP_PRESENT_FEEDBACK | NEW_CAPS)
 
 /* A client that does not serve a call answers AAR_E_NOSYS (spec 8.2). The row then passes and says so. */
 static int not_served(struct conf_test *t, int rc, const char *call)
@@ -1164,6 +1166,134 @@ static void test_last_present(void)
     conf_end(&t);
 }
 
+static void test_present_feedback(void)
+{
+    struct conf_test t;
+    aar_surface s;
+    aar_present_result result;
+    uint64_t previous = 0;
+    uint64_t id = 1;
+    unsigned i, count;
+
+    conf_begin(&t, "C-DISPLAY.34");
+    if (!open_s(&t, &s, 160, 100, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC | AAR_DISPLAY_WINDOW)) {
+        conf_end(&t);
+        return;
+    }
+    if (!(s.caps & AAR_DISPCAP_PRESENT_FEEDBACK)) {
+        conf_check(&t, aar_display_present(s.id, 0, &id) == AAR_E_NOSYS && !id,
+                   "present without feedback support was not refused");
+        conf_buf_str(&t.note, "feedback not granted");
+        goto done;
+    }
+    conf_check(&t, aar_display_present_poll(&result) == 0, "result before any tracked frame");
+    conf_check(&t, aar_display_present(s.id, AAR_PRESENT_GL | AAR_PRESENT_ASYNC, &id) == AAR_E_INVAL && !id,
+               "conflicting present flags were not refused");
+    count = (s.caps & AAR_DISPCAP_ASYNC) ? 2u : 1u;
+    for (i = 0; i < count; ++i) {
+        uint64_t started;
+        int rc;
+
+        if (!s.back || aar_display_refresh(&s) != AAR_OK || !s.back) {
+            conf_check(&t, 0, "cannot refresh the drawing buffer");
+            break;
+        }
+        fill_bytes_zero(s.back, i ? 0xaau : 0x55u, s.pitch * s.height);
+        started = aar_time_us();
+        rc = aar_display_present(s.id, i ? AAR_PRESENT_ASYNC : 0u, &id);
+        if (!expect_rc(&t, rc, AAR_OK, "tracked buffer present"))
+            break;
+        conf_check(&t, id != 0u && id != previous, "invalid or duplicate frame ID");
+        previous = id;
+        do {
+            rc = aar_display_present_poll(&result);
+            if (rc != 0)
+                break;
+            aar_sleep_us(1000u);
+        } while (aar_time_us() - started < 1000000u && !aar_should_stop());
+        if (!expect_rc(&t, rc, 1, "collect the tracked frame"))
+            break;
+        conf_check(&t, result.frame_id == id &&
+                      result.outcome == AAR_PRESENT_ACKNOWLEDGED &&
+                      result.reason == AAR_PRESENT_REASON_NONE,
+                   "normal flip did not return its acknowledgement");
+        conf_check(&t, result.completed_us >= started &&
+                      result.completed_us <= aar_time_us(),
+                   "result time is outside the submission-to-collection interval");
+    }
+done:
+    close_s(&t, &s);
+    if (s.caps & AAR_DISPCAP_PRESENT_FEEDBACK)
+        conf_check(&t, aar_display_present_poll(&result) == 0, "frame result returned more than once");
+    conf_end(&t);
+}
+
+static void test_latest_feedback(void)
+{
+    struct conf_test t;
+    aar_surface s;
+    uint64_t id[4], started[4], last_started = 0;
+    unsigned accepted = 0, seen = 0, drained = 0, replaced = 0;
+    uint32_t dropped, flags;
+
+    conf_begin(&t, "C-DISPLAY.35");
+    if (!open_s(&t, &s, 320, 200, AAR_FMT_RGB565, AAR_DISPLAY_VSYNC | AAR_DISPLAY_LATEST))
+        goto done;
+    if ((s.caps & (AAR_DISPCAP_LATEST | AAR_DISPCAP_PRESENT_FEEDBACK)) !=
+                  (AAR_DISPCAP_LATEST | AAR_DISPCAP_PRESENT_FEEDBACK)) {
+        conf_buf_str(&t.note, "LATEST or feedback not granted");
+        goto close;
+    }
+    flags = (s.caps & AAR_DISPCAP_ASYNC) ? AAR_PRESENT_ASYNC : 0u;
+    dropped = aar_display_latest_dropped();
+    while (accepted < sizeof(id) / sizeof(id[0])) {
+        int rc = aar_display_refresh(&s);
+
+        if (!conf_check(&t, rc == AAR_OK && s.back, "could not refresh the LATEST buffer"))
+            goto close;
+        fill_bytes_zero(s.back, 0x20u * accepted, s.pitch * s.height);
+        last_started = started[accepted] = aar_time_us();
+        if (!expect_rc(&t, aar_display_present(s.id, flags, &id[accepted]), AAR_OK,
+                       "tracked LATEST flip"))
+            goto close;
+        ++accepted;
+    }
+    while (drained < accepted) {
+        aar_present_result result;
+        unsigned i;
+        int rc = aar_display_present_poll(&result);
+
+        if (rc == 0 && aar_time_us() - last_started < 1000000u && !aar_should_stop()) {
+            aar_sleep_us(1000);
+            continue;
+        }
+        if (!expect_rc(&t, rc, 1, "collect the LATEST result"))
+            goto close;
+        for (i = 0; i < accepted && id[i] != result.frame_id; ++i)
+            ;
+        if (!conf_check(&t, result.frame_id && i < accepted && !(seen & (1u << i)),
+                        "unexpected or duplicate LATEST frame ID"))
+            goto close;
+        seen |= 1u << i;
+        ++drained;
+        replaced += result.outcome == AAR_PRESENT_REPLACED;
+        conf_check(&t, result.reason == AAR_PRESENT_REASON_NONE &&
+                      (result.outcome == AAR_PRESENT_ACKNOWLEDGED ||
+                       (result.outcome == AAR_PRESENT_REPLACED && i + 1u < accepted)),
+                   "LATEST frame failed, or final frame was not acknowledged");
+        conf_check(&t, result.completed_us >= started[i] && result.completed_us <= aar_time_us(),
+                   "LATEST result time is outside the submission-to-collection interval");
+    }
+    conf_check(&t, replaced == aar_display_latest_dropped() - dropped,
+               "replacement count differs from tracked results");
+    conf_buf_str(&t.note, "frames replaced: ");
+    conf_buf_u64(&t.note, replaced);
+close:
+    close_s(&t, &s);
+done:
+    conf_end(&t);
+}
+
 /* Variant window: the rows above, with the client's own display (a window on a public screen where the client
  * can show one), because they ask the client. The variant std has the runner's display table, which
  * serves none of the display calls of API 0.6. */
@@ -1177,6 +1307,7 @@ static void variant_window(void)
     test_resize();
     test_vblank();
     test_new_served();
+    test_present_feedback();
 }
 
 /* Variants pointer and resize (the operator rows C-DISPLAY.30 and C-DISPLAY.31, only with INTERACTIVE). */
@@ -1332,6 +1463,10 @@ int aar_main(int argc, char **argv)
         variant_window();
         return conf_finish("C-DISPLAY");
     }
+    if (variant && cmio_streq(variant, "present-latest")) {
+        test_latest_feedback();
+        return conf_finish("C-DISPLAY");
+    }
     if (variant && cmio_streq(variant, "pointer")) {
         variant_pointer(argc, argv);
         return conf_finish("C-DISPLAY");
@@ -1361,5 +1496,9 @@ int aar_main(int argc, char **argv)
     test_palette();
     test_palette_refused();
     test_last_present();
+    if (!have_peer) {
+        test_present_feedback();
+        test_latest_feedback();
+    }
     return conf_finish("C-DISPLAY");
 }
