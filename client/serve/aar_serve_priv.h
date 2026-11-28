@@ -272,6 +272,8 @@ struct aar_serve_file_transfer {
     uint32_t chunk;              /* bytes requested in the packet now out */
 };
 
+struct aar_serve_requester;
+
 /*
  * Each section belongs to one backend file and is touched by that file only,
  * except where a section says otherwise. A backend that needs more state adds
@@ -311,6 +313,8 @@ struct aar_serve {
         struct aar_serve_target target;
         struct aar_serve_file_transfer file;
     } dos;
+
+    struct aar_serve_requester *requester; /* Native ASL dialog in flight. */
 
     /* ---- aar_serve_con.c: the console ------------------------------------------------------ */
     struct {

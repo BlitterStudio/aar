@@ -655,6 +655,14 @@ return length-prefixed BCPL names; aar-run converts them to NUL-terminated
 names in the request buffer before posting the list completion. The end of a
 list is `AAR_E_NOENT`.
 
+Apps can call `aar_file_request` for a single-file Open or Save As dialog.
+aar-run needs `asl.library` V44 or later to support this call. The dialog
+starts in `ROOT` unless the app supplies an allowed initial path.
+Selections follow the same `ROOT` and `ABS` rules as file operations.
+The result is a path; selecting it does not open, create or overwrite a file.
+There is no 30-second timeout while the dialog is open. Cancel returns to
+the app without a path; Ctrl-C stops the app and dismisses the dialog.
+
 The open request carries the AAR file flags: `READ` 1, `WRITE` 2, `CREATE` 4,
 `TRUNCATE` 8, and `EXCL` 16. aar-run refuses an invalid combination with
 `AAR_E_INVAL` (-2) before it touches AmigaDOS: neither `READ` nor `WRITE`, `CREATE`

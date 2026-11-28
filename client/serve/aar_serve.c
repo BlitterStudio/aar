@@ -200,6 +200,8 @@ static uint32_t timed_wake_us(struct aar_serve *s)
         if (s->reply_n)
             us = 1000UL;
     }
+    if (s->requester && s->stop_asked && us > 10000UL)
+        us = 10000UL;
     /* A DISPLAY_VBLANK that waits has its timeout to meet. */
     vb = aar_serve_display_vblank_wait_us(&s->core.display, now_ms(s));
     if (vb < us)
@@ -325,6 +327,8 @@ static int group_served(const struct aar_serve *s, uint16_t op)
     return group == 0 || s->cfg.groups == 0 || (s->cfg.groups & group) != 0;
 }
 
+#include "aar_serve_requester.c"
+
 /*
  * The app's messages. The library keeps 64 unread ones, and a message that the
  * full inbox cannot take blocks every request behind it in the SQ, so a client
@@ -386,8 +390,8 @@ static void service_requests(struct aar_serve *s)
             d.result = AAR_E_NOSYS;
         else if (file_transfer_busy(s, &q))
             d.result = AAR_E_BUSY;
-        else if ((file_transfer_flagged(&q) ?
-                  file_transfer_begin(s, &q, &d) :
+        else if ((q.op == AAR_OP_FILE_REQUEST ? requester_begin(s, &q, &d) :
+                  file_transfer_flagged(&q) ? file_transfer_begin(s, &q, &d) :
                   aar_serve_core_request(&s->core, &q, &d)) != AAR_SERVE_REQ_DONE) {
             /* A parked DISPLAY_VBLANK has a deadline. The timer still armed may be
              * set for longer, so it is taken back and the step arms the deadline. */
@@ -714,6 +718,7 @@ void aar_serve_destroy(aar_serve *s)
             leaving != AAR_STATE_IDLE)
             stop_owned(s);
     }
+    requester_destroy(s);
     log_sink_remove(s);
     ahi_close(s);
     /* A pending console read cannot be cancelled. Close the app screen before
@@ -751,6 +756,7 @@ ULONG aar_serve_sigmask(const aar_serve *cs)
         mask |= 1UL << s->con.port->mp_SigBit;
     if (s->dos.file.fh)
         mask |= 1UL << s->dos.file.port->mp_SigBit;
+    mask |= requester_sigmask(s);
     if (s->gfx.input_win && s->gfx.input_win->UserPort)
         mask |= 1UL << s->gfx.input_win->UserPort->mp_SigBit;
     /* The SafeMessage of a flip and the completion of an AHI buffer: with no
@@ -776,6 +782,7 @@ static LONG step_body(aar_serve *s, ULONG signals)
     /* The library renews the lease from its own interrupt. A claim whose
      * handle went stale is not served any more. */
     if (!claim_live(s)) {
+        requester_pump(s, 1);
         s->ownership_lost = 1;
         timer_reap(s);
         return AAR_SERVE_LOST;
@@ -805,16 +812,19 @@ static LONG step_body(aar_serve *s, ULONG signals)
     aar_serve_display_vblank_check(&s->core.display, now_ms(s));
     service_ahi_audio(s);
     service_file_transfer(s);
-    reply_flush(s);
     /* The claim may have been revoked while a request was served. One small
      * status read gives the state and the end reason; any failure of it means
      * the claim is gone. */
     if (claim_state(s, &state, &end_reason) != AAR_OK) {
+        requester_pump(s, 1);
         s->ownership_lost = 1;
         timer_reap(s);
         return AAR_SERVE_LOST;
     }
     s->app_state = state;
+    requester_pump(s, s->stop_asked || state != AAR_STATE_RUNNING ||
+                      end_reason != AAR_END_NONE);
+    reply_flush(s);
     if (state == AAR_STATE_FAULTED)
         s->saw_fault = 1;
     memset(&leave, 0, sizeof(leave));
@@ -889,6 +899,7 @@ void aar_serve_read_done(aar_serve *s, LONG got, const void *data)
 void aar_serve_stop(aar_serve *s)
 {
     request_stop(s);
+    requester_pump(s, 1);
 }
 
 void aar_serve_status(aar_serve *s, const char *text)

@@ -2404,6 +2404,95 @@ end:
     conf_end(&t);
 }
 
+/* ---- C-FILE.57 and C-FILE.58: native requester variants ---- */
+
+static int request_fixture_kept(const char *path)
+{
+    char bytes[sizeof CONF_FILE_TEXT];
+    uint32_t n, i;
+    int fd = aar_file_open(path, AAR_FILE_READ);
+    int rc, close_rc;
+
+    if (fd < 0)
+        return 0;
+    rc = aar_file_read(fd, bytes, sizeof bytes, &n);
+    close_rc = aar_file_close(fd);
+    if (rc != AAR_OK || close_rc != AAR_OK || n != sizeof bytes - 1u)
+        return 0;
+    for (i = 0; i < n; i++)
+        if (bytes[i] != CONF_FILE_TEXT[i])
+            return 0;
+    return 1;
+}
+
+static int request_output_untouched(const char *path, uint32_t bytes)
+{
+    uint32_t i;
+
+    for (i = 0; i < bytes; i++)
+        if (path[i] != '?')
+            return 0;
+    return 1;
+}
+
+static int run_request(void)
+{
+    const char *open_path = CONF_FILE_DIR "/" CONF_FILE_TEXT_NAME;
+    const char *save_path = CONF_FILE_DIR "/" CONF_FILE_REQUEST_SAVE_NAME;
+    char path[256];
+    aar_stat st;
+    uint32_t i;
+    int rc;
+
+    rc = aar_file_request(0, "AAR Open: accept the fixture", open_path, path, sizeof path);
+    if (rc == AAR_E_NOSYS)
+        return CONF_FILE_REQUEST_UNSUPPORTED;
+    if (rc != 1 || !seq(path, open_path) || !request_fixture_kept(path))
+        return CONF_FILE_REQUEST_OPEN_FAILED;
+
+    st.size = sizeof st;
+    if (aar_file_stat(save_path, &st) != AAR_E_NOENT)
+        return CONF_FILE_REQUEST_SAVE_EXISTS;
+    rc = aar_file_request(AAR_FILE_REQUEST_SAVE, "AAR Save As: accept the name",
+                          save_path, path, sizeof path);
+    if (rc != 1 || !seq(path, save_path))
+        return CONF_FILE_REQUEST_SAVE_FAILED;
+
+    for (i = 0; i < sizeof path; i++)
+        path[i] = '?';
+    rc = aar_file_request(0, "AAR Open: cancel this requester", open_path, path, sizeof path);
+    if (rc != 0 || !request_output_untouched(path, sizeof path))
+        return CONF_FILE_REQUEST_CANCEL_FAILED;
+
+    rc = aar_file_request(0, "AAR Open: select a file outside ROOT", open_path, path, sizeof path);
+    if (rc != AAR_E_ACCES || !request_output_untouched(path, sizeof path))
+        return CONF_FILE_REQUEST_OUTSIDE_FAILED;
+
+    st.size = sizeof st;
+    if (!request_fixture_kept(open_path) || aar_file_stat(save_path, &st) != AAR_E_NOENT)
+        return CONF_FILE_REQUEST_CHANGED_FILES;
+    return CONF_FILE_REQUEST_OK;
+}
+
+static int run_request_stop(void)
+{
+    char path[256];
+    uint64_t start;
+    int rc;
+
+    if (conf_file_send(CONF_FILE_REQUEST_STOP_BEGIN, 0, 0, 0, 0) != AAR_OK)
+        return CONF_FILE_REQUEST_STOP_SIGNAL_FAILED;
+    start = aar_time_us();
+    rc = aar_file_request(0, "AAR Open: wait for the runner to stop", NULL, path, sizeof path);
+    if (rc == AAR_E_NOSYS)
+        return CONF_FILE_REQUEST_UNSUPPORTED;
+    if (rc != AAR_E_IO || !aar_should_stop())
+        return CONF_FILE_REQUEST_STOP_FAILED;
+    if (aar_time_us() - start < CONF_FILE_REQUEST_MIN_WAIT_US)
+        return CONF_FILE_REQUEST_STOP_EARLY;
+    return CONF_FILE_REQUEST_OK;
+}
+
 /* ---- main --------------------------------------------------------------------------------------------------------------- */
 
 int aar_main(int argc, char **argv)
@@ -2430,6 +2519,10 @@ int aar_main(int argc, char **argv)
             run_abs(abs);
         return conf_finish("C-FILE");
     }
+    if (variant && seq(variant, CONF_FILE_VARIANT_REQUEST))
+        return run_request();
+    if (variant && seq(variant, CONF_FILE_VARIANT_REQUEST_STOP))
+        return run_request_stop();
 
     test_long_path();
     test_root();

@@ -378,6 +378,10 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_OP_VOLUME_INFO   0x1Fu /* path in buf; out: BLOCKS_TOTAL, BLOCKS_USED, BLOCK_BYTES, FLAGS (AAR_VOLF_*) */
 #define AAR_OP_FILE_GET_COMMENT 0x22u /* path in buf; arg: CAP; comment goes to buf; out: LEN */
 #define AAR_OP_FILE_SET_COMMENT 0x23u /* buf holds path NUL followed by the comment bytes */
+/* Native requester (spec 9.6). The buffer starts with title NUL, initial_path
+ * NUL. buf_len is max(IN_BYTES, CAP). On result 1, the selected native path
+ * replaces the input; LEN excludes its NUL. No write on cancellation or error. */
+#define AAR_OP_FILE_REQUEST   0x24u /* arg: FLAGS, IN_BYTES, CAP; out: LEN */
 
 /* Console. The bytes sit in a console buffer named by buf, buf_off, buf_len. */
 #define AAR_OP_CONSOLE_WRITE 0x20u /* bytes in buf; out: COUNT consumed */
@@ -444,6 +448,10 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_R_VOLUME_FLAGS     3u /* AAR_VOLF_* */
 #define AAR_A_FILE_COMMENT_CAP 0u /* GET_COMMENT: output room, at most buf_len */
 #define AAR_R_FILE_COMMENT_LEN 0u /* GET_COMMENT: full length, excluding any terminator */
+#define AAR_A_FILE_REQUEST_FLAGS    0u /* AAR_FILE_REQUEST_* */
+#define AAR_A_FILE_REQUEST_IN_BYTES 1u /* both input strings including their NULs */
+#define AAR_A_FILE_REQUEST_CAP      2u /* output capacity including NUL, 1..256 */
+#define AAR_R_FILE_REQUEST_LEN      0u /* selected path length excluding NUL */
 
 #define AAR_A_DISPLAY_OPEN_W      0u
 #define AAR_A_DISPLAY_OPEN_H      1u

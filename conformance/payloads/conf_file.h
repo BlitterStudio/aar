@@ -75,6 +75,28 @@
 #define CONF_FILE_VARIANT_ABS   "abs"
 #define CONF_FILE_VARIANT_STALL "stall"
 #define CONF_FILE_VARIANT_LEAK  "leak"
+#define CONF_FILE_VARIANT_REQUEST "request"
+#define CONF_FILE_VARIANT_REQUEST_STOP "request-stop"
+
+#define CONF_FILE_REQUEST_SAVE_NAME "request-save.tmp"
+#define CONF_FILE_REQUEST_STOP_BEGIN "CONF-FILE-REQ"
+#define CONF_FILE_REQUEST_WAIT_S 35u
+#define CONF_FILE_REQUEST_MIN_WAIT_US 31000000u
+
+/* Exit codes of the two requester variants, judged by the card runner. */
+enum conf_file_request_result {
+    CONF_FILE_REQUEST_OK,
+    CONF_FILE_REQUEST_UNSUPPORTED,
+    CONF_FILE_REQUEST_OPEN_FAILED,
+    CONF_FILE_REQUEST_SAVE_EXISTS,
+    CONF_FILE_REQUEST_SAVE_FAILED,
+    CONF_FILE_REQUEST_CANCEL_FAILED,
+    CONF_FILE_REQUEST_OUTSIDE_FAILED,
+    CONF_FILE_REQUEST_CHANGED_FILES,
+    CONF_FILE_REQUEST_STOP_SIGNAL_FAILED,
+    CONF_FILE_REQUEST_STOP_FAILED,
+    CONF_FILE_REQUEST_STOP_EARLY
+};
 
 /* The scratch file stopcmt.tmp of the second stop row (C-FILE.49): the payload gives it the comment KEPT
  * before the stop request, if the client serves comments, and asks for AFTER once it is stopped. The runner

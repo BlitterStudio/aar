@@ -1044,6 +1044,7 @@ struct hx_node {
     char name[24];
     int is_dir;
     int held;                    /* locks of it fail with OBJECT_IN_USE */
+    int link;                    /* nonzero: node this path component resolves to */
     uint8_t *data;
     uint32_t size;
     uint32_t cap;
@@ -1214,10 +1215,23 @@ static int hx_walk(int dir, const char *path, int *err)
                 *err = *p ? ERROR_DIR_NOT_FOUND : ERROR_OBJECT_NOT_FOUND;
                 return *p ? -1 : 0;
             }
-            cur = next;
+            cur = hx_nodes[next].link ? hx_nodes[next].link : next;
         }
     }
     return cur;
+}
+
+HX_UNUSED static BPTR hx_lock_native(const char *path)
+{
+    int err, node;
+
+    if (strncmp(path, "RAM:", 4) != 0) {
+        hx_ioerr = ERROR_OBJECT_NOT_FOUND;
+        return 0;
+    }
+    node = hx_walk(1, path + 4, &err);
+    hx_ioerr = err;
+    return node > 0 ? MKBADDR(hx_lock_new(&hx_vol_port, node)) : 0;
 }
 
 static void hx_fib_fill(struct FileInfoBlock *fib, int node)
@@ -1967,7 +1981,7 @@ HX_UNUSED static BPTR hx_current_dir(BPTR b)
 HX_UNUSED static LONG hx_name_from_lock(BPTR b, char *buf, LONG size)
 {
     struct FileLock *l = BADDR(b);
-    char tmp[128];
+    char tmp[512];
     int n = (int)l->fl_Key, pos = (int)sizeof(tmp) - 1;
 
     tmp[pos] = 0;
@@ -3307,6 +3321,7 @@ HX_UNUSED static void hx_reset(void)
 #define X_GET_DEVICE_PROC(name, prev) hx_get_device_proc((const char *)(name), (prev))
 #define X_FREE_DEVICE_PROC(dp) hx_free_device_proc(dp)
 #define X_CURRENT_DIR(l) hx_current_dir(l)
+#define X_LOCK(name, mode) ((void)(mode), hx_lock_native((const char *)(name)))
 #define X_NAME_FROM_LOCK(l, buf, n) hx_name_from_lock((l), (char *)(buf), (n))
 
 #define X_OPEN_WINDOW(...) hx_open_window(__VA_ARGS__)

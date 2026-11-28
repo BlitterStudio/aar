@@ -846,11 +846,131 @@ static void t_leak(int idx)
     conf_set_result(idx, CONF_R_FAIL, why);
 }
 
+/* ---- C-FILE.57 and C-FILE.58: native requester ------------------------------------------ */
+
+struct request_stop {
+    ULONG started;
+    int waiting;
+};
+
+static void request_stop_begin(struct conf_run *run, const AARMessage *msg)
+{
+    struct request_stop *stop = run->user;
+
+    if (memcmp(msg->bytes, CONF_FILE_REQUEST_STOP_BEGIN, sizeof CONF_FILE_REQUEST_STOP_BEGIN - 1u)
+        == 0) {
+        stop->started = conf_ticks();
+        stop->waiting = 1;
+    }
+}
+
+static void request_stop_poll(struct conf_run *run, ULONG now_ticks)
+{
+    struct request_stop *stop = run->user;
+
+    if (stop->waiting &&
+        now_ticks - stop->started >= CONF_FILE_REQUEST_WAIT_S * CONF_TICKS_PER_SECOND) {
+        stop->waiting = 0;
+        conf_run_stop(run);
+    }
+}
+
+static int prepare_request_fixture(void)
+{
+    BPTR root = root_lock();
+    BPTR dir;
+    int ok = 0;
+
+    if (!root)
+        return 0;
+    dir = child_dir(root, CONF_FILE_DIR);
+    if (dir) {
+        ok = make_file(dir, CONF_FILE_TEXT_NAME, CONF_FILE_TEXT, sizeof CONF_FILE_TEXT - 1u, 0);
+        UnLock(dir);
+    }
+    UnLock(root);
+    return ok;
+}
+
+static void t_request(int idx)
+{
+    static const char *const failure[] = {
+        [CONF_FILE_REQUEST_OPEN_FAILED] = "Open did not return the root-relative fixture and its bytes",
+        [CONF_FILE_REQUEST_SAVE_EXISTS] = "the Save As target must not exist before the test",
+        [CONF_FILE_REQUEST_SAVE_FAILED] = "Save As did not return the root-relative target",
+        [CONF_FILE_REQUEST_CANCEL_FAILED] = "Cancel did not return 0 with untouched output",
+        [CONF_FILE_REQUEST_OUTSIDE_FAILED] = "selecting outside ROOT did not return AAR_E_ACCES with untouched output",
+        [CONF_FILE_REQUEST_CHANGED_FILES] = "selection changed the Open fixture or created the Save As target",
+        [CONF_FILE_REQUEST_STOP_SIGNAL_FAILED] = "the app could not tell the runner when to stop",
+        [CONF_FILE_REQUEST_STOP_FAILED] = "the parked requester did not return AAR_E_IO on stop",
+        [CONF_FILE_REQUEST_STOP_EARLY] = "the requester wait ended before the long wait was exercised",
+    };
+    int stop = strcmp(conf_tests[idx].id, "C-FILE.58") == 0;
+    const char *skip = conf_operator_skip_reason(conf_g.interactive, 1, conf_tests[idx].id, conf_g.only);
+    struct conf_run run;
+    struct conf_outcome out;
+    struct request_stop state = { 0 };
+    char why[CONF_DETAIL_MAX];
+
+    if (skip) {
+        conf_set_result(idx, CONF_R_SKIP, skip);
+        return;
+    }
+    if (!prepare_request_fixture()) {
+        conf_set_result(idx, CONF_R_FAIL, "could not prepare the requester fixture under ROOT");
+        return;
+    }
+    conf_run_init(&run, "C-FILE");
+    run.norelay = 1;
+    if (stop) {
+        run.variant = CONF_FILE_VARIANT_REQUEST_STOP;
+        run.user = &state;
+        run.on_message = request_stop_begin;
+        run.poll = request_stop_poll;
+        run.timeout_s = CONF_FILE_REQUEST_WAIT_S + 20u;
+        conf_emitf("# Leave the Open requester alone. The runner stops the app after %u seconds.",
+                   CONF_FILE_REQUEST_WAIT_S);
+    } else {
+        run.variant = CONF_FILE_VARIANT_REQUEST;
+        conf_emitf("# In Open and Save As, accept the pre-filled file names (%s and %s).",
+                   CONF_FILE_TEXT_NAME, CONF_FILE_REQUEST_SAVE_NAME);
+        conf_emitf("# Cancel the third requester. In the fourth, select any existing file outside ROOT (%s).",
+                   conf_g.root);
+    }
+    conf_run_payload(&run, &out);
+    conf_run_free(&run);
+    if (out.timed_out) {
+        conf_set_result(idx, CONF_R_FAIL, "requester payload timed out");
+    } else if (!out.ran) {
+        conf_detailf(why, "requester payload did not run: %.120s", out.why);
+        conf_set_result(idx, CONF_R_FAIL, why);
+    } else if (out.end_reason != AAR_END_EXIT) {
+        conf_detailf(why, "requester payload did not exit normally (end reason %lu)",
+                     (unsigned long)out.end_reason);
+        conf_set_result(idx, CONF_R_FAIL, why);
+    } else if (out.exit_code == CONF_FILE_REQUEST_UNSUPPORTED) {
+        conf_set_result(idx, CONF_R_SKIP, "native requester unavailable (AAR_E_NOSYS)");
+    } else if (out.exit_code == CONF_FILE_REQUEST_OK &&
+               (!stop || (out.serve_flags & AAR_SERVE_R_STOP_ASKED))) {
+        conf_set_result(idx, CONF_R_PASS, stop ? "long requester wait ended with AAR_E_IO on stop"
+                                              : "Open, Save As, Cancel and ROOT policy; no file changed");
+    } else if (out.exit_code > 0 && (ULONG)out.exit_code < CONF_COUNT(failure) &&
+               failure[out.exit_code]) {
+        conf_set_result(idx, CONF_R_FAIL, failure[out.exit_code]);
+    } else {
+        conf_detailf(why, "unexpected requester payload result %ld (serve flags %lx)",
+                     (long)out.exit_code, (unsigned long)out.serve_flags);
+        conf_set_result(idx, CONF_R_FAIL, why);
+    }
+}
+
 static const struct conf_r_test tests[] = {
     { "C-FILE.26", t_stall },
     { "C-FILE.27", t_stall },
     { "C-FILE.28", t_stall },
     { "C-FILE.31", t_leak },
+    { "C-FILE.57", t_request },
+    { "C-FILE.58", t_request },
 };
 
 const struct conf_area conf_area_file = {
