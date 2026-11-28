@@ -388,6 +388,10 @@ A load that cannot get a resource answers the same way (4.1). A refused open lea
 
 **Sharing the CPU.** The standard does not define a scheduler. A platform that runs several apps SHOULD give runnable apps CPU in proportion to their weight (`AAR_TAG_WEIGHT`, default 1). The standard states no tolerance; the suite accepts a work ratio within 30 percent of the weight ratio for two compute-bound apps. A platform MUST NOT let an app that is parked in a wait consume CPU: a compute-bound app beside a parked app keeps at least 90 percent of the work it does alone (the suite's bound). Note: a platform keeps its own service work ahead of apps; the standard does not require it. The ZZ9000 uses weighted fair share by virtual run time: the app furthest behind runs next.
 
+A platform can schedule separate apps on separate cores. Each app still has
+one thread (3.7). `max_apps` describes admission, so a client cannot use it to
+infer how many apps will run in parallel. On the ZZ9000 all apps share core 1.
+
 ## 6. Messages and waiting
 
 - A message is exactly 32 bytes (`AAR_MSG_BYTES`), opaque to the runtime and the library. It travels in one queue entry (10.4). Each direction is a FIFO that holds at least `msg_capacity` messages (at least 32) and never drops or reorders. `msg_capacity` is a minimum: the client library takes messages off the queue into an inbox of its own, so the first `AAR_E_BUSY` can come later (the reference library's inbox holds 64). An app MUST NOT depend on the exact number. The default queue has 64 entries and a message post keeps one entry free for the call in flight (`AAR_MSG_RESERVE`), so `msg_capacity` is 63 (`AAR_MSG_CAPACITY`); a queue of depth `d` holds `d - 1`.

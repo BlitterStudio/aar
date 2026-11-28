@@ -108,6 +108,13 @@ on the pointer of a closed handle for anything.
 A handle may be used by one call at a time. The calls do not block on each
 other for other handles.
 
+A library that wraps an AAR app can start a process of its own to hold the
+handle across calls from different tasks. That process opens `aar.library`,
+claims the handle, and runs the app's message and service loop. To free the
+app from another task, ask the owner to shut down and wait for it to close the
+handle and its `aar.library` base. Keep the wrapper library resident while
+the owner process still uses its code or data.
+
 ### The sequence
 
 1. `AARQuery` says what the platform offers. It is optional.
@@ -160,11 +167,14 @@ giving a notify port arms one. A client that polls from its own timer (aar-run
 does, every millisecond by default) never arms and costs the library nothing.
 The library's dispatcher does not visit a handle that is not armed and has no
 doorbell or mouse event waiting, so the cost of the library does not grow with
-the number of such handles. A client that needs a faster response polls
-`AARServiceNext` itself.
+the number of such handles.
 
-**ZZ9000 note.** The library looks at armed handles at each vertical blank,
-so a wake-up takes up to 20 ms on a PAL machine.
+**ZZ9000 note.** The dispatcher checks armed handles at vertical blank, once
+every 20 ms on PAL. The owner can call `AARGetMessage` or `AARServiceNext`
+without waiting for a notification; the calls check the queue directly.
+For a short burst such as a scene upload, the owner can poll for replies with
+a time limit. Keep serving pending requests and return to a signal or timer
+wait after the burst.
 
 On a platform that publishes event counts, an armed handle that has nothing
 pending costs one read per vertical blank for all such handles together. The
@@ -673,8 +683,12 @@ LONG AARSharedUnmap(AARHandle *handle, struct AARSharedMap *map);
 
 Gives the map up.
 
-**ZZ9000 note.** Unmapping releases the library's map record but leaves the
-pages cache-inhibited; see the [transport note](transport.md#visibility-of-the-control-structures).
+**ZZ9000 note.** Unmapping clears the caller's map but leaves the pages
+cache-inhibited; see the [transport note](transport.md#visibility-of-the-control-structures).
+A map does not pin the allocation. If the app needs to free a mapped block
+while it is still running, stop using the pointer, unmap it, then send the app
+an acknowledgement. The app waits for that acknowledgement before freeing
+the block.
 
 ### AARSharedPublish
 
