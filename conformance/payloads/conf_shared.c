@@ -1,7 +1,7 @@
 /*
  * Conformance payload for C-SHARED (spec 4.2, 4.3): shared buffers and
  * visibility, from the app's side. The tests that need the client (C-SHARED.9,
- * 10, 11, 14, 28) use the peer protocol of conf_shared.h; the runner (r_shared.c)
+ * 10, 11, 14, 28, 29) use the peer protocol of conf_shared.h; the runner (r_shared.c)
  * is the other half. See conformance/TESTS.md for the ids.
  *
  * Variants (conf:variant=<name>, given by the runner in every run): "default"
@@ -882,6 +882,77 @@ done:
     conf_end(&t);
 }
 
+static int expect_release_ack(struct conf_test *t, int rc, const char *what,
+                              uint32_t serial, uint32_t phase)
+{
+    uint32_t ack[4] = { 0, 0, 0, 0 };
+
+    if (rc == AAR_OK)
+        rc = conf_shared_wait_ack(ack);
+    if (rc != AAR_OK || ack[0] != 0u) {
+        peer_failure(t, what, rc, ack);
+        return 0;
+    }
+    return conf_check(t, ack[2] == serial && ack[3] == phase,
+                      "ACK does not name this block and phase") &&
+           conf_check(t, !aar_should_stop(), "app is stopping");
+}
+
+/* C-SHARED.29: exchange data, retire both views, free, and do it again. */
+static void test_release(void)
+{
+    struct conf_test t;
+    uint32_t serial;
+    int offered = 0;
+
+    conf_begin(&t, "C-SHARED.29");
+    for (serial = 1; serial <= CONF_SHARED_RELEASE_ROUNDS; serial++) {
+        aar_shared out = { 0, 0, 0, 0 };
+        uint32_t bytes;
+        int rc = aar_shared_alloc(granule, 1, 0, &out);
+
+        if (!conf_check(&t, rc == AAR_OK && out.ptr && out.bytes == granule &&
+                            out.bytes <= UINT32_MAX, "invalid shared block grant"))
+            break;
+        bytes = (uint32_t)out.bytes;
+        conf_shared_fill(out.ptr, 0, bytes, 2u * serial);
+        if (!conf_check(&t, aar_publish(out.ptr, bytes) == AAR_OK, "publish failed"))
+            break;
+        offered = 1;
+        rc = conf_shared_send(CONF_SHARED_RELEASE_OPEN, out.haddr, bytes, serial, 0);
+        if (!expect_release_ack(&t, rc, "client did not complete the exchange",
+                                serial, CONF_SHARED_RELEASE_READY))
+            break;
+        if (!conf_check(&t, aar_acquire(out.ptr, bytes) == AAR_OK, "acquire failed") ||
+            !conf_check(&t, conf_shared_check(out.ptr, 0, bytes, 2u * serial + 1u) ==
+                            UINT32_MAX, "client reply has the wrong pattern"))
+            break;
+        rc = conf_shared_send(CONF_SHARED_RELEASE_DROP, serial, 0, 0, 0);
+        if (!expect_release_ack(&t, rc, "client did not acknowledge retirement",
+                                serial, CONF_SHARED_RELEASE_DONE))
+            break;
+        offered = 0;
+        if (!conf_check(&t, aar_shared_free(out.ptr) == AAR_OK, "free after retirement failed"))
+            break;
+    }
+    /* The failure path does not free or touch the offered block. */
+    if (t.failed) {
+        conf_buf_str(&t.why, " (block ");
+        conf_buf_u64(&t.why, serial);
+        conf_buf_chr(&t.why, ')');
+    }
+    conf_buf_str(&t.note, "two views retired before each free; replacement exchanged in the same app");
+    conf_end(&t);
+    if (offered) {
+        /* The runner handles the stop after any earlier OPEN callback.
+         * A timeout alone does not make it safe to exit while it may read. */
+        if (!aar_should_stop())
+            (void)conf_peer_send(CONF_MSG_STOP);
+        while (!aar_should_stop())
+            aar_sleep_us(100000u);
+    }
+}
+
 /* ---- main ----------------------------------------------------------------------------------- */
 
 int aar_main(int argc, char **argv)
@@ -917,12 +988,14 @@ int aar_main(int argc, char **argv)
         test_seq();
         test_granules();
         test_progress();
+        test_release();
     } else {
         conf_skip("C-SHARED.9", "host: no client to map the block");
         conf_skip("C-SHARED.10", "host: no client to write the block");
         conf_skip("C-SHARED.11", "host: no client to read while the app writes");
         conf_skip("C-SHARED.14", "host: no client to own the odd granules");
         conf_skip("C-SHARED.28", "host: no client to poll the progress word");
+        conf_skip("C-SHARED.29", "host: no client to retire and unmap both views");
     }
     return conf_finish("C-SHARED");
 }

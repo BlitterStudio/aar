@@ -175,6 +175,22 @@ must not interpret it. It names the allocated block, only for this app, and only
 until `aar_shared_free`, exit, fault or stop. To describe part of a block, send
 the token and an offset. The block is rounded up to `shared_granule`.
 
+### Retiring a buffer while the app runs
+
+Before freeing a block whose token you gave the client, stop announcing it
+and ask the client to retire it. For example, give each allocation an ID and
+include it in announcements, a `RETIRE` request, and a `RETIRED` reply. A
+replacement can have the same token but has a new ID, so old announcements and
+replies cannot be mistaken for messages about the replacement.
+
+On retirement, the client rejects new maps and new users of that allocation,
+including work from queued or late announcements. It finishes or cancels any
+maps, reads and writes already in progress, then unmaps every view with
+`AARSharedUnmap`. Only then does it send `RETIRED`. Wait for the matching
+reply before calling `aar_shared_free`. A map need not keep the block
+allocated. See [spec 4.2](../spec/aar.md#42-shared-buffers) and
+[9.5](../spec/aar.md#95-shared-buffers-on-the-client).
+
 ### The visibility problem
 
 When the app writes data and the Amiga reads it (or the other way round), three
@@ -301,10 +317,11 @@ if (ready_rows != read_rows) {
 ```
 
 The app leaves published rows unchanged until the client is finished. Before
-the app reuses the buffer for another image or frees it, the client stops
-polling, unmaps it and sends an acknowledgement. Use a new registration for
-the next image. For the full contract, see
-[spec 4.3](../spec/aar.md#polling-a-progress-word).
+the app reuses the buffer for another image or frees it, use the
+[retirement handshake](#retiring-a-buffer-while-the-app-runs). The client
+stops starting polls and waits for any poll or row reader already running to
+finish before it unmaps. Use a new registration for the next image.
+See [spec 4.3](../spec/aar.md#polling-a-progress-word) for the polling rules.
 
 For the ZZ9000's ACP path and cache-inhibited client mapping, see the
 [transport's ZZ9000 note](transport.md#visibility-of-the-control-structures).

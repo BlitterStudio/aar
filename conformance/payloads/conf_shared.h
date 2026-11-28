@@ -91,6 +91,20 @@
  *     the first bad byte (UINT32_MAX if none) on failure. The client unmaps
  *     before the final or failed ACK; the app keeps the block live until then.
  *
+ *   CONF_SHARED_RELEASE_OPEN  w0 haddr, w1 bytes, w2 serial    C-SHARED.29
+ *     The app fills a new block with seed 2 * serial and publishes it. The
+ *     runner maps it twice, acquires and checks each view, then writes and
+ *     publishes seed 2 * serial + 1 through the second view. ACK w2 is the
+ *     serial and w3 is CONF_SHARED_RELEASE_READY; on success both views stay mapped.
+ *   CONF_SHARED_RELEASE_DROP  w0 serial
+ *     After acquiring and checking the reply, the app requests retirement.
+ *     The runner retires this serial, has no more users of either view, and
+ *     unmaps both. Only then does it send ACK w2 = serial, w3 =
+ *     CONF_SHARED_RELEASE_DONE, and the app frees the block. A replacement
+ *     uses the next serial even if its token is identical. If the exchange
+ *     fails before retirement is acknowledged, the app leaves the block
+ *     allocated and waits for a stop before exiting.
+ *
  * The answer (runner to app):
  *
  *   CONF_SHARED_ACK  w0 result, w1, w2, w3 as the request says
@@ -115,6 +129,8 @@
 #define CONF_SHARED_GRAN      "CONF-SHARED-GRAN"
 #define CONF_SHARED_ACK       "CONF-SHARED-ACK"
 #define CONF_SHARED_PROGRESS  "CONF-SHARED-PROG"
+#define CONF_SHARED_RELEASE_OPEN "CONF-SHARED-OPEN"
+#define CONF_SHARED_RELEASE_DROP "CONF-SHARED-DROP"
 
 #define CONF_SHARED_KEYWORD_BYTES 16u
 #define CONF_SHARED_MSG_BYTES     32u
@@ -134,6 +150,9 @@
 #define CONF_SHARED_PROGRESS_BATCH   3u
 #define CONF_SHARED_PROGRESS_BATCHES 4u
 #define CONF_SHARED_PROGRESS_COUNT   (CONF_SHARED_PROGRESS_BATCH * CONF_SHARED_PROGRESS_BATCHES)
+#define CONF_SHARED_RELEASE_ROUNDS 2u
+#define CONF_SHARED_RELEASE_READY  1u
+#define CONF_SHARED_RELEASE_DONE   2u
 #define CONF_SHARED_ACK_WAIT_US    10000000u
 
 /* ---- Words and the pattern ------------------------------------------------------------ */
