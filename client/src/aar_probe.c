@@ -48,13 +48,11 @@ static int run(struct source *src, uint32_t length, AARImageInfo *info,
     if (!info || info->size < 4)
         return AAR_E_INVAL;
     rc = aar_image_check(source_read, src, length, 0, &image, why);
-    if (rc != AAR_OK) {
-        /* The loader's rules, one code: every refusal is AAR_E_INVAL, including
-         * a note whose profile word is not the ELF class (the loader says
-         * AAR_E_PROFILE there); a failing reader is AAR_E_IO. The platform's
-         * profiles are not consulted, so the probe never says AAR_E_PROFILE. */
-        return rc == AAR_E_IO ? AAR_E_IO : AAR_E_INVAL;
-    }
+    /* The probe checks the image's own profile, not the platform's profiles. */
+    if (rc == AAR_E_PROFILE)
+        return AAR_E_INVAL;
+    if (rc != AAR_OK)
+        return rc;
     memset(&full, 0, sizeof(full));
     full.size = sizeof(full);
     full.profile = image.profile;

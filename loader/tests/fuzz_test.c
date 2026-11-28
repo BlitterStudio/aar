@@ -109,7 +109,7 @@ static void run_one(const uint8_t *img, size_t len)
     images++;
     mem_init(&m, img, len, 512);
     rc = aar_load_plan(mem_read, &m, len, BOTH, &plan, &why);
-    CHECK(rc == AAR_OK || rc == AAR_E_INVAL || rc == AAR_E_PROFILE);
+    CHECK(rc == AAR_OK || rc == AAR_E_INVAL || rc == AAR_E_PROFILE || rc == AAR_E_VERSION);
     CHECK(!m.bad);
     CHECK((rc == AAR_OK) == (why == NULL));
     /* The strict rules are the spec's rules and more. */

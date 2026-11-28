@@ -227,6 +227,8 @@ def check_segments(img):
                 fail("PT_LOAD is writable and executable")
             if memsz < filesz:
                 fail("PT_LOAD p_memsz %d is below p_filesz %d" % (memsz, filesz))
+            if vaddr + memsz >= 1 << 64:
+                fail("a PT_LOAD segment ends beyond the 64-bit address space")
             loads.append((vaddr, off, filesz, memsz, flags))
     if len(loads) > 4:
         fail("%d PT_LOAD segments" % len(loads))
@@ -411,14 +413,6 @@ def check_note(img):
     if profile != PROFILE_NUMBER[img.profile]:
         fail("note profile %d does not match the %s image"
              % (profile, img.profile))
-    if api_major != AAR_API_MAJOR:
-        fail("note api major %d is not %d" % (api_major, AAR_API_MAJOR))
-    if api_minor > AAR_API_MINOR:
-        fail("note api_minor_required %d is above %d"
-             % (api_minor, AAR_API_MINOR))
-    if api_minor < AAR_API_MINOR_OLDEST:
-        fail("note api_minor_required %d is below %d"
-             % (api_minor, AAR_API_MINOR_OLDEST))
     if stack != 0 and (stack < STACK_MIN or stack > STACK_MAX or stack % 16):
         fail("note stack %d is not 0 or 64 KiB..1 MiB, a multiple of 16"
              % stack)
@@ -427,6 +421,14 @@ def check_note(img):
     del groups_req, groups_opt
     if reserved != 0:
         fail("note reserved word is 0x%x, need 0" % reserved)
+    if api_major != AAR_API_MAJOR:
+        fail("note api major %d is not %d" % (api_major, AAR_API_MAJOR))
+    if api_minor > AAR_API_MINOR:
+        fail("note api_minor_required %d is above %d"
+             % (api_minor, AAR_API_MINOR))
+    if api_minor < AAR_API_MINOR_OLDEST:
+        fail("note api_minor_required %d is below %d"
+             % (api_minor, AAR_API_MINOR_OLDEST))
 
 
 def check_entry(img, loads):

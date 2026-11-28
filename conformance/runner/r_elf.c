@@ -12,7 +12,8 @@
  * start and the wait for the exit code; AARClose, which has to give AAR_OK; then
  * a second claim for AARLoadMemory of the same bytes, which has to give the same
  * answer (C-ELF.42). The next AAROpen proves that a refusal left nothing behind.
- * Every refusal is collected for C-ELF.41.
+ * Rows with an exact probe refusal also judge AARProbeMemory and AARLoadMemory.
+ * Every file load refusal is collected for C-ELF.41.
  *
  * Copyright (C) 2024-2026, Dimitris Panokostas / BlitterStudio
  * SPDX-License-Identifier: MIT
@@ -35,7 +36,7 @@
 #define LC_ANY     (1UL << 5)
 #define LC_NORESOURCE (1UL << 6) /* AAR_E_NORESOURCE with a reason */
 #define LC_MAYBE   (1UL << 7)    /* the image may also load (it is not started) */
-#define LC_REFUSALS (LC_PROFILE | LC_INVAL | LC_NOGROUP | LC_NOMEM)
+#define LC_VERSION (1UL << 8)
 
 struct acc {
     UWORD pass, fail;
@@ -68,7 +69,7 @@ static void note(int id, int ok, const char *detail)
 static int is_refusal_code(LONG rc)
 {
     return rc == AAR_E_PROFILE || rc == AAR_E_INVAL || rc == AAR_E_NOGROUP ||
-           rc == AAR_E_NOMEM;
+           rc == AAR_E_NOMEM || rc == AAR_E_VERSION;
 }
 
 /* A refusal for lack of memory that the client API documents for a load: AAR_E_NORESOURCE
@@ -80,7 +81,7 @@ static int no_resource(LONG rc, ULONG reason)
 
 static int is_library_code(LONG rc)
 {
-    return rc <= AAR_OK && rc >= AAR_E_OWNER;
+    return rc <= AAR_OK && rc >= AAR_E_VERSION;
 }
 
 static ULONG code_mask(LONG rc)
@@ -88,6 +89,7 @@ static ULONG code_mask(LONG rc)
     switch (rc) {
     case AAR_E_PROFILE: return LC_PROFILE;
     case AAR_E_INVAL: return LC_INVAL;
+    case AAR_E_VERSION: return LC_VERSION;
     case AAR_E_NOGROUP: return LC_NOGROUP;
     case AAR_E_NOMEM: return LC_NOMEM;
     case AAR_E_NORESOURCE: return LC_NORESOURCE;
@@ -107,6 +109,9 @@ static ULONG parse_load(const char *s)
         } else if (strncmp(s, "INVAL", 5) == 0) {
             m |= LC_INVAL;
             s += 5;
+        } else if (strncmp(s, "VERSION", 7) == 0) {
+            m |= LC_VERSION;
+            s += 7;
         } else if (strncmp(s, "NOGROUP", 7) == 0) {
             m |= LC_NOGROUP;
             s += 7;
@@ -139,6 +144,8 @@ static const char *mask_text(ULONG m, char *buf, ULONG size)
         snprintf(buf + strlen(buf), size - strlen(buf), "PROFILE ");
     if (m & LC_INVAL)
         snprintf(buf + strlen(buf), size - strlen(buf), "INVAL ");
+    if (m & LC_VERSION)
+        snprintf(buf + strlen(buf), size - strlen(buf), "VERSION ");
     if (m & LC_NOGROUP)
         snprintf(buf + strlen(buf), size - strlen(buf), "NOGROUP ");
     if (m & LC_NOMEM)
@@ -244,6 +251,7 @@ static void do_image(const char *name, const char *prof, const char *ids,
 {
     char path[256];
     char d[CONF_DETAIL_MAX];
+    char memory_detail[CONF_DETAIL_MAX] = "";
     char want[48];
     ULONG want_mask = parse_load(loadspec);
     AARImageInfo ii;
@@ -251,6 +259,8 @@ static void do_image(const char *name, const char *prof, const char *ids,
     UBYTE *data = NULL;
     ULONG len = 0;
     LONG probe_rc;
+    LONG probe_want = strcmp(probespec, "VERSION") == 0 ? AAR_E_VERSION :
+                      strcmp(probespec, "INVAL") == 0 ? AAR_E_INVAL : AAR_OK;
     LONG rd;
     int ok = 1;
     int unlisted = ids_has(ids, 31);
@@ -277,6 +287,10 @@ static void do_image(const char *name, const char *prof, const char *ids,
     probe_rc = AARProbeFile(path, &ii);
     if (probe_rc == AAR_E_NOENT) {
         conf_detailf(d, "%.30s: the file is missing, copy conformance/negative to DIR", name);
+        ok = 0;
+    } else if (probe_want != AAR_OK && probe_rc != probe_want) {
+        conf_detailf(d, "%.30s: AARProbeFile returned %ld, want %ld", name,
+                     (long)probe_rc, (long)probe_want);
         ok = 0;
     } else if (strcmp(probespec, "ok") == 0 && probe_rc != AAR_OK) {
         conf_detailf(d, "%.30s: AARProbeFile refused it: %ld", name, (long)probe_rc);
@@ -341,9 +355,8 @@ static void do_image(const char *name, const char *prof, const char *ids,
             conf_detailf(d, "%.30s: AARClose returned %ld", name, (long)af.close_rc);
         ok = 0;
     }
-    judge_ids(ids, ok, ok ? name : d);
 
-    /* C-ELF.41: a refusal is one of the four codes of spec 5.2. */
+    /* C-ELF.41: a file load refusal is one of the codes of spec 5.2. */
     if (af.open_rc == AAR_OK && af.load_rc != AAR_OK) {
         char e[CONF_DETAIL_MAX];
 
@@ -351,34 +364,43 @@ static void do_image(const char *name, const char *prof, const char *ids,
         note(41, is_refusal_code(af.load_rc) || no_resource(af.load_rc, af.reason), e);
     }
 
-    /* C-ELF.42: AARLoadMemory gives the same answer. */
+    /* C-ELF.42: AARLoadMemory gives the same answer. When the manifest names
+     * an exact probe code, test the memory probe as part of the row too. */
     rd = conf_util_read_file(path, &data, &len);
     if (rd != 0) {
-        conf_detailf(d, "%.30s: the file cannot be read for the memory load", name);
-        note(42, 0, d);
-        return;
-    }
-    attempt(NULL, data, len, (want_mask & LC_OK) != 0, &am);
-    FreeVec(data);
-    if (am.open_rc != AAR_OK) {
-        conf_detailf(d, "%.30s: AAROpen returned %ld", name, (long)am.open_rc);
-        note(42, 0, d);
-    } else if (am.load_rc != af.load_rc) {
-        conf_detailf(d, "%.30s: AARLoadMemory %ld, AARLoadFile %ld", name,
-                     (long)am.load_rc, (long)af.load_rc);
-        note(42, 0, d);
-    } else if (am.load_rc == AAR_OK && (am.exit_code != af.exit_code ||
-                                       am.end_reason != af.end_reason)) {
-        conf_detailf(d, "%.30s: memory load ends %lu/%ld, file load %lu/%ld", name,
-                     (unsigned long)am.end_reason, (long)am.exit_code,
-                     (unsigned long)af.end_reason, (long)af.exit_code);
-        note(42, 0, d);
-    } else if (am.close_rc != AAR_OK) {
-        conf_detailf(d, "%.30s: AARClose returned %ld", name, (long)am.close_rc);
-        note(42, 0, d);
+        conf_detailf(memory_detail, "%.30s: the file cannot be read for the memory load", name);
     } else {
-        note(42, 1, name);
+        if (probe_want != AAR_OK) {
+            memset(&ii, 0, sizeof ii);
+            ii.size = sizeof ii;
+            probe_rc = AARProbeMemory(data, len, &ii);
+            if (ok && probe_rc != probe_want) {
+                conf_detailf(d, "%.30s: AARProbeMemory returned %ld, want %ld", name,
+                             (long)probe_rc, (long)probe_want);
+                ok = 0;
+            }
+        }
+        attempt(NULL, data, len, (want_mask & LC_OK) != 0, &am);
+        FreeVec(data);
+        if (am.open_rc != AAR_OK) {
+            conf_detailf(memory_detail, "%.30s: AAROpen returned %ld", name, (long)am.open_rc);
+        } else if (am.load_rc != af.load_rc) {
+            conf_detailf(memory_detail, "%.30s: AARLoadMemory %ld, AARLoadFile %ld", name,
+                         (long)am.load_rc, (long)af.load_rc);
+        } else if (am.load_rc == AAR_OK && (am.exit_code != af.exit_code ||
+                                           am.end_reason != af.end_reason)) {
+            conf_detailf(memory_detail, "%.30s: memory load ends %lu/%ld, file load %lu/%ld", name,
+                         (unsigned long)am.end_reason, (long)am.exit_code,
+                         (unsigned long)af.end_reason, (long)af.exit_code);
+        } else if (am.close_rc != AAR_OK) {
+            conf_detailf(memory_detail, "%.30s: AARClose returned %ld", name, (long)am.close_rc);
+        }
     }
+    note(42, !memory_detail[0], memory_detail[0] ? memory_detail : name);
+    if (ok && probe_want != AAR_OK && memory_detail[0])
+        judge_ids(ids, 0, memory_detail);
+    else
+        judge_ids(ids, ok, ok ? name : d);
 }
 
 static void run_corpus(void)

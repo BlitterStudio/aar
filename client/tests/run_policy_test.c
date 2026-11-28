@@ -770,6 +770,9 @@ static void test_load_failure_lines(void)
     aar_run_load_failure_line(line, sizeof(line), AAR_E_NOGROUP,
                               AAR_REASON_NONE, 0, 16u * AAR_RUN_MIB_BYTES);
     assert(strstr(line, "service group not available"));
+    aar_run_load_failure_line(line, sizeof(line), AAR_E_VERSION,
+                              AAR_REASON_NONE, 0, 16u * AAR_RUN_MIB_BYTES);
+    assert(strcmp(line, "aar-run: load failed (incompatible AAR API version)") == 0);
 }
 
 static void test_start_and_generic_failure_lines(void)
@@ -896,6 +899,8 @@ static void test_probe_refuses_each_cause(void)
     assert(aar_run_probe_check(AAR_E_NOENT, &img, &info) == AAR_RUN_PROBE_NOENT);
     assert(aar_run_probe_check(AAR_E_IO, &img, &info) == AAR_RUN_PROBE_IO);
     assert(aar_run_probe_check(AAR_E_INVAL, &img, &info) == AAR_RUN_PROBE_NOT_AAR);
+    assert(aar_run_probe_check(AAR_E_VERSION, NULL, &info) == AAR_RUN_PROBE_VERSION);
+    assert(aar_run_project_is_app(0, AAR_E_VERSION));
     assert(aar_run_probe_check(AAR_E_NOMEM, &img, &info) == AAR_RUN_PROBE_FAILED);
 
     /* The wrong profile: an A64 image on a platform that runs A32. */
@@ -966,6 +971,10 @@ static void test_probe_lines_name_the_cause(void)
     aar_run_probe_line(line, sizeof(line), AAR_RUN_PROBE_NOT_AAR, "RAM:a.elf", &img,
                        &info);
     assert(strstr(line, "RAM:a.elf is not an AAR image"));
+    aar_run_probe_line(line, sizeof(line), AAR_RUN_PROBE_VERSION, "RAM:a.elf",
+                       NULL, &info);
+    assert(strcmp(line, "aar-run: RAM:a.elf uses an AAR API version this library "
+                        "does not support.") == 0);
     aar_run_probe_line(line, sizeof(line), AAR_RUN_PROBE_FAILED, "RAM:a.elf", &img,
                        &info);
     assert(strstr(line, "cannot probe RAM:a.elf"));

@@ -131,12 +131,12 @@ struct aar_load_plan {
  *   AAR_E_PROFILE  the image is acceptable, but its profile is not in `profiles`
  *                  (the platform answers AAR_E_PROFILE), or the note names a
  *                  profile that does not match the ELF class
+ *   AAR_E_VERSION  the note requires an unsupported API major or minor
  *   AAR_E_INVAL    a rule is broken: not a little-endian ELF32 or ELF64 image,
  *                  a header, segment, relocation or note rule, or a segment
  *                  that ends beyond the 64-bit address space
  *   AAR_E_IO       `read` failed
- * The rules are checked before the profile: an image that breaks a rule is
- * AAR_E_INVAL (or the note's AAR_E_PROFILE) whatever `profiles` is. `why`, when
+ * The image rules are checked before platform profile support. `why`, when
  * not NULL, receives a static string that names the rule (NULL on success).
  * `length` is below 2^62. On failure *plan is unspecified.
  */

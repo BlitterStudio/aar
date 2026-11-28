@@ -53,6 +53,7 @@ typedef int (*aar_probe_read_fn)(void *user, uint32_t offset, void *dst,
  *                 is not the ELF class included), no note or more than one, a
  *                 bad relocation, no PT_DYNAMIC. The platform's profiles are
  *                 not judged, so AAR_E_PROFILE is never returned
+ *   AAR_E_VERSION the note requires an unsupported API major or minor
  *   AAR_E_IO      `read` failed
  * `why`, when not NULL, receives a static string that says which rule
  * failed (NULL on success).

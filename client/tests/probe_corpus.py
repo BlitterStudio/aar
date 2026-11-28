@@ -15,12 +15,12 @@ loader_corpus.py keeps the strict verdict of aar-check as well. The corpus has
     itself xor 1, itself xor 0x80 and 8 in turn. A mutation that turns a header
     or table field into garbage is the test that the C probe reads nothing out
     of range and decides as the oracle does.
-Each image carries the decision (accepted or refused; the probe says AAR_E_INVAL
-for every refusal, the loader AAR_E_PROFILE for a note whose profile word is not
-the ELF class, see loader_corpus.py) and, for an accepted one, the note
-fields as the Python tool reads them. probe_test checks the C probe against
-both. An image on which aar-check itself raises (not a CheckError) is counted
-and treated as refused: the tool exits 1 on it too, with a traceback.
+Each image carries the exact decision: an incompatible application API version
+is AAR_E_VERSION, other malformed images are AAR_E_INVAL in the probe (the
+loader says AAR_E_PROFILE for a note that does not match the ELF class).
+For an accepted image the corpus carries the note fields as the Python tool
+reads them. An image on which aar-check itself raises (not a CheckError) is
+counted and treated as refused: the tool exits 1 on it too, with a traceback.
 """
 
 import importlib.machinery
@@ -45,13 +45,22 @@ loader.exec_module(tool)
 
 CRASHES = [0]
 
-OK, INVAL, PROFILE = 0, 1, 2
+OK, INVAL, PROFILE, VERSION = 0, 1, 2, 3
 
 
 def code_of(exc):
-    """A refusal of aar-check as the loader's code: a note whose profile word is
-    not the ELF class is AAR_E_PROFILE, every other rule AAR_E_INVAL."""
-    return PROFILE if str(exc).startswith("note profile ") else INVAL
+    """Translate the independent lint's diagnostic into the loader's result."""
+    text = str(exc)
+    if text.startswith("note profile "):
+        return PROFILE
+    if text.startswith(("note api major ", "note api_minor_required ")):
+        return VERSION
+    return INVAL
+
+
+def probe_code(code):
+    """The probe treats a note/ELF profile mismatch as an invalid image."""
+    return INVAL if code == PROFILE else code
 
 
 def spec_tables(img):
@@ -132,7 +141,7 @@ def decide(blob):
 
 
 def named_cases():
-    """Every image of the aar-check tests, by its test name."""
+    """Named checker images and compound faults that exercise precedence."""
     cases = []
 
     def ok(name, blob, args=()):
@@ -144,6 +153,13 @@ def named_cases():
     corpus.ok, corpus.bad = ok, bad
     corpus.elf_rules()
     corpus.note_rules()
+    for profile in ("a32", "a64"):
+        for label, fields in (
+                ("wrong major with invalid stack", {"major": 1, "stack": 4}),
+                ("old minor with reserved word set",
+                 {"minor": tool.AAR_API_MINOR_OLDEST - 1, "reserved": 1})):
+            blob = corpus.build(profile, note=corpus.note_bytes(profile, **fields))
+            cases.append(("%s [%s]" % (label, profile), blob, False, False))
     return cases
 
 
@@ -208,9 +224,7 @@ def write(records, path):
         for name, blob, code, fields, need in records:
             raw = name.encode()
             fh.write(struct.pack("<H", len(raw)) + raw)
-            # 1 accepted, 0 refused: the probe says AAR_E_INVAL for every refusal,
-            # also where the loader says AAR_E_PROFILE
-            fh.write(struct.pack("<B", 1 if code == OK else 0))
+            fh.write(struct.pack("<B", probe_code(code)))
             fh.write(struct.pack("<9I", *(fields or [0] * 9)))
             # the shortest prefix that is still accepted (0 for a refused image)
             fh.write(struct.pack("<I", need))

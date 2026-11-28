@@ -440,7 +440,7 @@ int aar_main(int argc, char **argv)
 
 `AAR_NOTE` declares the profile of the compiler, the API major, and
 `AAR_API_MINOR` as the minor the app needs. `AAR_NOTE_EX` takes an explicit
-minor, for an app that uses only calls an older minor has. Require a group only
+minor, for an app that can run with an older supported minor. Require a group only
 if the app cannot work without it: the runtime refuses the load with
 `AAR_E_NOGROUP` when a required group is absent. List a group as optional if the
 app can run without it but a launcher might want to prepare for it. At run
@@ -709,7 +709,8 @@ Workbench tool. It uses `aar.library` ([client API](aar-client-api.md)) and
 The manual is the reference for arguments, ToolTypes, exit codes and platform
 requirements.
 
-**ZZ9000 note.** AAR 0.5 images need firmware that implements AAR 0.5.
+**ZZ9000 note.** Use firmware and `aar.library` that support the app's API
+version. The 0.6 draft does not accept images built for the 0.5 draft.
 See the firmware's
 [runtime contract](https://github.com/BlitterStudio/zz9000-firmware/blob/master/docs/app-runtime.md)
 and the manual's [platform notes](../client/run/README.md#platform-notes).
@@ -987,9 +988,12 @@ through the table.
 
 ## Versioning
 
-The table is append-only from 1.0. `AAR_API_MINOR` is 6; the 0.6 draft
-includes optional asynchronous file I/O. Before 1.0 any minor may break,
-and 1.0 is cut when a second platform passes conformance.
+Compatibility starts at the first shipped baseline, even if the major is
+still 0. A compatible minor appends calls without changing the offsets,
+signatures or semantics of any slot available to an older accepted minor.
+The first 30 slots (`exit` through `msg_wait`) can stay stable without a
+note flag, but preserving those slots alone does not make an older minor
+compatible. The current draft accepts only API 0.6.
 
 Gate every appended slot with `AAR_API_COVERS` and a non-NULL function pointer.
 `libaar` already does this and returns `AAR_E_NOSYS` when a slot is missing. A
@@ -1000,14 +1004,14 @@ bit once. Do not gate on `aar_api.version` alone; use `size`, `groups` and
 `aar_get_info`. `AAR_API_AT_LEAST` is there for a code path that needs a whole
 release.
 
-The runtime returns `AAR_E_INVAL` if the note's `api_major` differs from its
-own or if `api_minor_required` falls outside the range from
-`AAR_API_MINOR_OLDEST` to `AAR_API_MINOR`, inclusive. Both bounds are 6 in
-the 0.6 draft. Raising the runtime minor alone does not raise the lower bound;
-that bound tracks the oldest supported table layout.
-
-From 1.0, a breaking change needs a new major. Within a major, do not renumber
-or reorder fields or change the meaning of an `AAR_*` value.
+Once the ELF and note pass structural validation, the runtime returns
+`AAR_E_VERSION` if the note's `api_major` differs from its own or the required
+minor falls outside `AAR_API_MINOR_OLDEST` through `AAR_API_MINOR`, inclusive.
+Both bounds are 6 in this draft. A release can keep the old floor if it
+preserves the full ABI for every accepted minor, including structure layouts
+and constant values. If a change breaks that ABI, the floor must rise unless
+the runtime actually implements the old ABI. From 1.0, an ABI break requires
+a new major.
 
 The note layout has its own version, `AAR_NOTE_VERSION`, which is not the API
 minor.

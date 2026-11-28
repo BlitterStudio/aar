@@ -407,6 +407,7 @@ static void test_constants(void)
     CHECK_EQ(AAR_TAG_PLATFORM_BASE(AAR_PLATFORM_ZZ9000), 0x80415300UL);
     /* The names the header reuses from the app side exist with the spec values. */
     CHECK_EQ(AAR_OK, 0);
+    CHECK_EQ(AAR_E_VERSION, -18);
     CHECK_EQ(AAR_E_OWNER, -17);
     CHECK_EQ(AAR_E_STALE, -16);
     CHECK_EQ(AAR_E_NORESOURCE, -15);

@@ -23,9 +23,10 @@ The module has two sets of rules, and the corpus carries the decision of each:
           segment must not end beyond the 64-bit address space.
 
 Each record has the code of each decision (0 accepted, 1 AAR_E_INVAL, 2
-AAR_E_PROFILE, the profile word of the note) and what an accepted image says:
-the note, the number of segments with memory, the span, the entry offset, and the
-number and the entries of the relocation tables.
+AAR_E_PROFILE for a note/ELF profile mismatch, 3 AAR_E_VERSION for an
+incompatible application API) and what an accepted image says: the note, the
+number of segments with memory, the span, the entry offset, and the number and
+the entries of the relocation tables.
 """
 
 import importlib.machinery

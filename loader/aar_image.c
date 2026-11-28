@@ -354,6 +354,8 @@ static int check_segments(struct image *p)
                 return refuse(p, "PT_LOAD is writable and executable");
             if (s.memsz < s.filesz)
                 return refuse(p, "PT_LOAD p_memsz is below p_filesz");
+            if (s.vaddr > UINT64_MAX - s.memsz)
+                return refuse(p, "a PT_LOAD segment ends beyond the 64-bit address space");
             if (n < MAX_LOADS) {
                 out->load[n].vaddr = s.vaddr;
                 out->load[n].offset = s.off;
@@ -779,12 +781,6 @@ static int check_note(struct image *p)
     if (w[2] != (p->a64 ? AAR_PROFILE_A64 : AAR_PROFILE_A32))
         return refuse_as(p, AAR_E_PROFILE,
                          "the note profile does not match the ELF class");
-    if (w[3] != AAR_API_MAJOR)
-        return refuse(p, "the note api major is not this library's");
-    if (w[4] > AAR_API_MINOR)
-        return refuse(p, "the note needs a newer api minor");
-    if (w[4] < AAR_API_MINOR_OLDEST)
-        return refuse(p, "the note's api minor predates this library's table layout");
     if (w[5] != 0 && (w[5] < STACK_MIN || w[5] > STACK_MAX || (w[5] & 15u)))
         return refuse(p, "the note stack size is not 0 or 64 KiB to 1 MiB in steps of 16");
     /* groups_required and groups_optional are reported, not judged (spec 8.1):
@@ -793,6 +789,14 @@ static int check_note(struct image *p)
      * bits it does not know. */
     if (w[9] != 0)
         return refuse(p, "the note reserved word is not 0");
+
+    if (w[3] != AAR_API_MAJOR)
+        return refuse_as(p, AAR_E_VERSION, "the note api major is not this library's");
+    if (w[4] > AAR_API_MINOR)
+        return refuse_as(p, AAR_E_VERSION, "the note needs a newer api minor");
+    if (w[4] < AAR_API_MINOR_OLDEST)
+        return refuse_as(p, AAR_E_VERSION,
+                         "the note's api minor predates this library's table layout");
 
     out->profile = w[2];
     out->note_version = w[1];
