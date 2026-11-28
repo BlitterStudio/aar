@@ -1289,17 +1289,12 @@ bytes: values the app and the client exchange through a message or shared
 buffer follow their own protocol, and `aar_bswap16`, `aar_bswap32` and
 `aar_bswap64` swap a value when that protocol says big-endian.
 
-The hand-off is always a message. The writer makes its stores visible with
-`aar_publish`, then sends the message that announces the data. The reader, once
-the message has arrived, calls `aar_acquire` before it reads. A granule has one
-writer at a time: between two hand-offs the app must not write a granule the
-client is writing, and the reverse. `aar_msg_send`, `aar_msg_poll` and
-`aar_msg_wait` order the bus (a release and an acquire point), but they do not
-clean or invalidate caches, which is why publish and acquire exist. The calls
-are table calls rather than inline instructions because user mode on A64 cannot
-invalidate by address. The wrapper returns at once when the runtime reports
-coherence. The [developer guide](aar-developer-guide.md#shared-buffers) walks
-through the rules.
+For an ordinary message hand-off, the writer publishes its data before
+sending the message, and the reader acquires the data after receiving it.
+An app can also register a shared progress word for the client to poll as
+payload becomes ready. See the [developer guide](aar-developer-guide.md#shared-buffers)
+for examples and [spec 4.3](../spec/aar.md#visibility-rules-publish-and-acquire)
+for the ordering and granule rules.
 
 Each app has a shared limit (`aar_info.shared_limit`, default
 `AAR_SHARED_DEFAULT_MIB`, set by the client). The limit is a cap, not a
@@ -1354,9 +1349,10 @@ Missing slot: `AAR_E_NOSYS`. Minimum minor: 5.
 int aar_publish(const void *p, uint64_t bytes);
 ```
 
-Writer: makes the app's stores to the range visible to the host. Call it on the
-written range after the data is final and before the message that announces the
-data. It is a store barrier when the block is coherent
+Writer: makes the app's stores to the range visible to the host. For a message
+hand-off, call it on the written range before sending the message. For polled
+progress, see [spec 4.3](../spec/aar.md#polling-a-progress-word). It is a store
+barrier when the block is coherent
 (`AAR_SHAREDF_COHERENT`, or `AAR_INFOF_SHARED_COHERENT` for the runtime) and a
 cache clean otherwise. The range is an arbitrary byte range inside a block;
 the runtime rounds to `shared_granule` internally. A display surface does not

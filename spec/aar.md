@@ -272,12 +272,14 @@ A shared buffer is memory the app owns that the host can read and write.
 
 ### 4.3 Visibility rules: publish and acquire
 
-Goal: after a data hand-off, the other side reads what the writer wrote, on any platform. The hand-off is always a message (section 6), except for the audio ring, which orders its data by its own indices (8.4). Two operations make it correct on platforms whose caches or buses are not coherent, and are free where they are:
+Use a message for an ordinary data hand-off (section 6). An app may also register a progress word so the client can poll for completed data. Both patterns use publish and acquire. The audio ring follows its own rules (8.4).
 
 ```c
 int aar_publish(const void *p, uint64_t bytes);  /* writer: make my stores visible to the host */
 int aar_acquire(const void *p, uint64_t bytes);  /* reader: drop my stale view of host-written data */
 ```
+
+#### Message hand-off
 
 App side rules:
 
@@ -295,13 +297,35 @@ Client side rules (the library implements them; section 9.5):
 4. The client MUST NOT write to a range it is about to acquire. On a copyback 68k cache an invalidate-by-push (`CacheClearE` with `CACRF_ClearD`) first writes dirty lines back, and a dirty line that overlaps the app's fresh data would overwrite it with stale bytes. This is the reason for the granule and ownership rules.
 5. A client that always calls Publish and Acquire is correct on every platform. A client that skips them is correct only on maps that report both uncached and coherent.
 
+#### Polling a progress word
+
+One ARM app produces data and its Amiga client reads it. The progress word counts the completed prefix of a payload in units that the app and client agree on, such as image rows. Only the app writes the word. The word is an unsigned 32-bit big-endian value, aligned to four bytes on both mappings, and occupies a `shared_granule` of its own. The payload lies outside that granule. The same layout and ordering apply on A32 and A64. The platform MUST preserve the indivisibility of an aligned 32-bit access to the word across the two mappings.
+
+The app initializes the word to zero and publishes it before sending one registration message by the ordinary hand-off rules. The message and the app protocol together identify the shared block, its size, the word and payload ranges, and the units and maximum count. The client maps the block after receiving the message. The count MUST NOT go backwards, wrap or reset while the registration is live. The app MUST keep all announced bytes unchanged and the block live until the client is done with them. Revocation of the shared mapping ends the registration (5.5, 9.5).
+
+To advance the count, the app MUST, in this order:
+
+1. Finish writing the newly completed payload range and call `aar_publish` on that range. Do not advance the count if this fails.
+2. Store the new count with release ordering, using a single aligned 32-bit store of the big-endian value.
+3. Call `aar_publish` on the progress word itself. The release store orders the data before the word; it does not clean the word's cache line on a non-coherent platform.
+
+On each poll the client MUST, in this order:
+
+1. Call `AARSharedAcquire` on the progress word's range.
+2. Read the word once with a single aligned 32-bit load and acquire ordering. This ordering applies to the load of the word and the access to the payload that follows it; acquiring the word's range before the load does not replace it.
+3. If the count advanced, call `AARSharedAcquire` on the newly announced payload range, then read that range. The client may see the same count again or miss intermediate counts. It MUST NOT read beyond the count it observed or read a range if its acquire failed.
+
+The one-writer-per-granule rule still applies. In particular the client MUST NOT write to the granules it acquires for polling. Before reusing or freeing the buffer, the app waits for the client to acknowledge that it no longer needs those bytes. No message is required for an individual count advance.
+
+#### Cache notes
+
 **The 68k-cache case.** A frequent question is why the client sometimes sees old data when the ARM app renders into a shared buffer and the 68k client reads it. Three different things can cause that:
 
 - The platform's own path. On the ZZ9000 2.x firmware the Zorro master reaches DDR through the Zynq ACP, which snoops the ARM L1 caches, and non-cacheable shareable memory is also coherent for Zorro readers. The standard does not rely on this. A platform that is not coherent implements `aar_publish`/`aar_acquire` with real cache maintenance. On the ZZ9000, `publish` is a store barrier only. This was checked on the card with a test that ran plain and under load, and a negative control with the shared bit cleared made it fail.
 - The 68k's own data cache. No card, including an ACP, reaches the 68k's caches. A 68040 or 68060 client that has read a line of a shared buffer once can read the old copy again from its own cache. The fix is on the client: map the range cache-inhibited (what the ZZ9000 library does with `mmu.library` for the control block, the queues and every shared buffer it maps), or call `AARSharedAcquire` before each read pass. The library reports which one it did in `AARSharedMap.flags`.
 - The transport's own structures. The control block and queue pair (section 10) sit in ordinary shared memory with the same mapping as an app's shared buffer. The control structures have a different writer pattern (the runtime and the client write indices and entries). See 10.5.
 
-The conformance test (section 11, C-SHARED) runs an app that writes a counter and a pattern into a shared buffer while a 68k client reads it, and requires zero stale or torn reads. The test runs with the map the library gives and calls `AARSharedAcquire` before each read pass, as client rule 5 says. On a platform whose maps report uncached the Acquire does nothing and is not exercised; on any other platform it is what makes the test pass. A way to ask for a deliberately cacheable map is planned for API 0.6 (appendix).
+Non-normative: C-SHARED.11 is a seqlock test. The app rewrites the payload and the client checks for stale or torn snapshots using the sequence word before and after reading. That test is separate from polling for an immutable completed prefix. Shared-buffer tests use the mapping the library returns. On an uncached or coherent client map they do not exercise real 68k cache maintenance, and on a runtime that reports shared coherence they do not exercise ARM cache maintenance. The current API has no flag to request a deliberately cacheable client map (appendix).
 
 ### 4.4 Isolation
 

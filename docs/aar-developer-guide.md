@@ -188,10 +188,10 @@ things can make the reader see old bytes:
    68060 client that has read a line of the buffer once can read the old copy
    again from its own cache.
 
-The standard fixes the first two with two calls and a rule about messages. The
-third is the client's job, and the client library does it.
+Publish and acquire handle cache visibility. A message or an ordered progress
+word tells the reader when it can use the data.
 
-### The rules, in plain words
+### Handing off data with a message
 
 **Writing for the host.** Finish writing the data. Call `aar_publish(ptr,
 bytes)` on the range you wrote. Only then send the message that tells the host
@@ -246,6 +246,65 @@ is about to acquire, because on a copyback cache an invalidate-by-push would
 write a stale dirty line over your fresh bytes. That is the reason for the
 granule rule. A client that always calls publish and acquire is correct on every
 platform.
+
+### Polling for completed data
+
+If your app renders an image a row at a time, the client can poll for finished
+rows instead of receiving a message per row. Use a shared buffer with room
+for the progress word at offset zero and start the pixels at offset
+`shared_granule`. Publish the initial zero word and send the buffer token and
+size once. The two sides agree on the pixel offset, row stride and total row
+count. The client maps the block after it receives the
+message.
+
+On the app side, finish rows up to `ready_rows` and publish just the new rows.
+`published_rows` is the count from the preceding update. `pixels` is a
+`uint8_t *` and `progress` is a `uint32_t *`. The release store uses the same
+code on A32 and A64, including the byte swap to big-endian.
+
+```c
+/* ready_rows > published_rows; pixels points at the payload */
+int rc = aar_publish(pixels + (uint64_t)published_rows * stride,
+                     (uint64_t)(ready_rows - published_rows) * stride);
+if (rc != AAR_OK)
+    return rc;
+__atomic_store_n(progress, aar_bswap32(ready_rows), __ATOMIC_RELEASE);
+rc = aar_publish(progress, sizeof *progress);
+if (rc != AAR_OK)
+    return rc;
+published_rows = ready_rows;
+```
+
+On the Amiga, acquire the word's range before each poll, then load it with
+acquire ordering. `aar_get_be32` from `<aar/transport.h>` makes one aligned
+word load and decodes big-endian; it does not include a barrier. On the
+ordered m68k path, the example uses a compiler acquire fence after the load.
+Validate the image layout against `map.bytes` before polling.
+
+```c
+LONG rc = AARSharedAcquire(handle, &map, 0, sizeof(uint32_t));
+if (rc != AAR_OK)
+    return rc;
+uint32_t ready_rows = aar_get_be32(map.base);
+__atomic_signal_fence(__ATOMIC_ACQUIRE);
+if (ready_rows < read_rows || ready_rows > total_rows)
+    return AAR_E_INVAL;
+if (ready_rows != read_rows) {
+    ULONG offset = pixel_offset + read_rows * stride;
+    ULONG bytes = (ready_rows - read_rows) * stride;
+    rc = AARSharedAcquire(handle, &map, offset, bytes);
+    if (rc != AAR_OK)
+        return rc;
+    consume_rows((const uint8_t *)map.base + offset, bytes);
+    read_rows = ready_rows;
+}
+```
+
+The app leaves published rows unchanged until the client is finished. Before
+the app reuses the buffer for another image or frees it, the client stops
+polling, unmaps it and sends an acknowledgement. Use a new registration for
+the next image. For the full contract, see
+[spec 4.3](../spec/aar.md#polling-a-progress-word).
 
 For the ZZ9000's ACP path and cache-inhibited client mapping, see the
 [transport's ZZ9000 note](transport.md#visibility-of-the-control-structures).

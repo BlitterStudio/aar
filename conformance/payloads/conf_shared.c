@@ -1,8 +1,8 @@
 /*
  * Conformance payload for C-SHARED (spec 4.2, 4.3): shared buffers and
  * visibility, from the app's side. The tests that need the client (C-SHARED.9,
- * 10, 11, 14) use the peer protocol of conf_shared.h; the runner (r_shared.c) is
- * the other half. See conformance/TESTS.md for the ids.
+ * 10, 11, 14, 28) use the peer protocol of conf_shared.h; the runner (r_shared.c)
+ * is the other half. See conformance/TESTS.md for the ids.
  *
  * Variants (conf:variant=<name>, given by the runner in every run): "default"
  * runs every test but C-SHARED.8; "caps" (the runner sets AAR_TAG_SHARED_MIB to
@@ -802,6 +802,86 @@ static void test_granules(void)
     conf_end(&t);
 }
 
+/* C-SHARED.28: publication through a count, not through message delivery. */
+static void test_progress(void)
+{
+    struct conf_test t;
+    aar_shared out = { 0, 0, 0, 0 };
+    uint32_t ack[4] = { 0, 0, 0, 0 };
+    uint64_t bytes = (1u + CONF_SHARED_PROGRESS_COUNT) * granule;
+    uint32_t g = (uint32_t)granule;
+    uint8_t *b;
+    uint32_t n;
+    int rc;
+
+    conf_begin(&t, "C-SHARED.28");
+    if (bytes > UINT32_MAX || g < 64u || (g & (g - 1u)) != 0u ||
+        aar_shared_alloc(bytes, 1, 0, &out) != AAR_OK) {
+        conf_check(&t, 0, "cannot allocate progress block");
+        goto done;
+    }
+    if (!out.ptr || out.bytes != bytes || (uintptr_t)out.ptr % g != 0u) {
+        conf_check(&t, 0, "invalid progress block grant");
+        goto free_block;
+    }
+    b = (uint8_t *)out.ptr;
+    rc = conf_shared_publish_progress(b, 0);
+    if (rc != AAR_OK) {
+        conf_check(&t, 0, "cannot publish initial count");
+        goto free_block;
+    }
+    rc = conf_shared_send(CONF_SHARED_PROGRESS, out.haddr, (uint32_t)bytes, g, 0);
+    if (rc != AAR_OK) {
+        peer_failure(&t, "cannot register progress block", rc, ack);
+        goto free_block;
+    }
+
+    for (n = 0; n <= CONF_SHARED_PROGRESS_COUNT; n++) {
+        if (n != 0) {
+            uint32_t off = n * g;
+
+            conf_shared_fill(b, off, off + g, n);
+            rc = aar_publish(b + off, g);
+            if (rc == AAR_OK)
+                rc = conf_shared_publish_progress(b, n);
+            if (rc != AAR_OK) {
+                conf_check(&t, 0, "cannot publish progress");
+                conf_buf_str(&t.why, " at record ");
+                conf_buf_u64(&t.why, n);
+                conf_buf_str(&t.why, ": ");
+                text_rc(&t.why, rc);
+                goto done;
+            }
+        }
+        if (n % CONF_SHARED_PROGRESS_BATCH == 0u) {
+            rc = conf_shared_wait_ack(ack);
+            if (rc != AAR_OK || ack[0] != 0u || ack[1] != n) {
+                peer_failure(&t, "progress checkpoint not observed", rc, ack);
+                conf_buf_str(&t.why, ", expected ");
+                conf_buf_u64(&t.why, n);
+                if (rc == AAR_OK && ack[0] == CONF_SHARED_BAD && ack[2] != UINT32_MAX) {
+                    conf_buf_str(&t.why, ", bad byte ");
+                    conf_buf_u64(&t.why, ack[2]);
+                }
+                goto done;
+            }
+        }
+    }
+    conf_buf_u64(&t.note, CONF_SHARED_PROGRESS_BATCHES);
+    conf_buf_str(&t.note, " advances observed without app messages, ");
+    conf_buf_u64(&t.note, CONF_SHARED_PROGRESS_COUNT);
+    conf_buf_str(&t.note, " records verified; client map flags ");
+    conf_buf_hex(&t.note, ack[2]);
+
+free_block:
+    if (out.ptr)
+        (void)aar_shared_free(out.ptr);
+done:
+    /* After registration, a failed writer leaves the block live until exit:
+     * the reader may still be polling it. The final success ACK ends the map. */
+    conf_end(&t);
+}
+
 /* ---- main ----------------------------------------------------------------------------------- */
 
 int aar_main(int argc, char **argv)
@@ -836,11 +916,13 @@ int aar_main(int argc, char **argv)
         test_fill();
         test_seq();
         test_granules();
+        test_progress();
     } else {
         conf_skip("C-SHARED.9", "host: no client to map the block");
         conf_skip("C-SHARED.10", "host: no client to write the block");
         conf_skip("C-SHARED.11", "host: no client to read while the app writes");
         conf_skip("C-SHARED.14", "host: no client to own the odd granules");
+        conf_skip("C-SHARED.28", "host: no client to poll the progress word");
     }
     return conf_finish("C-SHARED");
 }
