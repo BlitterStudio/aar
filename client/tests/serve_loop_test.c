@@ -2615,6 +2615,17 @@ static void test_the_log_sink_is_gone_after_destroy(void)
     finish();
 }
 
+static void test_aborting_the_timer_clears_its_signal(void)
+{
+    setup("timer_abort_signal");
+    make_serve();
+    CHECK(S->tm.pending && !(hx_sig & (1UL << S->tm.port->mp_SigBit)));
+    timer_reap(S);
+    CHECK(hx_timer_aborts == 1 && !S->tm.pending);
+    CHECK(!(hx_sig & (1UL << S->tm.port->mp_SigBit)));
+    finish();
+}
+
 /* The card hang: aar-run locates the ELF (a DOS wait that reaps the heartbeat
  * timer) between create and the first Wait. Nothing re-armed the timer until
  * some other signal arrived, so a program that only waits on aar_serve_sigmask
@@ -4911,6 +4922,7 @@ static const struct {
     T(test_a_tall_screen_that_opens_too_short_is_not_used),
     T(test_a_completion_of_a_held_request_waits_for_a_full_cq),
     T(test_the_heartbeat_runs_after_a_call_made_outside_the_loop),
+    T(test_aborting_the_timer_clears_its_signal),
     T(test_the_result_counts_the_logs_the_runtime_dropped),
     T(test_workbench_project_uses_dostrue_from_name_from_lock),
     T(test_ahi_that_runs_dry_is_counted_and_buffered_again),

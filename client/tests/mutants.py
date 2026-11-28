@@ -862,8 +862,9 @@ mutant("ahi-without-a-heartbeat", "ahi_heartbeat", SL,
        ("        (cfg->poll_us == 0 || cfg->poll_us > 20000UL))", "        (0))"))
 mutant("refused-ring-leaves-ahi-open", "refused_ring", SL,
        ("        aar_serve_audio_refused(&s->core.audio);", "        (void)0;"))
-mutant("timer-signal-left-set", "files", SL,
-       ("        X_SET_SIGNAL(0, 1UL << s->tm.port->mp_SigBit);", "        (void)0;"))
+mutant("timer-signal-left-set", "timer_abort_signal", SL,
+       ("        X_SET_SIGNAL(0, 1UL << s->tm.port->mp_SigBit);", "        (void)0;"),
+       loop_case="test_aborting_the_timer_clears_its_signal")
 mutant("flags-unchecked", "config", SL,
        ("           (cfg->flags & ~known) == 0 &&\n", ""))
 mutant("audio-route-unchecked", "config", SL,
@@ -888,7 +889,8 @@ mutant("log-hook-ignored", "hooks", SL,
 mutant("hook-table-size-unchecked", "hooks_size", "client/serve/aar_serve_priv.h",
        ("     (s)->cfg.hooks->size >= offsetof(aar_serve_hooks, field) +               \\\n                             sizeof((s)->cfg.hooks->field) &&                 \\\n", ""))
 mutant("dos-wait-leaves-the-heartbeat-unarmed", "heartbeat_after_locate", "client/serve/aar_serve_dos.c",
-       ("    if (!s->closing && !s->in_step)\n        timer_arm_for(s, timed_wake_us(s));\n    if (check_live && !claim_live(s)) {", "    if (check_live && !claim_live(s)) {"))
+       ("    if (!s->closing && !s->in_step)\n        timer_arm_for(s, timed_wake_us(s));\n    if (check_live && !claim_live(s)) {", "    if (check_live && !claim_live(s)) {"),
+       loop_case="test_the_heartbeat_runs_after_a_call_made_outside_the_loop")
 mutant("destroy-lets-a-dos-wait-arm-the-timer", "heartbeat_after_locate", SL,
        ("    s->closing = 1; /* the DOS waits below must not arm the timer again */\n", ""),
        loop_case="test_the_heartbeat_runs_after_a_call_made_outside_the_loop")
@@ -1054,7 +1056,8 @@ mutant("display-buffers-forced", "display_strategy", "client/serve/aar_serve_gfx
 mutant("pan3-forced", "display_strategy", "client/serve/aar_serve_gfx.c",
        ("        if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN3 &&\n            pan_base && h <= (AAR_SERVE_SCREEN_MAX - pan_base) / 2u)", "        if (pan_base && h <= (AAR_SERVE_SCREEN_MAX - pan_base) / 2u)"))
 mutant("pan2-forced", "display_strategy", "client/serve/aar_serve_gfx.c",
-       ("            if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN2 &&\n                pan_base && h <= AAR_SERVE_SCREEN_MAX - pan_base)", "            if (pan_base && h <= AAR_SERVE_SCREEN_MAX - pan_base)"))
+       ("        if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN2 &&\n            X_GET_DISPLAY_INFO(&dim, sizeof(dim), DTAG_DIMS, mode)) {",
+        "        if (X_GET_DISPLAY_INFO(&dim, sizeof(dim), DTAG_DIMS, mode)) {"))
 mutant("input-window-despite-the-flag", "no_input_window", "client/serve/aar_serve_gfx.c",
        ("    if (!(s->cfg.flags & AAR_SERVEF_NO_INPUT_WINDOW)) {", "    if (1) {"))
 mutant("buffer-pitch-unchecked", "buffer_pitch", "client/serve/aar_serve_gfx.c",
