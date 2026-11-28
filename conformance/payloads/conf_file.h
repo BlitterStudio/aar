@@ -77,13 +77,15 @@
 #define CONF_FILE_VARIANT_LEAK  "leak"
 #define CONF_FILE_VARIANT_REQUEST "request"
 #define CONF_FILE_VARIANT_REQUEST_STOP "request-stop"
+#define CONF_FILE_VARIANT_MESSAGE_REQUEST "message-request"
+#define CONF_FILE_VARIANT_MESSAGE_REQUEST_STOP "message-request-stop"
 
 #define CONF_FILE_REQUEST_SAVE_NAME "request-save.tmp"
 #define CONF_FILE_REQUEST_STOP_BEGIN "CONF-FILE-REQ"
 #define CONF_FILE_REQUEST_WAIT_S 35u
 #define CONF_FILE_REQUEST_MIN_WAIT_US 31000000u
 
-/* Exit codes of the two requester variants, judged by the card runner. */
+/* Exit codes of the requester variants, judged by the card runner. */
 enum conf_file_request_result {
     CONF_FILE_REQUEST_OK,
     CONF_FILE_REQUEST_UNSUPPORTED,
@@ -95,7 +97,10 @@ enum conf_file_request_result {
     CONF_FILE_REQUEST_CHANGED_FILES,
     CONF_FILE_REQUEST_STOP_SIGNAL_FAILED,
     CONF_FILE_REQUEST_STOP_FAILED,
-    CONF_FILE_REQUEST_STOP_EARLY
+    CONF_FILE_REQUEST_STOP_EARLY,
+    CONF_FILE_MESSAGE_REQUEST_FIRST_FAILED,
+    CONF_FILE_MESSAGE_REQUEST_LAST_FAILED,
+    CONF_FILE_MESSAGE_REQUEST_ONLY_FAILED
 };
 
 /* The scratch file stopcmt.tmp of the second stop row (C-FILE.49): the payload gives it the comment KEPT

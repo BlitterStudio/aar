@@ -470,6 +470,8 @@ static void release_surface(struct aar_serve *s)
 
 static void close_display(struct aar_serve *s)
 {
+    if (s->gfx.screen)
+        requester_close_message_on_screen(s, s->gfx.screen);
     if (s->gfx.have_two && s->gfx.buf_front && s->gfx.buf_back && s->gfx.screen && s->gfx.safe_port) {
         /* A prior app flip may still own either buffer. */
         flip_wait_safe_messages(s);
@@ -905,8 +907,7 @@ static int open_screen(struct aar_serve *s, uint32_t w, uint32_t h,
             if (tall)
                 X_P96_CLOSE_SCREEN(s, tall);
             tall = NULL;
-            if (s->cfg.display_strategy <= AAR_SERVE_DISPLAY_PAN2 &&
-                pan_base && h <= AAR_SERVE_SCREEN_MAX - pan_base)
+            if (pan_base && h <= AAR_SERVE_SCREEN_MAX - pan_base)
                 tall = open_p96_screen(s, mode, pan_width, pan_base + h, depth, rgb);
             if (tall && tall->Height >= (WORD)(pan_base + h) &&
                 bitmap_token(s, tall->RastPort.BitMap, &tall_front, &tall_pitch)) {

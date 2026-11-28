@@ -671,6 +671,206 @@ static void test_file_requester_host_validates_before_reporting_unavailable(void
     finish();
 }
 
+static void test_message_requester_wire_validation(void)
+{
+#define REQUEST_PAYLOAD(s) { (s), sizeof(s) }
+    static const struct {
+        const char *bytes;
+        uint32_t len;
+    } malformed[] = {
+        REQUEST_PAYLOAD("\0\0OK"),
+        REQUEST_PAYLOAD("\0Text\0"),
+        REQUEST_PAYLOAD("Title\0Text\0OK\0tail"),
+        REQUEST_PAYLOAD("Title\0Text\0|First"),
+        REQUEST_PAYLOAD("Title\0Text\0First|"),
+        REQUEST_PAYLOAD("Title\0Text\0First||Last"),
+        REQUEST_PAYLOAD("Title\0Text\0a|b|c|d|e|f|g|h|i"),
+        REQUEST_PAYLOAD("\xED\xA0\x80\0Text\0OK"),
+        REQUEST_PAYLOAD("\0Text\xE2\x82\0OK"),
+        REQUEST_PAYLOAD("\0Text\0\xC0\xAF")
+    };
+#undef REQUEST_PAYLOAD
+    static const uint32_t limit[] = {
+        AAR_REQUESTER_TITLE_MAX, AAR_REQUESTER_TEXT_MAX, AAR_REQUESTER_BUTTONS_MAX
+    };
+    static const char valid[] = "\0Message\0Only";
+    uint32_t args[AAR_ENTRY_ARGS] = {0};
+    struct comp c = {0};
+    char *mapped;
+    unsigned i;
+
+    setup("message_requester_wire_validation");
+    make_serve();
+    hx_intuition_version = 35;
+    mapped = (char *)(uintptr_t)buf(0x100);
+    for (i = 0; i < sizeof(malformed) / sizeof(malformed[0]); i++) {
+        memcpy(mapped, malformed[i].bytes, malformed[i].len);
+        CHECK(call(AAR_OP_REQUESTER, i + 1u, 0, 0, 0, 0, 0x100, malformed[i].len, &c));
+        CHECK(c.op == AAR_OP_REQUESTER && c.id == i + 1u && c.result == AAR_E_INVAL);
+        CHECK(c.out[AAR_R_REQUESTER_CHOICE] == 0);
+        CHECK(memcmp(mapped, malformed[i].bytes, malformed[i].len) == 0);
+    }
+    for (i = 0; i < sizeof(limit) / sizeof(limit[0]); i++) {
+        uint32_t bytes = 0;
+        unsigned field;
+
+        for (field = 0; field < 3; field++) {
+            uint32_t n = field == i ? limit[field] + 1u : 1u;
+
+            memset(mapped + bytes, 'X', n);
+            bytes += n;
+            mapped[bytes++] = '\0';
+        }
+        CHECK(call(AAR_OP_REQUESTER, 20u + i, 0, 0, 0, 0, 0x100, bytes, &c));
+        CHECK(c.result == AAR_E_INVAL && c.out[AAR_R_REQUESTER_CHOICE] == 0);
+    }
+    memcpy(mapped, valid, sizeof(valid));
+    CHECK(call(AAR_OP_REQUESTER, 24, 0, 0, 0, 0, 0, 0, &c) && c.result == AAR_E_INVAL);
+    CHECK(call(AAR_OP_REQUESTER, 25, 0, 0, 0, 0, 0x100, sizeof(valid) - 1u, &c));
+    CHECK(c.result == AAR_E_INVAL && c.out[AAR_R_REQUESTER_CHOICE] == 0);
+    CHECK(refplat_app_request(SLOT, AAR_OP_REQUESTER, 1, 26, args,
+                              refplat_buf_token(SLOT, 0), 0x100, sizeof(valid)) == AAR_OK);
+    CHECK(wait_comp(&c, 4) && c.id == 26 && c.result == AAR_E_INVAL);
+    args[AAR_ENTRY_ARGS - 1u] = 1;
+    CHECK(refplat_app_request(SLOT, AAR_OP_REQUESTER, 0, 27, args,
+                              refplat_buf_token(SLOT, 0), 0x100, sizeof(valid)) == AAR_OK);
+    CHECK(wait_comp(&c, 4) && c.id == 27 && c.result == AAR_E_INVAL);
+    CHECK(call(AAR_OP_REQUESTER, 28, 0, 0, 0, 0, 0x100, sizeof(valid), &c));
+    CHECK(c.result == AAR_E_NOSYS && c.out[AAR_R_REQUESTER_CHOICE] == 0);
+    CHECK(memcmp(mapped, valid, sizeof(valid)) == 0 && !hx_message_request);
+    finish();
+}
+
+static void test_message_requester_serves_until_choice(void)
+{
+    static const char payload[] = "100% Caf\xC3\xA9\0Body %s|%% \xE2\x82\xAC\0%n|50%|Last %ld";
+    static const char file[] = "File\0";
+    static const struct { LONG native; uint32_t choice; } selections[] = {
+        { 2, 2 }, { 0, 3 }, { 3, 0 }, { -1, 0 }
+    };
+    struct comp c = {0};
+    unsigned i;
+
+    setup("message_requester_serves_until_choice");
+    cfg.poll_us = 0;
+    make_serve();
+    memcpy((void *)(uintptr_t)buf(0x100), payload, sizeof(payload));
+    for (i = 0; i < sizeof(selections) / sizeof(selections[0]); i++) {
+        CHECK(post(AAR_OP_REQUESTER, i + 1u, 0, 0, 0, 0, 0x100, sizeof(payload)) == AAR_OK);
+        CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+        CHECK(hx_message_request && !next_comp(&c));
+        if (!i) {
+            CHECK(strcmp(hx_message_title, "100% Caf\xE9") == 0);
+            CHECK(strcmp(hx_message_text, "Body %s|%% ?") == 0);
+            CHECK(strcmp(hx_message_buttons, "%n|50%|Last %ld") == 0);
+            hx_run_for(31000000u);
+            CHECK(tick() == AAR_SERVE_CONTINUE && !next_comp(&c));
+            CHECK(call(AAR_OP_TIME_UNIX, 11, 0, 0, 0, 0, 0, 0, &c) && c.result == AAR_OK);
+            CHECK(call(AAR_OP_REQUESTER, 12, 0, 0, 0, 0, 0x100, sizeof(payload), &c));
+            CHECK(c.id == 12 && c.result == AAR_E_BUSY);
+            memcpy((void *)(uintptr_t)buf(0x200), file, sizeof(file));
+            CHECK(call(AAR_OP_FILE_REQUEST, 13, 0, sizeof(file), sizeof(file), 0,
+                       0x200, sizeof(file), &c));
+            CHECK(c.id == 13 && c.result == AAR_E_BUSY);
+        }
+        hx_post_requester_choice(selections[i].native);
+        CHECK(hx_wait(aar_serve_sigmask(S)) == (1UL << hx_message_request->UserPort->mp_SigBit));
+        CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+        CHECK(next_comp(&c) && c.op == AAR_OP_REQUESTER && c.id == i + 1u);
+        CHECK(c.result == (selections[i].choice ? AAR_OK : AAR_E_IO));
+        CHECK(c.out[AAR_R_REQUESTER_CHOICE] == selections[i].choice);
+        CHECK(!hx_message_request && !next_comp(&c));
+        CHECK(memcmp((const void *)(uintptr_t)buf(0x100), payload, sizeof(payload)) == 0);
+    }
+    finish();
+}
+
+static void test_message_requester_at_wire_limits(void)
+{
+    static const char solo[] = "\0Text\0OK";
+    char payload[AAR_REQUESTER_TITLE_MAX + AAR_REQUESTER_TEXT_MAX +
+                 AAR_REQUESTER_BUTTONS_MAX + 3u];
+    char *title = payload;
+    char *text = title + AAR_REQUESTER_TITLE_MAX + 1u;
+    char *buttons = text + AAR_REQUESTER_TEXT_MAX + 1u;
+    struct comp c = {0};
+    unsigned i;
+
+    setup("message_requester_at_wire_limits");
+    make_serve();
+    memset(title, 'T', AAR_REQUESTER_TITLE_MAX);
+    title[AAR_REQUESTER_TITLE_MAX] = '\0';
+    memset(text, 'a', AAR_REQUESTER_TEXT_MAX);
+    text[AAR_REQUESTER_TEXT_MAX] = '\0';
+    memset(buttons, 'X', AAR_REQUESTER_BUTTONS_MAX);
+    buttons[AAR_REQUESTER_BUTTONS_MAX] = '\0';
+    for (i = 1; i < AAR_REQUESTER_MAX_CHOICES; i++)
+        buttons[2u * i - 1u] = '|';
+    memcpy((void *)(uintptr_t)buf(0x100), payload, sizeof(payload));
+    CHECK(post(AAR_OP_REQUESTER, 1, 0, 0, 0, 0, 0x100, sizeof(payload)) == AAR_OK);
+    CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+    CHECK(strcmp(hx_message_title, title) == 0);
+    CHECK(strcmp(hx_message_text, text) == 0);
+    CHECK(strcmp(hx_message_buttons, buttons) == 0);
+    hx_post_requester_choice(0);
+    CHECK(wait_comp(&c, 4) && c.result == AAR_OK && c.out[AAR_R_REQUESTER_CHOICE] == 8);
+    memcpy((void *)(uintptr_t)buf(0x100), solo, sizeof(solo));
+    CHECK(post(AAR_OP_REQUESTER, 2, 0, 0, 0, 0, 0x100, sizeof(solo)) == AAR_OK);
+    CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+    CHECK(strcmp(hx_message_title, "Message") == 0 && strcmp(hx_message_buttons, "OK") == 0);
+    hx_post_requester_choice(0);
+    CHECK(wait_comp(&c, 4) && c.result == AAR_OK && c.out[AAR_R_REQUESTER_CHOICE] == 1);
+    for (i = 1; i <= 2; i++) {
+        hx_message_build_failure = i; /* Intuition's 0 and 1 window sentinels */
+        CHECK(call(AAR_OP_REQUESTER, 3u + i, 0, 0, 0, 0, 0x100, sizeof(solo), &c));
+        CHECK(c.result == AAR_E_IO && !hx_message_request && c.out[AAR_R_REQUESTER_CHOICE] == 0);
+    }
+    finish();
+}
+
+static void test_message_requester_stop_and_dispose(void)
+{
+    static const char payload[] = "\0Message\0Only";
+    unsigned i;
+
+    for (i = 0; i < 3; i++) {
+        struct comp c = {0};
+
+        setup("message_requester_stop_and_dispose");
+        make_serve();
+        memcpy((void *)(uintptr_t)buf(0x100), payload, sizeof(payload));
+        CHECK(post(AAR_OP_REQUESTER, 1, 0, 0, 0, 0, 0x100, sizeof(payload)) == AAR_OK);
+        CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+        CHECK(!next_comp(&c));
+        hx_post_requester_choice(0); /* A queued click must not win against stop or loss. */
+        if (i == 0) {
+            aar_serve_stop(S);
+        } else if (i == 1) {
+            aar_serve_destroy(S);
+            S = NULL;
+        } else {
+            revoke_notice_cb(NULL);
+            memset((void *)(uintptr_t)buf(0x100), 'x', sizeof(payload));
+            CHECK(aar_serve_step(S, 0) == AAR_SERVE_LOST);
+        }
+        CHECK(!hx_message_request && (!S || !S->requester));
+        if (i != 2) {
+            CHECK(next_comp(&c) && c.op == AAR_OP_REQUESTER && c.id == 1 && c.result == AAR_E_IO);
+            CHECK(c.out[AAR_R_REQUESTER_CHOICE] == 0);
+        }
+        CHECK(!next_comp(&c));
+        if (i != 2) {
+            CHECK(memcmp((const void *)(uintptr_t)buf(0x100), payload, sizeof(payload)) == 0);
+        } else {
+            unsigned j;
+
+            for (j = 0; j < sizeof(payload); j++)
+                CHECK(buf(0x100)[j] == 'x');
+        }
+        finish();
+    }
+}
+
 static void test_files_open_read_seek_stat_close(void)
 {
     struct comp c;
@@ -1091,6 +1291,26 @@ static void test_async_file_read_never_copies_after_claim_loss(void)
     for (i = 0; i < 5; i++)
         CHECK(buf(0x2000)[i] == 0xEE);
     CHECK(!next_comp(&c) && hx_packets_by[5] == reads + 1u);
+    finish();
+}
+
+static void test_message_requester_closes_with_its_private_screen(void)
+{
+    static const char payload[] = "Title\0Message\0Only";
+    struct comp c = {0};
+
+    setup("message_requester_closes_with_its_private_screen");
+    make_serve();
+    CHECK(open_display(&c, AAR_FMT_RGB565, 0) && c.result == AAR_OK);
+    memcpy((void *)(uintptr_t)buf(0x100), payload, sizeof(payload));
+    CHECK(post(AAR_OP_REQUESTER, 21, 0, 0, 0, 0, 0x100, sizeof(payload)) == AAR_OK);
+    CHECK(aar_serve_step(S, 0) == AAR_SERVE_CONTINUE);
+    CHECK(hx_message_request && hx_message_request->WScreen == hx_cur_screen && hx_screens == 1);
+    CHECK(post(AAR_OP_DISPLAY_CLOSE, 22, AAR_SERVE_DISPLAY_ID, 0, 0, 0, 0, 0) == AAR_OK);
+    CHECK(wait_comp(&c, 4) && c.op == AAR_OP_REQUESTER && c.id == 21 && c.result == AAR_E_IO);
+    CHECK(c.out[AAR_R_REQUESTER_CHOICE] == 0);
+    CHECK(wait_comp(&c, 4) && c.op == AAR_OP_DISPLAY_CLOSE && c.id == 22 && c.result == AAR_OK);
+    CHECK(!hx_message_request && !hx_screens && !hx_windows && !next_comp(&c));
     finish();
 }
 
@@ -2392,6 +2612,17 @@ static void test_the_log_sink_is_gone_after_destroy(void)
         (void)aar_core_service_next(&core, H, &r);
     }
     CHECK(H->stats.logs == 1 && H->stats.logs_unclaimed == 1);
+    finish();
+}
+
+static void test_aborting_the_timer_clears_its_signal(void)
+{
+    setup("timer_abort_signal");
+    make_serve();
+    CHECK(S->tm.pending && !(hx_sig & (1UL << S->tm.port->mp_SigBit)));
+    timer_reap(S);
+    CHECK(hx_timer_aborts == 1 && !S->tm.pending);
+    CHECK(!(hx_sig & (1UL << S->tm.port->mp_SigBit)));
     finish();
 }
 
@@ -4582,6 +4813,11 @@ static const struct {
     T(test_file_requester_abs_resolves_assigns_to_the_physical_drawer),
     T(test_file_requester_long_native_drawer),
     T(test_file_requester_host_validates_before_reporting_unavailable),
+    T(test_message_requester_wire_validation),
+    T(test_message_requester_serves_until_choice),
+    T(test_message_requester_at_wire_limits),
+    T(test_message_requester_stop_and_dispose),
+    T(test_message_requester_closes_with_its_private_screen),
     T(test_files_open_read_seek_stat_close),
     T(test_files_write_creates_and_truncates),
     T(test_async_file_read_keeps_serving_and_reports_a_short_chunk),
@@ -4686,6 +4922,7 @@ static const struct {
     T(test_a_tall_screen_that_opens_too_short_is_not_used),
     T(test_a_completion_of_a_held_request_waits_for_a_full_cq),
     T(test_the_heartbeat_runs_after_a_call_made_outside_the_loop),
+    T(test_aborting_the_timer_clears_its_signal),
     T(test_the_result_counts_the_logs_the_runtime_dropped),
     T(test_workbench_project_uses_dostrue_from_name_from_lock),
     T(test_ahi_that_runs_dry_is_counted_and_buffered_again),

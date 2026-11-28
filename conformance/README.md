@@ -59,6 +59,11 @@ operator test that is skipped does not affect the verdict. A MUST operator test
 (C-LIFE.24) that is skipped does, so a platform's report must include the operator's
 run of it.
 
+The native requester tests also need an operator, but the runner judges their
+results from what the app returns. They run only with `INTERACTIVE` and an
+exact `ONLY` id. See [C-FILE](TESTS.md#c-file-files-section-71) for the file
+and message requester commands.
+
 ### CD32 pad
 
 Run the row for the physical port with a CD32 pad connected:

@@ -1560,7 +1560,7 @@ uint32_t aar_serve_latin1_to_utf8(const uint8_t *src, uint32_t n, uint8_t *dst,
     return o;
 }
 
-uint32_t aar_serve_utf8_to_latin1(const uint8_t *src, uint32_t n, uint8_t *dst)
+static int32_t utf8_to_latin1(const uint8_t *src, uint32_t n, uint8_t *dst, int strict)
 {
     uint32_t i = 0;
     uint32_t o = 0;
@@ -1602,6 +1602,9 @@ uint32_t aar_serve_utf8_to_latin1(const uint8_t *src, uint32_t n, uint8_t *dst)
                 ok = 0;
         }
         if (!ok) {
+            if (strict)
+                return AAR_E_INVAL;
+
             /* A malformed sequence is one '?', with the continuation bytes it
              * carries. */
             uint32_t skipped = 0;
@@ -1619,6 +1622,16 @@ uint32_t aar_serve_utf8_to_latin1(const uint8_t *src, uint32_t n, uint8_t *dst)
         i += len;
     }
     return o;
+}
+
+uint32_t aar_serve_utf8_to_latin1(const uint8_t *src, uint32_t n, uint8_t *dst)
+{
+    return (uint32_t)utf8_to_latin1(src, n, dst, 0);
+}
+
+int32_t aar_serve_utf8_to_latin1_checked(const uint8_t *src, uint32_t n, uint8_t *dst)
+{
+    return utf8_to_latin1(src, n, dst, 1);
 }
 
 void aar_serve_host_init(struct aar_serve_host *h, const struct aar_serve_host_ops *ops,

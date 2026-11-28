@@ -807,6 +807,8 @@ uint32_t aar_serve_latin1_to_utf8(const uint8_t *src, uint32_t n, uint8_t *dst,
 /* UTF-8 to ISO-8859-1. A character above U+00FF and a malformed sequence each
  * become '?'. Writes at most n bytes, and dst may be src. The bytes written. */
 uint32_t aar_serve_utf8_to_latin1(const uint8_t *src, uint32_t n, uint8_t *dst);
+/* Same conversion, but malformed UTF-8 returns AAR_E_INVAL. */
+int32_t aar_serve_utf8_to_latin1_checked(const uint8_t *src, uint32_t n, uint8_t *dst);
 
 /* aar_serve_host.policy: what the client refuses with AAR_E_ACCES. */
 #define AAR_SERVE_HOST_NO_ENV  (1u << 0)

@@ -685,6 +685,16 @@ int aar_file_request(uint32_t flags, const char *title, const char *initial_path
     return AAR_E_NOSYS;
 }
 
+int aar_requester(const char *title, const char *text, const char *buttons,
+                  uint32_t *choice)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, requester) && api->requester)
+        return api->requester(title, text, buttons, choice);
+    return AAR_E_NOSYS;
+}
+
 static int file_async_available(const aar_api *api)
 {
     return AAR_API_COVERS(api, file_collect) && api->file_read_async &&

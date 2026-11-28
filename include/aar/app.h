@@ -185,6 +185,12 @@ extern "C" {
 #define AAR_MIN_DECODE_SESSIONS  4u       /* per kind per app */
 #define AAR_SHA256_BYTES         32u
 
+/* Native message requester limits (UTF-8 bytes excluding the NUL). */
+#define AAR_REQUESTER_TITLE_MAX   127u
+#define AAR_REQUESTER_TEXT_MAX    511u
+#define AAR_REQUESTER_BUTTONS_MAX 255u
+#define AAR_REQUESTER_MAX_CHOICES 8u
+
 /* ---- aar_info (spec 3.4) ----------------------------------------------------------- */
 
 #define AAR_INFOF_ISOLATED        (1u << 0)
@@ -746,6 +752,10 @@ typedef struct aar_api {
     int      (*file_request)(uint32_t flags, const char *title,
                              const char *initial_path, char *path,
                              uint32_t capacity);
+
+    /* -- optional: native message requester -- */
+    int      (*requester)(const char *title, const char *text,
+                          const char *buttons, uint32_t *choice);
 } aar_api;
 
 /* True when size covers field. A NULL function pointer still means absent. */
@@ -860,6 +870,15 @@ int      aar_file_set_comment(const char *path, const void *data, uint32_t bytes
 int      aar_file_request(uint32_t flags, const char *title,
                           const char *initial_path, char *path,
                           uint32_t capacity);
+/* Shows a native message requester without a timeout or an implicit cancel
+ * button. NULL or empty title selects the client's default. The UTF-8 text
+ * must be nonempty and buttons must contain 1..AAR_REQUESTER_MAX_CHOICES
+ * nonempty UTF-8 labels separated by '|'. Strings obey AAR_REQUESTER_*_MAX;
+ * text and labels are literal. On AAR_OK, writes the 1-based label index to
+ * choice. Leaves it unchanged on error: AAR_E_INVAL for malformed input,
+ * AAR_E_IO on stop or corrupt completion, AAR_E_NOSYS when unsupported. */
+int      aar_requester(const char *title, const char *text,
+                       const char *buttons, uint32_t *choice);
 /* Microseconds since 1970-01-01 UTC. */
 int      aar_time_unix_us(int64_t *out_us);
 int      aar_get_locale_info(aar_locale_info *out);
@@ -976,7 +995,7 @@ void     aar_free(void *p);
       AAR_ALIGNOF(type) - 1u) & ~(AAR_ALIGNOF(type) - 1u))
 
 /* Number of pointer slots in the table after the 16-byte header. */
-#define AAR_API_SLOT_COUNT 83u
+#define AAR_API_SLOT_COUNT 84u
 #define AAR_API_CORE_SLOT_COUNT 42u
 
 AAR_STATIC_ASSERT(sizeof(aar_info) == 88, "aar_info size");
@@ -1082,9 +1101,12 @@ AAR_STATIC_ASSERT(offsetof(aar_api, audio_open) ==
 AAR_STATIC_ASSERT(offsetof(aar_api, file_read_async) ==
                       offsetof(aar_api, audio_decode_close) + sizeof(void *),
                   "aar_api async files follow the service group");
-AAR_STATIC_ASSERT(offsetof(aar_api, file_request) ==
+AAR_STATIC_ASSERT(offsetof(aar_api, requester) ==
+                      offsetof(aar_api, file_request) + sizeof(void *),
+                  "aar_api message requester follows the file requester");
+AAR_STATIC_ASSERT(offsetof(aar_api, requester) ==
                       16 + (AAR_API_SLOT_COUNT - 1) * sizeof(void *),
-                  "aar_api ends at file_request");
+                  "aar_api ends at requester");
 
 #ifdef __cplusplus
 }

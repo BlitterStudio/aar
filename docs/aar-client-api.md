@@ -761,6 +761,10 @@ The library does not know which ops the client serves. A client that serves
 only some must answer the others with `AAR_E_NOSYS` itself, and should do the
 same for an op code it does not know. `aar_serve` does. A request that nobody
 completes leaves the app parked until it stops or its own wait ends.
+In particular, a client without a native message dialog must reply
+`AAR_E_NOSYS` to `AAR_OP_REQUESTER`; the app has no timeout for that request.
+See [the transport operations](transport.md#operations) for its payload and
+completion.
 
 ### AARPostEvent
 

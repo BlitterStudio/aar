@@ -140,6 +140,9 @@
 #define X_WAIT_TOF(...) WaitTOF(__VA_ARGS__)
 #define X_GET_DEFAULT_PUB_SCREEN(...) GetDefaultPubScreen(__VA_ARGS__)
 #define X_EASY_REQUEST(...) EasyRequestArgs(__VA_ARGS__)
+#define X_BUILD_EASY_REQUEST(...) BuildEasyRequestArgs(__VA_ARGS__)
+#define X_SYS_REQ_HANDLER(...) SysReqHandler(__VA_ARGS__)
+#define X_FREE_SYS_REQUEST(...) FreeSysRequest(__VA_ARGS__)
 
 /* aar.library, through the program's AARBase */
 #define X_AAR_STATUS(...) AARStatus(__VA_ARGS__)
@@ -313,7 +316,7 @@ struct aar_serve {
         struct aar_serve_file_transfer file;
     } dos;
 
-    struct aar_serve_requester *requester; /* Native ASL dialog in flight. */
+    struct aar_serve_requester *requester; /* One native dialog in flight. */
 
     /* ---- aar_serve_con.c: the console ------------------------------------------------------ */
     struct {
@@ -456,5 +459,6 @@ static void launcher_status(struct aar_serve *s, const char *msg);
 /* The same, with the program's title in front ("title: text"). */
 static void launcher_say(struct aar_serve *s, const char *text);
 static void serve_requester(struct aar_serve *s, const char *msg);
+static void requester_close_message_on_screen(struct aar_serve *s, const struct Screen *screen);
 
 #endif /* AAR_SERVE_PRIV_H */

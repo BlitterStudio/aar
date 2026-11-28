@@ -286,6 +286,7 @@ static int test_big_size(void)
 static int test_wrappers(void)
 {
     aar_info info;
+    uint32_t choice = 99u;
     char buf[4];
 
     info.size = (uint32_t)sizeof info;
@@ -305,6 +306,8 @@ static int test_wrappers(void)
     memcpy(buf, "old", sizeof buf);
     CHECK(aar_file_request(0, NULL, NULL, buf, sizeof buf) == AAR_E_NOSYS);
     CHECK(memcmp(buf, "old", sizeof buf) == 0);
+    CHECK(aar_requester(NULL, "Message", "OK", &choice) == AAR_E_NOSYS);
+    CHECK(choice == 99u);
     return 0;
 }
 
