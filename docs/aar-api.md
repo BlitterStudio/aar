@@ -1338,10 +1338,12 @@ int aar_shared_free(void *p);
 ```
 
 Releases a shared buffer. `p` is the `ptr` of an `aar_shared`. A pointer that is
-not the base of a live block is `AAR_E_INVAL`. The quota returns at once. The
-client's mapping of the token ends. Remaining blocks are released on exit,
-fault, runtime restart and reset. Gate: `AAR_API_COVERS(api, shared_free)`.
-Missing slot: `AAR_E_NOSYS`. Minimum minor: 5.
+not the base of a live block is `AAR_E_INVAL`. The quota returns at once. If
+the app has given the client the token, wait for the client to acknowledge
+[retirement](aar-developer-guide.md#retiring-a-buffer-while-the-app-runs) before
+calling `aar_shared_free`. Remaining blocks are released on exit, fault,
+runtime restart and reset. Gate: `AAR_API_COVERS(api, shared_free)`. Missing
+slot: `AAR_E_NOSYS`. Minimum minor: 5.
 
 ### aar_publish
 

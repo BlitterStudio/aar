@@ -4,7 +4,7 @@
  * conf_shared.c belongs to the C-SHARED payload author, and the two agree through
  * payloads/conf_shared.h (read its header comment first).
  *
- * The runner is the peer of C-SHARED.9, .10, .11, .14 and .28: the app sends a
+ * The runner is the peer of C-SHARED.9, .10, .11, .14, .28 and .29: the app sends a
  * token (or a request) in a message and the runner maps it with AARSharedMap,
  * reads or writes through the map, publishes or acquires, and sends ACKs.
  * The payload judges those rows from its side. While the runner handles the first
@@ -429,6 +429,112 @@ static void peer_gran(struct conf_run *run, const AARMessage *msg)
     ack(run, rc != AAR_OK ? rc : (bad == NONE ? 0 : CONF_SHARED_BAD), bad, 0, 0);
 }
 
+/* ---- Live release: C-SHARED.29 ------------------------------------------------------------ */
+
+static struct {
+    struct AARSharedMap views[2];
+    unsigned mapped;
+    ULONG serial;             /* next offer, or current offer while views are held */
+} release;
+
+static int release_live(struct conf_run *run)
+{
+    AARStatusInfo st = { 0 };
+
+    /* The serving loop can deliver queued messages after the app has ended. */
+    st.size = sizeof st;
+    return AARStatus(run->h, &st) == AAR_OK && st.state == AAR_STATE_RUNNING &&
+           st.end_reason == AAR_END_NONE;
+}
+
+static LONG release_unmap(struct conf_run *run)
+{
+    LONG result = AAR_OK;
+    unsigned i;
+
+    for (i = 0; i < CONF_COUNT(release.views); i++) {
+        unsigned bit = 1u << i;
+
+        if (release.mapped & bit) {
+            LONG rc = AARSharedUnmap(run->h, &release.views[i]);
+
+            if (rc == AAR_OK)
+                release.mapped &= ~bit;
+            else if (result == AAR_OK)
+                result = rc;
+        }
+    }
+    return result;
+}
+
+static void peer_release_open(struct conf_run *run, const AARMessage *msg)
+{
+    ULONG haddr = conf_shared_get32(msg->bytes, 0);
+    ULONG bytes = conf_shared_get32(msg->bytes, 1);
+    ULONG serial = conf_shared_get32(msg->bytes, 2);
+    ULONG bad = NONE;
+    unsigned i;
+    LONG rc;
+
+    if (serial == 0 || serial > CONF_SHARED_RELEASE_ROUNDS || serial != release.serial ||
+        release.mapped || !release_live(run))
+        return;
+    for (i = 0; i < CONF_COUNT(release.views); i++) {
+        rc = map_block(run->h, haddr, bytes, &release.views[i]);
+        if (rc != AAR_OK)
+            goto reply;
+        release.mapped |= 1u << i;
+    }
+    for (i = 0; i < CONF_COUNT(release.views); i++) {
+        struct AARSharedMap *view = &release.views[i];
+
+        if (!view->base || view->bytes != bytes) {
+            rc = AAR_E_INVAL;
+            goto reply;
+        }
+        rc = AARSharedAcquire(run->h, view, 0UL, bytes);
+        if (rc != AAR_OK)
+            goto reply;
+        bad = conf_shared_check(view->base, 0, bytes, 2UL * serial);
+        if (bad != NONE) {
+            rc = CONF_SHARED_BAD;
+            goto reply;
+        }
+    }
+    conf_shared_fill(release.views[1].base, 0, bytes, 2UL * serial + 1UL);
+    rc = AARSharedPublish(run->h, &release.views[1], 0UL, bytes);
+reply:
+    if (rc != AAR_OK)
+        release.serial = 0;   /* no more opens; leave remaining unmaps to teardown */
+    ack(run, rc, bad, serial, CONF_SHARED_RELEASE_READY);
+}
+
+static void peer_release_drop(struct conf_run *run, const AARMessage *msg)
+{
+    ULONG serial = conf_shared_get32(msg->bytes, 0);
+    LONG rc;
+
+    if (serial == 0 || serial != release.serial || !release.mapped || !release_live(run))
+        return;
+    /* Retire before unmapping. All access is in the OPEN callback on this
+     * same task, so no reader or writer can still be running here. */
+    release.serial++;
+    rc = release_unmap(run);
+    if (rc != AAR_OK) {
+        release.serial = 0;
+        conf_emitf("# C-SHARED live release: AARSharedUnmap returned %ld", (long)rc);
+        conf_run_stop(run);
+        return;
+    }
+    ack(run, AAR_OK, 0, serial, CONF_SHARED_RELEASE_DONE);
+}
+
+static void finish_release(struct conf_run *run)
+{
+    release.serial = 0;
+    (void)release_unmap(run);  /* teardown, no access through the views and no ACK */
+}
+
 static const struct conf_peer peers[] = {
     { CONF_SHARED_MAP, peer_map },
     { CONF_SHARED_FILL, peer_fill },
@@ -436,6 +542,8 @@ static const struct conf_peer peers[] = {
     { CONF_SHARED_END_SEQ, peer_seq_end },
     { CONF_SHARED_GRAN, peer_gran },
     { CONF_SHARED_PROGRESS, peer_progress },
+    { CONF_SHARED_RELEASE_OPEN, peer_release_open },
+    { CONF_SHARED_RELEASE_DROP, peer_release_drop },
 };
 
 /* ---- The variants of the payload --------------------------------------------------------------- */
@@ -444,7 +552,10 @@ static void prepare_default(struct conf_run *run)
 {
     memset(&seq, 0, sizeof seq);
     memset(&progress, 0, sizeof progress);
+    memset(&release, 0, sizeof release);
+    release.serial = 1;
     run->poll = poll_shared;
+    run->on_finished = finish_release;
 }
 
 static const struct TagItem caps_tags[] = {

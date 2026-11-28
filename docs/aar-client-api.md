@@ -665,11 +665,14 @@ LONG AARSharedMap(AARHandle *handle, ULONG haddr, ULONG bytes, ULONG flags,
 ```
 
 Turns a token and a byte count into a 68k pointer. `flags` is reserved: pass 0.
-The library checks the range against the platform's shared aperture and makes
-the memory cache-inhibited where it can. It maps a block once and reuses the
-map. A map is valid until `AARSharedUnmap`, `AARClose` or the end of the app.
-After `AARStatus` reports an end state, do not write through a map: the memory
-may belong to another app.
+The library checks the range against the platform's shared aperture, which
+does not establish that the token names a live allocation. It makes the
+memory cache-inhibited where it can and caches platform mappings. A map
+need not keep the allocation live. Follow the
+[retirement protocol](../spec/aar.md#95-shared-buffers-on-the-client) before the
+app frees the block. A map ends at `AARSharedUnmap`, `AARClose` or the end of the
+app. After `AARStatus` reports an end state, unmap and do not write through
+the map: the memory may belong to another app.
 
 | Error | Cause |
 |---|---|
@@ -684,14 +687,12 @@ may belong to another app.
 LONG AARSharedUnmap(AARHandle *handle, struct AARSharedMap *map);
 ```
 
-Gives the map up.
+Gives up one view of the block. To retire a live allocation, stop all access
+and unmap every view before acknowledging retirement. See the
+[developer guide](aar-developer-guide.md#retiring-a-buffer-while-the-app-runs).
 
 **ZZ9000 note.** Unmapping clears the caller's map but leaves the pages
 cache-inhibited; see the [transport note](transport.md#visibility-of-the-control-structures).
-A map does not pin the allocation. If the app needs to free a mapped block
-while it is still running, stop using the pointer, unmap it, then send the app
-an acknowledgement. The app waits for that acknowledgement before freeing
-the block.
 
 ### AARSharedPublish
 
