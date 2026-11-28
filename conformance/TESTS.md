@@ -37,9 +37,11 @@ SHOULD of sections 2 to 11 has an id or an explicit "not tested".
 ## C-ELF: image refusal and acceptance (sections 2.2, 2.3, 5.2)
 
 The runner loads the files of `negative/` (and the positive images next to them)
-with `AARLoadFile` and checks the result code. Every refusal is `AAR_E_PROFILE`
-or `AAR_E_INVAL` unless the check says otherwise. After every refusal the runner
-checks that the handle can be closed and that a new claim succeeds.
+with `AARLoadFile` and `AARLoadMemory` and checks that the result codes match.
+Every refusal is `AAR_E_PROFILE` or `AAR_E_INVAL` unless the check says otherwise.
+After every refusal the runner checks that the handle can be closed and that a
+new claim succeeds. Rows with an exact probe refusal test both `AARProbeFile`
+and `AARProbeMemory`.
 
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
@@ -70,20 +72,20 @@ checks that the handle can be closed and that a new claim succeeds.
 | C-ELF.25 | 2.2.6 | MUST | core | a32 | runner | yes | entry point with bit 0 set refused |
 | C-ELF.26 | 2.2.7 | MUST | core | any | runner | yes | image with no AAR note refused |
 | C-ELF.27 | 2.2.7 | MUST | core | any | runner | yes | image with two AAR notes refused |
-| C-ELF.28 | 2.3 | MUST | core | any | runner | yes | note with a wrong `magic` refused |
-| C-ELF.29 | 2.3 | MUST | core | any | runner | yes | `note_version` other than 1 refused |
-| C-ELF.30 | 2.3 | MUST | core | any | runner | yes | note `profile` that differs from the ELF class refused with `AAR_E_PROFILE` |
+| C-ELF.28 | 2.3 | MUST | core | any | runner | yes | note with a wrong `magic` refused with `AAR_E_INVAL` by both load and probe |
+| C-ELF.29 | 2.3 | MUST | core | any | runner | yes | `note_version` other than 1 refused with `AAR_E_INVAL` by both load and probe |
+| C-ELF.30 | 2.3 | MUST | core | any | runner | yes | note `profile` that differs from the ELF class refused with `AAR_E_PROFILE` by load and `AAR_E_INVAL` by probe |
 | C-ELF.31 | 2.3 | MUST | core | any | runner | yes | an image of a profile that `AARInfo.profiles` does not list is refused with `AAR_E_PROFILE` or `AAR_E_INVAL` (2.2 allows both for the class; passes with detail `all profiles supported` when the platform lists every defined profile) [spec question 61] |
-| C-ELF.32 | 2.3 | MUST | core | any | runner | yes | `api_major` other than the platform's refused with `AAR_E_INVAL` |
-| C-ELF.33 | 2.3 | MUST | core | any | runner | yes | `api_minor_required` above the platform's minor, or below `AAR_API_MINOR_OLDEST`, refused with `AAR_E_INVAL` |
-| C-ELF.34 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` below 64 KiB refused |
-| C-ELF.35 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` that is not a multiple of 16 refused |
+| C-ELF.32 | 2.3 | MUST | core | any | runner | yes | otherwise well-formed image with `api_major` other than the platform's refused with `AAR_E_VERSION` by both load and probe |
+| C-ELF.33 | 2.3 | MUST | core | any | runner | yes | otherwise well-formed image with `api_minor_required` above the platform's minor or below `AAR_API_MINOR_OLDEST` refused with `AAR_E_VERSION` by both load and probe |
+| C-ELF.34 | 2.3 | MUST | core | any | runner | yes | a nonzero `stack_bytes` below 64 KiB refused with `AAR_E_INVAL` by both load and probe, including when `api_major` is also wrong |
+| C-ELF.35 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` that is not a multiple of 16 refused with `AAR_E_INVAL` by both load and probe |
 | C-ELF.36 | 2.3 | MUST | core | any | runner | yes | `stack_bytes` 0, 64 KiB and 1 MiB all load and run |
 | C-ELF.37 | 2.3 | MUST | core | any | runner | yes | `groups_required` with a bit that no platform sets (reserved bit 5 or 27, experimental bit 28 or 31) refused with `AAR_E_NOGROUP`; unknown bits of `groups_optional` are ignored: the image loads and runs [spec question 4] |
-| C-ELF.38 | 2.3 | MUST | core | any | runner | yes | a note with wrong name or descriptor padding is not an AAR note: refused |
+| C-ELF.38 | 2.3 | MUST | core | any | runner | yes | wrong note name or descriptor size is refused; a nonzero reserved word returns `AAR_E_INVAL` from both load and probe, even with `api_minor_required` below the floor |
 | C-ELF.39 | 5.2 | MUST | core | any | runner | yes | `AARInfo.max_image_bytes` is at least 16 MiB |
 | C-ELF.40 | 4.1 | MUST | core | any | runner | yes | `min_heap_mib` above anything the platform can commit (0xFFFFFFFF, and 0x10000001, which wraps to 1 MiB in 32-bit bytes) is refused. The load call returns `AAR_E_NOMEM`, or `AAR_E_NORESOURCE` with a reason in `AARStatusInfo.reason` [spec questions 40 and 60] |
-| C-ELF.41 | 5.2 | MUST | core | any | runner | yes | every load refusal is one of `AAR_E_PROFILE`, `AAR_E_NOGROUP`, `AAR_E_INVAL`, `AAR_E_NOMEM` (or `AAR_E_NORESOURCE` with a reason, spec question 60); checked over every image in the corpus |
+| C-ELF.41 | 5.2 | MUST | core | any | runner | yes | every load refusal is one of `AAR_E_PROFILE`, `AAR_E_NOGROUP`, `AAR_E_INVAL`, `AAR_E_VERSION`, `AAR_E_NOMEM` (or `AAR_E_NORESOURCE` with a reason, spec question 60); checked over every image in the corpus |
 | C-ELF.42 | 2.2 | MUST | core | any | runner | yes | the same image loaded with `AARLoadMemory` gives the same result as `AARLoadFile` (accept and refuse alike) |
 | C-ELF.43 | 2.4 | MUST | core | any | none | todo | not tested: `tools/aar-check` is a tool of this repository, tested by `tests/aar_check_test.py` in CI |
 | C-ELF.44 | 2.1 | SHOULD | core | any | none | todo | not tested: a launcher picks `.a32` or `.a64` with `AARProbeFile`; probe behaviour is C-CLIENT |
@@ -764,7 +766,7 @@ developers.
 23. **Probe versus load** (9.2): `AARProbeFile` "does not judge the image against
     the platform"; no statement says what it returns for a note that is present
     but invalid (bad magic): the suite expects an error code, C-CLIENT.10.
-    settled: spec 9.2 (`AAR_E_NOENT` and `AAR_E_IO` for the file errors, `AAR_E_INVAL` for anything that is not a valid image, never `AAR_E_PROFILE`)
+    settled: spec 9.2 (`AAR_E_NOENT` and `AAR_E_IO` for file errors, `AAR_E_VERSION` for an incompatible application API in an otherwise well-formed image, `AAR_E_INVAL` for an invalid image, never `AAR_E_PROFILE`)
 24. **Handle and NULL** (10.2): "handle 0 is invalid" is stated for the transport
     value; the client API takes a pointer. C-CLIENT.26 assumes NULL gives
     `AAR_E_INVAL`.

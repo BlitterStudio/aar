@@ -407,6 +407,7 @@ static inline const char *aar_run_error_name(int status)
     case AAR_E_NORESOURCE: return "no resources";
     case AAR_E_STALE: return "claim revoked";
     case AAR_E_OWNER: return "handle belongs to another task";
+    case AAR_E_VERSION: return "incompatible AAR API version";
     default: return "error";
     }
 }
@@ -720,6 +721,7 @@ enum aar_run_probe_verdict {
     AAR_RUN_PROBE_NOENT,   /* the file cannot be opened */
     AAR_RUN_PROBE_IO,      /* the file cannot be read */
     AAR_RUN_PROBE_NOT_AAR, /* not an AAR image (the probe's AAR_E_INVAL) */
+    AAR_RUN_PROBE_VERSION, /* the image API is not supported by this library */
     AAR_RUN_PROBE_FAILED,  /* any other answer of the probe */
     AAR_RUN_PROBE_PROFILE, /* an image of a profile the platform does not run */
     AAR_RUN_PROBE_API,     /* the image needs a newer API than the platform has */
@@ -740,6 +742,8 @@ aar_run_probe_check(int probe_rc, const AARImageInfo *img,
         return AAR_RUN_PROBE_IO;
     if (probe_rc == AAR_E_INVAL)
         return AAR_RUN_PROBE_NOT_AAR;
+    if (probe_rc == AAR_E_VERSION)
+        return AAR_RUN_PROBE_VERSION;
     if (probe_rc != AAR_OK)
         return AAR_RUN_PROBE_FAILED;
     /* A profile is a number; the platform's mask has a bit for each. The
@@ -816,9 +820,12 @@ static inline void aar_run_probe_line(char *buf, size_t size,
         snprintf(buf, size, "aar-run: cannot read %s", path);
         break;
     case AAR_RUN_PROBE_NOT_AAR:
-        snprintf(buf, size, "aar-run: %s is not an AAR image (no valid AAR "
-                 "ELF note, or one built for another API than this library)",
-                 path);
+        snprintf(buf, size, "aar-run: %s is not an AAR image (invalid AAR ELF "
+                 "or note)", path);
+        break;
+    case AAR_RUN_PROBE_VERSION:
+        snprintf(buf, size, "aar-run: %s uses an AAR API version this library "
+                 "does not support.", path);
         break;
     case AAR_RUN_PROBE_PROFILE:
         aar_run_profiles_text(list, sizeof(list), platform->profiles);

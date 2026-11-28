@@ -43,11 +43,6 @@ int aar_load_plan(aar_load_read_fn read, void *user, uint64_t length,
 
         if (l->memsz == 0)
             continue;
-        if (l->vaddr > UINT64_MAX - l->memsz) {
-            if (why)
-                *why = "a PT_LOAD segment ends beyond the 64-bit address space";
-            return AAR_E_INVAL;
-        }
         s = &plan->seg[plan->nsegments++];
         s->offset = l->offset;
         s->filesz = l->filesz;

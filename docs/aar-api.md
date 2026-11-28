@@ -14,7 +14,8 @@ side, `aar.library`, which a launcher uses to load, start and serve an app, is
 in [aar-client-api.md](aar-client-api.md).
 
 `AAR_API_MAJOR` is 0 and `AAR_API_MINOR` is 6. Each entry's "Minimum minor"
-gives the version that introduced it. Before 1.0 any minor may break.
+gives the version that introduced it. Compatibility starts at the first
+shipped baseline; this draft accepts only API 0.6.
 
 ## How an app reaches the runtime
 
@@ -115,24 +116,26 @@ extension](#the-zz9000-extension-table).
 
 ### AAR_API_MAJOR
 
-`0u`. Changes only for a break. The runtime refuses a note whose `api_major`
-differs from its own.
+`0u`. Changes only for a break. The runtime returns `AAR_E_VERSION` if a
+structurally valid image declares a different API major.
 
 ### AAR_API_MINOR
 
 `6u`. Increments for each release that adds table slots, constants or groups.
-From 1.0 constant values and structure meanings never change within a major.
-The runtime refuses a note whose `api_minor_required` is higher than its own
-minor, or lower than `AAR_API_MINOR_OLDEST`.
+Compatible releases preserve the values of constants and the layouts and
+meanings of structures used by accepted older minors. The runtime returns
+`AAR_E_VERSION` if a structurally valid image needs a minor above this value
+or below `AAR_API_MINOR_OLDEST`.
 
 ### AAR_API_MINOR_OLDEST
 
-`6u`. The oldest minor whose table layout this header describes. Before 1.0 a
-minor may move slots (0.6 did), so an image built against an older minor would
-call the wrong slots. A runtime built from this header refuses a note whose
-`api_minor_required` is below this value or above `AAR_API_MINOR`, with
-`AAR_E_INVAL`, and `AAR_NOTE_EX` rejects such a value at compile time. When a
-minor moves slots again, raise both it and `AAR_API_MINOR`. Minimum minor: 6.
+`6u`. The oldest minor of the current major whose API this runtime supports.
+The 0.6 draft moved slots relative to the 0.5 draft and cannot run 0.5
+binaries. A compatible release appends new calls and can keep the floor only
+if it preserves the offsets, signatures and semantics of every slot available
+to every accepted older minor. An incompatible release raises the floor
+unless it implements the older ABI. `AAR_NOTE_EX` rejects a minor outside
+the supported range at compile time. Minimum minor: 6.
 
 ### AAR_API_VERSION
 
@@ -216,6 +219,13 @@ ticket is not current. A request that names it changes nothing.
 ### AAR_E_OWNER
 
 `-17`. A handle was used by a task that does not own it.
+
+### AAR_E_VERSION
+
+`-18`. A structurally valid image declares a different API major or a required
+minor outside `AAR_API_MINOR_OLDEST` through `AAR_API_MINOR`, inclusive.
+Returned by probe and load, not by app table calls. An unknown note format
+(`note_version`) remains `AAR_E_INVAL`.
 
 ### Admission refusal reasons
 
@@ -368,17 +378,19 @@ little-endian `uint32_t`:
 | 1 | `note_version` | `AAR_NOTE_VERSION` |
 | 2 | `profile` | `AAR_PROFILE_A32` or `AAR_PROFILE_A64` |
 | 3 | `api_major` | the major the app was built against |
-| 4 | `api_minor_required` | the lowest minor that has every call the app needs |
+| 4 | `api_minor_required` | the lowest supported minor that provides the API contracts the app needs |
 | 5 | `stack_bytes` | 0 for the default (1 MiB); otherwise 64 KiB up to the platform maximum, a multiple of 16 |
 | 6 | `min_heap_mib` | private heap committed at load, in MiB |
 | 7 | `groups_required` | `AAR_GROUP_*` bits; the load fails with `AAR_E_NOGROUP` if one is missing |
 | 8 | `groups_optional` | a hint, for example for a launcher that opens a screen before start |
 | 9 | `reserved` | 0 |
 
-The runtime refuses a note whose profile word does not match the image
-(`AAR_E_PROFILE`), whose `api_major` differs from its own, or whose
-`api_minor_required` is above its own minor (`AAR_E_INVAL`). There is no
-C structure for the descriptor: `AAR_NOTE` emits it.
+The runtime returns `AAR_E_PROFILE` if the note's profile does not match the
+ELF class, and `AAR_E_INVAL` for structural errors such as bad note magic, an
+unknown `note_version`, an invalid stack size or a nonzero reserved word.
+After structural validation it returns `AAR_E_VERSION` if `api_major` differs
+from its own or `api_minor_required` is outside the supported range. There is
+no C structure for the descriptor: `AAR_NOTE` emits it.
 
 ### AAR_NOTE_MAGIC
 
@@ -431,9 +443,9 @@ AAR_NOTE_EX(api_minor_required, stack_bytes, min_heap_mib,
             groups_required, groups_optional)
 ```
 
-The same as `AAR_NOTE` with an explicit `api_minor_required`. Use it to
-declare an older minor than the header you build against when you use only
-calls that older minor has.
+The same as `AAR_NOTE` with an explicit `api_minor_required`. Use it to declare
+an older supported minor only if the app works with that minor's API. Gate any
+calls added later on slot presence before using them.
 
 ## Profiles, platforms and groups
 

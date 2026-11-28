@@ -15,7 +15,7 @@
  *                                   memory: either; a refusal has a code the
  *                                   row lists
  *   otherwise                       plan refuses it with a code the row lists
- *                                   (PROFILE: AAR_E_PROFILE, INVAL: AAR_E_INVAL)
+ *                                   (PROFILE, INVAL or VERSION)
  * An image that is accepted is placed at an address that is not where it is
  * written; the images whose point is a relocation (C-ELF.16 to C-ELF.18, and
  * ok-reloc-bss of C-ELF.23) hold a
@@ -57,6 +57,8 @@ static int code_allowed(const struct row *r, int rc)
         return has_token(r->load, "PROFILE");
     if (rc == AAR_E_INVAL)
         return has_token(r->load, "INVAL");
+    if (rc == AAR_E_VERSION)
+        return has_token(r->load, "VERSION");
     return 0;
 }
 
@@ -146,7 +148,8 @@ static void run_row(const struct row *r, const char *dir)
         mem_init(&m, img, len, 512);
         rc[i] = aar_load_plan(mem_read, &m, len, masks[i], &plan, &why);
         CHECK(!m.bad);
-        CHECK(rc[i] == AAR_OK || rc[i] == AAR_E_PROFILE || rc[i] == AAR_E_INVAL);
+        CHECK(rc[i] == AAR_OK || rc[i] == AAR_E_PROFILE || rc[i] == AAR_E_INVAL ||
+              rc[i] == AAR_E_VERSION);
         CHECK((rc[i] == AAR_OK) == (why == NULL));
         if (rc[i] != AAR_OK)
             continue;

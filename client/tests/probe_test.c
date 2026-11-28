@@ -41,7 +41,7 @@ static unsigned long failures;
 
 struct image {
     char name[160];
-    int expect_ok;
+    int expect_rc;
     uint32_t fields[9]; /* profile, api_major, api_minor_required, stack, heap,
                          * groups_required, groups_optional, note_version,
                          * image_bytes */
@@ -125,18 +125,17 @@ static void run_image(const struct image *img)
     fill_pattern(&mem);
     before = mem;
     rc_mem = aar_probe_memory_why(img->data, img->len, &mem, &why);
-    CHECK((rc_mem == AAR_OK) == (img->expect_ok != 0));
+    CHECK(rc_mem == img->expect_rc);
     if (rc_mem != AAR_OK) {
-        CHECK(rc_mem == AAR_E_INVAL);
         CHECK(why != NULL);
         CHECK(same_info(&mem, &before));
     } else {
         CHECK(why == NULL);
         check_fields(img, &mem);
     }
-    if ((rc_mem == AAR_OK) != (img->expect_ok != 0))
-        printf("  case: %s (probe %d, runtime rules %s)\n", img->name, rc_mem,
-               img->expect_ok ? "accept" : "refuse");
+    if (rc_mem != img->expect_rc)
+        printf("  case: %s (memory probe %d, want %d)\n", img->name, rc_mem,
+               img->expect_rc);
 
     /* Through the callback: same decision, same fields, sane reads. */
     rd.data = img->data;
@@ -145,7 +144,10 @@ static void run_image(const struct image *img)
     rd.bad_use = 0;
     fill_pattern(&cb);
     rc_cb = aar_probe_source(checked_read, &rd, img->len, &cb, NULL);
-    CHECK(rc_cb == rc_mem);
+    CHECK(rc_cb == img->expect_rc);
+    if (rc_cb != img->expect_rc)
+        printf("  case: %s (reader probe %d, want %d)\n", img->name, rc_cb,
+               img->expect_rc);
     CHECK(!rd.bad_use);
     CHECK(same_info(&cb, &mem));
     /* The reader is only asked for what the image has, and sequentially
@@ -160,7 +162,7 @@ static void run_truncations(const struct image *img)
 {
     uint32_t n;
 
-    if (!img->expect_ok)
+    if (img->expect_rc != AAR_OK)
         return;
     CHECK(img->need <= img->len);
     for (n = 0; n < img->len; n++) {
@@ -188,7 +190,7 @@ static void run_size_rules(const struct image *img)
     uint8_t *guard = (uint8_t *)words;
     AARImageInfo *at = (AARImageInfo *)words;
 
-    if (!img->expect_ok)
+    if (img->expect_rc != AAR_OK)
         return;
     /* size < 4 cannot hold the size word. */
     fill_pattern(&info);
@@ -255,7 +257,12 @@ static int read_corpus(const char *path, struct image **out, uint32_t *count)
             return -1;
         if (fread(&flag, 1, 1, fp) != 1)
             return -1;
-        v[i].expect_ok = flag == 1;
+        switch (flag) {
+        case 0: v[i].expect_rc = AAR_OK; break;
+        case 1: v[i].expect_rc = AAR_E_INVAL; break;
+        case 3: v[i].expect_rc = AAR_E_VERSION; break;
+        default: return -1;
+        }
         for (k = 0; k < 9; k++) {
             if (fread(b, 1, 4, fp) != 4)
                 return -1;
@@ -292,9 +299,9 @@ int main(int argc, char **argv)
     }
     for (i = 0; i < n; i++) {
         run_image(&v[i]);
-        if (v[i].expect_ok && strncmp(v[i].name, "stripped section headers", 24) == 0)
+        if (v[i].expect_rc == AAR_OK && strncmp(v[i].name, "stripped section headers", 24) == 0)
             stripped++;
-        if (v[i].expect_ok) {
+        if (v[i].expect_rc == AAR_OK) {
             accepted++;
             /* Truncating and the size rules are the same for every accepted
              * image; the named ones (not the mutations) are enough. */

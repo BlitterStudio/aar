@@ -243,16 +243,17 @@ limit or does not report it.
 
 ### AARImageInfo
 
-What the probe reports (48 bytes). It is what the image declares in its note.
-The probe does not judge it against the platform. Compare `profile` with
-`AARInfo.profiles` and the group masks with `AARInfo.groups` yourself.
+What the probe reports on success (48 bytes). Compare the note's `profile`,
+API version and required groups with the platform's `AARInfo`. The probe
+checks API compatibility against the library, not the platform. On failure
+it leaves the caller's structure unchanged; do not use it as probe output.
 
 | Offset | Field | Meaning |
 |---|---|---|
 | 0 | `size` | sizeof, set by the caller |
 | 4 | `profile` | `AAR_PROFILE_A32` or `AAR_PROFILE_A64` |
 | 8 | `api_major` | the major the app was built against |
-| 12 | `api_minor_required` | the lowest minor with every call the app needs |
+| 12 | `api_minor_required` | the lowest supported minor that provides the API contracts the app needs |
 | 16 | `stack_bytes` | as in the note; 0 is the 1 MiB default |
 | 20 | `min_heap_mib` | private heap committed at load, in MiB |
 | 24 | `groups_required` | `AAR_GROUP_*` bits the app needs |
@@ -509,24 +510,23 @@ LONG AARProbeFile(const char *path, AARImageInfo *info);
 ```
 
 Reads the AAR note of an image without loading it. It needs no handle. The
-probe applies the image rules of the specification (2.2 and 2.3) as the
-platform's loader does. An image that breaks one is refused, and an image the
-loader would accept is accepted, with or without section headers.
-`tools/aar-check` is stricter: it also requires the section headers and compares
-them with the segments, which is a check of build output. The probe does not
-judge the image against the platform. Profile, groups, heap and stack are
-reported, not checked. The note's API numbers are judged against the API this
-library was built with. A note for another major, or one that needs a newer
-minor, is refused.
+probe applies the structural image rules of the specification (2.2 and 2.3),
+with or without section headers. `tools/aar-check` also requires the section
+headers and compares them with the segments, which is a check of build output.
+The probe does not judge the image against the platform's profiles, groups
+or memory limits. After structural validation it checks the note's app API
+version against the library's major and supported minor range.
 
 | Error | Cause |
 |---|---|
 | `AAR_E_NOENT` | the file cannot be opened |
 | `AAR_E_IO` | the file cannot be read |
-| `AAR_E_INVAL` | not a little-endian ELF32 or ELF64 file, a header, relocation or note rule broken, no AAR note or more than one, a note with a wrong magic or version, or a profile word that differs from the ELF class |
+| `AAR_E_INVAL` | invalid argument, malformed ELF or note, missing or duplicate AAR note, bad note magic, unknown `note_version`, invalid stack size, nonzero reserved word, or a note profile that differs from the ELF class |
+| `AAR_E_VERSION` | a structurally valid image declares a different API major or requires a minor above `AAR_API_MINOR` or below `AAR_API_MINOR_OLDEST` |
 
-`AAR_E_PROFILE` is not returned. The probe reports the `profile`, and the
-launcher chooses.
+The probe never returns `AAR_E_PROFILE`. On `AAR_OK` it fills `info`; on any
+failure it leaves `info` unchanged. In particular, `AAR_E_VERSION` does not
+make the image's API numbers available in `info`.
 
 ### AARProbeMemory
 
@@ -535,8 +535,9 @@ LONG AARProbeMemory(const void *data, ULONG length, AARImageInfo *info);
 ```
 
 The same for an image in memory. `data` needs no alignment. It returns
-`AAR_E_INVAL` for a NULL pointer with a length, and the errors of
-`AARProbeFile` except the two file errors.
+`AAR_E_INVAL` for a NULL pointer with a length, and the image and argument
+errors of `AARProbeFile`, including `AAR_E_VERSION`. It leaves `info` unchanged
+on failure.
 
 ### AARSetTagList
 
@@ -567,7 +568,8 @@ seconds. A load that keeps making progress is not timed out.
 | `AAR_E_BUSY` | a load was already tried on this handle (also one that failed or was cut short), or the app has started |
 | `AAR_E_NOENT` | the file cannot be opened |
 | `AAR_E_IO` | a read failed, or Ctrl-C |
-| `AAR_E_INVAL` | the file is empty or larger than `AARInfo.max_image_bytes`, or the platform's loader refuses the image |
+| `AAR_E_INVAL` | the file is empty, is larger than `AARInfo.max_image_bytes`, or is not a structurally valid AAR image |
+| `AAR_E_VERSION` | the structurally valid image declares an app API major or minor the platform's loader does not support |
 | `AAR_E_PROFILE`, `AAR_E_NOGROUP`, `AAR_E_NOMEM` | the platform's loader refuses the image (spec 2.3) |
 | `AAR_E_NORESOURCE` | the platform lacks the memory; `AARStatusInfo.reason` says which |
 
@@ -577,7 +579,8 @@ seconds. A load that keeps making progress is not timed out.
 LONG AARLoadMemory(AARHandle *handle, const void *data, ULONG length);
 ```
 
-The same for an image in memory.
+The same for an image in memory, including `AAR_E_VERSION` for an incompatible
+app API.
 
 Only a load that completed can be started. A load that fails after it began (a
 failed chunk or end, a Ctrl-C, a read error) leaves the handle unloaded for good:
@@ -921,7 +924,7 @@ control block.
 |---|---|
 | `AAR_OK` | success |
 | `AAR_E_IO` | a queue or the control block is corrupt, a read failed, or `AARLoadFile` was interrupted by Ctrl-C |
-| `AAR_E_INVAL` | a bad argument, a `size` below 4, an unknown tag or flag, a range outside the aperture, an image that fails the probe |
+| `AAR_E_INVAL` | a bad argument, a `size` below 4, an unknown tag or flag, a range outside the aperture, or an image that fails structural validation |
 | `AAR_E_NOMEM` | no memory for a handle, a map or a signal bit, or the platform lacks memory |
 | `AAR_E_BUSY` | a queue is full or empty (messages, requests), an option set too late, an image loaded twice |
 | `AAR_E_NOENT` | a file does not exist, or `AARReadStack` found no snapshot |
@@ -931,6 +934,7 @@ control block.
 | `AAR_E_NORESOURCE` | admission or load refused for lack of a resource; `AAR_REASON_*` says which |
 | `AAR_E_STALE` | the handle is closed, or the platform revoked its claim (for example after a lease expiry) |
 | `AAR_E_OWNER` | a task other than the owner used the handle |
+| `AAR_E_VERSION` | a structurally valid image declares an unsupported app API major or minor; returned by both probe and load |
 
 `AAR_E_TIMEDOUT`, `AAR_E_ACCES`, `AAR_E_FAULT`, `AAR_E_NOSPC`, `AAR_E_EXIST` and
 `AAR_E_BADF` are codes of the app and service side. The library does not

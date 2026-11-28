@@ -16,9 +16,9 @@ the files are not all ELF images), and .gitattributes marks it binary.
 Every image has real code at its entry point: a few instructions that call the
 table's exit slot with the exit code 3 (EXIT_CODE), and the read-write segment
 sits on its own 4 KiB page, so an image that is meant to load and run does so
-on a runtime that maps pages, and an image that is meant to be refused has no
-other defect than the one it names. The runner starts the accepted images and
-reads the exit code.
+on a runtime that maps pages. Usually a refused image has one defect; names
+that include two faults exercise precedence. The runner starts the accepted
+images and reads the exit code.
 
 The accepted images whose point is a relocation (C-ELF.16, C-ELF.17, C-ELF.18, and
 C-ELF.23 for a target in the bss tail) have
@@ -38,11 +38,12 @@ The MANIFEST has one line per image, fields separated by a single space:
     ids      the C-ELF ids the image counts for, comma separated; "-" for none
              (images that other areas use). Every image also counts for C-ELF.41
              and C-ELF.42
-    load     what AARLoadFile may return: "OK" (loads, starts and exits with
-             code 3), or the codes of a refusal separated by "|": PROFILE,
-             INVAL, NOGROUP, NOMEM
+    load     what AARLoadFile/Memory may return: "OK" (loads, starts and exits
+             with code 3), or the codes of a refusal separated by "|": PROFILE,
+             INVAL, VERSION, NOGROUP, NOMEM, NORESOURCE
     probe    what AARProbeFile does: "ok" (accepts), "refuse" (a negative code),
-             "any" (the spec does not say: either)
+             "any" (the spec does not say: either); "INVAL" or "VERSION" requires
+             the exact code from both AARProbeFile and AARProbeMemory
 
 C-ELF.31 uses the image `unlisted-profile` of the profile that AARInfo.profiles
 does not list.
@@ -114,6 +115,7 @@ CODE = {
 OTHER = {"a32": "a64", "a64": "a32"}
 PN = {"a32": 1, "a64": 2}
 REFUSE = "PROFILE|INVAL"
+EXACT_PROBE = {"INVAL": probe_corpus.INVAL, "VERSION": probe_corpus.VERSION}
 
 
 def img(profile, **o):
@@ -276,30 +278,31 @@ def corpus(p):
         ["C-ELF.26"])
     add("note-not-in-pt-note", img(p, no_pt_note=True), ["C-ELF.26"])
     add("two-notes", img(p, second_note=note()), ["C-ELF.27"])
-    add("note-magic-bad", img(p, note=note(magic=0x11111111)), ["C-ELF.28"])
-    add("note-magic-other", img(p, note=note(magic=0x50505A41)), ["C-ELF.28"])
-    add("note-magic-swapped", img(p, note=note(magic=0x4141524E)), ["C-ELF.28"])
-    add("note-version-0", img(p, note=note(version=0)), ["C-ELF.29"])
-    add("note-version-2", img(p, note=note(version=2)), ["C-ELF.29"])
+    add("note-magic-bad", img(p, note=note(magic=0x11111111)), ["C-ELF.28"], "INVAL", "INVAL")
+    add("note-magic-other", img(p, note=note(magic=0x50505A41)), ["C-ELF.28"],
+        "INVAL", "INVAL")
+    add("note-magic-swapped", img(p, note=note(magic=0x4141524E)), ["C-ELF.28"],
+        "INVAL", "INVAL")
+    add("note-version-0", img(p, note=note(version=0)), ["C-ELF.29"], "INVAL", "INVAL")
+    add("note-version-2", img(p, note=note(version=2)), ["C-ELF.29"], "INVAL", "INVAL")
     add("note-profile-other", img(p, note=note(prof=PN[o])), ["C-ELF.30"],
-        "PROFILE", "refuse")
-    add("note-profile-0", img(p, note=note(prof=0)), ["C-ELF.30"], "PROFILE", "refuse")
-    add("note-profile-9", img(p, note=note(prof=9)), ["C-ELF.30"], "PROFILE", "refuse")
-    add("api-major-1", img(p, note=note(major=1)), ["C-ELF.32"], "INVAL", "refuse")
-    add("api-major-65535", img(p, note=note(major=65535)), ["C-ELF.32"], "INVAL",
-        "refuse")
-    add("api-minor-9999", img(p, note=note(minor=9999)), ["C-ELF.33"], "INVAL",
-        "refuse")
+        "PROFILE", "INVAL")
+    add("note-profile-0", img(p, note=note(prof=0)), ["C-ELF.30"], "PROFILE", "INVAL")
+    add("note-profile-9", img(p, note=note(prof=9)), ["C-ELF.30"], "PROFILE", "INVAL")
+    add("api-major-1", img(p, note=note(major=1)), ["C-ELF.32"], "VERSION", "VERSION")
+    add("api-major-65535", img(p, note=note(major=65535)), ["C-ELF.32"], "VERSION", "VERSION")
+    add("api-minor-9999", img(p, note=note(minor=9999)), ["C-ELF.33"], "VERSION", "VERSION")
     add("api-minor-above", img(p, note=note(minor=AAR_API_MINOR + 1)),
-        ["C-ELF.33"], "INVAL", "refuse")
+        ["C-ELF.33"], "VERSION", "VERSION")
     add("api-minor-below", img(p, note=note(minor=AAR_API_MINOR_OLDEST - 1)),
-        ["C-ELF.33"], "INVAL", "refuse")
-    add("api-minor-0", img(p, note=note(minor=0)), ["C-ELF.33"], "INVAL",
-        "refuse")
-    add("stack-4", img(p, note=note(stack=4)), ["C-ELF.34"])
-    add("stack-65520", img(p, note=note(stack=(64 << 10) - 16)), ["C-ELF.34"])
-    add("stack-65544", img(p, note=note(stack=(64 << 10) + 8)), ["C-ELF.35"])
-    add("stack-131080", img(p, note=note(stack=(128 << 10) + 8)), ["C-ELF.35"])
+        ["C-ELF.33"], "VERSION", "VERSION")
+    add("api-minor-0", img(p, note=note(minor=0)), ["C-ELF.33"], "VERSION", "VERSION")
+    add("stack-4", img(p, note=note(stack=4)), ["C-ELF.34"], "INVAL", "INVAL")
+    add("stack-65520", img(p, note=note(stack=(64 << 10) - 16)), ["C-ELF.34"], "INVAL", "INVAL")
+    add("stack-4-major-1", img(p, note=note(stack=4, major=1)), ["C-ELF.34"], "INVAL", "INVAL")
+    add("stack-65544", img(p, note=note(stack=(64 << 10) + 8)), ["C-ELF.35"], "INVAL", "INVAL")
+    add("stack-131080", img(p, note=note(stack=(128 << 10) + 8)), ["C-ELF.35"],
+        "INVAL", "INVAL")
     add("group-experimental-28", img(p, note=note(req=1 << 28)), ["C-ELF.37"],
         "NOGROUP", "ok")
     add("group-experimental-31", img(p, note=note(req=1 << 31)), ["C-ELF.37"],
@@ -319,6 +322,9 @@ def corpus(p):
     add("note-name-lower", img(p, note=note(owner=b"aar\x00")), ["C-ELF.38"])
     add("note-desc-36", img(p, note=note(descsz=36)), ["C-ELF.38"])
     add("note-desc-41", img(p, note=note(descsz=41)), ["C-ELF.38"])
+    add("note-reserved", img(p, note=note(reserved=1)), ["C-ELF.38"], "INVAL", "INVAL")
+    add("note-reserved-minor-below", img(p, note=note(reserved=1, minor=AAR_API_MINOR_OLDEST - 1)),
+        ["C-ELF.38"], "INVAL", "INVAL")
 
     # ---- C-ELF.40: more heap than any platform commits. min_heap_mib is a 32-bit
     # count of MiB with no maximum (spec 4.1). 0xFFFFFFFF is the largest word;
@@ -409,7 +415,8 @@ def check():
             for name, blob, ids, load, probe in corpus(p):
                 if load != "OK" and load != "ANY":
                     for code in load.split("|"):
-                        if code not in ("PROFILE", "INVAL", "NOGROUP", "NOMEM", "NORESOURCE"):
+                        if code not in ("PROFILE", "INVAL", "VERSION", "NOGROUP", "NOMEM",
+                                        "NORESOURCE"):
                             errors.append("%s/%s: unknown load code %s" % (p, name, code))
                 for i in ids:
                     if i not in rows:
@@ -417,17 +424,20 @@ def check():
                     elif rows[i][0] != "runner":
                         errors.append("%s/%s: %s is not judged by runner" % (p, name, i))
                     covered[p].add(i)
-                if probe in ("ok", "refuse"):
+                if probe not in ("ok", "refuse", "any") and probe not in EXACT_PROBE:
+                    errors.append("%s/%s: unknown probe code %s" % (p, name, probe))
+                if probe != "any":
                     path = os.path.join(tmp, "%s-%s%s" % (p, name, EXT))
                     with open(path, "wb") as fh:
                         fh.write(blob)
                     # The probe applies the rules of spec 2.2 and 2.3 as the loader
                     # does (no section headers needed): aar-check's functions
                     # without the section rules say what that is.
-                    runtime_ok = probe_corpus.spec_check(blob)[0] == probe_corpus.OK
-                    if runtime_ok != (probe == "ok"):
-                        errors.append("%s/%s: the runtime rules %s it, the manifest says %s"
-                                      % (p, name, "accept" if runtime_ok else "refuse", probe))
+                    runtime = probe_corpus.probe_code(probe_corpus.spec_check(blob)[0])
+                    if ((runtime == probe_corpus.OK) != (probe == "ok")
+                            or (probe in EXACT_PROBE and runtime != EXACT_PROBE[probe])):
+                        errors.append("%s/%s: runtime probe code %d, manifest says %s"
+                                      % (p, name, runtime, probe))
                     # aar-check, a lint for build output, also demands section headers.
                     rc = aar_check(path, p)
                     want = 0 if probe == "ok" and name not in NEEDS_NO_SECTIONS else 1

@@ -165,16 +165,19 @@ together. The result is:
 |---|---|
 | `AAR_OK` | the plan is filled |
 | `AAR_E_PROFILE` | the image is acceptable but its profile is not in `profiles`, or the note names a profile that does not match the ELF class |
-| `AAR_E_INVAL` | a rule is broken |
+| `AAR_E_INVAL` | the ELF or note fails structural validation |
+| `AAR_E_VERSION` | a structurally valid image declares an unsupported app API major or minor |
 | `AAR_E_IO` | the callback failed |
 
-The rules are checked before the platform profile mask, so a broken rule is
-`AAR_E_INVAL` (or `AAR_E_PROFILE` for a note/ELF profile mismatch), whatever
-`profiles` is. `why`, when not NULL, receives static text that names the rule.
+ELF and note structure are checked before API compatibility. The platform
+profile mask is checked after image validation. `why`, when not NULL,
+receives static text that names the failed check.
 Planning writes no image memory, so it can run before any memory is reserved
 and refuse an image at that point.
 
-The validator judges the note against the API of the headers it was built with.
+The validator uses the API major and inclusive minor range of the headers
+it was built with. A bad magic, an unknown note layout version, an invalid
+stack size or a nonzero reserved word is still `AAR_E_INVAL`.
 It reports group bits without rejecting unknown ones. The platform decides
 whether all required groups are available (`AAR_E_NOGROUP`) and whether the
 stack and minimum heap fit (`AAR_E_NOMEM`).

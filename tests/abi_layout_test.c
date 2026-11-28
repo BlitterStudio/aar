@@ -422,6 +422,7 @@ static void test_constants(void)
     CHECK_EQ(AAR_E_NORESOURCE, -15);
     CHECK_EQ(AAR_E_STALE, -16);
     CHECK_EQ(AAR_E_OWNER, -17);
+    CHECK_EQ(AAR_E_VERSION, -18);
 
     CHECK_EQ(AAR_REASON_MEMORY, 1);
     CHECK_EQ(AAR_REASON_TABLES, 2);

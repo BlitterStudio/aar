@@ -128,17 +128,18 @@ names the cause and the exit code is 20:
 | Cause | Line |
 | --- | --- |
 | the file cannot be opened or read | `cannot open <file>`, `cannot read <file>` |
-| not an AAR image | `<file> is not an AAR image (no valid AAR ELF note, or one built for another API than this library)` |
+| malformed ELF or AAR note | `<file> is not an AAR image` |
+| the image declares an app API the library does not support (`AAR_E_VERSION`) | `<file> uses an AAR API version this library does not support.` |
 | wrong profile, for example an A64 image on an A32 platform | `<file> is an A64 app; this platform runs A32 apps only.` |
-| API too new for the platform | `<file> needs AAR API 0.5, this platform has 0.3.` |
+| API too new for the platform, after a successful probe | `<file> needs AAR API 0.6, this platform has 0.5.` |
 | a required service group the platform lacks | `<file> needs service groups this platform lacks: gl.` |
 
-The profile is checked first, then the API, then the groups the image requires.
-The groups it lists as optional are only a hint and never refuse an image. The
-library's probe cannot tell a note newer than the library from a damaged one,
-which is why the not-an-AAR-image line names both. A platform older than its
-library is reported by the API line. A file name with a volume or assign colon
-may be a multi-directory assign, which the library's own open does not search.
+The library checks the image's structure, then its app API. A failed probe
+does not provide note fields, so aar-run cannot print the image's API version
+in that case. After a successful probe aar-run checks the platform's
+profile first, then its API and then the required groups. Optional groups
+are only a hint and never refuse an image. A file name with a volume or assign
+colon may be a multi-directory assign, which the library's own open does not search.
 If the first probe finds nothing there, aar-run finds the file the way it does
 for the load and probes the full name then. That needs the serving loop and so a
 claim, which aar-run opens and closes again when it refuses the image. Every
@@ -240,11 +241,12 @@ settings, with no copy of aar-run for each app. A drawer is a project too, and
 its icon is the one beside it (`Games.info` for the drawer `Games`, `disk.info`
 for a volume), so a drawer can carry `APP`, `ROOT` and the other ToolTypes.
 
-The first project is the app when it is an AAR image (`AARProbeFile` finds a
-valid note, whatever the platform), or a file the probe cannot open or read, so
-that the launch names the cause. Otherwise it is a document, and the app is
-the `APP` ToolType, taken from the project icon first and from aar-run's icon
-second. A drawer is never the app. A start with no project takes `APP` from
+The first project is the app when it is a file and the probe does not reject
+it as malformed. This includes an image that needs a different app API, and a
+file the probe cannot open or read, so the launch names the cause. Otherwise
+it is a document, and the app is the `APP` ToolType, taken from the project
+icon first and from aar-run's icon second. A drawer is never the app. A start
+with no project takes `APP` from
 aar-run's icon. Without an app aar-run requests `Set the APP tooltype, or start
 aar-run from a project icon.` and returns 10. The project directory lock is
 resolved with `NameFromLock`, and any nonzero DOS BOOLEAN result is success,
@@ -463,9 +465,10 @@ each buffer it wants aar-run to use in the request that needs it.
    image. A stalled device holds up the load (the lease does not depend on it),
    and Ctrl-C is honoured between 64 KiB chunks. A refusal prints `load
    refused:` with the reason, as the library reports it in the status (a
-   platform limit means `HOSTMEM` or `MAXMEM` is too large). An empty or
-   oversized image is refused by the library against the platform's image
-   limit.
+   platform limit means `HOSTMEM` or `MAXMEM` is too large). If the loader
+   rejects the app API, aar-run prints `load failed (incompatible AAR API
+   version)`. An empty or oversized image is refused by the library against
+   the platform's image limit.
 6. `AARStart` takes the argument strings. They travel in the load buffer.
 7. `aar_serve_run` is the main loop. It wakes every millisecond (`POLL`) and
    each pass forwards input, serves the requests the app has posted

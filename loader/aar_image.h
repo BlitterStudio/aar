@@ -106,6 +106,7 @@ struct aar_image_info {
  *   AAR_OK         the image passes; *info is filled
  *   AAR_E_PROFILE  the note names a profile that is not the one of the ELF
  *                  class (spec 2.3: the profile word)
+ *   AAR_E_VERSION  the note requires an unsupported API major or minor
  *   AAR_E_INVAL    any other rule is broken: not a little-endian ELF32 or
  *                  ELF64 file, a header, segment, relocation or note rule, no
  *                  note or more than one

@@ -48,7 +48,13 @@ static uint64_t get_le(const uint8_t *p, unsigned n)
 
 static int code_of(int rc)
 {
-    return rc == AAR_OK ? 0 : rc == AAR_E_INVAL ? 1 : rc == AAR_E_PROFILE ? 2 : -1;
+    switch (rc) {
+    case AAR_OK: return 0;
+    case AAR_E_INVAL: return 1;
+    case AAR_E_PROFILE: return 2;
+    case AAR_E_VERSION: return 3;
+    default: return -1;
+    }
 }
 
 static void check_note(const struct record *r, const struct aar_image_info *i)
@@ -122,6 +128,8 @@ static void run_image(const struct record *r, unsigned long *accepted)
     CHECK(code_of(rc) == want);
     CHECK(!m.bad);
     CHECK((rc == AAR_OK) == (why == NULL));
+    if (code_of(rc) != want)
+        printf("  case: %s (load plan %d, spec oracle %d)\n", r->name, code_of(rc), want);
     if (rc == AAR_OK) {
         uint32_t other = plan.profile == AAR_PROFILE_A32 ? AAR_PROFILE_A64 : AAR_PROFILE_A32;
         struct aar_load_plan p2;
@@ -159,7 +167,7 @@ static void run_image(const struct record *r, unsigned long *accepted)
             printf("  case: %s (place %d, span %llu)\n", r->name, prc,
                    (unsigned long long)plan.span);
         free(block);
-    } else if (rc == AAR_E_PROFILE || rc == AAR_E_INVAL) {
+    } else {
         /* A refusal does not depend on the platform's profiles. */
         CHECK(aar_load_plan(mem_read, &m, r->len, AAR_PROFILE_A32, &plan, &why) == rc);
     }

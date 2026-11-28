@@ -89,6 +89,7 @@ extern "C" {
 #define AAR_E_NORESOURCE -15 /* admission or load refused; the reason is an AAR_REASON_* code */
 #define AAR_E_STALE    -16  /* a handle generation or async ticket is no longer current */
 #define AAR_E_OWNER    -17  /* handle used by a task that does not own it */
+#define AAR_E_VERSION  -18  /* image requires an unsupported AAR API major or minor */
 
 /* Admission refusal reasons (spec 5.6), reported with AAR_E_NORESOURCE. */
 #define AAR_REASON_NONE     0u
