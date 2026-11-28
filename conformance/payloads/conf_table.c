@@ -41,11 +41,11 @@ AAR_NOTE(0, 0, 0, 0)
 #define SLOT_CORE      0u   /* exit .. clip_write: 42 slots */
 #define SLOT_EXT       42u  /* ext, map_file, unmap_file */
 #define SLOT_COMMENT   45u  /* file_get_comment, file_set_comment: optional, C-FILE.53 to C-FILE.55 */
-#define SLOT_DISPLAY   47u  /* display_open .. display_last_present_us: 16 slots */
-#define SLOT_AUDIO     63u  /* audio_open, audio_close, audio_stats */
-#define SLOT_GL        66u  /* gl_bind, gl_swap, gl_unbind */
-#define SLOT_SERVICES  69u  /* sha256 .. audio_decode_close: 8 slots */
-#define SLOT_COUNT     80u
+#define SLOT_DISPLAY   47u  /* display_open .. display_present_poll: 18 slots */
+#define SLOT_AUDIO     65u  /* audio_open, audio_close, audio_stats */
+#define SLOT_GL        68u  /* gl_bind, gl_swap, gl_unbind */
+#define SLOT_SERVICES  71u  /* sha256 .. audio_decode_close: 8 slots */
+#define SLOT_COUNT     82u
 
 static const char *const slot_names[SLOT_COUNT] = {
     "exit", "yield", "should_stop", "time_us", "sleep_us", "info",
@@ -64,6 +64,7 @@ static const char *const slot_names[SLOT_COUNT] = {
     "display_latest_dropped",
     "display_info", "display_modes", "display_resize", "display_set_title",
     "display_pointer", "display_wait_vblank", "display_last_present_us",
+    "display_present", "display_present_poll",
     "audio_open", "audio_close", "audio_stats",
     "gl_bind", "gl_swap", "gl_unbind",
     "sha256", "decompress", "image_open", "image_decode", "image_close",
@@ -290,7 +291,7 @@ static void test_group_slots(const aar_api *api, uint32_t declared)
 
     if (declared & AAR_GROUP_DISPLAY) {
         conf_begin(&t, "C-TABLE.4");
-        check_slots(&t, api, SLOT_DISPLAY, 16u, "display");
+        check_slots(&t, api, SLOT_DISPLAY, 18u, "display");
         conf_end(&t);
     }
     if (declared & AAR_GROUP_AUDIO) {
@@ -346,6 +347,8 @@ static void test_clear_groups(const aar_api *api, uint32_t declared)
 {
     struct conf_test t;
     aar_surface surf;
+    uint64_t frame_id;
+    aar_present_result present;
     aar_audio audio;
     aar_audio_stats stats;
     aar_image_params params;
@@ -401,6 +404,8 @@ static void test_clear_groups(const aar_api *api, uint32_t declared)
         } else {
             fail_present(&t, SLOT_DISPLAY + 8u);
         }
+        CLEAR_CALL(SLOT_DISPLAY + 16u, aar_display_present(1u, 0u, &frame_id), "display_present");
+        CLEAR_CALL(SLOT_DISPLAY + 17u, aar_display_present_poll(&present), "display_present_poll");
     }
     if (!(declared & AAR_GROUP_AUDIO)) {
         CLEAR_CALL(SLOT_AUDIO + 0u, aar_audio_open(AAR_AUDIO_RATE_22050, 2u, &audio), "audio_open");

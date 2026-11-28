@@ -88,6 +88,8 @@ void host_display_pump(void);
 void host_display_dump(const char *path);
 int host_display_selftest(void);
 uint32_t host_display_flips(void);
+void host_display_cancel_tracked(void);
+void host_display_present_complete(uint64_t frame_id, uint32_t reason);
 
 /* display.c, for input.c: the caps the open display was granted (0 without
  * one) and the events of its window. host_display_focus returns 1 when the
@@ -109,7 +111,6 @@ void host_display_to_surface(int x, int y, int *sx, int *sy);
 int host_display_gl_open(uint32_t surface_id, void **window, int32_t *w,
                          int32_t *h);
 void host_display_gl_close(void);
-void host_display_gl_swapped(void);
 void host_display_gl_store(const uint8_t *rgba, uint32_t w, uint32_t h);
 
 /* hostgl.c. host_gl_init probes for an OpenGL compatibility context with a
@@ -119,6 +120,7 @@ void host_display_gl_store(const uint8_t *rgba, uint32_t w, uint32_t h);
 int host_gl_init(void);
 int host_gl_available(void);
 void host_gl_bind(aar_api *api);
+void host_gl_swap(uint64_t frame_id);
 void host_gl_release(void);
 void host_gl_shutdown(void);
 /* The bound context, if any, moves to another window of the same pixel

@@ -1010,13 +1010,14 @@ runtime](#how-an-app-reaches-the-runtime). The slot order is fixed until 1.0:
    `display_vsync`, `display_set_palette`, `display_close`,
    `display_latest_dropped`, `display_info`, `display_modes`,
    `display_resize`, `display_set_title`, `display_pointer`,
-   `display_wait_vblank`, `display_last_present_us`), audio (`audio_open`,
+   `display_wait_vblank`, `display_last_present_us`, `display_present`,
+   `display_present_poll`), audio (`audio_open`,
    `audio_close`, `audio_stats`), GL (`gl_bind`, `gl_swap`, `gl_unbind`),
    services (`sha256`, `decompress`, `image_open`, `image_decode`,
    `image_close`, `audio_decode_open`, `audio_decode`, `audio_decode_close`).
 5. Optional async files: `file_read_async`, `file_write_async`, `file_collect`.
 
-The table has 80 pointer slots after the header. The table is const and apps
+The table has 82 pointer slots after the header. The table is const and apps
 must not write to it. A wrapper has the slot's name with an `aar_` prefix, except
 that a slot whose name is a type name gets a `get`: `aar_get_info`,
 `aar_get_heap_info`, `aar_audio_get_stats`, `aar_get_volume_info`,
@@ -1042,7 +1043,7 @@ structures.
 
 ### AAR_API_SLOT_COUNT
 
-`80u`. The number of pointer slots in `aar_api` after the 16-byte header.
+`82u`. The number of pointer slots in `aar_api` after the 16-byte header.
 
 ### AAR_API_CORE_SLOT_COUNT
 
@@ -2418,10 +2419,85 @@ pacing hint. Gate: `AAR_API_COVERS(api, display_wait_vblank)`. Missing slot:
 uint64_t aar_display_last_present_us(void);
 ```
 
-The `aar_time_us` value at which the runtime learned that the most recent flip
-or GL swap was shown. 0 before the first one, and when the slot is absent. The
-runtime answers it from its own record and sends no request. Does not block.
+The `aar_time_us` value at which the runtime observed its most recent flip or
+GL swap acknowledgement. 0 before the first one, and when the slot is absent.
+The runtime answers it from its own record and sends no request. Does not block.
 Gate: `AAR_API_COVERS(api, display_last_present_us)`. Minimum minor: 6.
+
+### aar_display_present
+
+```c
+int aar_display_present(uint32_t id, uint32_t flags, uint64_t *frame_id);
+```
+
+Opt in to feedback for one frame. Check `AAR_DISPCAP_PRESENT_FEEDBACK` on
+the surface. Pass 0 for a synchronous flip, `AAR_PRESENT_ASYNC` for an
+asynchronous flip, or `AAR_PRESENT_GL` for a swap on the bound GL surface.
+Keep using the existing refresh and idle rules before writing the next buffer.
+`AAR_OK` and a nonzero `*frame_id` mean the frame was accepted. The result may
+still be pending. On rejection `*frame_id` is zero; the frame and any pending
+frame are unchanged. `AAR_E_BUSY` can mean the feedback queue is full; collect
+results and then retry. See [spec section 8.2](../spec/aar.md#82-display-aar_group_display)
+for the complete contract.
+
+Gate: `AAR_API_COVERS(api, display_present)`. Missing slot: `AAR_E_NOSYS`.
+Minimum minor: 6.
+
+### aar_display_present_poll
+
+```c
+int aar_display_present_poll(aar_present_result *out);
+```
+
+Returns 1 and consumes a result, or 0 without changing `out` if none is
+ready. Does not wait, pump the display backend or issue a client request.
+Keep polling after display close to collect results already recorded or
+cancelled by close.
+
+Gate: `AAR_API_COVERS(api, display_present_poll)`. Missing slot: `AAR_E_NOSYS`.
+Minimum minor: 6.
+
+### aar_present_result
+
+`frame_id` identifies the submission and `completed_us` uses the `aar_time_us`
+clock. `outcome` and `reason` use the constants below.
+
+### AAR_PRESENT_ASYNC
+
+`(1u << 0)`. Submit an asynchronous buffer flip. Requires `AAR_DISPCAP_ASYNC`.
+
+### AAR_PRESENT_GL
+
+`(1u << 1)`. Swap the bound GL surface. Do not combine with `AAR_PRESENT_ASYNC`.
+
+### AAR_PRESENT_ACKNOWLEDGED
+
+`1u`. The backend acknowledged the frame. The time is when the runtime
+observed that acknowledgement, not physical scanout.
+
+### AAR_PRESENT_REPLACED
+
+`2u`. A newer frame superseded this LATEST frame before acknowledgement.
+
+### AAR_PRESENT_UNCONFIRMED
+
+`3u`. The runtime could not confirm the frame. Check `reason`.
+
+### AAR_PRESENT_REASON_NONE
+
+`0u`. Used with `AAR_PRESENT_ACKNOWLEDGED` and `AAR_PRESENT_REPLACED`.
+
+### AAR_PRESENT_REASON_TIMEOUT
+
+`1u`. A deadline expired before the runtime saw an acknowledgement.
+
+### AAR_PRESENT_REASON_CANCELLED
+
+`2u`. The display closed, GL unbound, or stop cancelled the pending frame.
+
+### AAR_PRESENT_REASON_BACKEND
+
+`3u`. The presentation backend reported a failure.
 
 ### Display formats
 
@@ -2547,6 +2623,12 @@ window and keeps the aspect ratio. Minimum minor: 6.
 ### AAR_DISPCAP_SCALED
 
 `(1u << 8)`. `aar_surface.caps`: the client scales the surface. Minimum minor: 6.
+
+### AAR_DISPCAP_PRESENT_FEEDBACK
+
+`(1u << 9)`. The runtime supports tracked presents for this display; no open
+flag is needed. `AAR_PRESENT_ASYNC` still requires `AAR_DISPCAP_ASYNC`, and
+GL needs a bound context that supports tracked swaps. Minimum minor: 6.
 
 ### AAR_DISPINFO_WINDOW
 

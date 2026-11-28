@@ -30,6 +30,7 @@
 #define SDL_MAIN_HANDLED
 #endif
 #include "host_internal.h"
+#include "aar/detail/present_feedback.h"
 
 #include <SDL.h>
 
@@ -54,6 +55,7 @@ struct host_display {
     int showing;
     int drawing;
     int pending;
+    uint64_t pending_id;
     uint32_t dropped;
     int latest;
     uint32_t palette[256];
@@ -78,6 +80,8 @@ struct host_display {
 };
 
 static struct host_display disp;
+/* Frame IDs and unread results belong to the app, not the open surface. */
+static aar_present_queue presents;
 static SDL_Cursor *cursor_custom;
 static SDL_Cursor *cursor_busy;
 
@@ -212,10 +216,26 @@ static int logical_size_in_use(void)
     return !disp.gl && (disp.caps & AAR_DISPCAP_SCALED) != 0u;
 }
 
-static void count_flip(void)
+static void finish_tracked(uint64_t id, uint32_t outcome, uint32_t reason)
 {
-    const struct host_options *opt = host_options();
-    uint64_t now = host_time_us();
+    if (id)
+        aar_present_finish(&presents, id, outcome, reason, host_time_us());
+}
+
+void host_display_present_complete(uint64_t id, uint32_t reason)
+{
+    const struct host_options *opt;
+    uint64_t now;
+
+    if (reason != AAR_PRESENT_REASON_NONE) {
+        finish_tracked(id, AAR_PRESENT_UNCONFIRMED, reason);
+        return;
+    }
+    now = host_time_us();
+    if (id)
+        aar_present_finish(&presents, id, AAR_PRESENT_ACKNOWLEDGED,
+                           AAR_PRESENT_REASON_NONE, now);
+    opt = host_options();
 
     disp.flips++;
     disp.presented_us = now ? now : 1u;
@@ -251,7 +271,7 @@ static void ensure_texture(void)
     disp.tex_valid = 0;
 }
 
-static void draw_texture(void)
+static int draw_texture(void)
 {
     SDL_Rect dst;
     int scale = logical_size_in_use() ? 1 : host_options()->scale;
@@ -260,40 +280,66 @@ static void draw_texture(void)
     dst.y = 0;
     dst.w = (int)disp.tex_w * scale;
     dst.h = (int)disp.tex_h * scale;
-    SDL_RenderClear(disp.ren);
-    SDL_RenderCopy(disp.ren, disp.tex, NULL, &dst);
+    if (SDL_RenderClear(disp.ren) != 0 ||
+        SDL_RenderCopy(disp.ren, disp.tex, NULL, &dst) != 0)
+        return -1;
+    /* SDL2 has no return value here, but some drivers set an error. */
+    SDL_ClearError();
     SDL_RenderPresent(disp.ren);
+    return *SDL_GetError() ? -1 : 0;
 }
 
 /* The window shows the last frame again, after an expose or a size change. */
 static void redraw(void)
 {
     if (disp.open && !disp.gl && disp.ren && disp.tex && disp.tex_valid)
-        draw_texture();
+        (void)draw_texture();
 }
 
-static void present_buffer(int index)
+static void remember_buffer(int index)
+{
+    ensure_shown();
+    if (disp.shown)
+        memcpy(disp.shown, disp.buf[index], disp.shown_bytes);
+}
+
+static int present_buffer(int index)
 {
     uint32_t y;
     uint8_t *src = disp.buf[index];
 
-    if (!src)
-        return;
-    ensure_shown();
-    if (disp.shown && disp.shown_bytes)
-        memcpy(disp.shown, src, disp.shown_bytes);
+    if (!src || !disp.win || disp.gl)
+        return -1;
+    /* A headless software window has no renderer: the runner is the sink. */
+    if (host_options()->headless)
+        return 0;
     if (!disp.convert || !disp.ren)
-        return;
+        return -1;
     ensure_texture();
     if (!disp.tex)
-        return;
+        return -1;
     for (y = 0; y < disp.h; y++) {
         convert_row(src + y * disp.pitch, disp.format, disp.layout, disp.w,
                     disp.palette, disp.convert + y * disp.w * 4u);
     }
-    SDL_UpdateTexture(disp.tex, NULL, disp.convert, (int)(disp.w * 4u));
+    disp.tex_valid = 0;
+    if (SDL_UpdateTexture(disp.tex, NULL, disp.convert, (int)(disp.w * 4u)) != 0 ||
+        draw_texture() != 0)
+        return -1;
     disp.tex_valid = 1;
-    draw_texture();
+    return 0;
+}
+
+static int present_pixels(int index, uint64_t id, int check_stop)
+{
+    int shown = present_buffer(index) == 0;
+    int stopped = check_stop && host_stop_requested();
+
+    host_display_present_complete(id, shown ? AAR_PRESENT_REASON_NONE
+                                            : AAR_PRESENT_REASON_BACKEND);
+    if (shown)
+        remember_buffer(index);
+    return stopped ? AAR_E_IO : AAR_OK;
 }
 
 static int spare_buffer(void)
@@ -307,19 +353,36 @@ static int spare_buffer(void)
     return disp.drawing;
 }
 
+static uint64_t take_pending(void)
+{
+    uint64_t id = disp.pending_id;
+
+    disp.pending = -1;
+    disp.pending_id = 0u;
+    return id;
+}
+
+static void cancel_pending(void)
+{
+    finish_tracked(take_pending(), AAR_PRESENT_UNCONFIRMED,
+                   AAR_PRESENT_REASON_CANCELLED);
+}
+
+void host_display_cancel_tracked(void)
+{
+    if (disp.pending_id)
+        cancel_pending();
+}
+
 static void complete_pending(void)
 {
-    int was;
+    int was = disp.pending;
+    uint64_t id = take_pending();
 
-    if (!disp.open || disp.pending < 0)
-        return;
-    was = disp.pending;
-    present_buffer(was);
+    (void)present_pixels(was, id, 0);
     disp.showing = was;
-    disp.pending = -1;
     if (!disp.latest)
         disp.drawing = disp.drawing == was ? (was ^ 1) : disp.drawing;
-    count_flip();
 }
 
 static void fill_surface(aar_surface *out)
@@ -440,6 +503,7 @@ static int api_display_open(uint32_t w, uint32_t h, uint32_t format,
     /* The host shows the surface in a window, so WINDOW is always granted
      * when asked for. RESIZABLE needs it. */
     disp.caps = AAR_DISPCAP_ASYNC | AAR_DISPCAP_CLUT8 |
+                AAR_DISPCAP_PRESENT_FEEDBACK |
                 (disp.latest ? AAR_DISPCAP_LATEST : 0u);
     if (flags & AAR_DISPLAY_WINDOW) {
         disp.caps |= AAR_DISPCAP_WINDOW;
@@ -503,22 +567,43 @@ static int valid_id(uint32_t id)
     return disp.open && id == disp.id;
 }
 
-static int api_display_flip(uint32_t surface_id)
+static uint64_t reserve_frame(uint64_t *out)
 {
-    if (host_stop_requested())
-        return AAR_E_IO;
-    if (!valid_id(surface_id))
-        return AAR_E_INVAL;
-    if (disp.pending >= 0) {
-        if (!disp.latest)
-            return AAR_E_BUSY;
-        /* Latest mode: this frame replaces the one still pending. */
+    uint64_t id = aar_present_reserve(&presents);
+
+    if (id)
+        *out = id;
+    return id;
+}
+
+static int flip_pixels(int async, uint64_t *out)
+{
+    int old = disp.pending;
+    uint64_t id = 0u;
+    int rc;
+
+    if (old >= 0 && !disp.latest)
+        return AAR_E_BUSY;
+    if (out && !(id = reserve_frame(out)))
+        return AAR_E_BUSY;
+    if (old >= 0) {
         disp.dropped++;
-        disp.pending = -1;
+        finish_tracked(take_pending(), AAR_PRESENT_REPLACED,
+                       AAR_PRESENT_REASON_NONE);
     }
-    present_buffer(disp.drawing);
-    if (host_stop_requested())
-        return AAR_E_IO;
+    if (async) {
+        disp.pending = disp.drawing;
+        disp.pending_id = id;
+        if (disp.latest) {
+            disp.drawing = spare_buffer();
+            if (disp.drawing == disp.pending)
+                disp.drawing = old >= 0 ? old : (disp.showing ^ 1);
+        }
+        return AAR_OK;
+    }
+    rc = present_pixels(disp.drawing, id, !out);
+    if (rc != AAR_OK)
+        return rc;
     disp.showing = disp.drawing;
     /*
      * Pick the next drawing buffer from the live rotation (showing /
@@ -528,30 +613,23 @@ static int api_display_flip(uint32_t surface_id)
     disp.drawing = spare_buffer();
     if (disp.drawing == disp.showing)
         disp.drawing = (disp.showing + 1) % disp.nbuf;
-    count_flip();
     return AAR_OK;
+}
+
+static int api_display_flip(uint32_t surface_id)
+{
+    if (host_stop_requested())
+        return AAR_E_IO;
+    if (!valid_id(surface_id))
+        return AAR_E_INVAL;
+    return flip_pixels(0, NULL);
 }
 
 static int api_display_flip_async(uint32_t surface_id)
 {
-    int old;
-
     if (!valid_id(surface_id))
         return AAR_E_INVAL;
-    if (!disp.latest) {
-        if (disp.pending >= 0)
-            return AAR_E_BUSY;
-        disp.pending = disp.drawing;
-        return AAR_OK;
-    }
-    if (disp.pending >= 0)
-        disp.dropped++;
-    old = disp.pending;
-    disp.pending = disp.drawing;
-    disp.drawing = spare_buffer();
-    if (disp.drawing == disp.pending)
-        disp.drawing = old >= 0 ? old : (disp.showing ^ 1);
-    return AAR_OK;
+    return flip_pixels(1, NULL);
 }
 
 static int api_display_flip_idle(void)
@@ -628,6 +706,7 @@ static int api_display_close(uint32_t surface_id)
 
     if (!valid_id(surface_id))
         return AAR_E_INVAL;
+    cancel_pending();
     host_gl_release();
     reset_pointer();
     destroy_window();
@@ -640,7 +719,6 @@ static int api_display_close(uint32_t surface_id)
     disp.open = 0;
     disp.gl = 0;
     disp.caps = 0u;
-    disp.pending = -1;
     return AAR_OK;
 }
 
@@ -852,6 +930,7 @@ static int api_display_resize(uint32_t id, uint32_t w, uint32_t h,
             return AAR_E_IO;
         }
     }
+    cancel_pending(); /* a latest-mode frame of the old size cannot finish */
     for (i = 0; i < 3; i++) {
         free(disp.buf[i]);
         disp.buf[i] = buf[i];
@@ -863,7 +942,6 @@ static int api_display_resize(uint32_t id, uint32_t w, uint32_t h,
     disp.pitch = pitch;
     disp.showing = 0;
     disp.drawing = 1;
-    disp.pending = -1; /* a latest-mode frame of the old size is dropped */
     disp.reported_w = w;
     disp.reported_h = h;
     /* The window follows the surface. The frame on screen stays what it was
@@ -982,6 +1060,42 @@ static uint64_t api_display_last_present_us(void)
     return disp.presented_us;
 }
 
+static int api_display_present(uint32_t id, uint32_t flags, uint64_t *out)
+{
+    uint64_t frame_id;
+
+    if (!out)
+        return AAR_E_INVAL;
+    *out = 0u;
+    if (!valid_id(id) || (flags != 0u && flags != AAR_PRESENT_ASYNC &&
+                          flags != AAR_PRESENT_GL))
+        return AAR_E_INVAL;
+    if (flags == AAR_PRESENT_GL) {
+        if (!disp.gl)
+            return host_gl_available() ? AAR_E_INVAL : AAR_E_NOSYS;
+    } else if (disp.gl) {
+        return AAR_E_NOSYS;
+    }
+    if (host_stop_requested())
+        return AAR_E_IO;
+    if (flags != AAR_PRESENT_GL)
+        return flip_pixels(flags == AAR_PRESENT_ASYNC, out);
+    frame_id = reserve_frame(out);
+    if (!frame_id)
+        return AAR_E_BUSY;
+    host_gl_swap(frame_id);
+    return AAR_OK;
+}
+
+static int api_display_present_poll(aar_present_result *out)
+{
+    if (!out)
+        return AAR_E_INVAL;
+    if (disp.pending_id && host_stop_event_pending())
+        cancel_pending();
+    return aar_present_poll(&presents, out);
+}
+
 /* ---- Window events, for input.c ----------------------------------------- */
 
 uint32_t host_display_caps(void)
@@ -1060,9 +1174,8 @@ void host_display_to_surface(int x, int y, int *sx, int *sy)
 /*
  * The GL side (hostgl.c). gl_open swaps the window of the open surface for one
  * with an OpenGL pixel format and returns it with its size. gl_close puts the
- * software window back and shows the surface again. gl_swapped counts a
- * presented frame, as a flip does. gl_store copies a frame that GL drew (RGBA,
- * bottom row first) into the surface, in the format of the surface, so that
+ * software window back and shows the surface again. gl_store copies a frame
+ * that GL drew (RGBA, bottom row first) into the surface, in its format, so that
  * --dump-front and a read of the front buffer see it. A CLUT8 surface has no
  * colour to store.
  */
@@ -1094,12 +1207,8 @@ void host_display_gl_close(void)
                 SDL_GetError());
         return;
     }
-    present_buffer(disp.showing);
-}
-
-void host_display_gl_swapped(void)
-{
-    count_flip();
+    if (present_buffer(disp.showing) == 0)
+        remember_buffer(disp.showing);
 }
 
 void host_display_gl_store(const uint8_t *rgba, uint32_t w, uint32_t h)
@@ -1135,9 +1244,11 @@ void host_display_gl_store(const uint8_t *rgba, uint32_t w, uint32_t h)
 
 void host_display_pump(void)
 {
-    if (!disp.open)
+    if (!disp.open || disp.pending < 0)
         return;
-    if (disp.pending >= 0)
+    if (disp.pending_id && host_stop_event_pending())
+        cancel_pending();
+    else
         complete_pending();
 }
 
@@ -1186,6 +1297,7 @@ void host_display_shutdown(void)
     disp.shown = 0;
     free(disp.convert);
     disp.convert = 0;
+    memset(&presents, 0, sizeof presents);
 }
 
 void host_display_bind(aar_api *api)
@@ -1206,4 +1318,6 @@ void host_display_bind(aar_api *api)
     api->display_pointer = api_display_pointer;
     api->display_wait_vblank = api_display_wait_vblank;
     api->display_last_present_us = api_display_last_present_us;
+    api->display_present = api_display_present;
+    api->display_present_poll = api_display_present_poll;
 }

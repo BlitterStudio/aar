@@ -263,7 +263,8 @@ Pitch is `width * bytes per pixel`; apps must use
 `surface.pitch`. Layouts: RGB565 is `AAR_LAYOUT_RGB565_BE`, 32-bit is
 `AAR_LAYOUT_BGRA8888`, 8-bit is `AAR_LAYOUT_CLUT8`. Palette entries are
 `0x00RRGGBB`. There is one display, up to `AAR_DISPLAY_MAX_DIM` square. The
-surface grants `AAR_DISPCAP_ASYNC` and `AAR_DISPCAP_CLUT8`.
+surface grants `AAR_DISPCAP_ASYNC`, `AAR_DISPCAP_CLUT8` and
+`AAR_DISPCAP_PRESENT_FEEDBACK`.
 `AAR_DISPLAY_LATEST` is granted (`AAR_DISPCAP_LATEST`) and uses three
 buffers. A flip replaces the pending frame, counts it in
 `aar_display_latest_dropped`, and `aar_display_flip_idle` stays 1. Without
@@ -318,9 +319,28 @@ last presented frame (after the open, before the first) as the blanks. The
 call returns at the next one, or after the timeout with `AAR_E_TIMEDOUT` when
 that comes first, and then completes a pending async flip as `aar_yield`
 does. It is not synchronised to the hardware, and it is `AAR_E_NOSYS` where the
-display has no known rate. `aar_display_last_present_us` is the
-`aar_time_us` value at which the last flip completed or the last GL swap ran
-(the host presents at once), and 0 before the first one after an open.
+display has no known rate. `aar_display_last_present_us` records the last
+successful presentation acknowledgement, and is 0 before the first one after
+an open. Replacement, cancellation and detected backend failure do not change it
+or count toward `--frames`.
+
+`aar_display_present(id, flags, &frame_id)` opts one frame into feedback.
+`flags=0` is a synchronous pixel flip; `AAR_PRESENT_ASYNC` uses ordinary async
+flipping, including LATEST when granted; `AAR_PRESENT_GL` swaps a bound GL
+surface. Pixel tracking is not available while GL is bound. The results share
+one bounded queue per app. When it fills, a tracked submission returns
+`AAR_E_BUSY` without committing or replacing a frame; ordinary flips and swaps
+do not use the queue.
+
+`aar_display_present_poll` does not pump SDL. It returns one terminal result per
+accepted ID, including if a tracked LATEST frame is replaced by an untracked
+flip. A pending frame that can no longer be shown is cancelled, for example
+on close, stop, a resize in LATEST mode or a successful bind replacing the
+software renderer. Unread results can be polled after close and IDs are not
+recycled on reopen. The terminal timestamp uses `aar_time_us()`: an
+acknowledgement means handoff to SDL's renderer or GL swap, or to the runner's
+image sink for headless software. It is not a measurement of physical scanout,
+refresh or vblank.
 
 ### GL
 
@@ -344,16 +364,16 @@ software window again and shows the surface. `aar_display_close` with a context
 bound releases it first. The window changes in a bind and an unbind, so it may
 flicker.
 
-`aar_gl_swap` calls `SDL_GL_SwapWindow` and counts one presented frame, as a
-flip does (`--frames`). The host presents at once, so no swapped frame is in
-flight. The swap waits for the display refresh in a window and not headless.
+`aar_gl_swap` and tracked GL presents call `SDL_GL_SwapWindow` and acknowledge
+a successful handoff on return. The swap keeps the binding's pacing: the runner
+requests a swap interval of one with a window and zero headless.
 It then runs the host pump, so window input and a close request reach an app
 whose loop only swaps, polls events and checks `aar_should_stop`. After a stop
 the swap presents nothing.
 GL draws into the window, and the surface's own buffers are left as the app set
-them. With `--dump-front` a swap first reads the back buffer into the front
-buffer of the surface, in the layout of the surface (RGB565 or BGRA8888; CLUT8
-is not written), so that the dump and `aar_display_refresh` show the GL frame.
+them. With `--dump-front` a swap captures the back buffer before the handoff and
+stores it on success in the surface layout (RGB565 or BGRA8888; CLUT8 is not
+written), so that the dump and `aar_display_refresh` show the GL frame.
 That costs a readback per frame, so it is off otherwise.
 
 `aar_display_resize` with a context bound: when the window already has the new

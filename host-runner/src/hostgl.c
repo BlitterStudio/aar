@@ -681,11 +681,13 @@ static const aar_gl *api_gl_bind(uint32_t surface_id)
     SDL_GL_SetSwapInterval(host_options()->headless ? 0 : 1);
     fill_table(&gl.table);
     gl.bound = 1;
+    /* A queued software frame cannot reach the renderer we just replaced. */
+    host_display_cancel_tracked();
     return &gl.table;
 }
 
-/* The back buffer into the surface, for --dump-front. */
-static void store_frame(void)
+/* Capture the back buffer for --dump-front before handing it to SDL. */
+static int capture_frame(void)
 {
     size_t bytes = (size_t)gl.w * (size_t)gl.h * 4u;
     int32_t read_buffer = 0;
@@ -697,7 +699,7 @@ static void store_frame(void)
         gl.readback_bytes = gl.readback ? bytes : 0;
     }
     if (!gl.readback)
-        return;
+        return 0;
     host_GetIntegerv(HGL_READ_BUFFER, &read_buffer);
     pack[0] = pixel_store(HGL_PACK_ALIGNMENT);
     pack[1] = pixel_store(HGL_PACK_ROW_LENGTH);
@@ -715,23 +717,42 @@ static void store_frame(void)
     host_PixelStorei(HGL_PACK_ROW_LENGTH, pack[1]);
     host_PixelStorei(HGL_PACK_SKIP_ROWS, pack[2]);
     host_PixelStorei(HGL_PACK_SKIP_PIXELS, pack[3]);
-    host_display_gl_store(gl.readback, (uint32_t)gl.w, (uint32_t)gl.h);
+    return 1;
 }
 
 /* A swap parks like a flip, so it also runs the host pump: an app whose loop
  * only swaps, polls events and checks should_stop still gets input and a
  * close request. After a stop the frame is not presented, as with a flip. */
+void host_gl_swap(uint64_t frame_id)
+{
+    uint32_t reason = AAR_PRESENT_REASON_NONE;
+    int captured = 0;
+
+    if (!gl.bound) {
+        host_display_present_complete(frame_id, AAR_PRESENT_REASON_BACKEND);
+        return;
+    }
+    if (host_stop_requested()) {
+        reason = AAR_PRESENT_REASON_CANCELLED;
+    } else {
+        if (host_options()->dump_front && SDL_GL_GetCurrentWindow() == gl.win &&
+            SDL_GL_GetCurrentContext() == gl.ctx)
+            captured = capture_frame();
+        /* SDL2 has no return value here, but some drivers set an error. */
+        SDL_ClearError();
+        SDL_GL_SwapWindow(gl.win);
+        if (*SDL_GetError())
+            reason = AAR_PRESENT_REASON_BACKEND;
+    }
+    host_display_present_complete(frame_id, reason);
+    if (reason == AAR_PRESENT_REASON_NONE && captured)
+        host_display_gl_store(gl.readback, (uint32_t)gl.w, (uint32_t)gl.h);
+    host_pump();
+}
+
 static void api_gl_swap(void)
 {
-    if (!gl.bound)
-        return;
-    if (!host_stop_requested()) {
-        if (host_options()->dump_front)
-            store_frame();
-        SDL_GL_SwapWindow(gl.win);
-        host_display_gl_swapped();
-    }
-    host_pump();
+    host_gl_swap(0u);
 }
 
 static void api_gl_unbind(void)

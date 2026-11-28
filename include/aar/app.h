@@ -417,6 +417,27 @@ typedef struct aar_locale_info {
 #define AAR_DISPCAP_TEXT_INPUT    (1u << 6)  /* AAR_EV_TEXT is sent */
 #define AAR_DISPCAP_CLOSE_REQUEST (1u << 7)  /* AAR_EV_CLOSE_REQUEST is sent */
 #define AAR_DISPCAP_SCALED        (1u << 8)  /* the client scales the surface */
+#define AAR_DISPCAP_PRESENT_FEEDBACK (1u << 9) /* tracked presents are supported */
+
+/* Flags for aar_display_present(). With neither flag, flip synchronously. */
+#define AAR_PRESENT_ASYNC (1u << 0) /* asynchronous buffer flip */
+#define AAR_PRESENT_GL    (1u << 1) /* swap GL; do not combine with ASYNC */
+
+#define AAR_PRESENT_ACKNOWLEDGED 1u
+#define AAR_PRESENT_REPLACED     2u
+#define AAR_PRESENT_UNCONFIRMED  3u
+
+#define AAR_PRESENT_REASON_NONE      0u
+#define AAR_PRESENT_REASON_TIMEOUT   1u
+#define AAR_PRESENT_REASON_CANCELLED 2u
+#define AAR_PRESENT_REASON_BACKEND   3u
+
+typedef struct aar_present_result {
+    uint64_t frame_id;      /* opaque; unique within this app instance */
+    uint64_t completed_us;  /* aar_time_us() clock, not a scanout timestamp */
+    uint32_t outcome;       /* AAR_PRESENT_* result */
+    uint32_t reason;        /* AAR_PRESENT_REASON_* */
+} aar_present_result;
 
 /* Non-pointer fields first; front is at offset 32 on both profiles. front and
  * back are the app mapping, NULL if the app does not draw that buffer. */
@@ -679,6 +700,8 @@ typedef struct aar_api {
                                 const aar_pointer *image);   /* AAR_POINTER_* */
     int      (*display_wait_vblank)(uint32_t timeout_us);
     uint64_t (*display_last_present_us)(void);
+    int      (*display_present)(uint32_t id, uint32_t flags, uint64_t *frame_id);
+    int      (*display_present_poll)(aar_present_result *out);
 
     /* -- group AAR_GROUP_AUDIO -- */
     int      (*audio_open)(uint32_t rate, uint32_t channels, aar_audio *out);
@@ -879,6 +902,12 @@ int      aar_display_wait_vblank(uint32_t timeout_us);
 /* The aar_time_us value at which the last flip or GL swap was shown; 0 before
  * the first or when the call is absent. */
 uint64_t aar_display_last_present_us(void);
+/* Submit with feedback. On acceptance returns AAR_OK and a nonzero ID.
+ * A rejected submission sets *frame_id to 0 and leaves the frame unsubmitted. */
+int      aar_display_present(uint32_t id, uint32_t flags, uint64_t *frame_id);
+/* Returns 1 and consumes a result, 0 if none is ready, or a negative error.
+ * May be called after display close. Does not block or pump display events. */
+int      aar_display_present_poll(aar_present_result *out);
 
 int      aar_audio_open(uint32_t rate, uint32_t channels, aar_audio *out);
 int      aar_audio_close(void);
@@ -929,7 +958,7 @@ void     aar_free(void *p);
       AAR_ALIGNOF(type) - 1u) & ~(AAR_ALIGNOF(type) - 1u))
 
 /* Number of pointer slots in the table after the 16-byte header. */
-#define AAR_API_SLOT_COUNT 80u
+#define AAR_API_SLOT_COUNT 82u
 #define AAR_API_CORE_SLOT_COUNT 42u
 
 AAR_STATIC_ASSERT(sizeof(aar_info) == 88, "aar_info size");
@@ -980,6 +1009,10 @@ AAR_STATIC_ASSERT(offsetof(aar_surface, caps) == 24, "aar_surface.caps");
 AAR_STATIC_ASSERT(offsetof(aar_surface, front) == 32, "aar_surface.front");
 AAR_STATIC_ASSERT(offsetof(aar_surface, back) == 32 + sizeof(void *), "aar_surface.back");
 AAR_STATIC_ASSERT(sizeof(aar_surface) == AAR_ABI_SIZE(aar_surface, 32, 2), "aar_surface size");
+AAR_STATIC_ASSERT(offsetof(aar_present_result, completed_us) == 8, "aar_present_result.completed_us");
+AAR_STATIC_ASSERT(offsetof(aar_present_result, outcome) == 16, "aar_present_result.outcome");
+AAR_STATIC_ASSERT(offsetof(aar_present_result, reason) == 20, "aar_present_result.reason");
+AAR_STATIC_ASSERT(sizeof(aar_present_result) == 24, "aar_present_result size");
 
 AAR_STATIC_ASSERT(sizeof(aar_display_info) == 48, "aar_display_info size");
 AAR_STATIC_ASSERT(offsetof(aar_display_info, refresh_mhz) == 12, "aar_display_info.refresh_mhz");
@@ -1026,7 +1059,7 @@ AAR_STATIC_ASSERT(offsetof(aar_api, display_info) ==
                       offsetof(aar_api, display_latest_dropped) + sizeof(void *),
                   "aar_api minor 6 display slots follow display_latest_dropped");
 AAR_STATIC_ASSERT(offsetof(aar_api, audio_open) ==
-                      offsetof(aar_api, display_last_present_us) + sizeof(void *),
+                      offsetof(aar_api, display_present_poll) + sizeof(void *),
                   "aar_api audio group follows the display group");
 AAR_STATIC_ASSERT(offsetof(aar_api, file_read_async) ==
                       offsetof(aar_api, audio_decode_close) + sizeof(void *),

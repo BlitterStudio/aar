@@ -268,6 +268,47 @@ static void test_swap(void)
     conf_end(&t);
 }
 
+static void test_tracked_swap(void)
+{
+    struct conf_test t;
+    aar_present_result result;
+    uint64_t started, id = 0;
+    int rc;
+
+    conf_begin(&t, "C-GL.17");
+    if (!bind_display(&t)) {
+        conf_end(&t);
+        return;
+    }
+    glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    started = aar_time_us();
+    rc = aar_display_present(surf.id, AAR_PRESENT_GL, &id);
+    if (rc == AAR_E_NOSYS) {
+        conf_check(&t, id == 0, "unsupported tracked GL swap returned an ID");
+        conf_buf_str(&t.note, "tracked GL swaps not provided");
+    } else if (conf_check(&t, (surf.caps & AAR_DISPCAP_PRESENT_FEEDBACK) &&
+                              rc == AAR_OK && id != 0, "tracked GL swap not accepted")) {
+        do {
+            rc = aar_display_present_poll(&result);
+            if (rc != 0)
+                break;
+            aar_sleep_us(1000);
+        } while (aar_time_us() - started < 1000000u && !aar_should_stop());
+        if (conf_check(&t, rc == 1, "tracked GL swap did not complete"))
+            conf_check(&t, result.frame_id == id &&
+                          result.outcome == AAR_PRESENT_ACKNOWLEDGED &&
+                          result.reason == AAR_PRESENT_REASON_NONE &&
+                          result.completed_us >= started &&
+                          result.completed_us <= aar_time_us(),
+                       "GL swap acknowledgement ID, outcome or time did not match");
+    }
+    unbind_display();
+    if (id)
+        conf_check(&t, aar_display_present_poll(&result) == 0, "GL result returned more than once");
+    conf_end(&t);
+}
+
 /* ---- C-GL.6: the texture environment matrix of templates/mgl_conformance.c ------------------------ */
 
 static const float vertices[4][3] = {
@@ -886,10 +927,17 @@ static void test_v11_state(void)
 
 int aar_main(int argc, char **argv)
 {
+    const char *variant = conf_arg(argc, argv, "conf:variant");
+
+    if (variant && cmio_streq(variant, "present")) {
+        test_tracked_swap();
+        return conf_finish("C-GL");
+    }
     have_peer = conf_have_peer(argc, argv);
     test_table();
     test_bind_rules();
     test_swap();
+    test_tracked_swap();
     test_matrix();
     test_doubles();
     test_isolated_draw();

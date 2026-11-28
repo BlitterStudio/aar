@@ -6,8 +6,8 @@
  *
  * argv[1]: "gl" (default), "front" (gl, and also read the surface after a
  * swap, which needs --dump-front), "pump" (a loop that only swaps, polls
- * events and checks should_stop must see a key and a quit that SDL queued), or
- * "absent".
+ * events and checks should_stop must see a key and a quit that SDL queued),
+ * "absent", "resize" or "present" (tracked GL swaps).
  *
  * SPDX-License-Identifier: MIT
  */
@@ -522,6 +522,87 @@ static int test_resize(void)
     return 0;
 }
 
+static int test_present_feedback(void)
+{
+    aar_surface surface;
+    aar_present_result result;
+    SDL_Window *win;
+    SDL_GLContext ctx;
+    uint64_t queued, swapped, failed, begin, end, shown;
+    unsigned i;
+    int acknowledgements = 0;
+    int failures = 0;
+    uint64_t rejected = 1u;
+
+    if (!(aar_api_ptr->groups & AAR_GROUP_GL))
+        return 77;
+    if (aar_display_open(WIDTH, HEIGHT, AAR_FMT_RGB565, 0u, &surface) != AAR_OK ||
+        !(surface.caps & AAR_DISPCAP_PRESENT_FEEDBACK))
+        return fail(140, "open with feedback");
+    if (aar_display_present(surface.id, AAR_PRESENT_ASYNC, &queued) != AAR_OK ||
+        queued == 0u)
+        return fail(141, "queue a software frame before binding GL");
+    if (aar_display_present(surface.id, AAR_PRESENT_GL, &rejected) != AAR_E_INVAL ||
+        rejected != 0u)
+        return fail(153, "swap without a GL binding");
+    begin = aar_time_us();
+    if (!aar_gl_bind(surface.id))
+        return fail(142, "bind for tracked GL swaps");
+    end = aar_time_us();
+    if (aar_display_present_poll(&result) != 1 || result.frame_id != queued ||
+        result.outcome != AAR_PRESENT_UNCONFIRMED || result.reason != AAR_PRESENT_REASON_CANCELLED ||
+        result.completed_us < begin || result.completed_us > end ||
+        aar_display_present_poll(&result) != 0 || aar_display_last_present_us() != 0u)
+        return fail(143, "binding should cancel the queued software frame");
+    rejected = 1u;
+    if (aar_display_present(surface.id, 0u, &rejected) != AAR_E_NOSYS || rejected != 0u)
+        return fail(144, "pixel flip while bound");
+
+    draw_scene();
+    SDL_SetError("stale error before a normal swap");
+    begin = aar_time_us();
+    if (aar_display_present(surface.id, AAR_PRESENT_GL, &swapped) != AAR_OK ||
+        swapped == 0u || swapped == queued)
+        return fail(145, "submit a tracked GL swap");
+    end = aar_time_us();
+    shown = aar_display_last_present_us();
+    if (shown < begin || shown > end || shown == 0u)
+        return fail(146, "last present of a successful SDL swap");
+
+    /* SDL can't swap a window without its current context. The submission
+     * is accepted by AAR but cannot be acknowledged at the SDL boundary. */
+    win = SDL_GL_GetCurrentWindow();
+    ctx = SDL_GL_GetCurrentContext();
+    if (!win || !ctx || SDL_GL_MakeCurrent(win, NULL) != 0)
+        return fail(147, "release the current context to force a backend failure");
+    begin = aar_time_us();
+    if (aar_display_present(surface.id, AAR_PRESENT_GL, &failed) != AAR_OK ||
+        failed == 0u || failed == swapped || failed == queued)
+        return fail(148, "accept an unconfirmable swap");
+    end = aar_time_us();
+    if (aar_display_last_present_us() != shown)
+        return fail(149, "failed GL swap advanced the last successful present");
+    if (SDL_GL_MakeCurrent(win, ctx) != 0)
+        return fail(150, "restore the current context");
+    aar_gl_unbind();
+
+    /* Unbind cannot clear recorded results or manufacture a new one. */
+    for (i = 0u; i < 2u; i++) {
+        if (aar_display_present_poll(&result) != 1)
+            return fail(151, "a swap result was lost on unbind");
+        if (result.frame_id == swapped && result.outcome == AAR_PRESENT_ACKNOWLEDGED &&
+            result.reason == AAR_PRESENT_REASON_NONE && result.completed_us == shown)
+            acknowledgements++;
+        if (result.frame_id == failed && result.outcome == AAR_PRESENT_UNCONFIRMED &&
+            result.reason == AAR_PRESENT_REASON_BACKEND && result.completed_us >= begin &&
+            result.completed_us <= end)
+            failures++;
+    }
+    if (acknowledgements != 1 || failures != 1 || aar_display_present_poll(&result) != 0)
+        return fail(152, "expected one acknowledgement and one backend failure");
+    return AAR_OK;
+}
+
 int aar_main(int argc, char **argv)
 {
     int mode_absent = argc > 1 && strcmp(argv[1], "absent") == 0;
@@ -531,5 +612,7 @@ int aar_main(int argc, char **argv)
         return test_resize();
     if (argc > 1 && strcmp(argv[1], "pump") == 0)
         return test_pump();
+    if (argc > 1 && strcmp(argv[1], "present") == 0)
+        return test_present_feedback();
     return mode_absent ? test_absent() : test_gl(front);
 }

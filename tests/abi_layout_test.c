@@ -74,6 +74,7 @@ static unsigned long failures;
     X(display_info) X(display_modes) X(display_resize)                   \
     X(display_set_title) X(display_pointer) X(display_wait_vblank)       \
     X(display_last_present_us)                                           \
+    X(display_present) X(display_present_poll)                           \
     X(audio_open) X(audio_close) X(audio_stats)                          \
     X(gl_bind) X(gl_swap) X(gl_unbind)                                   \
     X(sha256) X(decompress) X(image_open) X(image_decode)                \
@@ -143,13 +144,15 @@ static void test_table(void)
     CHECK_EQ(offsetof(aar_api, display_latest_dropped), 16 + 55 * P);
     CHECK_EQ(offsetof(aar_api, display_info), 16 + 56 * P);
     CHECK_EQ(offsetof(aar_api, display_last_present_us), 16 + 62 * P);
-    CHECK_EQ(offsetof(aar_api, audio_open), 16 + 63 * P);
-    CHECK_EQ(offsetof(aar_api, gl_bind), 16 + 66 * P);
-    CHECK_EQ(offsetof(aar_api, sha256), 16 + 69 * P);
-    CHECK_EQ(offsetof(aar_api, audio_decode_close), 16 + 76 * P);
-    CHECK_EQ(offsetof(aar_api, file_read_async), 16 + 77 * P);
-    CHECK_EQ(offsetof(aar_api, file_write_async), 16 + 78 * P);
-    CHECK_EQ(offsetof(aar_api, file_collect), 16 + 79 * P);
+    CHECK_EQ(offsetof(aar_api, display_present), 16 + 63 * P);
+    CHECK_EQ(offsetof(aar_api, display_present_poll), 16 + 64 * P);
+    CHECK_EQ(offsetof(aar_api, audio_open), 16 + 65 * P);
+    CHECK_EQ(offsetof(aar_api, gl_bind), 16 + 68 * P);
+    CHECK_EQ(offsetof(aar_api, sha256), 16 + 71 * P);
+    CHECK_EQ(offsetof(aar_api, audio_decode_close), 16 + 78 * P);
+    CHECK_EQ(offsetof(aar_api, file_read_async), 16 + 79 * P);
+    CHECK_EQ(offsetof(aar_api, file_write_async), 16 + 80 * P);
+    CHECK_EQ(offsetof(aar_api, file_collect), 16 + 81 * P);
 
     /* AAR_API_COVERS gates on size. */
     {
@@ -368,14 +371,14 @@ static void test_structures(void)
         CHECK_EQ(sizeof(aar_audio), 40);
         CHECK_EQ(sizeof(aar_image_params), 32);
         CHECK_EQ(sizeof(aar_pointer), 32);
-        CHECK_EQ(sizeof(aar_api), 16 + 80 * 8);
+        CHECK_EQ(sizeof(aar_api), 16 + 82 * 8);
         CHECK_EQ(sizeof(aar_gl), 8 + 123 * 8);
     } else {
         CHECK_EQ(sizeof(aar_surface), 40);
         CHECK_EQ(sizeof(aar_audio), 28);
         CHECK_EQ(sizeof(aar_image_params), 28);
         CHECK_EQ(sizeof(aar_pointer), 28);
-        CHECK_EQ(sizeof(aar_api), 16 + 80 * 4);
+        CHECK_EQ(sizeof(aar_api), 16 + 82 * 4);
         CHECK_EQ(sizeof(aar_gl), 8 + 123 * 4);
 #if defined(__arm__)
         CHECK_EQ(sizeof(aar_shared), 24);

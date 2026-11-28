@@ -815,3 +815,26 @@ uint64_t aar_display_last_present_us(void)
         return api->display_last_present_us();
     return 0;
 }
+
+int aar_display_present(uint32_t id, uint32_t flags, uint64_t *frame_id)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (!frame_id)
+        return AAR_E_INVAL;
+    if (AAR_API_COVERS(api, display_present) && api->display_present)
+        return api->display_present(id, flags, frame_id);
+    *frame_id = 0;
+    return AAR_E_NOSYS;
+}
+
+int aar_display_present_poll(aar_present_result *out)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (!out)
+        return AAR_E_INVAL;
+    if (AAR_API_COVERS(api, display_present_poll) && api->display_present_poll)
+        return api->display_present_poll(out);
+    return AAR_E_NOSYS;
+}

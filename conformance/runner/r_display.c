@@ -191,6 +191,17 @@ static void prep_window(struct conf_run *run)
     run->timeout_s = 120;
 }
 
+static const struct TagItem latest_caps[] = {
+    { AAR_TAG_CLIENT_CAPS, AAR_CCAP_DISPLAY_LATEST | AAR_CCAP_DISPLAY_PAN_ACK },
+    { TAG_DONE, 0 }
+};
+
+static void prep_present_latest(struct conf_run *run)
+{
+    prep_window(run);
+    run->tags = latest_caps;
+}
+
 static void prep_pointer(struct conf_run *run)
 {
     gfx_reset();
@@ -273,6 +284,7 @@ static const struct conf_variant variants[] = {
     { "std", prep_std },
     { "picture", prep_picture },
     { "window", prep_window },
+    { "present-latest", prep_present_latest },
     { "pointer", prep_pointer },
     { "resize", prep_resize },
 };
