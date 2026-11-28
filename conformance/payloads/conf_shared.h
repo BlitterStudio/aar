@@ -8,9 +8,9 @@
  * Every message is 32 bytes. Bytes 0 to 15 are the keyword, padded with zero
  * bytes; the runner dispatches by keyword (the CONF-SHARED- prefix is the
  * runner's). Bytes 16 to 31 are four 32-bit words, little-endian, w0 to w3. A
- * message the app sends to the runner is a request; the runner answers each
- * request with one CONF_SHARED_ACK (except CONF_SHARED_BEGIN_SEQ, which only
- * starts a watch and is answered after CONF_SHARED_END_SEQ).
+ * message the app sends to the runner is a request. The runner answers each
+ * with one CONF_SHARED_ACK, except BEGIN_SEQ (answered after END_SEQ) and
+ * PROGRESS (answered after observing each checkpoint, as described below).
  *
  * The app runs the tests in one run of the payload (variant "default"), apart
  * from C-SHARED.8 that is judged in the variant "caps" (the runner sets
@@ -75,6 +75,22 @@
  *         granules still hold seed 2r and the odd ones seed 2r + 1.
  *     Neither side may write the granules of the other.
  *
+ *   CONF_SHARED_PROGRESS  w0 haddr, w1 bytes, w2 granule          C-SHARED.28
+ *     The first granule contains only an aligned, big-endian 32-bit count.
+ *     Each later granule is one immutable payload record; slot n starts at
+ *     n * granule and holds the pattern for seed n. The app publishes count
+ *     zero, sends PROGRESS once to register the map, and waits for ACK(0).
+ *     For each slot it writes and publishes the payload, does one release
+ *     store of the new count, and publishes that word. It waits for an ACK
+ *     after every batch of slots before starting the next batch.
+ *     The client polls the word (acquire its range, load it with acquire
+ *     ordering), then acquires and checks only payload newly announced by
+ *     that word. Intermediate counts may be skipped, but the count may not
+ *     go backwards or pass the current checkpoint. No app message announces
+ *     an advance. ACK w1 is the count read, w2 is the map flags on success or
+ *     the first bad byte (UINT32_MAX if none) on failure. The client unmaps
+ *     before the final or failed ACK; the app keeps the block live until then.
+ *
  * The answer (runner to app):
  *
  *   CONF_SHARED_ACK  w0 result, w1, w2, w3 as the request says
@@ -88,6 +104,8 @@
 
 #include <stdint.h>
 
+#include "aar/transport.h"
+
 /* ---- Keywords (16 bytes at most, no one is the prefix of another) -------------- */
 
 #define CONF_SHARED_MAP       "CONF-SHARED-MAP"
@@ -96,6 +114,7 @@
 #define CONF_SHARED_END_SEQ   "CONF-SHARED-END"
 #define CONF_SHARED_GRAN      "CONF-SHARED-GRAN"
 #define CONF_SHARED_ACK       "CONF-SHARED-ACK"
+#define CONF_SHARED_PROGRESS  "CONF-SHARED-PROG"
 
 #define CONF_SHARED_KEYWORD_BYTES 16u
 #define CONF_SHARED_MSG_BYTES     32u
@@ -112,6 +131,9 @@
 #define CONF_SHARED_SEQ_MIN_SAMPLES 5u
 #define CONF_SHARED_GRAN_ROUNDS    16u
 #define CONF_SHARED_GRAN_COUNT     8u    /* granules of the ownership block */
+#define CONF_SHARED_PROGRESS_BATCH   3u
+#define CONF_SHARED_PROGRESS_BATCHES 4u
+#define CONF_SHARED_PROGRESS_COUNT   (CONF_SHARED_PROGRESS_BATCH * CONF_SHARED_PROGRESS_BATCHES)
 #define CONF_SHARED_ACK_WAIT_US    10000000u
 
 /* ---- Words and the pattern ------------------------------------------------------------ */
@@ -205,9 +227,33 @@ static inline void conf_shared_put_be32(volatile uint8_t *p, uint32_t v)
     p[3] = (uint8_t)v;
 }
 
+/* One aligned load, not the bytewise sequence-test accessor above. */
+static inline uint32_t conf_shared_read_progress(const volatile void *p)
+{
+#if defined(__m68k__)
+    uint32_t count = aar_get_be32(p);
+
+    /* The 68k does not reorder reads; prevent compiler motion across the load. */
+    __asm__ __volatile__("" ::: "memory");
+    return count;
+#else
+    uint32_t count = __atomic_load_n((const volatile uint32_t *)p, __ATOMIC_ACQUIRE);
+
+    return AAR_NATIVE_BIG_ENDIAN ? count : aar_bswap32(count);
+#endif
+}
+
 /* ---- The app's side: only when the payload protocol (conf.h) is included first ------- */
 
 #ifdef AAR_CONF_H
+
+/* The caller has already published the newly completed slot, if any. */
+static inline int conf_shared_publish_progress(void *p, uint32_t count)
+{
+    __atomic_store_n((volatile uint32_t *)p,
+                     AAR_NATIVE_BIG_ENDIAN ? count : aar_bswap32(count), __ATOMIC_RELEASE);
+    return aar_publish(p, sizeof count);
+}
 
 /* Sends a request to the runner. A full queue is retried for up to 100 ms.
  * Returns the message call's result. */

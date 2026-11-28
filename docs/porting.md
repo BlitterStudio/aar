@@ -69,6 +69,12 @@ A platform whose memory is not coherent between the two sides maps the control
 structures non-cacheable on the ARM side or performs cache maintenance
 internally; see [visibility](transport.md#visibility-of-the-control-structures).
 
+App-defined progress words are separate from the transport queues. See
+[spec 4.3](../spec/aar.md#polling-a-progress-word) for the guarantees the
+shared mapping and cache operations must provide. Tests on an uncached or
+coherent client map do not exercise 68k cache maintenance. Tests on a
+coherent ARM path do not exercise ARM cache maintenance.
+
 If the app and the Amiga side run in the same machine and share RAM (an
 emulator, for example), the transport is simple: a token is an Amiga address,
 `resolve` is the identity and the doorbell can be a signal. The layouts and the

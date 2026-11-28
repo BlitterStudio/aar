@@ -4,17 +4,17 @@
  * conf_shared.c belongs to the C-SHARED payload author, and the two agree through
  * payloads/conf_shared.h (read its header comment first).
  *
- * The runner is the peer of C-SHARED.9, .10, .11 and .14: the app sends a token
- * (or a request) in a message and the runner maps it with AARSharedMap, reads or
- * writes through the map, publishes or acquires, and answers with CONF-SHARED-ACK.
+ * The runner is the peer of C-SHARED.9, .10, .11, .14 and .28: the app sends a
+ * token (or a request) in a message and the runner maps it with AARSharedMap,
+ * reads or writes through the map, publishes or acquires, and sends ACKs.
  * The payload judges those rows from its side. While the runner handles the first
  * message (CONF-SHARED-MAP) it also judges C-SHARED.15 to C-SHARED.20 on the live
  * block, which the app keeps allocated until the answer arrives. C-SHARED.16 and
  * C-SHARED.27 need no app.
  *
- * The cacheable-map half of C-SHARED.12 is not tested (spec question 7): the
- * flags argument of AARSharedMap is reserved, so a client cannot ask for a
- * cacheable map.
+ * The deliberately cacheable run in C-SHARED.12 is not tested: the flags
+ * argument of AARSharedMap is reserved. C-SHARED.28 reports the map flags
+ * actually received, without assuming that cache maintenance was needed.
  *
  * Copyright (C) 2024-2026, Dimitris Panokostas / BlitterStudio
  * SPDX-License-Identifier: MIT
@@ -292,6 +292,100 @@ static void peer_seq_end(struct conf_run *run, const AARMessage *msg)
     ack(run, ok ? 0 : CONF_SHARED_BAD, seq.stale, seq.torn, seq.samples);
 }
 
+/* ---- CONF-SHARED-PROG: C-SHARED.28 ----------------------------------------------------------- */
+
+static struct {
+    int active;
+    struct AARSharedMap map;
+    ULONG last;    /* all records through this count have been checked */
+    ULONG next;    /* producer waits at this checkpoint (initially zero) */
+} progress;
+
+static void peer_progress(struct conf_run *run, const AARMessage *msg)
+{
+    ULONG haddr = conf_shared_get32(msg->bytes, 0);
+    ULONG bytes = conf_shared_get32(msg->bytes, 1);
+    ULONG g = conf_shared_get32(msg->bytes, 2);
+    LONG rc;
+
+    if (!is_pow2(g) || g < 64UL || g > NONE / (1UL + CONF_SHARED_PROGRESS_COUNT) ||
+        bytes != (1UL + CONF_SHARED_PROGRESS_COUNT) * g) {
+        ack(run, AAR_E_INVAL, 0, NONE, 0);
+        return;
+    }
+    rc = map_block(run->h, haddr, bytes, &progress.map);
+    if (rc != AAR_OK) {
+        ack(run, rc, 0, NONE, 0);
+        return;
+    }
+    if (!progress.map.base || (uintptr_t)progress.map.base % sizeof(uint32_t) != 0u ||
+        progress.map.granule != g || progress.map.bytes != bytes) {
+        (void)AARSharedUnmap(run->h, &progress.map);
+        ack(run, AAR_E_INVAL, 0, NONE, 0);
+        return;
+    }
+    progress.active = 1;
+}
+
+static void poll_progress(struct conf_run *run)
+{
+    const volatile uint8_t *p = (const volatile uint8_t *)progress.map.base;
+    ULONG g = progress.map.granule;
+    ULONG flags = progress.map.flags;
+    ULONG count = progress.last;
+    ULONG bad = NONE;
+    LONG rc;
+
+    rc = AARSharedAcquire(run->h, &progress.map, 0UL, sizeof(uint32_t));
+    if (rc != AAR_OK)
+        goto end;
+    count = conf_shared_read_progress(p);
+    if (count < progress.last || count > progress.next) {
+        rc = CONF_SHARED_BAD;
+        goto end;
+    }
+    if (count > progress.last) {
+        ULONG n;
+
+        rc = AARSharedAcquire(run->h, &progress.map, (progress.last + 1UL) * g,
+                              (count - progress.last) * g);
+        if (rc != AAR_OK)
+            goto end;
+        for (n = progress.last + 1UL; n <= count; n++) {
+            bad = conf_shared_check(p, n * g, (n + 1UL) * g, n);
+            if (bad != NONE) {
+                rc = CONF_SHARED_BAD;
+                goto end;
+            }
+        }
+        progress.last = count;
+    }
+    if (count != progress.next)
+        return;
+    if (count != CONF_SHARED_PROGRESS_COUNT) {
+        progress.next += CONF_SHARED_PROGRESS_BATCH;
+        ack(run, AAR_OK, count, flags, 0);
+        return;
+    }
+
+end:
+    progress.active = 0;
+    {
+        LONG unmap_rc = AARSharedUnmap(run->h, &progress.map);
+
+        if (rc == AAR_OK)
+            rc = unmap_rc;
+    }
+    ack(run, rc, count, rc == AAR_OK ? flags : bad, 0);
+}
+
+static void poll_shared(struct conf_run *run, ULONG now)
+{
+    poll_seq(run, now);
+    if (progress.active)
+        poll_progress(run);
+}
+
 /* ---- CONF-SHARED-GRAN: C-SHARED.14 ------------------------------------------------------------- */
 
 static void peer_gran(struct conf_run *run, const AARMessage *msg)
@@ -341,6 +435,7 @@ static const struct conf_peer peers[] = {
     { CONF_SHARED_BEGIN_SEQ, peer_seq_begin },
     { CONF_SHARED_END_SEQ, peer_seq_end },
     { CONF_SHARED_GRAN, peer_gran },
+    { CONF_SHARED_PROGRESS, peer_progress },
 };
 
 /* ---- The variants of the payload --------------------------------------------------------------- */
@@ -348,7 +443,8 @@ static const struct conf_peer peers[] = {
 static void prepare_default(struct conf_run *run)
 {
     memset(&seq, 0, sizeof seq);
-    run->poll = poll_seq;
+    memset(&progress, 0, sizeof progress);
+    run->poll = poll_shared;
 }
 
 static const struct TagItem caps_tags[] = {

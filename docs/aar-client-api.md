@@ -712,7 +712,10 @@ LONG AARSharedAcquire(AARHandle *handle, struct AARSharedMap *map, ULONG offset,
                       ULONG length);
 ```
 
-Makes the app's writes visible to the client. Same rules as publish.
+Drops the client's stale view of data the app wrote. The range and cache
+rules are the same as for publish. The
+[developer guide](aar-developer-guide.md#polling-for-completed-data) shows
+where to call it when polling a progress word.
 
 ### AARServiceNext
 
