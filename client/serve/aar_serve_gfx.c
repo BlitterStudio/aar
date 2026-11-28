@@ -470,6 +470,8 @@ static void release_surface(struct aar_serve *s)
 
 static void close_display(struct aar_serve *s)
 {
+    if (s->gfx.screen)
+        requester_close_message_on_screen(s, s->gfx.screen);
     if (s->gfx.have_two && s->gfx.buf_front && s->gfx.buf_back && s->gfx.screen && s->gfx.safe_port) {
         /* A prior app flip may still own either buffer. */
         flip_wait_safe_messages(s);

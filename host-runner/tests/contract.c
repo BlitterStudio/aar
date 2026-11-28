@@ -42,6 +42,7 @@ static int test_table(int no_gl)
     unsigned char big[sizeof(aar_info) + 16];
     unsigned char small[sizeof(aar_info)];
     uint32_t i;
+    uint32_t choice = 99u;
 
     if (!api || api->size != sizeof(aar_api))
         return fail(110, "table size");
@@ -89,6 +90,9 @@ static int test_table(int no_gl)
     } else if (api->gl_bind || api->gl_swap || api->gl_unbind) {
         return fail(117, "a GL slot is set without the GL group");
     }
+    if (aar_requester(NULL, "Message", "OK", &choice) != AAR_E_NOSYS ||
+        choice != 99u)
+        return fail(119, "the host has no native message requester");
 
     memset(&info, 0xaa, sizeof info);
     info.size = (uint32_t)sizeof info;

@@ -509,6 +509,7 @@ at the app API; it never goes on the wire.
 | `AAR_OP_FILE_GET_COMMENT` | `0x22` | request | NUL-terminated path in `buf`; arg `AAR_A_FILE_COMMENT_CAP` limits the output to at most 79 bytes and at most `buf_len`. The reply copies the native comment bytes to `buf` without a terminator; out `AAR_R_FILE_COMMENT_LEN` is the full length on `AAR_OK` or `AAR_E_NOSPC`. |
 | `AAR_OP_FILE_SET_COMMENT` | `0x23` | request | `buf` holds the path, a NUL, then zero to 79 native comment bytes. Zero comment bytes clear it. |
 | `AAR_OP_FILE_REQUEST` | `0x24` | request | Args `AAR_A_FILE_REQUEST_FLAGS`, `AAR_A_FILE_REQUEST_IN_BYTES`, `AAR_A_FILE_REQUEST_CAP`. On result `1`, the selected path replaces the input and `AAR_R_FILE_REQUEST_LEN` gives its length excluding the NUL. Framing below. |
+| `AAR_OP_REQUESTER` | `0x25` | request | No arguments. `buf` holds title, a NUL, text, a NUL, button labels and a NUL. On `AAR_OK`, `out[AAR_R_REQUESTER_CHOICE]` is the 1-based button choice. |
 | `AAR_OP_DISPLAY_OPEN` | `0x30` | request | Args `AAR_A_DISPLAY_OPEN_W`, `_H`, `_FORMAT`, `_FLAGS`; out `AAR_R_DISPLAY_OPEN_ID`, `_PITCH`, `_LAYOUT`, `_FRONT`, `_BACK`, `_SPARE`. The reply's `flags` carry the `AAR_DISPCAP_*` caps and may carry `AAR_DISP_REPLY_SCANOUT`. |
 | `AAR_OP_DISPLAY_FLIP` | `0x31` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_FLIP_FLAGS`. Replied when shown; out `AAR_R_DISPLAY_FLIP_FRONT`, `_BACK`, `_PITCH`, `_LAYOUT`, `_DROPPED`. A platform that owns the display buffers (a card-owned latest-frame mode) may complete a flip itself and never send it to the client. |
 | `AAR_OP_DISPLAY_PALETTE` | `0x32` | request | Args `AAR_A_DISPLAY_ID`, `AAR_A_DISPLAY_PALETTE_FIRST`, `AAR_A_DISPLAY_PALETTE_COUNT`. The colors are big-endian `0x00RRGGBB` words in `buf`, which stay unchanged until the completion. The API call that submits it does not park the app, so more requests can be in flight. |
@@ -544,6 +545,18 @@ does not overwrite the buffer. Unsupported clients reply `AAR_E_NOSYS`.
 The app parks without a timeout; a stop ends the wait with `AAR_E_IO` but
 does not release storage still borrowed by the client.
 
+For `AAR_OP_REQUESTER`, entry flags and argument words are zero. `buf_len`
+counts exactly the three NUL-terminated strings, with no trailing bytes.
+A default title is encoded as an empty string. The limits and label syntax
+are in [section 7.5 of the specification](../spec/aar.md#75-native-message-requester).
+The client checks the framing and contents before displaying anything and
+replies `AAR_E_INVAL` to malformed input. The buffer is input only.
+A client without the service replies `AAR_E_NOSYS` to a valid request.
+The runtime checks the completion before storing the choice: an unexpected
+positive status or a choice outside the supplied labels on `AAR_OK` gives
+`AAR_E_IO`. The app parks without a timeout; a stop ends the wait with
+`AAR_E_IO` and closes the dialog.
+
 File and list ids are chosen by the runtime and are small integers from
 `AAR_FD_BASE`. Paths and names are NUL-terminated bytes in the payload buffer.
 File payloads, paths, console bytes and palettes travel as shared buffers named
@@ -578,6 +591,7 @@ completion. A 64-bit value is `_HI` then `_LO`.
 | `AAR_A_LIST_ID` | 0 | list open, next, close |
 | `AAR_R_LIST_MODE` | 0 | list next |
 | `AAR_R_CONSOLE_COUNT` | 0 | console write, read |
+| `AAR_R_REQUESTER_CHOICE` | 0 | `AAR_OP_REQUESTER` |
 | `AAR_A_DISPLAY_OPEN_W`, `AAR_A_DISPLAY_OPEN_H` | 0, 1 | display open |
 | `AAR_A_DISPLAY_OPEN_FORMAT`, `AAR_A_DISPLAY_OPEN_FLAGS` | 2, 3 | display open |
 | `AAR_R_DISPLAY_OPEN_ID` | 0 | display open |

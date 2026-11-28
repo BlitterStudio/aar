@@ -449,6 +449,15 @@ bytes, including an unconfirmed final chunk after a stop or timeout, may
 have reached the file. Wait until successful collection before closing a
 normal transfer. `aar_msg_wait` does not wait for file tickets.
 
+## Native message requester
+
+Use [`aar_requester`](aar-api.md#aar_requester) when the user needs to choose
+from a short list of buttons. For example, pass `"Keep|Discard"` as the labels
+and read `choice` only on `AAR_OK`: 1 means Keep and 2 means Discard.
+Include a Cancel label yourself if your app needs one, and handle it like
+any other choice. The call parks until the user chooses or the client
+stops the app. On `AAR_E_NOSYS`, use another way to get the choice.
+
 ## Console and log
 
 In the libc flavor, `printf`, `puts` and `write` of fd 1 or 2 go to the console

@@ -81,7 +81,7 @@ static unsigned long failures;
     X(image_close) X(audio_decode_open) X(audio_decode)                  \
     X(audio_decode_close)                                              \
     X(file_read_async) X(file_write_async) X(file_collect)              \
-    X(file_request)
+    X(file_request) X(requester)
 
 #define GL_SLOTS(X)                                                      \
     X(Begin) X(End) X(Vertex2f) X(Vertex3f) X(Vertex3fv) X(TexCoord2f)   \
@@ -155,6 +155,7 @@ static void test_table(void)
     CHECK_EQ(offsetof(aar_api, file_write_async), 16 + 80 * P);
     CHECK_EQ(offsetof(aar_api, file_collect), 16 + 81 * P);
     CHECK_EQ(offsetof(aar_api, file_request), 16 + 82 * P);
+    CHECK_EQ(offsetof(aar_api, requester), 16 + 83 * P);
 
     /* AAR_API_COVERS gates on size. */
     {
@@ -168,8 +169,12 @@ static void test_table(void)
         t.size = (uint32_t)offsetof(aar_api, file_request);
         CHECK(AAR_API_COVERS(&t, file_collect));
         CHECK(!AAR_API_COVERS(&t, file_request));
+        t.size = (uint32_t)offsetof(aar_api, requester);
+        CHECK(AAR_API_COVERS(&t, file_request));
+        CHECK(!AAR_API_COVERS(&t, requester));
         t.size = (uint32_t)sizeof(t);
         CHECK(AAR_API_COVERS(&t, file_request));
+        CHECK(AAR_API_COVERS(&t, requester));
         t.version = AAR_API_VERSION;
         CHECK(AAR_API_AT_LEAST(&t, 6));
         CHECK(!AAR_API_AT_LEAST(&t, 7));
@@ -378,14 +383,14 @@ static void test_structures(void)
         CHECK_EQ(sizeof(aar_audio), 40);
         CHECK_EQ(sizeof(aar_image_params), 32);
         CHECK_EQ(sizeof(aar_pointer), 32);
-        CHECK_EQ(sizeof(aar_api), 16 + 83 * 8);
+        CHECK_EQ(sizeof(aar_api), 16 + 84 * 8);
         CHECK_EQ(sizeof(aar_gl), 8 + 123 * 8);
     } else {
         CHECK_EQ(sizeof(aar_surface), 40);
         CHECK_EQ(sizeof(aar_audio), 28);
         CHECK_EQ(sizeof(aar_image_params), 28);
         CHECK_EQ(sizeof(aar_pointer), 28);
-        CHECK_EQ(sizeof(aar_api), 16 + 83 * 4);
+        CHECK_EQ(sizeof(aar_api), 16 + 84 * 4);
         CHECK_EQ(sizeof(aar_gl), 8 + 123 * 4);
 #if defined(__arm__)
         CHECK_EQ(sizeof(aar_shared), 24);
@@ -403,6 +408,11 @@ static void test_constants(void)
     CHECK_EQ(AAR_API_MINOR_OLDEST, 6);
     CHECK_EQ(AAR_PROFILE_A32, 1);
     CHECK_EQ(AAR_PROFILE_A64, 2);
+
+    CHECK_EQ(AAR_REQUESTER_TITLE_MAX, 127);
+    CHECK_EQ(AAR_REQUESTER_TEXT_MAX, 511);
+    CHECK_EQ(AAR_REQUESTER_BUTTONS_MAX, 255);
+    CHECK_EQ(AAR_REQUESTER_MAX_CHOICES, 8);
 
     CHECK_EQ(AAR_OK, 0);
     CHECK_EQ(AAR_E_IO, -1);
@@ -727,7 +737,7 @@ static void test_transport_layout(void)
             AAR_OP_FILE_SET_DATE, AAR_OP_FILE_SET_PROTECT,
             AAR_OP_FILE_TRUNCATE, AAR_OP_VOLUME_INFO,
             AAR_OP_FILE_GET_COMMENT, AAR_OP_FILE_SET_COMMENT,
-            AAR_OP_FILE_REQUEST,
+            AAR_OP_FILE_REQUEST, AAR_OP_REQUESTER,
             AAR_OP_DISPLAY_INFO, AAR_OP_DISPLAY_MODES,
             AAR_OP_DISPLAY_RESIZE, AAR_OP_DISPLAY_TITLE,
             AAR_OP_DISPLAY_POINTER, AAR_OP_DISPLAY_VBLANK,
@@ -767,6 +777,8 @@ static void test_transport_layout(void)
     CHECK_EQ(AAR_A_FILE_REQUEST_IN_BYTES, 1);
     CHECK_EQ(AAR_A_FILE_REQUEST_CAP, 2);
     CHECK_EQ(AAR_R_FILE_REQUEST_LEN, 0);
+    CHECK_EQ(AAR_OP_REQUESTER, 0x25);
+    CHECK_EQ(AAR_R_REQUESTER_CHOICE, 0);
     CHECK_EQ(AAR_OP_DISPLAY_INFO, 0x34);
     CHECK_EQ(AAR_OP_DISPLAY_MODES, 0x35);
     CHECK_EQ(AAR_OP_DISPLAY_RESIZE, 0x36);

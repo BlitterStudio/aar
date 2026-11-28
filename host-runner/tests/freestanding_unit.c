@@ -66,6 +66,18 @@ static int fake_msg_wait(uint32_t timeout_us)
     return AAR_OK;
 }
 
+static int fake_requester(const char *title, const char *text,
+                          const char *buttons, uint32_t *choice)
+{
+    assert(title == NULL);
+    assert(strcmp(text, "Done: 100%") == 0);
+    assert(strcmp(buttons, "Again|Done %") == 0);
+    if (!choice)
+        return AAR_E_INVAL;
+    *choice = 2u;
+    return AAR_OK;
+}
+
 static void fake_clear(uint32_t mask)
 {
     clear_calls++;
@@ -147,6 +159,32 @@ static void test_size_gate(void)
     api.size = (uint32_t)sizeof api;
     api.version = 0u;
     assert(aar_msg_wait(0u) == AAR_OK);
+}
+
+static void test_requester(void)
+{
+    aar_api api;
+    const char *text = "Done: 100%";
+    const char *buttons = "Again|Done %";
+    uint32_t choice = 99u;
+
+    reset(&api);
+    assert(aar_requester(NULL, text, buttons, &choice) == AAR_E_NOSYS);
+    assert(choice == 99u);
+
+    api.requester = fake_requester;
+    api.size = (uint32_t)offsetof(aar_api, requester);
+    assert(aar_requester(NULL, text, buttons, &choice) == AAR_E_NOSYS);
+    assert(choice == 99u);
+
+    api.size = (uint32_t)sizeof api;
+    assert(aar_requester(NULL, text, buttons, &choice) == AAR_OK);
+    assert(choice == 2u);
+    assert(aar_requester(NULL, text, buttons, NULL) == AAR_E_INVAL);
+
+    aar_crt0_bind(NULL);
+    assert(aar_requester(NULL, text, buttons, &choice) == AAR_E_NOSYS);
+    assert(choice == 2u);
 }
 
 static void test_publish_and_acquire(void)
@@ -375,6 +413,7 @@ int main(void)
 {
     test_missing_slots();
     test_size_gate();
+    test_requester();
     test_publish_and_acquire();
     test_gl_gate();
     test_zz9000_gl_bind_flags();

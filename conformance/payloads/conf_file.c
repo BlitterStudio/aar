@@ -2474,8 +2474,29 @@ static int run_request(void)
     return CONF_FILE_REQUEST_OK;
 }
 
-static int run_request_stop(void)
+/* ---- C-FILE.59 and C-FILE.60: native message requester variants ---- */
+
+static int run_message_request(void)
 {
+    const char *text = "Show 100% and %s literally.";
+    const char *buttons = "Keep 100%|Review|Leave 25%";
+    uint32_t choice = UINT32_MAX;
+    int rc = aar_requester("AAR Message: first choice", text, buttons, &choice);
+
+    if (rc == AAR_E_NOSYS && choice == UINT32_MAX)
+        return CONF_FILE_REQUEST_UNSUPPORTED;
+    if (rc != AAR_OK || choice != 1u)
+        return CONF_FILE_MESSAGE_REQUEST_FIRST_FAILED;
+    if (aar_requester(NULL, text, buttons, &choice) != AAR_OK || choice != 3u)
+        return CONF_FILE_MESSAGE_REQUEST_LAST_FAILED;
+    if (aar_requester("", text, "Done 10%", &choice) != AAR_OK || choice != 1u)
+        return CONF_FILE_MESSAGE_REQUEST_ONLY_FAILED;
+    return CONF_FILE_REQUEST_OK;
+}
+
+static int run_request_stop(int message)
+{
+    uint32_t choice = UINT32_MAX;
     char path[256];
     uint64_t start;
     int rc;
@@ -2483,7 +2504,13 @@ static int run_request_stop(void)
     if (conf_file_send(CONF_FILE_REQUEST_STOP_BEGIN, 0, 0, 0, 0) != AAR_OK)
         return CONF_FILE_REQUEST_STOP_SIGNAL_FAILED;
     start = aar_time_us();
-    rc = aar_file_request(0, "AAR Open: wait for the runner to stop", NULL, path, sizeof path);
+    if (message)
+        rc = aar_requester("AAR Message: wait for the runner to stop",
+                           "Leave this requester open.", "Continue", &choice);
+    else
+        rc = aar_file_request(0, "AAR Open: wait for the runner to stop", NULL, path, sizeof path);
+    if (choice != UINT32_MAX)
+        return CONF_FILE_REQUEST_STOP_FAILED;
     if (rc == AAR_E_NOSYS)
         return CONF_FILE_REQUEST_UNSUPPORTED;
     if (rc != AAR_E_IO || !aar_should_stop())
@@ -2491,6 +2518,57 @@ static int run_request_stop(void)
     if (aar_time_us() - start < CONF_FILE_REQUEST_MIN_WAIT_US)
         return CONF_FILE_REQUEST_STOP_EARLY;
     return CONF_FILE_REQUEST_OK;
+}
+
+/* ---- C-FILE.61: absent service and malformed message requester inputs ---- */
+
+static void check_bad_request(struct conf_test *t, const char *title, const char *text,
+                              const char *buttons, const char *why)
+{
+    uint32_t choice = UINT32_MAX;
+    int rc = aar_requester(title, text, buttons, &choice);
+
+    conf_check(t, rc == AAR_E_INVAL, why);
+    conf_check(t, choice == UINT32_MAX, "a refused input changed the choice");
+}
+
+static void test_message_request_inputs(void)
+{
+    struct conf_test t;
+    uint32_t choice = UINT32_MAX;
+    char long_input[AAR_REQUESTER_TEXT_MAX + 2u];
+    uint32_t i;
+    int rc;
+
+    conf_begin(&t, "C-FILE.61");
+    if (!AAR_API_COVERS(aar_api_ptr, requester) || !aar_api_ptr->requester) {
+        /* The host runner and qemu loader also take this path. Never send a
+         * valid request to a live client in a non-interactive run. */
+        rc = aar_requester(NULL, "AAR Message", "OK", &choice);
+        conf_check(&t, rc == AAR_E_NOSYS, "the absent slot did not give AAR_E_NOSYS");
+        conf_check(&t, choice == UINT32_MAX, "the unsupported call changed the choice");
+    } else {
+        conf_check(&t, aar_requester(NULL, "Message", "OK", NULL) == AAR_E_INVAL,
+                   "NULL choice did not give AAR_E_INVAL");
+        check_bad_request(&t, NULL, NULL, "OK", "NULL text was accepted");
+        check_bad_request(&t, NULL, "", "OK", "empty text was accepted");
+        check_bad_request(&t, NULL, "Message", NULL, "NULL buttons were accepted");
+        check_bad_request(&t, NULL, "Message", "", "empty buttons were accepted");
+        check_bad_request(&t, NULL, "Message", "|One", "an empty first label was accepted");
+        check_bad_request(&t, NULL, "Message", "One||Two", "an empty inner label was accepted");
+        check_bad_request(&t, NULL, "Message", "One|", "an empty last label was accepted");
+        check_bad_request(&t, NULL, "Message", "1|2|3|4|5|6|7|8|9", "nine labels were accepted");
+
+        for (i = 0; i < AAR_REQUESTER_TEXT_MAX + 1u; i++)
+            long_input[i] = 'x';
+        long_input[i] = '\0';
+        check_bad_request(&t, NULL, long_input, "OK", "overlong text was accepted");
+        long_input[AAR_REQUESTER_BUTTONS_MAX + 1u] = '\0';
+        check_bad_request(&t, NULL, "Message", long_input, "overlong buttons were accepted");
+        long_input[AAR_REQUESTER_TITLE_MAX + 1u] = '\0';
+        check_bad_request(&t, long_input, "Message", "OK", "overlong title was accepted");
+    }
+    conf_end(&t);
 }
 
 /* ---- main --------------------------------------------------------------------------------------------------------------- */
@@ -2522,7 +2600,11 @@ int aar_main(int argc, char **argv)
     if (variant && seq(variant, CONF_FILE_VARIANT_REQUEST))
         return run_request();
     if (variant && seq(variant, CONF_FILE_VARIANT_REQUEST_STOP))
-        return run_request_stop();
+        return run_request_stop(0);
+    if (variant && seq(variant, CONF_FILE_VARIANT_MESSAGE_REQUEST))
+        return run_message_request();
+    if (variant && seq(variant, CONF_FILE_VARIANT_MESSAGE_REQUEST_STOP))
+        return run_request_stop(1);
 
     test_long_path();
     test_root();
@@ -2559,6 +2641,7 @@ int aar_main(int argc, char **argv)
     test_comment_served(test_comment());
     test_comment_refused();
     test_async_file();
+    test_message_request_inputs();
     if (platform_id == AAR_PLATFORM_ZZ9000)
         test_map_zz9000();
     test_stop();

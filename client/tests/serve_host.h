@@ -2007,6 +2007,11 @@ HX_UNUSED static struct Window *hx_cur_window;
 HX_UNUSED static int hx_requesters;
 HX_UNUSED static char hx_requester_text[256];
 HX_UNUSED static char hx_requester_format[16];
+HX_UNUSED static struct Window *hx_message_request;
+HX_UNUSED static uintptr_t hx_message_build_failure;
+HX_UNUSED static char hx_message_title[AAR_REQUESTER_TITLE_MAX + 1u];
+HX_UNUSED static char hx_message_text[AAR_REQUESTER_TEXT_MAX + 1u];
+HX_UNUSED static char hx_message_buttons[AAR_REQUESTER_BUTTONS_MAX + 1u];
 static uint32_t hx_gfx_next;                         /* the bump pointer in the arena */
 #define HX_GFX_SLOT (REFPLAT_CLAIMS - 1u)
 
@@ -2426,7 +2431,7 @@ HX_UNUSED static void hx_p96_close_screen(struct Screen *s)
 {
     if (hx_buffers_live)
         HX_FAIL("a screen is closed while its screen buffers are not freed");
-    if (hx_windows)
+    if (hx_windows > (hx_message_request && hx_message_request->WScreen != s))
         HX_FAIL("a screen is closed while a window is open on it");
     hx_screens--;
     if (hx_cur_screen == s)
@@ -2998,6 +3003,92 @@ HX_UNUSED static LONG hx_easy_request(void *win, struct EasyStruct *es, void *a,
     return 1;
 }
 
+/* Model the supported RawDoFmt directives; unlike printf its text and gadget
+ * formats share a single stream of arguments. Unexpected formats fail here. */
+static void hx_requester_format_into(char *out, size_t cap, const char *format,
+                                     const char *const **args)
+{
+    while (*format) {
+        const char *part = format;
+        size_t bytes = 1;
+
+        if (*format++ == '%') {
+            if (*format++ != 's')
+                HX_FAIL("unexpected requester format directive");
+            part = *(*args)++;
+            bytes = strlen(part);
+        }
+        if (bytes >= cap)
+            HX_FAIL("rendered requester text too long");
+        memcpy(out, part, bytes);
+        out += bytes;
+        cap -= bytes;
+    }
+    *out = '\0';
+}
+
+HX_UNUSED static struct Window *hx_build_easy_request(struct Window *parent,
+                                                       struct EasyStruct *es, ULONG idcmp,
+                                                       const char *const *args)
+{
+    struct Window *w;
+
+    if (hx_message_request || idcmp)
+        HX_FAIL("unexpected native message requester or IDCMP flags");
+    if (hx_message_build_failure)
+        return (struct Window *)(hx_message_build_failure - 1u);
+    w = hx_alloc(sizeof(*w), 1);
+    w->WScreen = parent ? parent->WScreen : &hx_pub_screen;
+    w->UserPort = hx_port_new();
+    snprintf(hx_message_title, sizeof(hx_message_title), "%s", (const char *)es->es_Title);
+    hx_requester_format_into(hx_message_text, sizeof(hx_message_text),
+                             (const char *)es->es_TextFormat, &args);
+    hx_requester_format_into(hx_message_buttons, sizeof(hx_message_buttons),
+                             (const char *)es->es_GadgetFormat, &args);
+    hx_windows++;
+    hx_message_request = w;
+    return w;
+}
+
+struct hx_requester_input {
+    struct Message msg;
+    LONG result;
+};
+
+HX_UNUSED static void hx_post_requester_choice(LONG result)
+{
+    struct hx_requester_input *input;
+
+    if (!hx_message_request)
+        HX_FAIL("selection with no message requester open");
+    input = hx_alloc(sizeof(*input), 1);
+    input->result = result;
+    hx_post(hx_message_request->UserPort, &input->msg);
+}
+
+HX_UNUSED static LONG hx_sys_req_handler(struct Window *w, ULONG *idcmp, int wait_input)
+{
+    struct hx_requester_input *input;
+    LONG result;
+
+    if (w != hx_message_request || idcmp || wait_input)
+        HX_FAIL("unexpected SysReqHandler window, flags or blocking wait");
+    input = (struct hx_requester_input *)hx_getmsg(w->UserPort);
+    if (!input)
+        return -2;
+    result = input->result;
+    hx_free(input);
+    return result;
+}
+
+HX_UNUSED static void hx_free_sys_request(struct Window *w)
+{
+    if (!hx_message_request || w != hx_message_request)
+        HX_FAIL("freeing the wrong message requester");
+    hx_message_request = NULL;
+    hx_close_window(w);
+}
+
 /* ---- Memory bindings ------------------------------------------------------------------------ */
 
 /* Exec memory: from the pool, or, as a platform that shares Amiga RAM, from the
@@ -3220,6 +3311,9 @@ HX_UNUSED static void hx_reset(void)
     hx_requesters = 0;
     hx_requester_text[0] = 0;
     hx_requester_format[0] = 0;
+    hx_message_request = NULL;
+    hx_message_build_failure = 0;
+    hx_message_title[0] = hx_message_text[0] = hx_message_buttons[0] = '\0';
     hx_gfx_next = 0;
     hx_vblank_us = 20000;
     hx_joydat[0] = hx_joydat[1] = 0;
@@ -3323,6 +3417,9 @@ HX_UNUSED static void hx_reset(void)
 #define X_WAIT_TOF() hx_wait_tof()
 #define X_GET_DEFAULT_PUB_SCREEN(n) hx_get_default_pub_screen((char *)(n))
 #define X_EASY_REQUEST(w, es, a, b) hx_easy_request((w), (es), (a), (b))
+#define X_BUILD_EASY_REQUEST(w, es, flags, args) hx_build_easy_request((w), (es), (flags), (args))
+#define X_SYS_REQ_HANDLER(w, flags, wait) hx_sys_req_handler((w), (flags), (wait))
+#define X_FREE_SYS_REQUEST(w) hx_free_sys_request(w)
 
 #define X_AAR_STATUS(h, st) aar_core_status(hx_aar, (h), (st))
 #define X_AAR_STOP(h) aar_core_stop(hx_aar, (h))

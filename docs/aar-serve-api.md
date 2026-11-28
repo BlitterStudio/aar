@@ -53,7 +53,7 @@ structure is size-first and grows at the end only.
 | `flags` | `AAR_SERVEF_*`, below |
 | `root` | a lock the app's relative paths resolve under; duplicated by `aar_serve_create`. 0: a duplicate of the current directory |
 | `screen_mode` | the Picasso96 DisplayID to force; 0 chooses by size and format |
-| `screen_title` | title of the screen and of requesters; NULL: `aar-serve` |
+| `screen_title` | title of the screen and launcher diagnostics; NULL: `aar-serve` |
 | `console_in`, `console_out` | the streams of the console; 0: `Input()` and `Output()`, each default independent of the other (an output stream alone leaves reads on `Input()`). A stream the caller gives is the caller's to close |
 | `console_spec` | opened at the first console use when `console_out` is 0 (a Workbench start, for example `CON:0/0/640/160/aar-run/CLOSE/WAIT`). That window is one bidirectional console: with `console_in` 0 it is the input as well. NULL: none, console I/O then fails as `AAR_E_IO` |
 | `audio_route` | `AAR_AUDIO_ROUTE_PLATFORM` or `AAR_AUDIO_ROUTE_AHI`: what this loop serves; it must equal the `AAR_TAG_AUDIO_ROUTE` the handle was given |
@@ -75,6 +75,11 @@ handle and add the library signal to `aar_serve_sigmask`. `AAR_SERVEF_NO_ENV`:
 the app's reads of environment variables are refused with `AAR_E_ACCES`.
 `AAR_SERVEF_NO_CLIPBOARD`: the app's clipboard reads and writes are refused with
 `AAR_E_ACCES`. Both are served when the flag is clear.
+
+The loop serves [`aar_requester`](aar-api.md#aar_requester) through Intuition.
+The default title is `Message`. The loop converts the UTF-8 title, text and
+labels to ISO-8859-1 for display, replacing unrepresentable characters with
+`?`. An unavailable Intuition requester service gives `AAR_E_NOSYS`.
 
 `display_strategy`: `AAR_SERVE_DISPLAY_BUFFERS` tries two screen buffers, then a
 three page tall screen that is panned, then a two page one, then a single buffer
@@ -492,12 +497,11 @@ the app has ended. Returns `AAR_SERVE_ENDED` or `AAR_SERVE_LOST`.
 
 `ULONG aar_serve_sigmask(const aar_serve *s)`: every signal the loop waits on
 now: the break signals of `break_mask`, the timer, the console packet port, the
-file reply port while a transfer is pending, the native file requester reply
-port, the input window, the SafeMessage port of a flip, the AHI port, and the
-library signal with `AAR_SERVEF_USE_SIGNAL`. It changes while the app runs, so
-ask again before each
-`Wait`. The heartbeat timer is armed whenever it
-is in the mask. `aar_serve_create`, the end of every step and every call that
+file reply port while a transfer is pending, signals from pending native
+requesters, the input window, the SafeMessage port of a flip, the AHI port,
+and the library signal with `AAR_SERVEF_USE_SIGNAL`. It changes while the
+app runs, so ask again before each `Wait`. The heartbeat timer is armed
+whenever it is in the mask. `aar_serve_create`, the end of every step and every call that
 waits on DOS (`aar_serve_locate` included) arm it again, so a program may call
 those between `aar_serve_create` and its first `Wait`.
 
@@ -507,8 +511,8 @@ those between `aar_serve_create` and its first `Wait`.
 `signals` is what `Wait` returned. It takes the break signals, drains the input
 window and the joystick, flushes the stop event, serves up to 16 requests, pumps
 the console, the display (a flip's SafeMessage, the timeout of a
-`DISPLAY_VBLANK`) and the audio, takes any flagged file packet reply without
-waiting, flushes the completion backlog and reads the state.
+`DISPLAY_VBLANK`) and the audio, handles pending native requesters and flagged
+file packet replies without waiting, flushes the completion backlog and reads the state.
 It returns `AAR_SERVE_CONTINUE` until the app has ended and the
 output that must be written is written. Then it returns `AAR_SERVE_ENDED`, also
 when both grace periods have elapsed after a stop. It returns `AAR_SERVE_LOST`
@@ -551,7 +555,8 @@ read is started.
 ### aar_serve_stop
 
 `void aar_serve_stop(aar_serve *s)`: asks the app to stop: the stop event, then
-`AARStop`. Idempotent.
+`AARStop`. The serving loop closes a pending native message requester with
+`AAR_E_IO`. Idempotent.
 
 ### aar_serve_status
 
@@ -586,11 +591,12 @@ launcher's to derive from it.
 
 ### aar_serve_destroy
 
-`void aar_serve_destroy(aar_serve *s)`: stops the app if it still runs, cancels
-and waits for any native file requester before closing its screen, removes
-the log sink, closes AHI, closes the display (waits for the SafeMessages of the
-flips and restores the public screen), finishes the console reads and writes and
-the launcher text, reaps any flagged file packet before closing its handle,
+`void aar_serve_destroy(aar_serve *s)`: stops the app if it still runs, closes
+any native message requester, cancels and waits for any native file requester
+before closing its screen, removes the log sink, closes AHI, closes the display
+(waits for the SafeMessages of the flips and restores the public screen),
+finishes the console reads and writes and the launcher text, reaps any flagged
+file packet before closing its handle,
 answers every request a handler still holds with `AAR_E_IO` while the claim is
 live, closes every file and list, unlocks the root, closes `timer.device` and the
 libraries it opened and frees the state. The handle stays open: close it

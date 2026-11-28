@@ -846,7 +846,7 @@ static void t_leak(int idx)
     conf_set_result(idx, CONF_R_FAIL, why);
 }
 
-/* ---- C-FILE.57 and C-FILE.58: native requester ------------------------------------------ */
+/* ---- C-FILE.57 to C-FILE.60: native requesters ----------------------------------------- */
 
 struct request_stop {
     ULONG started;
@@ -902,10 +902,15 @@ static void t_request(int idx)
         [CONF_FILE_REQUEST_OUTSIDE_FAILED] = "selecting outside ROOT did not return AAR_E_ACCES with untouched output",
         [CONF_FILE_REQUEST_CHANGED_FILES] = "selection changed the Open fixture or created the Save As target",
         [CONF_FILE_REQUEST_STOP_SIGNAL_FAILED] = "the app could not tell the runner when to stop",
-        [CONF_FILE_REQUEST_STOP_FAILED] = "the parked requester did not return AAR_E_IO on stop",
+        [CONF_FILE_REQUEST_STOP_FAILED] = "the parked requester did not return AAR_E_IO on stop or changed the choice",
         [CONF_FILE_REQUEST_STOP_EARLY] = "the requester wait ended before the long wait was exercised",
+        [CONF_FILE_MESSAGE_REQUEST_FIRST_FAILED] = "the first message button did not give AAR_OK with choice 1",
+        [CONF_FILE_MESSAGE_REQUEST_LAST_FAILED] = "the last message button did not give AAR_OK with choice 3",
+        [CONF_FILE_MESSAGE_REQUEST_ONLY_FAILED] = "the only message button did not give AAR_OK with choice 1",
     };
-    int stop = strcmp(conf_tests[idx].id, "C-FILE.58") == 0;
+    int message_stop = strcmp(conf_tests[idx].id, "C-FILE.60") == 0;
+    int message = message_stop || strcmp(conf_tests[idx].id, "C-FILE.59") == 0;
+    int stop = message_stop || strcmp(conf_tests[idx].id, "C-FILE.58") == 0;
     const char *skip = conf_operator_skip_reason(conf_g.interactive, 1, conf_tests[idx].id, conf_g.only);
     struct conf_run run;
     struct conf_outcome out;
@@ -916,20 +921,24 @@ static void t_request(int idx)
         conf_set_result(idx, CONF_R_SKIP, skip);
         return;
     }
-    if (!prepare_request_fixture()) {
+    if (!message && !prepare_request_fixture()) {
         conf_set_result(idx, CONF_R_FAIL, "could not prepare the requester fixture under ROOT");
         return;
     }
     conf_run_init(&run, "C-FILE");
     run.norelay = 1;
     if (stop) {
-        run.variant = CONF_FILE_VARIANT_REQUEST_STOP;
+        run.variant = message ? CONF_FILE_VARIANT_MESSAGE_REQUEST_STOP : CONF_FILE_VARIANT_REQUEST_STOP;
         run.user = &state;
         run.on_message = request_stop_begin;
         run.poll = request_stop_poll;
         run.timeout_s = CONF_FILE_REQUEST_WAIT_S + 20u;
-        conf_emitf("# Leave the Open requester alone. The runner stops the app after %u seconds.",
-                   CONF_FILE_REQUEST_WAIT_S);
+        conf_emitf("# Leave the %s requester alone. The runner stops the app after %u seconds.",
+                   message ? "message" : "Open", CONF_FILE_REQUEST_WAIT_S);
+    } else if (message) {
+        run.variant = CONF_FILE_VARIANT_MESSAGE_REQUEST;
+        conf_emitf("# Check that the text shows 100%% and %%s literally and the button labels show their percent signs.");
+        conf_emitf("# Click Keep 100%% in the first dialog, Leave 25%% in the second and Done 10%% in the third.");
     } else {
         run.variant = CONF_FILE_VARIANT_REQUEST;
         conf_emitf("# In Open and Save As, accept the pre-filled file names (%s and %s).",
@@ -952,8 +961,10 @@ static void t_request(int idx)
         conf_set_result(idx, CONF_R_SKIP, "native requester unavailable (AAR_E_NOSYS)");
     } else if (out.exit_code == CONF_FILE_REQUEST_OK &&
                (!stop || (out.serve_flags & AAR_SERVE_R_STOP_ASKED))) {
-        conf_set_result(idx, CONF_R_PASS, stop ? "long requester wait ended with AAR_E_IO on stop"
-                                              : "Open, Save As, Cancel and ROOT policy; no file changed");
+        conf_set_result(idx, CONF_R_PASS,
+                        stop ? "long requester wait ended with AAR_E_IO on stop" :
+                        message ? "first, last and only message buttons returned 1, 3 and 1" :
+                                  "Open, Save As, Cancel and ROOT policy; no file changed");
     } else if (out.exit_code > 0 && (ULONG)out.exit_code < CONF_COUNT(failure) &&
                failure[out.exit_code]) {
         conf_set_result(idx, CONF_R_FAIL, failure[out.exit_code]);
@@ -971,6 +982,8 @@ static const struct conf_r_test tests[] = {
     { "C-FILE.31", t_leak },
     { "C-FILE.57", t_request },
     { "C-FILE.58", t_request },
+    { "C-FILE.59", t_request },
+    { "C-FILE.60", t_request },
 };
 
 const struct conf_area conf_area_file = {

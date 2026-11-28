@@ -382,6 +382,10 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
  * NUL. buf_len is max(IN_BYTES, CAP). On result 1, the selected native path
  * replaces the input; LEN excludes its NUL. No write on cancellation or error. */
 #define AAR_OP_FILE_REQUEST   0x24u /* arg: FLAGS, IN_BYTES, CAP; out: LEN */
+/* Native message requester. No flags or args. buf_len is exactly the size of
+ * title NUL, text NUL, buttons NUL, with no trailing bytes. The payload is
+ * input only; on AAR_OK, CHOICE is the 1-based index in label order. */
+#define AAR_OP_REQUESTER      0x25u /* out: CHOICE */
 
 /* Console. The bytes sit in a console buffer named by buf, buf_off, buf_len. */
 #define AAR_OP_CONSOLE_WRITE 0x20u /* bytes in buf; out: COUNT consumed */
@@ -452,6 +456,7 @@ static inline int aar_handle_check(uint32_t handle, uint32_t live_generation)
 #define AAR_A_FILE_REQUEST_IN_BYTES 1u /* both input strings including their NULs */
 #define AAR_A_FILE_REQUEST_CAP      2u /* output capacity including NUL, 1..256 */
 #define AAR_R_FILE_REQUEST_LEN      0u /* selected path length excluding NUL */
+#define AAR_R_REQUESTER_CHOICE      0u /* selected button, 1-based */
 
 #define AAR_A_DISPLAY_OPEN_W      0u
 #define AAR_A_DISPLAY_OPEN_H      1u

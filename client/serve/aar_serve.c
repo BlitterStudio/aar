@@ -390,7 +390,8 @@ static void service_requests(struct aar_serve *s)
             d.result = AAR_E_NOSYS;
         else if (file_transfer_busy(s, &q))
             d.result = AAR_E_BUSY;
-        else if ((q.op == AAR_OP_FILE_REQUEST ? requester_begin(s, &q, &d) :
+        else if ((q.op == AAR_OP_REQUESTER ? message_requester_begin(s, &q, &d) :
+                  q.op == AAR_OP_FILE_REQUEST ? file_requester_begin(s, &q, &d) :
                   file_transfer_flagged(&q) ? file_transfer_begin(s, &q, &d) :
                   aar_serve_core_request(&s->core, &q, &d)) != AAR_SERVE_REQ_DONE) {
             /* A parked DISPLAY_VBLANK has a deadline. The timer still armed may be

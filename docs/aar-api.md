@@ -42,17 +42,17 @@ calls `aar_main`.
   conforming runtime. A call that the client serves can still return
   `AAR_E_NOSYS` when the client does not serve that op. Optional slots outside
   groups (`ext`, `map_file`, `unmap_file`, `file_get_comment`,
-  `file_set_comment`, `file_read_async`, `file_write_async`, `file_collect`
-  and `file_request`) are NULL or absent where the platform does not provide
-  them. A group is present when its bit is set in `aar_api.groups`. Every call
-  of that group that
-  the table's `size` covers is non-NULL, except where a slot is marked
+  `file_set_comment`, `file_read_async`, `file_write_async`, `file_collect`,
+  `file_request` and `requester`) are NULL or absent where the platform does
+  not provide them. A group is present when its bit is set in `aar_api.groups`.
+  Every call of that group that the table's `size` covers is non-NULL, except
+  where a slot is marked
   optional. An app that needs a group checks `groups` once. If the bit is
   clear, every slot of that group is absent or NULL.
 - An app has one thread. No call is reentrant and no call takes variable
-  arguments. A call that parks (files, console, display flip, `aar_msg_wait`)
-  returns when the work completes, on stop (`AAR_E_IO`), or on its own
-  timeout if it has one. The native file requester has no timeout. A sleep
+  arguments. A call that parks (files, requesters, console, display flip,
+  `aar_msg_wait`) returns when the work completes, on stop (`AAR_E_IO`), or on
+  its own timeout if it has one. Native requesters have no timeout. A sleep
   is also ended by a stop, but it has no return value. Nothing calls back
   into the app.
 - Structures are plain C structures with fixed-width integers. Where a
@@ -177,11 +177,11 @@ transport statuses to these; that mapping is private to the platform.
 
 ### AAR_E_NOSYS
 
-`-7`. The slot is absent or NULL, or the codec, algorithm or format is not implemented, or CLUT8 was requested and the display has no `AAR_DISPCAP_CLUT8`. This is the wrapper result on a runtime older than the slot.
+`-7`. The slot is absent or NULL, the client does not serve the operation, the codec, algorithm or format is not implemented, or CLUT8 was requested and the display has no `AAR_DISPCAP_CLUT8`.
 
 ### AAR_E_TIMEDOUT
 
-`-8`. A file or directory call waited 30 seconds for the client (the native file requester has no timeout). The runtime retires that request before returning, so a late reply cannot satisfy a later call, and the file or list id is not reused for the rest of the app's life. `aar_msg_wait` also returns it when its timeout passes with no message queued.
+`-8`. A file or directory call waited 30 seconds for the client (native requesters have no timeout). The runtime retires that request before returning, so a late reply cannot satisfy a later call, and the file or list id is not reused for the rest of the app's life. `aar_msg_wait` also returns it when its timeout passes with no message queued.
 
 ### AAR_E_FAULT
 
@@ -1031,9 +1031,9 @@ runtime](#how-an-app-reaches-the-runtime). The slot order is fixed until 1.0:
    services (`sha256`, `decompress`, `image_open`, `image_decode`,
    `image_close`, `audio_decode_open`, `audio_decode`, `audio_decode_close`).
 5. Optional async files: `file_read_async`, `file_write_async`, `file_collect`.
-6. Optional native file requester: `file_request`.
+6. Optional native requesters: `file_request`, `requester`.
 
-The table has 83 pointer slots after the header. The table is const and apps
+The table has 84 pointer slots after the header. The table is const and apps
 must not write to it. A wrapper has the slot's name with an `aar_` prefix, except
 that a slot whose name is a type name gets a `get`: `aar_get_info`,
 `aar_get_heap_info`, `aar_audio_get_stats`, `aar_get_volume_info`,
@@ -1059,7 +1059,7 @@ structures.
 
 ### AAR_API_SLOT_COUNT
 
-`83u`. The number of pointer slots in `aar_api` after the 16-byte header.
+`84u`. The number of pointer slots in `aar_api` after the 16-byte header.
 
 ### AAR_API_CORE_SLOT_COUNT
 
@@ -1402,8 +1402,8 @@ Swaps the eight bytes of `v`. Header-only. Minimum minor: 5.
 
 The client serves file I/O and console work with dos.library. A transfer is
 served in chunks of the platform's choice, and each request waits at most
-30 seconds for the client. The native file requester waits for user input
-without this timeout.
+30 seconds for the client. Native requesters wait for user input without
+this timeout.
 
 ### aar_log
 
@@ -1799,6 +1799,48 @@ There is no capability bit. Minimum minor: 6.
 ### AAR_FILE_REQUEST_SAVE
 
 `1u`. Use Save As instead of Open with `aar_file_request`. Minimum minor: 6.
+
+### aar_requester
+
+```c
+int aar_requester(const char *title, const char *text,
+                  const char *buttons, uint32_t *choice);
+```
+
+Shows a native message dialog with the given buttons. All three inputs are
+NUL-terminated UTF-8 strings. A NULL or empty `title` uses the client's
+default title. `text` is nonempty. `buttons` gives one to eight nonempty
+labels separated by `|`, in the order the caller wants them shown. Text
+and labels are literal; `%` does not introduce a format directive.
+
+On `AAR_OK`, `*choice` is set to the chosen button's position in `buttons`,
+starting at 1. The last button is a choice like any other. The client adds
+no Cancel button and the call has no timeout. A stop closes the dialog
+and ends the wait with `AAR_E_IO`.
+
+Missing `text`, `buttons` or `choice`, empty text or labels, and inputs
+past the limits below return `AAR_E_INVAL`. An invalid completion returns
+`AAR_E_IO`. Errors do not change `*choice`. Gate:
+`AAR_API_COVERS(api, requester)` and a non-NULL slot. An absent slot or
+a client that does not serve the dialog returns `AAR_E_NOSYS`. There is no
+capability bit. Minimum minor: 6.
+
+### AAR_REQUESTER_TITLE_MAX
+
+`127u`. Maximum UTF-8 bytes in `title`, excluding its NUL. Minimum minor: 6.
+
+### AAR_REQUESTER_TEXT_MAX
+
+`511u`. Maximum UTF-8 bytes in `text`, excluding its NUL. Minimum minor: 6.
+
+### AAR_REQUESTER_BUTTONS_MAX
+
+`255u`. Maximum UTF-8 bytes in `buttons`, including separators but excluding
+its NUL. Minimum minor: 6.
+
+### AAR_REQUESTER_MAX_CHOICES
+
+`8u`. Maximum number of button labels. Minimum minor: 6.
 
 ### AAR_FILE_READ
 
