@@ -562,6 +562,7 @@ static void test_file_requester_abs_resolves_assigns_to_the_physical_drawer(void
     root = (int)((struct FileLock *)BADDR(root_lock))->fl_Key;
     outside = hx_node_add(1, "outside", 1, NULL, 0);
     hx_node_add(outside, "picked", 0, NULL, 0);
+    hx_node_add(hx_node_add(outside, "sub", 1, NULL, 0), "picked", 0, NULL, 0);
     hx_devs[1].name = "PICK";
     hx_devs[1].port[0] = hx_devs[1].port[1] = &hx_vol_port;
     hx_devs[1].node[0] = root;
@@ -578,6 +579,8 @@ static void test_file_requester_abs_resolves_assigns_to_the_physical_drawer(void
     CHECK(requester_initial_path(S, "../outside", drawer, file) == AAR_E_ACCES);
     CHECK(requester_selected_path(S, "RAM:outside", "picked", 0, path) == AAR_OK);
     CHECK(strcmp(path, "RAM:outside/picked") == 0);
+    CHECK(requester_selected_path(S, "PICK:sub", "picked", 0, path) == AAR_OK);
+    CHECK(strcmp(path, "RAM:outside/sub/picked") == 0);
     CHECK(requester_selected_path(S, "RAM:", "secret", 0, path) == AAR_OK);
     CHECK(strcmp(path, "RAM:secret") == 0);
     finish();
@@ -588,6 +591,10 @@ static void test_file_requester_long_native_drawer(void)
     static const char component[] = "abcdefghijklmnopqrstuv";
     char drawer[REQUESTER_DRAWER_BYTES], file[AAR_SERVE_PATH_BYTES];
     char initial[AAR_SERVE_PATH_BYTES] = "", path[AAR_SERVE_PATH_BYTES];
+    struct aar_serve_result res = {0};
+    unsigned long locates, releases;
+    size_t drawer_len;
+    int locks;
     int node = 1;
     unsigned i;
 
@@ -603,11 +610,33 @@ static void test_file_requester_long_native_drawer(void)
         strcat(initial, component);
     }
     make_serve();
+    locks = hx_live_locks;
+    CHECK(requester_initial_path(S, "", drawer, file) == AAR_OK);
+    CHECK(requester_selected_path(S, drawer, "new", 1, path) == AAR_OK);
+    CHECK(strcmp(path, "new") == 0);
     CHECK(requester_initial_path(S, initial, drawer, file) == AAR_OK);
-    CHECK(strlen(drawer) > AAR_PATH_MAX && file[0] == 0);
+    drawer_len = strlen(drawer);
+    CHECK(drawer_len > (sizeof("RAM:") - 1u) + UINT8_MAX && file[0] == 0);
     CHECK(requester_selected_path(S, drawer, "new", 1, path) == AAR_OK);
     strcat(initial, "/new");
     CHECK(strcmp(path, initial) == 0 && !hx_node_find(node, "new"));
+    CHECK(hx_live_locks == locks);
+
+    strcat(drawer, "/missing");
+    CHECK(requester_selected_path(S, drawer, "new", 1, path) == AAR_E_NOENT);
+    CHECK(hx_live_locks == locks);
+    drawer[drawer_len] = 0;
+
+    /* Interrupt the first component lookup after its parent is already locked. */
+    locates = hx_packets_by[0];
+    releases = hx_packets_by[1];
+    hx_sched(hx_vol_delay_us + hx_vol_delay_us / 2u, ctrl_c_cb, NULL);
+    CHECK(requester_selected_path(S, drawer, "new", 1, path) == AAR_E_IO);
+    CHECK(hx_packets_by[0] == locates + 2u && hx_packets_by[1] == releases + 1u);
+    CHECK(hx_live_locks == locks);
+    res.size = sizeof(res);
+    (void)aar_serve_result(S, &res);
+    CHECK((res.flags & AAR_SERVE_R_USER_STOP) && (res.flags & AAR_SERVE_R_STOP_ASKED));
     finish();
 }
 

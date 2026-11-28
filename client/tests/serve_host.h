@@ -1221,19 +1221,6 @@ static int hx_walk(int dir, const char *path, int *err)
     return cur;
 }
 
-HX_UNUSED static BPTR hx_lock_native(const char *path)
-{
-    int err, node;
-
-    if (strncmp(path, "RAM:", 4) != 0) {
-        hx_ioerr = ERROR_OBJECT_NOT_FOUND;
-        return 0;
-    }
-    node = hx_walk(1, path + 4, &err);
-    hx_ioerr = err;
-    return node > 0 ? MKBADDR(hx_lock_new(&hx_vol_port, node)) : 0;
-}
-
 static void hx_fib_fill(struct FileInfoBlock *fib, int node)
 {
     struct hx_node *n = &hx_nodes[node];
@@ -1449,7 +1436,7 @@ static void hx_vol_run(void *arg)
     struct FileLock *lock;
     struct hx_open *of;
     int node, err;
-    char name[64];
+    char name[UINT8_MAX + 1u];
 
     if (!hx_block_live(pkt))
         HX_FAIL("a handler replies to a packet that was freed (the packet's memory must live until the reply)");
@@ -3321,7 +3308,6 @@ HX_UNUSED static void hx_reset(void)
 #define X_GET_DEVICE_PROC(name, prev) hx_get_device_proc((const char *)(name), (prev))
 #define X_FREE_DEVICE_PROC(dp) hx_free_device_proc(dp)
 #define X_CURRENT_DIR(l) hx_current_dir(l)
-#define X_LOCK(name, mode) ((void)(mode), hx_lock_native((const char *)(name)))
 #define X_NAME_FROM_LOCK(l, buf, n) hx_name_from_lock((l), (char *)(buf), (n))
 
 #define X_OPEN_WINDOW(...) hx_open_window(__VA_ARGS__)

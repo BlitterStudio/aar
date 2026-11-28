@@ -493,6 +493,59 @@ static int requester_lock_absolute(struct aar_serve *s, const char *name,
     return io ? aar_serve_errno_from_io(io) : AAR_E_NOENT;
 }
 
+static int requester_lock_drawer(struct aar_serve *s, const char *drawer,
+                                 const char *suffix, uintptr_t *lock)
+{
+    char name[UINT8_MAX + 1u];
+    uintptr_t dir;
+    size_t len;
+    int rc;
+
+    /* Keep the whole name when it fits, so the resolver can try multi-assigns. */
+    if (strlen(suffix) <= UINT8_MAX)
+        return requester_lock_absolute(s, drawer, 0, lock);
+
+    /* A long canonical drawer can still fit in the ABI relative to ROOT. */
+    len = (size_t)(suffix - drawer);
+    if (len >= sizeof(name))
+        return AAR_E_NOSPC;
+    memcpy(name, drawer, len);
+    name[len] = 0;
+    rc = requester_lock_absolute(s, name, 0, &dir);
+    if (rc != AAR_OK)
+        return rc;
+
+    while (*suffix) {
+        const char *end;
+        uintptr_t next;
+        int transport_ok;
+        int32_t io;
+
+        len = strcspn(suffix, "/");
+        end = suffix + len;
+        if (*end)
+            end++;
+        if (!len)
+            len = 1; /* A slash without a preceding component means parent. */
+        if (len >= sizeof(name)) {
+            be_unlock(s, dir);
+            return AAR_E_NOSPC;
+        }
+        memcpy(name, suffix, len);
+        name[len] = 0;
+        next = be_lock_rel(s, dir, name, &transport_ok, &io);
+        be_unlock(s, dir);
+        if (!transport_ok)
+            return AAR_E_IO;
+        if (!next)
+            return io ? aar_serve_errno_from_io(io) : AAR_E_NOENT;
+        dir = next;
+        suffix = end;
+    }
+    *lock = dir;
+    return AAR_OK;
+}
+
 static int requester_examine(struct aar_serve *s, uintptr_t lock,
                              struct aar_serve_info *info)
 {
@@ -586,6 +639,7 @@ static int requester_selected_path(struct aar_serve *s, const char *drawer,
     char physical[REQUESTER_DRAWER_BYTES];
     char name[REQUESTER_DRAWER_BYTES];
     const char *base = physical;
+    const char *colon = strchr(drawer, ':');
     struct aar_serve_info info;
     uintptr_t lock = 0, parent = 0, target = 0;
     size_t base_len, file_len, sep;
@@ -596,12 +650,8 @@ static int requester_selected_path(struct aar_serve *s, const char *drawer,
     file_len = strlen(file);
     if (file_len > AAR_PATH_MAX)
         return AAR_E_NOSPC;
-    if (strchr(drawer, ':')) {
-        /* ASL returns a native drawer, which can exceed the packet's BSTR. */
-        lock = X_LOCK((CONST_STRPTR)drawer, ACCESS_READ);
-        rc = lock ? AAR_OK : aar_serve_errno_from_io((int32_t)X_IO_ERR());
-        if (!lock && rc == AAR_OK)
-            rc = AAR_E_IO;
+    if (colon) {
+        rc = requester_lock_drawer(s, drawer, colon + 1, &lock);
     } else {
         rc = aar_serve_requester_resolve_rel(f, drawer, 0, name, &parent, &lock);
         if (parent) {

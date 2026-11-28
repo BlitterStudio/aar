@@ -95,7 +95,7 @@ done
 echo "client/include/libraries/aar_serve.h: compiles alone as gnu89, c99 and c11 -pedantic, 0 warnings"
 stack=4096
 check_source client/serve/aar_serve_core.c "^_?($STR|strchr|strcmp|memchr)\$" -pedantic
-check_source client/serve/aar_serve.c "^_?($STR|memchr|memmove|strchr|strrchr|strcmp|strncmp|strpbrk|snprintf|AARBase|DOSBase|GfxBase|IntuitionBase|SysBase|__bcopz|aar_serve_[a-z0-9_]+)\$"
+check_source client/serve/aar_serve.c "^_?($STR|memchr|memmove|strchr|strrchr|strcmp|strncmp|strpbrk|strcspn|snprintf|AARBase|DOSBase|GfxBase|IntuitionBase|SysBase|__bcopz|aar_serve_[a-z0-9_]+)\$"
 # aar-run is a program: it may leave the C library and the program's own library
 # bases undefined; the link below is its undefined-symbol check.
 check_source client/run/aar_run.c "."

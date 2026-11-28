@@ -93,7 +93,6 @@
 #define X_CLOSE_LIB(...) CloseLibrary(__VA_ARGS__)
 
 /* dos.library */
-#define X_LOCK(...) Lock(__VA_ARGS__)
 #define X_UNLOCK(...) UnLock(__VA_ARGS__)
 #define X_DUP_LOCK(...) DupLock(__VA_ARGS__)
 #define X_PARENT_DIR(...) ParentDir(__VA_ARGS__)
