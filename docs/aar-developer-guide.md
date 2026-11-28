@@ -350,6 +350,12 @@ the runtime owns, and a platform may return `AAR_E_NOSYS`. Put data files under
 the root, and do not hard-code a volume unless the launcher allows absolute
 paths.
 
+For a user-selected file, use [`aar_file_request`](aar-api.md#aar_file_request)
+with `0` for Open or `AAR_FILE_REQUEST_SAVE` for Save As. This optional call
+waits for the user without the file I/O timeout. Open the path yourself
+after a return of `1`; `0` means the user cancelled, and `AAR_E_NOSYS` means
+you need another way to choose a path.
+
 ### Stream files without stalling the app
 
 Open the file before entering the frame loop. Use `aar_file_read_async` for

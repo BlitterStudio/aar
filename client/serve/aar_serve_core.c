@@ -309,7 +309,8 @@ static int32_t lock_errno(int32_t io)
 }
 
 static int lock_target(const struct aar_serve_files *f, uintptr_t dir,
-                       const char *leaf, uintptr_t *out, int32_t *err)
+                       const char *leaf, int allow_missing, uintptr_t *out,
+                       int32_t *err)
 {
     const struct aar_serve_dos_ops *d = f->dos;
     int transport_ok = 0;
@@ -330,6 +331,10 @@ static int lock_target(const struct aar_serve_files *f, uintptr_t dir,
         return 0;
     }
     if (!locked) {
+        if (allow_missing && io == AAR_SERVE_IOERR_OBJECT_NOT_FOUND) {
+            *out = 0;
+            return 1;
+        }
         *err = lock_errno(io);
         return 0;
     }
@@ -340,6 +345,28 @@ static int lock_target(const struct aar_serve_files *f, uintptr_t dir,
     }
     *out = locked;
     return 1;
+}
+
+int32_t aar_serve_requester_resolve_rel(const struct aar_serve_files *f,
+                                        const char *path, int allow_missing,
+                                        char leaf[AAR_SERVE_PATH_BYTES],
+                                        uintptr_t *parent, uintptr_t *target)
+{
+    int32_t err = AAR_OK;
+    uintptr_t dir;
+
+    *parent = *target = 0;
+    if (strchr(path, ':'))
+        return AAR_E_ACCES;
+    dir = resolve_rel(f, path, leaf, AAR_SERVE_PATH_BYTES, &err);
+    if (!dir)
+        return err;
+    if (!lock_target(f, dir, leaf, allow_missing, target, &err)) {
+        f->dos->unlock(f->dos->ctx, dir);
+        return err;
+    }
+    *parent = dir;
+    return AAR_OK;
 }
 
 static int final_path_under_root(const struct aar_serve_files *f, uintptr_t dir,
@@ -853,7 +880,7 @@ static int lock_named(struct aar_serve_files *f, const char *path,
     *dir = resolve_rel(f, path, leaf, sizeof(leaf), err);
     if (!*dir)
         return 0;
-    if (!lock_target(f, *dir, leaf, locked, err))
+    if (!lock_target(f, *dir, leaf, 0, locked, err))
         return 0;
     return 1;
 }

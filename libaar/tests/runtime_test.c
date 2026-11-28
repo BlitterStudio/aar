@@ -302,6 +302,9 @@ static int test_wrappers(void)
     CHECK(aar_zz9000_gl_bind_flags(1, 0) == NULL);
     glClear(1);
     CHECK(aar_display_latest_dropped() == 0);
+    memcpy(buf, "old", sizeof buf);
+    CHECK(aar_file_request(0, NULL, NULL, buf, sizeof buf) == AAR_E_NOSYS);
+    CHECK(memcmp(buf, "old", sizeof buf) == 0);
     return 0;
 }
 

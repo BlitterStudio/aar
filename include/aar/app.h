@@ -317,6 +317,9 @@ typedef struct aar_event {
 /* file_rename flags. */
 #define AAR_RENAME_REPLACE (1u << 0) /* delete an existing target first; not atomic on AmigaDOS */
 
+/* file_request flags. Pass 0 for Open. */
+#define AAR_FILE_REQUEST_SAVE 1u /* Save As */
+
 /* Protection bits, at the AmigaDOS FIBF_* positions. Bits 0 to 3 are set to
  * DENY, as in AmigaDOS: a set AAR_PROT_WRITE forbids writing. */
 #define AAR_PROT_DELETE  (1u << 0)
@@ -737,6 +740,11 @@ typedef struct aar_api {
     int      (*file_read_async)(int fd, void *buf, uint32_t len, uint32_t *ticket);
     int      (*file_write_async)(int fd, const void *buf, uint32_t len, uint32_t *ticket);
     int      (*file_collect)(uint32_t ticket, int32_t *status, uint32_t *out_n);
+
+    /* -- optional: native file requester (spec 7.1) -- */
+    int      (*file_request)(uint32_t flags, const char *title,
+                             const char *initial_path, char *path,
+                             uint32_t capacity);
 } aar_api;
 
 /* True when size covers field. A NULL function pointer still means absent. */
@@ -842,6 +850,15 @@ int      aar_file_get_comment(const char *path, void *buf, uint32_t bytes,
                               uint32_t *out_n);
 /* Replaces the comment. Zero bytes clears it; embedded NUL is invalid. */
 int      aar_file_set_comment(const char *path, const void *data, uint32_t bytes);
+/* Parks without a timeout for native Open (flags 0) or Save As. title (UTF-8)
+ * and initial_path (native) may be NULL or empty; each is at most 255 bytes
+ * before the NUL. path requires capacity > 0. Returns 1 and writes the
+ * NUL-terminated selected path, 0 on user cancellation, or AAR_E_*. No output
+ * is written on cancellation or error, including AAR_E_NOSPC. This does not
+ * open a file or override the client's path policy. Stop ends it with AAR_E_IO. */
+int      aar_file_request(uint32_t flags, const char *title,
+                          const char *initial_path, char *path,
+                          uint32_t capacity);
 /* Microseconds since 1970-01-01 UTC. */
 int      aar_time_unix_us(int64_t *out_us);
 int      aar_get_locale_info(aar_locale_info *out);
@@ -958,7 +975,7 @@ void     aar_free(void *p);
       AAR_ALIGNOF(type) - 1u) & ~(AAR_ALIGNOF(type) - 1u))
 
 /* Number of pointer slots in the table after the 16-byte header. */
-#define AAR_API_SLOT_COUNT 82u
+#define AAR_API_SLOT_COUNT 83u
 #define AAR_API_CORE_SLOT_COUNT 42u
 
 AAR_STATIC_ASSERT(sizeof(aar_info) == 88, "aar_info size");
@@ -1064,9 +1081,9 @@ AAR_STATIC_ASSERT(offsetof(aar_api, audio_open) ==
 AAR_STATIC_ASSERT(offsetof(aar_api, file_read_async) ==
                       offsetof(aar_api, audio_decode_close) + sizeof(void *),
                   "aar_api async files follow the service group");
-AAR_STATIC_ASSERT(offsetof(aar_api, file_collect) ==
+AAR_STATIC_ASSERT(offsetof(aar_api, file_request) ==
                       16 + (AAR_API_SLOT_COUNT - 1) * sizeof(void *),
-                  "aar_api ends at file_collect");
+                  "aar_api ends at file_request");
 
 #ifdef __cplusplus
 }

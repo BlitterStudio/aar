@@ -675,6 +675,16 @@ int aar_file_set_comment(const char *path, const void *data, uint32_t bytes)
     return AAR_E_NOSYS;
 }
 
+int aar_file_request(uint32_t flags, const char *title, const char *initial_path,
+                     char *path, uint32_t capacity)
+{
+    const aar_api *api = aar_api_ptr;
+
+    if (AAR_API_COVERS(api, file_request) && api->file_request)
+        return api->file_request(flags, title, initial_path, path, capacity);
+    return AAR_E_NOSYS;
+}
+
 static int file_async_available(const aar_api *api)
 {
     return AAR_API_COVERS(api, file_collect) && api->file_read_async &&

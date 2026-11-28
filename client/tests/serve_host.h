@@ -1044,6 +1044,7 @@ struct hx_node {
     char name[24];
     int is_dir;
     int held;                    /* locks of it fail with OBJECT_IN_USE */
+    int link;                    /* nonzero: node this path component resolves to */
     uint8_t *data;
     uint32_t size;
     uint32_t cap;
@@ -1214,7 +1215,7 @@ static int hx_walk(int dir, const char *path, int *err)
                 *err = *p ? ERROR_DIR_NOT_FOUND : ERROR_OBJECT_NOT_FOUND;
                 return *p ? -1 : 0;
             }
-            cur = next;
+            cur = hx_nodes[next].link ? hx_nodes[next].link : next;
         }
     }
     return cur;
@@ -1435,7 +1436,7 @@ static void hx_vol_run(void *arg)
     struct FileLock *lock;
     struct hx_open *of;
     int node, err;
-    char name[64];
+    char name[UINT8_MAX + 1u];
 
     if (!hx_block_live(pkt))
         HX_FAIL("a handler replies to a packet that was freed (the packet's memory must live until the reply)");
@@ -1967,7 +1968,7 @@ HX_UNUSED static BPTR hx_current_dir(BPTR b)
 HX_UNUSED static LONG hx_name_from_lock(BPTR b, char *buf, LONG size)
 {
     struct FileLock *l = BADDR(b);
-    char tmp[128];
+    char tmp[512];
     int n = (int)l->fl_Key, pos = (int)sizeof(tmp) - 1;
 
     tmp[pos] = 0;

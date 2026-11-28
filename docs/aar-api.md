@@ -39,18 +39,21 @@ calls `aar_main`.
   alone.
 - The 42 core slots, `exit` through `clip_write`, are non-NULL in every
   conforming runtime. A call that the client serves can still return
-  `AAR_E_NOSYS` when the client does not serve that op. The optional slots
-  (`ext`, `map_file`, `unmap_file`, `file_get_comment`, `file_set_comment`) are
-  NULL or absent where the platform does not provide them. A group is present
-  when its bit is set in `aar_api.groups`. Then every call of that group that
+  `AAR_E_NOSYS` when the client does not serve that op. Optional slots outside
+  groups (`ext`, `map_file`, `unmap_file`, `file_get_comment`,
+  `file_set_comment`, `file_read_async`, `file_write_async`, `file_collect`
+  and `file_request`) are NULL or absent where the platform does not provide
+  them. A group is present when its bit is set in `aar_api.groups`. Every call
+  of that group that
   the table's `size` covers is non-NULL, except where a slot is marked
   optional. An app that needs a group checks `groups` once. If the bit is
   clear, every slot of that group is absent or NULL.
 - An app has one thread. No call is reentrant and no call takes variable
   arguments. A call that parks (files, console, display flip, `aar_msg_wait`)
   returns when the work completes, on stop (`AAR_E_IO`), or on its own
-  timeout. A sleep is also ended by a stop, but it has no return value. Nothing
-  calls back into the app.
+  timeout if it has one. The native file requester has no timeout. A sleep
+  is also ended by a stop, but it has no return value. Nothing calls back
+  into the app.
 - Structures are plain C structures with fixed-width integers. Where a
   structure has pointers, they come last, so every fixed-width field has
   the same offset on A32 and A64.
@@ -175,7 +178,7 @@ transport statuses to these; that mapping is private to the platform.
 
 ### AAR_E_TIMEDOUT
 
-`-8`. A file or directory call waited 30 seconds for the client. The runtime retires that request before returning, so a late reply cannot satisfy a later call, and the file or list id is not reused for the rest of the app's life. `aar_msg_wait` also returns it when its timeout passes with no message queued.
+`-8`. A file or directory call waited 30 seconds for the client (the native file requester has no timeout). The runtime retires that request before returning, so a late reply cannot satisfy a later call, and the file or list id is not reused for the rest of the app's life. `aar_msg_wait` also returns it when its timeout passes with no message queued.
 
 ### AAR_E_FAULT
 
@@ -1016,8 +1019,9 @@ runtime](#how-an-app-reaches-the-runtime). The slot order is fixed until 1.0:
    services (`sha256`, `decompress`, `image_open`, `image_decode`,
    `image_close`, `audio_decode_open`, `audio_decode`, `audio_decode_close`).
 5. Optional async files: `file_read_async`, `file_write_async`, `file_collect`.
+6. Optional native file requester: `file_request`.
 
-The table has 82 pointer slots after the header. The table is const and apps
+The table has 83 pointer slots after the header. The table is const and apps
 must not write to it. A wrapper has the slot's name with an `aar_` prefix, except
 that a slot whose name is a type name gets a `get`: `aar_get_info`,
 `aar_get_heap_info`, `aar_audio_get_stats`, `aar_get_volume_info`,
@@ -1043,7 +1047,7 @@ structures.
 
 ### AAR_API_SLOT_COUNT
 
-`82u`. The number of pointer slots in `aar_api` after the 16-byte header.
+`83u`. The number of pointer slots in `aar_api` after the 16-byte header.
 
 ### AAR_API_CORE_SLOT_COUNT
 
@@ -1386,9 +1390,10 @@ Swaps the eight bytes of `v`. Header-only. Minimum minor: 5.
 
 ## Log, console and files
 
-All file and console work is performed by the client, which serves it with
-dos.library. A transfer is served in chunks of the platform's choice, and a call
-waits at most 30 seconds for the client.
+The client serves file I/O and console work with dos.library. A transfer is
+served in chunks of the platform's choice, and each request waits at most
+30 seconds for the client. The native file requester waits for user input
+without this timeout.
 
 ### aar_log
 
@@ -1752,6 +1757,38 @@ An unsupported operation returns `AAR_E_NOSYS`. Minimum minor: 6.
 ### AAR_FILE_COMMENT_MAX
 
 `79u`. The maximum number of native bytes in a file comment.
+
+### aar_file_request
+
+```c
+int aar_file_request(uint32_t flags, const char *title,
+                     const char *initial_path, char *path, uint32_t capacity);
+```
+
+Shows the client's native requester for one file. Pass `0` for Open or
+`AAR_FILE_REQUEST_SAVE` for Save As. The optional `title` (UTF-8) and
+`initial_path` (native path bytes) are NUL-terminated strings of at most
+255 bytes each before the NUL. NULL and empty strings both use the client's
+defaults for that input.
+
+Returns `1` and writes a NUL-terminated native path (at most `AAR_PATH_MAX`
+bytes before the NUL) on selection, or `0` on user cancellation. `path` must
+be non-NULL and `capacity` must be positive, counting room for the NUL.
+Unknown flags, overlong inputs or missing output storage give `AAR_E_INVAL`.
+If the selected path does not fit, the call returns `AAR_E_NOSPC` without
+truncating it. A client may refuse a path under its usual path policy
+(`AAR_E_ACCES`). Neither cancellation nor any error changes `path`. A
+selection does not open or create a file and does not grant additional
+access: pass the returned path to `aar_file_open` yourself.
+
+The call parks without a timeout until the client replies or a stop ends
+the wait with `AAR_E_IO`. Gate: `AAR_API_COVERS(api, file_request)` and a
+non-NULL slot. The wrapper or an unsupported client returns `AAR_E_NOSYS`.
+There is no capability bit. Minimum minor: 6.
+
+### AAR_FILE_REQUEST_SAVE
+
+`1u`. Use Save As instead of Open with `aar_file_request`. Minimum minor: 6.
 
 ### AAR_FILE_READ
 

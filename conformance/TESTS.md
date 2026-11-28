@@ -153,7 +153,7 @@ because the registers differ.
 | C-TABLE.23 | 8.8 | MUST | zz9000 | any | payload | yes | `aar_ext(AAR_PLATFORM_ZZ9000, AAR_EXT_ZZ9000_MAIN)` returns a table whose `size` covers `build_id`; `gl_bind_flags` is NULL when the GL group is absent |
 | C-TABLE.24 | 3.5 | MUST | core | any | payload | yes | the error codes a call returns are the ones of section 3.5: over a battery of failing calls the payload makes (files, heap, shared buffers, groups, absent slots), no code is outside -1 to -17 |
 | C-TABLE.25 | 3.6 | MUST | core | any | none | todo | not tested here: the major and minor check on the client's view is C-CLIENT.3 |
-| C-TABLE.26 | 3.3 | MUST | core | any | none | todo | not tested here: slot order, offsets and all 82 slots (42 core, five optional slots, the groups and three async file slots) are pinned by `_Static_assert`s and `tests/abi_check.sh` in CI. C-TABLE.1 covers the core slots; C-FILE.53 to C-FILE.56 exercise optional file calls |
+| C-TABLE.26 | 3.3 | MUST | core | any | none | todo | not tested here: slot order, offsets and all 83 slots (42 core, five optional slots, the groups, three async file slots and the optional native requester) are pinned by `_Static_assert`s and `tests/abi_check.sh` in CI. C-TABLE.1 covers the core slots; C-FILE.53 to C-FILE.58 exercise optional file calls |
 | C-TABLE.27 | 3.3 | MUST | core | any | none | todo | not tested: apps MUST NOT gate on `version`; an obligation of the app |
 | C-TABLE.28 | 3.5 | MUST | core | any | none | todo | not tested: the numeric values of the error codes are pinned by the header and `tests/abi_check.sh` |
 | C-TABLE.29 | 8.8 | SHOULD | core | any | none | todo | not tested: an app that uses an extension SHOULD say it is not portable; documentation of the app |
@@ -282,6 +282,11 @@ The runner prepares a fixture tree under its root before the payload starts
 a known date, a directory with five files, a chain of directories for the longest
 path) and checks the files the payload leaves behind.
 
+The native requester cases use the real file chooser. Run them individually on
+the card with `aar-conf ONLY=C-FILE.57 INTERACTIVE` and
+`aar-conf ONLY=C-FILE.58 INTERACTIVE`. Use the default ROOT or a scratch drawer.
+Both cases skip if the slot or the client's native backend is unavailable.
+
 | id | spec | level | group | profile | judged by | impl | check |
 |---|---|---|---|---|---|---|---|
 | C-FILE.1 | 7.1 | MUST | core | any | payload | yes | a path of 255 bytes opens; the first file id is at least `AAR_FD_BASE` (3) and below 64. The fixture chain has components of 30 characters, which an OFS volume can hold: 255 bytes is the limit of the app interface, and a client's filesystem may accept less (spec 7.1) |
@@ -340,6 +345,8 @@ path) and checks the files the payload leaves behind.
 | C-FILE.54 | 7.1 | SHOULD | core | any | payload | yes | neither `file_get_comment` nor `file_set_comment` returns `AAR_E_NOSYS` when C-FILE.53 tries the calls on its scratch file. Without a peer: `SKIP host:` |
 | C-FILE.55 | 7.1 | MUST | core | any | payload | yes | refusals that hold with or without comment support: `file_set_comment` of 80 bytes, with an embedded NUL, and of 1 byte from NULL, `file_get_comment` without `out_n`, and either call with a path of 256 bytes give negative codes; a `file_get_comment` that answers `AAR_E_NOSYS` writes neither the buffer nor `*out_n`, otherwise a missing path is `AAR_E_NOENT`; a `file_set_comment` of a missing path is `AAR_E_NOSYS` or `AAR_E_NOENT` and makes no object. It runs on the host runner, which serves no comments, and shows the unsupported answer there |
 | C-FILE.56 | 7.1 | MUST | core | any | payload | yes | when async files are implemented, one ticket retains the slot and fd until collected; a write followed by a read of nearly 1 MiB returns exact bytes and a short EOF count without modifying the byte after EOF, and a consumed ticket is stale |
+| C-FILE.57 | 7.1 | SHOULD | core | any | runner | yes | native requester: accept the default Open and Save As selections, then cancel the third requester and select an existing file outside ROOT in the fourth. The app gets usable root-relative paths for the selections, 0 for Cancel and `AAR_E_ACCES` for the outside path; neither changes the output buffer. The Open fixture's contents are unchanged and the Save As target is not created |
+| C-FILE.58 | 7.1 | SHOULD | core | any | runner | yes | leave the native requester open without interacting. After 35 seconds the runner asks the app to stop; the app must have waited more than the usual 30-second file timeout, return from `aar_file_request` with `AAR_E_IO`, and exit normally |
 
 ## C-CON: console and log (section 7.2, 10.4)
 

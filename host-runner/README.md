@@ -484,6 +484,8 @@ Windows file has no AmigaDOS comment, and the runner does not keep one in an
 extended attribute or a side file. Both answer `AAR_E_NOSYS` and write
 nothing. The conformance rows C-FILE.53 and C-FILE.55 show that answer here.
 
+`aar_file_request` is not served by the host runner and returns `AAR_E_NOSYS`.
+
 `aar_file_delete` is `unlink` or `rmdir`. A directory that is not empty is
 `AAR_E_EXIST`. An object in use is `AAR_E_BUSY`, as a locked object is on
 AmigaDOS: a file or directory that an open id holds, or a directory that an

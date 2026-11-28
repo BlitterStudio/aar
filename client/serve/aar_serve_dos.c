@@ -468,6 +468,262 @@ static const struct aar_serve_dos_ops aar_serve_dos_backend = {
     .lock_comment = be_lock_comment,
 };
 
+/* ---- File requester paths --------------------------------------------------- */
+
+/* A path relative to ROOT fits the ABI even when its native spelling does not. */
+#define REQUESTER_DRAWER_BYTES (2u * AAR_SERVE_PATH_BYTES)
+
+static int requester_basename(const char *file)
+{
+    return file[0] && strcmp(file, ".") != 0 && strcmp(file, "..") != 0 &&
+           !strpbrk(file, "/:");
+}
+
+static int requester_lock_absolute(struct aar_serve *s, const char *name,
+                                   int allow_missing, uintptr_t *lock)
+{
+    int transport_ok;
+    int32_t io;
+
+    *lock = be_lock_abs(s, name, &transport_ok, &io);
+    if (!transport_ok)
+        return AAR_E_IO;
+    if (*lock || (allow_missing && io == ERROR_OBJECT_NOT_FOUND))
+        return AAR_OK;
+    return io ? aar_serve_errno_from_io(io) : AAR_E_NOENT;
+}
+
+static int requester_lock_drawer(struct aar_serve *s, const char *drawer,
+                                 const char *suffix, uintptr_t *lock)
+{
+    char name[UINT8_MAX + 1u];
+    uintptr_t dir;
+    size_t len;
+    int rc;
+
+    /* Keep the whole name when it fits, so the resolver can try multi-assigns. */
+    if (strlen(suffix) <= UINT8_MAX)
+        return requester_lock_absolute(s, drawer, 0, lock);
+
+    /* A long canonical drawer can still fit in the ABI relative to ROOT. */
+    len = (size_t)(suffix - drawer);
+    if (len >= sizeof(name))
+        return AAR_E_NOSPC;
+    memcpy(name, drawer, len);
+    name[len] = 0;
+    rc = requester_lock_absolute(s, name, 0, &dir);
+    if (rc != AAR_OK)
+        return rc;
+
+    while (*suffix) {
+        const char *end;
+        uintptr_t next;
+        int transport_ok;
+        int32_t io;
+
+        len = strcspn(suffix, "/");
+        end = suffix + len;
+        if (*end)
+            end++;
+        if (!len)
+            len = 1; /* A slash without a preceding component means parent. */
+        if (len >= sizeof(name)) {
+            be_unlock(s, dir);
+            return AAR_E_NOSPC;
+        }
+        memcpy(name, suffix, len);
+        name[len] = 0;
+        next = be_lock_rel(s, dir, name, &transport_ok, &io);
+        be_unlock(s, dir);
+        if (!transport_ok)
+            return AAR_E_IO;
+        if (!next)
+            return io ? aar_serve_errno_from_io(io) : AAR_E_NOENT;
+        dir = next;
+        suffix = end;
+    }
+    *lock = dir;
+    return AAR_OK;
+}
+
+static int requester_examine(struct aar_serve *s, uintptr_t lock,
+                             struct aar_serve_info *info)
+{
+    int transport_ok;
+    int32_t io;
+
+    if (be_lock_examine(s, lock, info, &transport_ok, &io))
+        return AAR_OK;
+    return transport_ok && io ? aar_serve_errno_from_io(io) : AAR_E_IO;
+}
+
+static int requester_initial_path(struct aar_serve *s, const char *initial,
+                                  char drawer[REQUESTER_DRAWER_BYTES],
+                                  char file[AAR_PATH_MAX + 1u])
+{
+    const struct aar_serve_files *f = &s->core.files;
+    const char *colon = strchr(initial, ':');
+    struct aar_serve_info info;
+    uintptr_t parent = 0, target = 0;
+    int rc;
+
+    if (strlen(initial) > AAR_PATH_MAX)
+        return AAR_E_INVAL;
+    file[0] = 0;
+    if (colon) {
+        if (!f->abs_paths)
+            return AAR_E_ACCES;
+        rc = requester_lock_absolute(s, initial, 1, &target);
+    } else {
+        rc = aar_serve_requester_resolve_rel(f, initial, 1, file,
+                                            &parent, &target);
+    }
+    if (rc != AAR_OK)
+        goto done;
+    if (target) {
+        rc = requester_examine(s, target, &info);
+        if (rc != AAR_OK)
+            goto done;
+        if (info.is_dir) {
+            file[0] = 0;
+            if (!X_NAME_FROM_LOCK((BPTR)target, (STRPTR)drawer, REQUESTER_DRAWER_BYTES))
+                rc = AAR_E_IO;
+            goto done;
+        }
+    }
+    if (colon) {
+        if (target) {
+            /* The actual parent may be a later directory of a multi-assign. */
+            parent = be_parent_dir(s, target);
+            if (!parent) {
+                rc = AAR_E_IO;
+                goto done;
+            }
+            memcpy(file, info.name, strlen(info.name) + 1u);
+        } else {
+            const char *slash = strrchr(initial, '/');
+            const char *leaf = (slash && slash > colon ? slash : colon) + 1;
+            size_t prefix = (size_t)(leaf - initial);
+
+            /* Keep the separator; a run of slashes can include parent steps. */
+            memcpy(drawer, initial, prefix);
+            drawer[prefix] = 0;
+            memcpy(file, leaf, strlen(leaf) + 1u);
+            rc = requester_lock_absolute(s, drawer, 0, &parent);
+            if (rc != AAR_OK)
+                goto done;
+        }
+    }
+    if (!requester_basename(file)) {
+        rc = AAR_E_INVAL;
+        goto done;
+    }
+    rc = requester_examine(s, parent, &info);
+    if (rc == AAR_OK &&
+        (!info.is_dir ||
+         !X_NAME_FROM_LOCK((BPTR)parent, (STRPTR)drawer, REQUESTER_DRAWER_BYTES)))
+        rc = AAR_E_IO;
+done:
+    if (target)
+        be_unlock(s, target);
+    if (parent)
+        be_unlock(s, parent);
+    return rc;
+}
+
+static int requester_selected_path(struct aar_serve *s, const char *drawer,
+                                   const char *file, int save,
+                                   char path[AAR_PATH_MAX + 1u])
+{
+    const struct aar_serve_files *f = &s->core.files;
+    char physical[REQUESTER_DRAWER_BYTES];
+    char name[REQUESTER_DRAWER_BYTES];
+    const char *base = physical;
+    const char *colon = strchr(drawer, ':');
+    struct aar_serve_info info;
+    uintptr_t lock = 0, parent = 0, target = 0;
+    size_t base_len, file_len, sep;
+    int rc;
+
+    if (!requester_basename(file))
+        return AAR_E_INVAL;
+    file_len = strlen(file);
+    if (file_len > AAR_PATH_MAX)
+        return AAR_E_NOSPC;
+    if (colon) {
+        rc = requester_lock_drawer(s, drawer, colon + 1, &lock);
+    } else {
+        rc = aar_serve_requester_resolve_rel(f, drawer, 0, name, &parent, &lock);
+        if (parent) {
+            be_unlock(s, parent);
+            parent = 0;
+        }
+    }
+    if (rc != AAR_OK)
+        goto done;
+    rc = requester_examine(s, lock, &info);
+    if (rc != AAR_OK)
+        goto done;
+    if (!info.is_dir ||
+        !X_NAME_FROM_LOCK((BPTR)lock, (STRPTR)physical, sizeof(physical))) {
+        rc = AAR_E_IO;
+        goto done;
+    }
+    if (!f->abs_paths) {
+        size_t root_len;
+
+        if (!X_NAME_FROM_LOCK((BPTR)f->root, (STRPTR)name, sizeof(name))) {
+            rc = AAR_E_IO;
+            goto done;
+        }
+        root_len = strlen(name);
+        if (!root_len || strncmp(physical, name, root_len) != 0) {
+            rc = AAR_E_ACCES;
+            goto done;
+        }
+        base = physical + root_len;
+        if (*base && name[root_len - 1u] != ':') {
+            if (*base != '/') {
+                rc = AAR_E_ACCES;
+                goto done;
+            }
+            base++;
+        }
+    }
+    base_len = strlen(base);
+    sep = base_len && base[base_len - 1u] != ':' && base[base_len - 1u] != '/';
+    if (base_len + sep + file_len > AAR_PATH_MAX) {
+        rc = AAR_E_NOSPC;
+        goto done;
+    }
+    memcpy(path, base, base_len);
+    if (sep)
+        path[base_len] = '/';
+    memcpy(path + base_len + sep, file, file_len + 1u);
+    if (f->abs_paths) {
+        rc = requester_lock_absolute(s, path, save, &target);
+    } else {
+        /* The strings only format the answer. The ordinary file resolver must
+         * reach the same physical drawer and never follow a leaf outside ROOT. */
+        rc = aar_serve_requester_resolve_rel(f, path, save, name, &parent, &target);
+        if (rc == AAR_OK && X_SAME_LOCK((BPTR)parent, (BPTR)lock) != LOCK_SAME)
+            rc = AAR_E_ACCES;
+    }
+    if (rc == AAR_OK && target) {
+        rc = requester_examine(s, target, &info);
+        if (rc == AAR_OK && info.is_dir)
+            rc = AAR_E_INVAL;
+    }
+done:
+    if (target)
+        be_unlock(s, target);
+    if (parent)
+        be_unlock(s, parent);
+    if (lock)
+        be_unlock(s, lock);
+    return rc;
+}
+
 /*
  * A DOS packet may block on slow media. aar_serve waits on a reply port it owns
  * together with its poll timer and Ctrl-C, asking the library on each tick

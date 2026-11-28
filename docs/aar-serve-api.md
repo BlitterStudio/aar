@@ -492,9 +492,10 @@ the app has ended. Returns `AAR_SERVE_ENDED` or `AAR_SERVE_LOST`.
 
 `ULONG aar_serve_sigmask(const aar_serve *s)`: every signal the loop waits on
 now: the break signals of `break_mask`, the timer, the console packet port, the
-file reply port while a transfer is pending, the input window, the SafeMessage
-port of a flip, the AHI port when they exist, and the library signal with
-`AAR_SERVEF_USE_SIGNAL`. It changes while the app runs, so ask again before each
+file reply port while a transfer is pending, the native file requester reply
+port, the input window, the SafeMessage port of a flip, the AHI port, and the
+library signal with `AAR_SERVEF_USE_SIGNAL`. It changes while the app runs, so
+ask again before each
 `Wait`. The heartbeat timer is armed whenever it
 is in the mask. `aar_serve_create`, the end of every step and every call that
 waits on DOS (`aar_serve_locate` included) arm it again, so a program may call
@@ -585,7 +586,8 @@ launcher's to derive from it.
 
 ### aar_serve_destroy
 
-`void aar_serve_destroy(aar_serve *s)`: stops the app if it still runs, removes
+`void aar_serve_destroy(aar_serve *s)`: stops the app if it still runs, cancels
+and waits for any native file requester before closing its screen, removes
 the log sink, closes AHI, closes the display (waits for the SafeMessages of the
 flips and restores the public screen), finishes the console reads and writes and
 the launcher text, reaps any flagged file packet before closing its handle,

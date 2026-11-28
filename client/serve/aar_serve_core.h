@@ -787,6 +787,14 @@ void aar_serve_files_close_all(struct aar_serve_files *files);
 void aar_serve_files_serve(struct aar_serve_files *files, const struct aar_serve_req *req,
                            struct aar_serve_done *done);
 
+/* Resolves a relative requester path with the same ROOT walk and link checks
+ * as FILE_STAT. On success the caller owns parent and target separately;
+ * target is zero only if allow_missing permits an absent final component. */
+int32_t aar_serve_requester_resolve_rel(const struct aar_serve_files *f,
+                                        const char *path, int allow_missing,
+                                        char leaf[AAR_SERVE_PATH_BYTES],
+                                        uintptr_t *parent, uintptr_t *target);
+
 /* ---- Locale, time, environment and clipboard ---------------------------- */
 
 /* The longest name of an environment variable. */
